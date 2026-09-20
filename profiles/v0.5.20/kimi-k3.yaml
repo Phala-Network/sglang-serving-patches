@@ -1,0 +1,84 @@
+{
+  "schema": "phala.sglang-serving-profile.v1",
+  "id": "kimi-k3",
+  "status": "source_review_candidate",
+  "catalog": "patches/sglang/v0.5.20/kimi-k3.manifest.json",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20",
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+  },
+  "applicability": {
+    "model_repository": "moonshotai/Kimi-K3",
+    "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+    "tensor_parallel_size": 8,
+    "kv_dtype": "bfloat16",
+    "kda_state_dtype": "float32",
+    "context_length": 1048576,
+    "observed_dcp": [
+      1,
+      8
+    ],
+    "l3_validation_dcp": [
+      1
+    ],
+    "mooncake": "not accepted for this model",
+    "governor_combination": "not tested; disabled"
+  },
+  "patches": [
+    {
+      "id": "0001-prefill-seq-cap",
+      "path": "patches/sglang/v0.5.20/common/kimi-0001-prefill-seq-cap.patch",
+      "sha256": "b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b",
+      "dependencies": []
+    },
+    {
+      "id": "0002-chat-stream-close",
+      "path": "patches/sglang/v0.5.20/common/kimi-0002-chat-stream-close.patch",
+      "sha256": "c91dd9f8f86ca502b3fe57bc8c832e52326f9ce2dbf76eda593aad64b891b810",
+      "dependencies": []
+    },
+    {
+      "id": "0003-request-owner",
+      "path": "patches/sglang/v0.5.20/common/kimi-0003-request-owner.patch",
+      "sha256": "75eecd96f841d70cf94a71b2eaa136739d0330801ac536b17bfca37ae08f7805",
+      "dependencies": []
+    },
+    {
+      "id": "0004-mamba-checkpoint",
+      "path": "patches/sglang/v0.5.20/common/kimi-0004-mamba-checkpoint.patch",
+      "sha256": "065f2a7bc43413d031af30bc42ac12d32cf504544f7b87616494c966b33ebf3a",
+      "dependencies": []
+    },
+    {
+      "id": "0005-file-storage-ownership",
+      "path": "patches/sglang/v0.5.20/common/kimi-0005-file-storage-ownership.patch",
+      "sha256": "c8b4f01f41089a746a86078185a37d7905330445a59a860b51aa53d0f9bfa21c",
+      "dependencies": []
+    },
+    {
+      "id": "0006-restorable-prefix",
+      "path": "patches/sglang/v0.5.20/common/kimi-0006-restorable-prefix.patch",
+      "sha256": "ff5ee3087d5c06995f59676de35f14ac57c6154790a67a1602201d79f2b93418",
+      "dependencies": [
+        "0005-file-storage-ownership"
+      ]
+    },
+    {
+      "id": "0007-chunk-write-through",
+      "path": "patches/sglang/v0.5.20/common/kimi-0007-chunk-write-through.patch",
+      "sha256": "4b4887fcf835150840a375bcb650de49cca6b5d5b36a606f71a74fbd494b317c",
+      "dependencies": []
+    }
+  ],
+  "governor": {
+    "enabled": false,
+    "hooks": []
+  },
+  "expected_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574",
+  "equivalence": {
+    "frozen_tested_commit": "739b517714012a8766a7d09d473f82aabd7f4d28",
+    "composed_commit": "b873d248cdfb2ac62e9bbb1d14f45925c152f053",
+    "frozen_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574"
+  }
+}

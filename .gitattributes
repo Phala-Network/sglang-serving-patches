@@ -1,3 +1,11 @@
 * text=auto eol=lf
 # Unified diffs contain intentional blank context lines.
 *.patch -whitespace
+
+# Preserve raw provenance bytes on Windows and Linux.
+patches/sglang/v0.5.20/common/kimi-*.patch -text
+profiles/v0.5.20/kimi-k3.yaml -text
+patches/sglang/v0.5.20/kimi-k3.manifest.json -text
+tools/*.py text eol=lf
+tests/*.py text eol=lf
+.github/workflows/kimi-profile.yml text eol=lf

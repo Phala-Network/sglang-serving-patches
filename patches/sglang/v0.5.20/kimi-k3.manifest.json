@@ -1,0 +1,210 @@
+{
+  "schema": "phala.sglang-source-catalog.v1",
+  "base_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "export_argv": [
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.quotePath=true",
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--binary",
+    "--full-index",
+    "--no-renames",
+    "--diff-algorithm=myers",
+    "--no-indent-heuristic",
+    "--unified=3",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-color"
+  ],
+  "export_argv_sha256": "5b1c9ebbdc45775bd47a469bafc8d589d4ca3d1ad694677ca6525f5cfe43bda2",
+  "export_command_template": [
+    "git",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.quotePath=true",
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--binary",
+    "--full-index",
+    "--no-renames",
+    "--diff-algorithm=myers",
+    "--no-indent-heuristic",
+    "--unified=3",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-color",
+    "<source_parent>",
+    "<source_commit>",
+    "--"
+  ],
+  "selection_policy": "Catalog is unordered inventory; only profile selects patches. Review ancestry does not imply dependency.",
+  "patches": [
+    {
+      "id": "0001-prefill-seq-cap",
+      "scope": "common",
+      "title": "Bound prefill graph replay by total sequence length",
+      "path": "patches/sglang/v0.5.20/common/kimi-0001-prefill-seq-cap.patch",
+      "sha256": "b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "37d88dc627e4ab0560bc24e2825b912ffc7f3a0e",
+      "source_parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+      "source_tree": "63e201585d59f2805b2a4d1d4e5e72566d07004e",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/34",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0001-prefill-seq-cap-r1",
+      "dependencies": [],
+      "review_ancestry_only": [],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0002-chat-stream-close",
+      "scope": "common",
+      "title": "Close chat streaming generators on ASGI disconnect",
+      "path": "patches/sglang/v0.5.20/common/kimi-0002-chat-stream-close.patch",
+      "sha256": "c91dd9f8f86ca502b3fe57bc8c832e52326f9ce2dbf76eda593aad64b891b810",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "6e6e743682adb5449c072879502afbf6bc41f0b5",
+      "source_parent": "37d88dc627e4ab0560bc24e2825b912ffc7f3a0e",
+      "source_tree": "ce778e38b2e2295ac5c7f1371b86592d4bec17b0",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/35",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0002-chat-stream-close-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap"
+      ],
+      "conflicts_with_source_commits": [
+        "0bf1ed94ed6e16687de77c0d803ff5bd71367d37"
+      ],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification",
+      "overlap": {
+        "pr": 3,
+        "commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+        "reason": "PR #3 replaces chat response construction with shared response helpers and also changes completions, responses, MM ownership and scheduler behavior. It is not byte-equivalent to this frozen chat-only implementation. Do not select both without reconciliation."
+      }
+    },
+    {
+      "id": "0003-request-owner",
+      "scope": "common",
+      "title": "Bind delayed request aborts to their original request owner",
+      "path": "patches/sglang/v0.5.20/common/kimi-0003-request-owner.patch",
+      "sha256": "75eecd96f841d70cf94a71b2eaa136739d0330801ac536b17bfca37ae08f7805",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "5256c3113810f97a156e9847b79f586009cb3c51",
+      "source_parent": "6e6e743682adb5449c072879502afbf6bc41f0b5",
+      "source_tree": "2cf592874ff083759c2250a5a2a462808109b73e",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/36",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0003-request-owner-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close"
+      ],
+      "conflicts_with_source_commits": [
+        "35fc03abe0b876de2bfaac18dff2a220b2f0a87d"
+      ],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification",
+      "overlap": {
+        "pr": 7,
+        "commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+        "reason": "PR #7 uses an additional GenerateReqInput-specific branch for logical-parent registration. This frozen implementation adjusts the existing batch range and adds request-object identity checks for delayed aborts. The implementation and tests are not byte-equivalent. Do not select both without reconciliation."
+      }
+    },
+    {
+      "id": "0004-mamba-checkpoint",
+      "scope": "common",
+      "title": "Align Mamba checkpoint donation to the absolute page grid",
+      "path": "patches/sglang/v0.5.20/common/kimi-0004-mamba-checkpoint.patch",
+      "sha256": "065f2a7bc43413d031af30bc42ac12d32cf504544f7b87616494c966b33ebf3a",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "bda19ad5a7a3d6044d6825c4f492929ef7d85182",
+      "source_parent": "5256c3113810f97a156e9847b79f586009cb3c51",
+      "source_tree": "2cfb4819f2278d3904f1406fdb129da49eecb04f",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/37",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0004-mamba-checkpoint-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0005-file-storage-ownership",
+      "scope": "common",
+      "title": "Isolate hybrid MLA and Mamba file storage ownership and quotas",
+      "path": "patches/sglang/v0.5.20/common/kimi-0005-file-storage-ownership.patch",
+      "sha256": "c8b4f01f41089a746a86078185a37d7905330445a59a860b51aa53d0f9bfa21c",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "cf08f42ebf1a0018d0e6768dd0b014ead9afdfed",
+      "source_parent": "bda19ad5a7a3d6044d6825c4f492929ef7d85182",
+      "source_tree": "717a5afd6e8a08c4dbcf2161b9f3d3b0a19475ca",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/38",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0005-file-storage-ownership-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0006-restorable-prefix",
+      "scope": "common",
+      "title": "Intersect restorable hybrid cache endpoints across pools and ranks",
+      "path": "patches/sglang/v0.5.20/common/kimi-0006-restorable-prefix.patch",
+      "sha256": "ff5ee3087d5c06995f59676de35f14ac57c6154790a67a1602201d79f2b93418",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "530bf4c75e7fbad0010a47ccc51d968cc10c53c5",
+      "source_parent": "cf08f42ebf1a0018d0e6768dd0b014ead9afdfed",
+      "source_tree": "1413cbc18b20fb7a0e7d1854d7f4a24a7e87e14c",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/39",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0006-restorable-prefix-r1",
+      "dependencies": [
+        "0005-file-storage-ownership"
+      ],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint",
+        "0005-file-storage-ownership"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0007-chunk-write-through",
+      "scope": "common",
+      "title": "Back up completed write-through chunks before request completion",
+      "path": "patches/sglang/v0.5.20/common/kimi-0007-chunk-write-through.patch",
+      "sha256": "4b4887fcf835150840a375bcb650de49cca6b5d5b36a606f71a74fbd494b317c",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "b873d248cdfb2ac62e9bbb1d14f45925c152f053",
+      "source_parent": "530bf4c75e7fbad0010a47ccc51d968cc10c53c5",
+      "source_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574",
+      "source_pr": "https://github.com/Phala-Network/sglang/pull/40",
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-0007-chunk-write-through-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint",
+        "0005-file-storage-ownership",
+        "0006-restorable-prefix"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    }
+  ]
+}

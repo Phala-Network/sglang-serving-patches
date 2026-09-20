@@ -1,0 +1,44 @@
+name: Kimi profile provenance
+on:
+  pull_request:
+    paths:
+      - 'tools/**'
+      - 'tests/**'
+      - 'profiles/v0.5.20/kimi-k3.yaml'
+      - 'patches/sglang/v0.5.20/common/kimi-*.patch'
+      - 'patches/sglang/v0.5.20/kimi-k3.manifest.json'
+      - '.github/workflows/kimi-profile.yml'
+  push:
+    branches: ['codex/kimi-k3-v0520-profile-r1']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export-apply-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Validator regressions
+        run: python -m unittest discover -s tests -v
+      - name: Fetch immutable source commits and review refs
+        shell: python
+        run: |
+          import json, subprocess
+          from pathlib import Path
+          catalog = json.loads(Path('patches/sglang/v0.5.20/kimi-k3.manifest.json').read_bytes())
+          source = Path('${{ runner.temp }}') / 'sglang-source'
+          subprocess.run(['git', 'init', str(source)], check=True)
+          subprocess.run(['git', '-C', str(source), 'remote', 'add', 'origin', 'https://github.com/Phala-Network/sglang.git'], check=True)
+          refs = {catalog['base_commit']}
+          for item in catalog['patches']:
+              refs.update([item['source_commit'], item['source_parent'], item['source_ref']])
+          subprocess.run(['git', '-C', str(source), 'fetch', '--no-tags', 'origin', *sorted(refs)], check=True)
+      - name: Re-export and compose selected patches from official base
+        run: python tools/validate_profile.py --source "${{ runner.temp }}/sglang-source" --receipt kimi-profile-receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kimi-profile-provenance
+          path: kimi-profile-receipt.json

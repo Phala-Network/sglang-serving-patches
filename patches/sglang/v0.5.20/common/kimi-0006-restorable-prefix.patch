@@ -1,0 +1,678 @@
+diff --git a/python/sglang/srt/managers/cache_controller.py b/python/sglang/srt/managers/cache_controller.py
+index b9a134e13c652566b50fe83cf3ca11b4ca736ca5..24b1df7e8be5f83bfaf57de267dfb0e1d0473021 100644
+--- a/python/sglang/srt/managers/cache_controller.py
++++ b/python/sglang/srt/managers/cache_controller.py
+@@ -234,6 +234,8 @@ class StorageOperation:
+         # hash_value is truncated to the hit boundary; the tail is the
+         # absence signal that invalidates buffer-mode existence beliefs.
+         self.all_hash_values: Optional[List[str]] = None
++        # None is a legacy contiguous-prefix backend; [] has no legal endpoint.
++        self.restorable_prefix_pages: Optional[List[int]] = None
+         # Prefetch-outcome accounting, set at enqueue by the tree cache.
+         self.stats_requested_tokens = 0
+         # Absolute token offset at which this storage-prefetched span starts.
+@@ -1216,6 +1218,41 @@ class HiCacheController:
+ 
+         return hash_value, storage_query_count
+ 
++    def _sync_storage_hit_count(self, operation, storage_hit_count: int) -> int:
++        restorable = operation.restorable_prefix_pages
++        # Keep the collective identical for plain KV and hybrid controllers:
++        # different pipeline stages may have different auxiliary pools. A
++        # terminated operation still participates with a zero hit count.
++        hit_info = torch.tensor(
++            [storage_hit_count, int(restorable is None)], dtype=torch.int
++        )
++        self._all_reduce(
++            hit_info, torch.distributed.ReduceOp.MIN, self.prefetch_hits_sync_groups
++        )
++        common_hit_count, all_legacy = hit_info.tolist()
++        if common_hit_count == 0 or all_legacy:
++            return common_hit_count
++
++        # A per-rank maximum is not sufficient for sparse trailing pools:
++        # min(max({1, 3}), max({1, 2})) == 2 is illegal on the first rank.
++        # Size every rank's mask from the synchronized upper bound, then
++        # intersect legal endpoints across the same TP/CP/PP groups.
++        max_pages = common_hit_count // self.page_size
++        if restorable is None:
++            # Preserve the previous contiguous-prefix assumption where the
++            # backend does not provide the optional endpoint metadata.
++            mask = torch.ones(max_pages + 1, dtype=torch.int)
++        else:
++            mask = torch.zeros(max_pages + 1, dtype=torch.int)
++            mask[0] = 1
++            candidates = [page for page in restorable if 0 < page <= max_pages]
++            if candidates:
++                mask[candidates] = 1
++        self._all_reduce(
++            mask, torch.distributed.ReduceOp.MIN, self.prefetch_hits_sync_groups
++        )
++        return int(torch.nonzero(mask, as_tuple=True)[0][-1]) * self.page_size
++
+     def prefetch_thread_func(self):
+         """
+         Manage prefetching operations from storage backend to host memory.
+@@ -1229,15 +1266,9 @@ class HiCacheController:
+                     hash_value, storage_hit_count = [], 0
+                 else:
+                     hash_value, storage_hit_count = self._storage_hit_query(operation)
+-                storage_hit_count_tensor = torch.tensor(
+-                    storage_hit_count, dtype=torch.int
+-                )
+-                self._all_reduce(
+-                    storage_hit_count_tensor,
+-                    torch.distributed.ReduceOp.MIN,
+-                    self.prefetch_hits_sync_groups,
++                storage_hit_count = self._sync_storage_hit_count(
++                    operation, storage_hit_count
+                 )
+-                storage_hit_count = storage_hit_count_tensor.item()
+ 
+                 # Record the TP-synced hit count; the scheduler thread decides
+                 # at drain time whether to revoke (below threshold) or allocate.
+diff --git a/python/sglang/srt/mem_cache/hicache_storage.py b/python/sglang/srt/mem_cache/hicache_storage.py
+index a4f01ea1d73424504eb144ddbea85cf7a7efc877..70c61b0a352bfa452df96569c05574033983a463 100644
+--- a/python/sglang/srt/mem_cache/hicache_storage.py
++++ b/python/sglang/srt/mem_cache/hicache_storage.py
+@@ -189,8 +189,9 @@ class HiCacheStorage(ABC):
+         ------------------------------------------------------
+         Each ``PoolTransfer`` in ``pool_transfers`` describes a secondary
+         cache pool (e.g. Mamba SSM states) that must be co-present with the
+-        KV pages.  The final ``final_pages`` is the minimum across all pools,
+-        so a missing auxiliary page shrinks the usable prefix.
++        KV pages. The usable prefix ends at the greatest stop point that all
++        pools can restore. Trailing-page pools may have gaps in their valid
++        stop points, so taking the minimum of their maxima is not sufficient.
+ 
+         - ``"all_pages"`` (default):  every page in [0, kv_hit) must exist
+           for this pool.  Used for pools that are required for every token
+@@ -803,31 +804,39 @@ class HiCacheFile(HiCacheStorage):
+         )
+ 
+         hit_count: dict[str, int] = {PoolName.KV: kv_pages} if kv_pages else {}
+-        final_pages = kv_pages
++        # Trailing pools can have holes in their valid stop points: a longer
++        # prefix being restorable does not imply that a shorter one is. Keep
++        # the common stop points instead of taking the minimum of maxima.
++        restorable = list(range(1, kv_pages + 1))
+ 
+         for transfer in pool_transfers or []:
+-            if final_pages == 0:
++            if not restorable:
+                 break
+             name = transfer.name
+             if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
+                 boundary = next(
+                     (i for i in range(kv_pages) if not has_component(i, name)), kv_pages
+                 )
++                pool_restorable = list(range(1, boundary + 1))
+             else:  # trailing_pages
+                 trailing = max(1, len(transfer.keys) if transfer.keys else 1)
+-                boundary = 0
+-                for prefix_len in range(kv_pages, 0, -1):
+-                    if all(
+-                        has_component(i, name)
+-                        for i in range(max(0, prefix_len - trailing), prefix_len)
+-                    ):
+-                        boundary = prefix_len
+-                        break
++                pool_restorable = []
++                consecutive = 0
++                for prefix_len in range(1, kv_pages + 1):
++                    if has_component(prefix_len - 1, name):
++                        consecutive += 1
++                    else:
++                        consecutive = 0
++                    if consecutive >= min(trailing, prefix_len):
++                        pool_restorable.append(prefix_len)
++                boundary = pool_restorable[-1] if pool_restorable else 0
+             if boundary:
+                 hit_count[name] = boundary
+-            final_pages = min(final_pages, boundary)
++            pool_restorable_set = set(pool_restorable)
++            restorable = [p for p in restorable if p in pool_restorable_set]
+ 
+-        return PoolTransferResult(final_pages, hit_count)
++        final_pages = restorable[-1] if restorable else 0
++        return PoolTransferResult(final_pages, hit_count, restorable)
+ 
+     def _read_page(self, pool_name: str, key: str, host_pool, page_offset: int) -> bool:
+         """Read one page from storage into host_pool at page_offset."""
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+index 17b37747dee8f7bb406e3eebe6aef6454e75cf07..49fdec2f2818cc367fa942443586ae7b3b2766de 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+@@ -619,6 +619,7 @@ class HybridCacheController(BaseHiCacheController):
+             )
+ 
+         kv_hit_pages = hit_result.kv_hit_pages
++        operation.restorable_prefix_pages = hit_result.restorable_prefix_pages
+         operation.pool_storage_result.update_kv_hit_pages(kv_hit_pages)
+ 
+         return (
+diff --git a/test/registered/unit/mem_cache/test_hicache_file_prefix.py b/test/registered/unit/mem_cache/test_hicache_file_prefix.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..76dc5b2f50237c4b44e6ac22844810f2997fbe17
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hicache_file_prefix.py
+@@ -0,0 +1,172 @@
++"""CPU coverage for file-backend hybrid prefix intersection."""
++
++import tempfile
++import unittest
++from pathlib import Path
++
++from sglang.srt.mem_cache.hicache_storage import (
++    HiCacheFile,
++    HiCacheStorageConfig,
++    PoolHitPolicy,
++    PoolName,
++    PoolTransfer,
++)
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++def _file_backend(directory: str, metadata_enabled: bool) -> HiCacheFile:
++    rank, size = 3, 8
++    backend = HiCacheFile(
++        HiCacheStorageConfig(
++            tp_rank=rank,
++            tp_size=size,
++            pp_rank=0,
++            pp_size=1,
++            attn_cp_rank=0,
++            attn_cp_size=1,
++            is_mla_model=True,
++            enable_storage_metrics=False,
++            is_page_first_layout=True,
++            model_name="moonshotai/Kimi-K3",
++            extra_config={
++                "enable_metadata_cache": metadata_enabled,
++                "metadata_ttl": -1.0,
++            },
++        ),
++        file_path=directory,
++    )
++    # R8's File-L3 contract keeps replicated MLA KV TP-independent while
++    # Mamba/KDA state is rank-owned. Tests must use those real namespaces.
++    assert backend._get_component_key("fixture", PoolName.KV).endswith(
++        "_moonshotai-Kimi-K3"
++    )
++    assert backend._get_component_key("fixture", PoolName.MAMBA).endswith(
++        f"_moonshotai-Kimi-K3_mamba_tp{rank}_{size}"
++    )
++    return backend
++
++
++class TestHiCacheFilePrefix(CustomTestCase):
++    def check_prefix(self, kv_pages, pools, expected, num_pages=3):
++        # Exercise real file scans and metadata lookups without constructing
++        # the unrelated eviction/controller machinery.
++        for metadata_enabled in (False, True):
++            for reverse in (False, True):
++                with self.subTest(metadata=metadata_enabled, reverse=reverse):
++                    with tempfile.TemporaryDirectory() as directory:
++                        backend = _file_backend(directory, metadata_enabled)
++                        keys = [f"page{i}" for i in range(1, num_pages + 1)]
++                        for name, pages in [(PoolName.KV, kv_pages)] + [
++                            (name, pages) for name, pages, _, _ in pools
++                        ]:
++                            for page in pages:
++                                Path(
++                                    backend._get_component_path(keys[page - 1], name)
++                                ).touch()
++                        transfers = [
++                            PoolTransfer(
++                                name=name, keys=keys[-window:], hit_policy=policy
++                            )
++                            for name, _, policy, window in pools
++                        ]
++                        if reverse:
++                            transfers.reverse()
++                        # Second query also exercises warm metadata-cache hits.
++                        for _ in range(2):
++                            result = backend.batch_exists_v2(keys, transfers)
++                            self.assertEqual(
++                                result.kv_hit_pages, max(expected, default=0)
++                            )
++                            # R8 has only the legacy dense-prefix result shape;
++                            # model that shape explicitly so red is the illegal
++                            # endpoint assertion, not a missing-attribute error.
++                            actual_endpoints = getattr(
++                                result,
++                                "restorable_prefix_pages",
++                                list(range(1, result.kv_hit_pages + 1)),
++                            )
++                            self.assertEqual(actual_endpoints, expected)
++
++    def test_aligned_checkpoints(self):
++        self.check_prefix(
++            {1, 2, 3},
++            [
++                (PoolName.SWA, {3}, PoolHitPolicy.TRAILING_PAGES, 1),
++                (PoolName.MAMBA, {3}, PoolHitPolicy.TRAILING_PAGES, 1),
++            ],
++            [3],
++        )
++
++    def test_disjoint_checkpoints(self):
++        self.check_prefix(
++            {1, 2, 3},
++            [
++                (PoolName.SWA, {3}, PoolHitPolicy.TRAILING_PAGES, 1),
++                (PoolName.MAMBA, {2}, PoolHitPolicy.TRAILING_PAGES, 1),
++            ],
++            [],
++        )
++
++    def test_preserves_non_contiguous_stop_points(self):
++        self.check_prefix(
++            {1, 2, 3},
++            [(PoolName.MAMBA, {1, 3}, PoolHitPolicy.TRAILING_PAGES, 1)],
++            [1, 3],
++        )
++
++    def test_earlier_common_checkpoint(self):
++        self.check_prefix(
++            {1, 2, 3},
++            [
++                (PoolName.SWA, {1, 3}, PoolHitPolicy.TRAILING_PAGES, 1),
++                (PoolName.MAMBA, {1, 2}, PoolHitPolicy.TRAILING_PAGES, 1),
++            ],
++            [1],
++        )
++
++    def test_all_pages_truncates_trailing_pool(self):
++        self.check_prefix(
++            {1, 2, 3},
++            [
++                (PoolName.INDEXER, {1, 2}, PoolHitPolicy.ALL_PAGES, 3),
++                (PoolName.MAMBA, {1, 3}, PoolHitPolicy.TRAILING_PAGES, 1),
++            ],
++            [1],
++        )
++
++    def test_multi_page_window_with_holes(self):
++        self.check_prefix(
++            {1, 2, 3, 4, 5},
++            [
++                (PoolName.SWA, {1, 2, 4, 5}, PoolHitPolicy.TRAILING_PAGES, 2),
++                (PoolName.MAMBA, {2, 4}, PoolHitPolicy.TRAILING_PAGES, 1),
++            ],
++            [2],
++            num_pages=5,
++        )
++
++    def test_prefix_shorter_than_window(self):
++        self.check_prefix(
++            {1, 2},
++            [(PoolName.SWA, {1, 2}, PoolHitPolicy.TRAILING_PAGES, 3)],
++            [1, 2],
++        )
++
++    def test_kv_hole_limits_auxiliary_hits(self):
++        self.check_prefix(
++            {1, 3},
++            [(PoolName.MAMBA, {3}, PoolHitPolicy.TRAILING_PAGES, 1)],
++            [],
++        )
++
++    def test_kv_only_and_empty(self):
++        self.check_prefix({1, 3}, [], [1])
++        self.check_prefix(set(), [], [])
++        self.check_prefix(set(), [], [], num_pages=0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/mem_cache/test_hicache_prefix_sync.py b/test/registered/unit/mem_cache/test_hicache_prefix_sync.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f600c1c1fcbec091698b66ce0564f3d4bb517d16
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hicache_prefix_sync.py
+@@ -0,0 +1,341 @@
++"""CPU/Gloo coverage for hybrid storage prefix agreement across ranks."""
++
++import multiprocessing
++import tempfile
++import threading
++import time
++import unittest
++from datetime import timedelta
++from pathlib import Path
++from queue import Queue
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch.distributed as dist
++
++from sglang.srt.managers.cache_controller import (
++    HiCacheController,
++    PrefetchOperation,
++    StorageOperation,
++)
++from sglang.srt.mem_cache.hicache_storage import (
++    HiCacheFile,
++    HiCacheStorageConfig,
++    PoolHitPolicy,
++    PoolName,
++    PoolTransfer,
++)
++from sglang.srt.mem_cache.base_prefix_cache import CacheRequestHandle
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    PrefetchOperation as HybridPrefetchOperation,
++)
++from sglang.srt.mem_cache.utils import get_hash_str
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=30, suite="base-a-test-cpu")
++
++_PAGE_SIZE = 4
++_TOKENS = list(range(4 * _PAGE_SIZE))
++_HASHES = [f"{page:064x}" for page in range(1, 5)]
++_COLLECTIVE_TIMEOUT = timedelta(seconds=30)
++_WORKER_TIMEOUT = 90
++
++
++def _file_backend(directory: str, rank: int) -> HiCacheFile:
++    size = dist.get_world_size()
++    backend = HiCacheFile(
++        HiCacheStorageConfig(
++            tp_rank=rank,
++            tp_size=size,
++            pp_rank=0,
++            pp_size=1,
++            attn_cp_rank=0,
++            attn_cp_size=1,
++            is_mla_model=True,
++            enable_storage_metrics=False,
++            is_page_first_layout=True,
++            model_name="moonshotai/Kimi-K3",
++            extra_config={"enable_metadata_cache": False},
++        ),
++        file_path=directory,
++    )
++    assert backend._get_component_key("fixture", PoolName.KV).endswith(
++        "_moonshotai-Kimi-K3"
++    )
++    assert backend._get_component_key("fixture", PoolName.MAMBA).endswith(
++        f"_moonshotai-Kimi-K3_mamba_tp{rank}_{size}"
++    )
++    return backend
++
++
++def _controller(controller_cls, groups, storage_backend=None):
++    # Construct only the state read by _storage_hit_query,
++    # _sync_storage_hit_count, prefetch_thread_func and _sync_trailing_keys.
++    # Page hashing is the sole mocked boundary below; File queries, queues,
++    # collectives and endpoint intersection remain production implementations.
++    controller = controller_cls.__new__(controller_cls)
++    controller.page_size = _PAGE_SIZE
++    controller.prefetch_hits_sync_groups = groups
++    controller.prefetch_completion_sync_groups = groups
++    controller.get_hash_str = get_hash_str
++    controller.storage_backend = storage_backend
++    controller.mem_pool_host = SimpleNamespace(entry_map={})
++    controller.prefetch_queue = Queue()
++    controller.prefetch_hit_queue = Queue()
++    controller.storage_stop_event = threading.Event()
++    controller.storage_stop_event.set()
++    return controller
++
++
++def _check_file_prefetch(rank, groups, scenario):
++    """Exercise real file queries and the full hit-queue handoff, without GPUs."""
++    kv_pages = 4
++    checkpoints = (4,)
++    controller_cls = HybridCacheController
++    terminated = False
++    if scenario == "aligned":
++        expected = 4
++    elif scenario == "disjoint":
++        checkpoints = (4,) if rank % 2 == 0 else (3,)
++        expected = 0
++    elif scenario == "earlier_common":
++        checkpoints = (1, 4) if rank % 2 == 0 else (1, 3)
++        expected = 1
++    elif scenario == "kv_bound":
++        kv_pages = 4 if rank % 2 == 0 else 3
++        checkpoints = (1, 3, 4) if rank % 2 == 0 else (1, 2, 4)
++        expected = 1
++    elif scenario == "zero_hit":
++        kv_pages = 0 if rank == 0 else 4
++        expected = 0
++    elif scenario == "terminated":
++        terminated = rank == 0
++        expected = 0
++    elif scenario in ("mixed_controllers", "hybrid_kv_only"):
++        if rank % 2 == 0:
++            if scenario == "mixed_controllers":
++                controller_cls = HiCacheController
++            kv_pages = 3
++        checkpoints = (1, 4)
++        expected = 1
++    else:
++        raise AssertionError(f"Unknown scenario: {scenario}")
++
++    hashes = _HASHES
++    # Native hashing is Linux-only and independent of prefix agreement. Use
++    # fixed page keys; file lookup, controller logic and collectives stay real.
++    with (
++        tempfile.TemporaryDirectory() as directory,
++        patch("sglang.srt.mem_cache.utils.get_native_hash", return_value=hashes),
++    ):
++        backend = _file_backend(directory, rank)
++        for name, pages in (
++            (PoolName.KV, range(1, kv_pages + 1)),
++            (PoolName.MAMBA, checkpoints),
++        ):
++            for page in pages:
++                Path(backend._get_component_path(hashes[page - 1], name)).touch()
++
++        controller = _controller(controller_cls, groups, backend)
++        if controller_cls is HybridCacheController:
++            operation = HybridPrefetchOperation(
++                CacheRequestHandle("request", 0),
++                _TOKENS,
++                pool_transfers=[
++                    PoolTransfer(
++                        name=PoolName.MAMBA,
++                        keys=hashes[-1:],
++                        hit_policy=PoolHitPolicy.TRAILING_PAGES,
++                    )
++                ],
++            )
++            if scenario == "hybrid_kv_only" and rank % 2 == 0:
++                operation.pool_transfers = None
++        else:
++            operation = PrefetchOperation("request", _TOKENS)
++        if terminated:
++            operation.mark_terminate()
++
++        controller.prefetch_queue.put(operation)
++        # The production loop drains pending work after stop is requested.
++        controller.prefetch_thread_func()
++
++        result = controller.prefetch_hit_queue.get_nowait()
++        assert result is operation
++        assert result.storage_hit_count == expected * _PAGE_SIZE, (
++            rank,
++            scenario,
++            result.storage_hit_count,
++        )
++        assert result.hash_value == hashes[:expected], (rank, scenario)
++        assert controller.prefetch_hit_queue.empty()
++        if (
++            isinstance(operation, HybridPrefetchOperation)
++            and operation.pool_transfers
++            and expected
++        ):
++            # The endpoint metadata field is introduced by the candidate. The
++            # r8 red path is still judged by its wrong synchronized hit count;
++            # only assert metadata membership when the candidate field exists.
++            candidates = getattr(operation, "restorable_prefix_pages", None)
++            if candidates is not None:
++                assert expected in candidates
++            controller._sync_trailing_keys(
++                operation.pool_transfers, operation.all_hash_values, expected
++            )
++            assert operation.pool_transfers[0].keys == hashes[expected - 1 : expected]
++            assert Path(
++                backend._get_component_path(hashes[expected - 1], PoolName.MAMBA)
++            ).is_file()
++
++
++def _prefix_sync_worker(rank, world_size, rendezvous):
++    dist.init_process_group(
++        backend="gloo",
++        init_method=rendezvous,
++        rank=rank,
++        world_size=world_size,
++        timeout=_COLLECTIVE_TIMEOUT,
++    )
++    try:
++        groups = [dist.group.WORLD]
++        for scenario in (
++            "aligned",
++            "disjoint",
++            "earlier_common",
++            "kv_bound",
++            "zero_hit",
++            "terminated",
++            "mixed_controllers",
++            "hybrid_kv_only",
++        ):
++            _check_file_prefetch(rank, groups, scenario)
++
++        # Backends without metadata retain the legacy dense-prefix assumption.
++        # Explicit [] is different: it declares no restorable positive prefix.
++        for candidates, hit_pages, expected in (
++            (None, 3 if rank == 0 else 4, 3),
++            (None if rank == 0 else [1, 4], 3 if rank == 0 else 4, 1),
++            ([] if rank == 0 else None, 4, 0),
++        ):
++            operation = StorageOperation(None, _TOKENS)
++            operation.restorable_prefix_pages = candidates
++            controller = _controller(HiCacheController, groups)
++            actual = controller._sync_storage_hit_count(
++                operation, hit_pages * _PAGE_SIZE
++            )
++            assert actual == expected * _PAGE_SIZE, (rank, candidates, actual)
++
++        if world_size == 4:
++            # Orthogonal groups model the sequential CP/TP (or TP/PP) sync.
++            # Each row has an earlier endpoint absent from the other row.
++            groups = []
++            created_groups = []
++            for ranks in ([0, 1], [2, 3], [0, 2], [1, 3]):
++                group = dist.new_group(ranks, timeout=_COLLECTIVE_TIMEOUT)
++                if rank in ranks:
++                    groups.append(group)
++                    created_groups.append(group)
++            try:
++                operation = StorageOperation(None, _TOKENS)
++                operation.restorable_prefix_pages = (
++                    [1, 2, 4],
++                    [1, 2, 3],
++                    [1, 3, 4],
++                    [1, 3],
++                )[rank]
++                controller = _controller(HiCacheController, groups)
++                actual = controller._sync_storage_hit_count(
++                    operation, max(operation.restorable_prefix_pages) * _PAGE_SIZE
++                )
++                assert actual == _PAGE_SIZE, (rank, actual)
++            finally:
++                for group in created_groups:
++                    dist.destroy_process_group(group)
++    finally:
++        dist.destroy_process_group()
++
++
++class TestHiCachePrefixSync(CustomTestCase):
++    def test_single_rank_metadata_contract(self):
++        controller = _controller(HiCacheController, [])
++        for candidates, hit_pages, expected in (
++            (None, 3, 3),
++            ([], 3, 0),
++            ([1, 3], 3, 3),
++            ([1, 4], 3, 1),
++            ([4], 3, 0),
++            ([1, 4], 0, 0),
++        ):
++            with self.subTest(candidates=candidates, hit_pages=hit_pages):
++                operation = StorageOperation(None, _TOKENS)
++                operation.restorable_prefix_pages = candidates
++                self.assertEqual(
++                    controller._sync_storage_hit_count(
++                        operation, hit_pages * _PAGE_SIZE
++                    ),
++                    expected * _PAGE_SIZE,
++                )
++
++    def test_trailing_windows_follow_selected_endpoint(self):
++        controller = _controller(HybridCacheController, [])
++        hashes = _HASHES
++        for endpoint in (0, 1, 3):
++            with self.subTest(endpoint=endpoint):
++                transfers = [
++                    PoolTransfer(
++                        name=pool,
++                        keys=hashes[-window:],
++                        hit_policy=PoolHitPolicy.TRAILING_PAGES,
++                    )
++                    for pool, window in ((PoolName.MAMBA, 1), (PoolName.SWA, 2))
++                ]
++                controller._sync_trailing_keys(transfers, hashes, endpoint)
++                self.assertEqual(
++                    transfers[0].keys, hashes[max(0, endpoint - 1) : endpoint]
++                )
++                self.assertEqual(
++                    transfers[1].keys, hashes[max(0, endpoint - 2) : endpoint]
++                )
++
++    def _run_distributed(self, world_size):
++        if not dist.is_available() or not dist.is_gloo_available():
++            self.skipTest("Gloo is required for CPU prefix synchronization")
++        context = multiprocessing.get_context("spawn")
++        with tempfile.TemporaryDirectory() as directory:
++            rendezvous = Path(directory, "rendezvous").as_uri()
++            workers = [
++                context.Process(
++                    target=_prefix_sync_worker,
++                    args=(rank, world_size, rendezvous),
++                )
++                for rank in range(world_size)
++            ]
++            try:
++                for worker in workers:
++                    worker.start()
++                deadline = time.monotonic() + _WORKER_TIMEOUT
++                for rank, worker in enumerate(workers):
++                    worker.join(max(0, deadline - time.monotonic()))
++                    self.assertFalse(worker.is_alive(), f"Rank {rank} timed out")
++                    self.assertEqual(worker.exitcode, 0, f"Rank {rank} failed")
++            finally:
++                for worker in workers:
++                    if worker.is_alive():
++                        worker.terminate()
++                    if worker.pid is not None:
++                        worker.join(timeout=5)
++
++    def test_two_ranks(self):
++        self._run_distributed(2)
++
++    def test_four_ranks(self):
++        self._run_distributed(4)
++
++
++if __name__ == "__main__":
++    unittest.main()

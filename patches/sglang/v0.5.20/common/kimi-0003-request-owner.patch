@@ -1,0 +1,205 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 1b63fb642b23ed58d8cc9db771da61d69620cfb1..8b196f20426881be09b274762dee6d9b61ea6e36 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -247,6 +247,9 @@ class ReqState:
+ 
+     dispatched: bool = False
+     abort_sent: bool = False
++    # Identifies the API request object that created this state. A delayed
++    # disconnect task must not abort a later request that reuses the same rid.
++    request_owner: Optional[Union[GenerateReqInput, EmbeddingReqInput]] = None
+ 
+     # For streaming output
+     last_output_offset: int = 0
+@@ -2272,9 +2275,34 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         # Abort the request if the client is disconnected.
+         async def abort_request():
+             await asyncio.sleep(2)
+-            rids = [obj.rid] if obj.is_single else obj.rid
+-            for rid in rids:
+-                if rid in self.rid_to_state:
++            # Some entrypoints create the background task before this request
++            # has normalized GenerateReqInput. Without a normalized request,
++            # there is no scheduler rid to abort.
++            if not hasattr(obj, "is_single"):
++                return
++            if obj.is_single:
++                rid = getattr(obj, "rid", None)
++                if not isinstance(rid, str) or not rid:
++                    return
++                expected_requests = [(rid, obj)]
++            else:
++                batch_size = getattr(obj, "batch_size", None)
++                rids = getattr(obj, "rid", None)
++                if (
++                    not isinstance(batch_size, int)
++                    or batch_size < 1
++                    or not isinstance(rids, list)
++                    or len(rids) < batch_size
++                    or any(
++                        not isinstance(rid, str) or not rid
++                        for rid in rids[:batch_size]
++                    )
++                ):
++                    return
++                expected_requests = [(rids[i], obj) for i in range(batch_size)]
++            for rid, expected_owner in expected_requests:
++                state = self.rid_to_state.get(rid)
++                if state is not None and state.request_owner is expected_owner:
+                     self.abort_request(rid)
+ 
+         background_tasks = BackgroundTasks()
+@@ -3581,7 +3609,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 external_trace_header = extract_trace_headers(request.headers)
+                 obj.external_trace_header = external_trace_header
+ 
+-        # Normalize single/batch into a uniform list of (rid, sub_obj, bootstrap_room)
++        # Normalize single/batch into a uniform list of (rid, sub_obj, bootstrap_room).
++        # Parallel sampling can expand obj.rid for children while batch_size remains
++        # the original parent count. Only initialize parent placeholders here; the
++        # dummy prefill and every sample regenerate and initialize child rids.
+         if not hasattr(obj, "is_single") or obj.is_single:
+             items = [(obj.rid, obj, getattr(obj, "bootstrap_room", None))]
+         else:
+@@ -3595,7 +3626,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                         else None
+                     ),
+                 )
+-                for i in range(len(obj.rid))
++                for i in range(obj.batch_size)
+             ]
+ 
+         for rid, sub_obj, bootstrap_room in items:
+@@ -3603,6 +3634,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 raise ValueError(f"Duplicate request ID detected: {rid}")
+             time_stats = APIServerReqTimeStats(disagg_mode=self.disaggregation_mode)
+             state = ReqState([], False, asyncio.Event(), sub_obj, time_stats)
++            state.request_owner = obj
+             self.rid_to_state[rid] = state
+             if self.enable_trace:
+                 time_stats.init_trace_ctx(rid, bootstrap_room, external_trace_header)
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index 464fa50241262add730772628fce735d70b747f1..7831fb42b01c5020b7ccd896876f370afc9b0791 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -497,6 +497,7 @@ def _make_generate_obj(rid, is_single):
+     obj.max_thinking_tokens = None
+     obj.normalize_batch_and_arguments = Mock()
+     if not is_single:
++        obj.batch_size = len(rid)
+         obj.__getitem__.side_effect = lambda i: Mock()
+     return obj
+ 
+@@ -638,6 +639,111 @@ class TestParallelStreamTaskCleanup(CustomTestCase):
+         asyncio.run(drive())
+ 
+ 
++class TestParallelSampleParentStateLifecycle(CustomTestCase):
++    """Use real GenerateReqInput normalization with the real state initializer."""
++
++    @staticmethod
++    def _parallel_obj(text, *, rid, n):
++        obj = GenerateReqInput(text=text, rid=rid, sampling_params={"n": n})
++        obj.normalize_batch_and_arguments()
++        obj.received_time = 0.0
++        return obj
++
++    def test_single_prompt_parallel_samples_create_one_parent_state(self):
++        obj = self._parallel_obj("hello", rid="client-request", n=3)
++        self.assertEqual(obj.batch_size, 1)
++        self.assertEqual(len(obj.rid), 3)
++
++        tm = _make_tokenizer_manager(self)
++        tm._init_req_state(obj)
++
++        self.assertEqual(list(tm.rid_to_state), [obj.rid[0]])
++        self.assertIs(tm.rid_to_state[obj.rid[0]].obj, obj[0])
++
++    def test_two_prompt_parallel_samples_create_two_parent_states(self):
++        obj = self._parallel_obj(["first", "second"], rid="batch-request", n=2)
++        self.assertEqual(obj.batch_size, 2)
++        self.assertEqual(len(obj.rid), 4)
++
++        tm = _make_tokenizer_manager(self)
++        tm._init_req_state(obj)
++
++        self.assertEqual(list(tm.rid_to_state), obj.rid[: obj.batch_size])
++        self.assertIs(tm.rid_to_state[obj.rid[0]].obj, obj[0])
++        self.assertIs(tm.rid_to_state[obj.rid[1]].obj, obj[1])
++
++    def test_explicit_parent_rids_keep_existing_batch_behavior(self):
++        obj = self._parallel_obj(
++            ["first", "second"], rid=["parent-a", "parent-b"], n=2
++        )
++        self.assertEqual(obj.batch_size, 2)
++        self.assertEqual(obj.rid, ["parent-a", "parent-b"])
++
++        tm = _make_tokenizer_manager(self)
++        tm._init_req_state(obj)
++
++        self.assertEqual(list(tm.rid_to_state), ["parent-a", "parent-b"])
++
++
++class TestBackgroundAbortRequestOwnership(CustomTestCase):
++    @staticmethod
++    def _run(background):
++        async def drive():
++            with patch("asyncio.sleep", new=AsyncMock()):
++                await background()
++
++        asyncio.run(drive())
++
++    @staticmethod
++    def _normalized_obj(text, *, rid, sampling_params=None):
++        obj = GenerateReqInput(
++            text=text,
++            rid=rid,
++            sampling_params={} if sampling_params is None else sampling_params,
++        )
++        obj.normalize_batch_and_arguments()
++        obj.received_time = 0.0
++        return obj
++
++    def test_pre_normalization_background_abort_is_a_noop(self):
++        tm = _make_tokenizer_manager(self)
++        tm.abort_request = Mock()
++        obj = GenerateReqInput(text="hello", sampling_params={})
++
++        self._run(tm.create_abort_task(obj))
++
++        tm.abort_request.assert_not_called()
++
++    def test_background_abort_only_aborts_its_state_owner(self):
++        tm = _make_tokenizer_manager(self)
++        tm.abort_request = Mock()
++        old_obj = self._normalized_obj("hello", rid="reused", sampling_params={})
++        background = tm.create_abort_task(old_obj)
++        new_obj = self._normalized_obj("hello", rid="reused", sampling_params={})
++        tm._init_req_state(new_obj)
++
++        self._run(background)
++
++        tm.abort_request.assert_not_called()
++
++    def test_parallel_batch_background_abort_uses_original_parent_count(self):
++        tm = _make_tokenizer_manager(self)
++        tm.abort_request = Mock()
++        obj = self._normalized_obj(
++            ["first", "second"], rid="parallel", sampling_params={"n": 2}
++        )
++        self.assertEqual(obj.batch_size, 2)
++        self.assertEqual(len(obj.rid), 4)
++        tm._init_req_state(obj)
++
++        self._run(tm.create_abort_task(obj))
++
++        self.assertEqual(
++            [call.args[0] for call in tm.abort_request.call_args_list],
++            obj.rid[: obj.batch_size],
++        )
++
++
+ class TestGenerateRequestCleanupOnDispatchFailure(CustomTestCase):
+     """generate_request must not leak rid_to_state when dispatch fails.
+ 
