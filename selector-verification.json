@@ -16,6 +16,18 @@
       "patch_count": 1,
       "scope": "Source/tree replay only; Linux, runtime and model acceptance pending"
     },
+    "glm-5.3-v0520-frozen": {
+      "passed": true,
+      "patch_count": 2,
+      "target": "engine428 tree83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "scope": "Already included and tested as part of complete engine; no new GPU/Governor-on-GLM acceptance"
+    },
+    "qwen3-family-v0520": {
+      "passed": true,
+      "patch_count": 2,
+      "target": "engine428 tree83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "scope": "Already included with model guards; no blanket GGUF or cross-model acceptance"
+    },
     "deepseek-v4.1-v0520": {
       "passed": false,
       "applied_before_failure": 10,
