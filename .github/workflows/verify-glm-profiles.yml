@@ -59,12 +59,12 @@ jobs:
                   commits.add(data['upstream']['commit'])
                   for patch in data['patches']:
                       commits.update([patch['source_commit'], patch['source_parent']])
-              for commit in sorted(commits):
-                  import re
-                  if not re.fullmatch('[0-9a-f]{40}', commit):
-                      raise SystemExit('Expected immutable full commit')
-                  subprocess.run(['git', '-C', str(source), 'fetch', '--no-tags', '--depth=2',
-                                  'https://github.com/Phala-Network/sglang.git', commit], check=True)
+              import re
+              if not all(re.fullmatch('[0-9a-f]{40}', commit) for commit in commits):
+                  raise SystemExit('Expected immutable full commit')
+              subprocess.run(['git', '-C', str(source), '-c', 'maintenance.auto=false',
+                              'fetch', '--no-auto-maintenance', '--no-tags', '--depth=2',
+                              'https://github.com/Phala-Network/sglang.git', *sorted(commits)], check=True)
               command = [sys.executable, 'scripts/verify_glm_profiles.py', '--source-repo', str(source),
                          '--output', 'verification/glm-profiles.json']
               for profile in profiles:
