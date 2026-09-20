@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile": "profiles\\v0.5.20\\glm-5.3-mooncake.yaml",
+      "profile_sha256": "554532cf5ba98013c860d6dc1cbbec6000ea7a7a6a895419aa84ecafa8bf6747",
+      "upstream_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+      "complete_tree": "fe0d3721b919faf423151a241b08120105bcaffd",
+      "python_tree": "9efeac9896253b4841560ba920110290b822b66e",
+      "patches": [
+        {
+          "id": "glm53-atomic-tools",
+          "sha256": "048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d",
+          "source_commit": "0317dda785acf89c934e7a26327ab48f72c92edb",
+          "source_parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+        },
+        {
+          "id": "glm53-reasoning-usage",
+          "sha256": "85e7ce6d0c8f921d4ef4d9a6e057a9f85f31e52f0c01b36dc95388b17948d142",
+          "source_commit": "09c9094d197fc5021533a9541df75593e84c196f",
+          "source_parent": "0317dda785acf89c934e7a26327ab48f72c92edb"
+        },
+        {
+          "id": "glm53-dsa-host-budget",
+          "sha256": "f884a075f239640b50770a7200459eed387c28a696bf9124a92442e519582743",
+          "source_commit": "6ac0087cbe182df62a871b29905183c60163a823",
+          "source_parent": "09c9094d197fc5021533a9541df75593e84c196f"
+        },
+        {
+          "id": "glm53-idle-dp-gauge",
+          "sha256": "26c0d376f8fa6918aacc8c095cbfbf17cbef835885165a50956bccf8fb0287b0",
+          "source_commit": "f5b2896f4b7cc64997eb999ca54e7646c89b9d0e",
+          "source_parent": "6ac0087cbe182df62a871b29905183c60163a823"
+        },
+        {
+          "id": "glm53-mooncake-ssd-ranks",
+          "sha256": "812500fbeda8c4b5e7b7ee710aca46d4108c1cbeee98c7d10e99f698c5ae8a9e",
+          "source_commit": "5131ac5344737595ca9aa7cd794247f210583ba7",
+          "source_parent": "f5b2896f4b7cc64997eb999ca54e7646c89b9d0e"
+        },
+        {
+          "id": "glm53-completed-chunks",
+          "sha256": "b8d569d9072eb0b892f660363c63373cb2d1d1e43e330beeaad7beab56758535",
+          "source_commit": "05b7ae76048eace20a32481af5669b63935cc6d2",
+          "source_parent": "5131ac5344737595ca9aa7cd794247f210583ba7"
+        },
+        {
+          "id": "glm53-flashinfer-cleanup",
+          "sha256": "7be9deff809de3ba198b46c67056b004755c4b162bbb7397721f5897288bff4b",
+          "source_commit": "76d35078fa769bd340104a6a06e5b412fc29696c",
+          "source_parent": "05b7ae76048eace20a32481af5669b63935cc6d2"
+        },
+        {
+          "id": "glm53-physical-kv-budget",
+          "sha256": "60c3d6fc8ce165acff3e3f62ef64cb614308bdb2ad6731325077ed2f901c6136",
+          "source_commit": "d9651dc87c1eb15ef91b9d9cd10f02f1b8db3140",
+          "source_parent": "76d35078fa769bd340104a6a06e5b412fc29696c"
+        }
+      ],
+      "regressions": [
+        {
+          "path": "test/manual/test_glm53_atomic_tools.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_reasoning_usage.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_dsa_host_budget.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_idle_dp_gauge.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_mooncake_ssd_ranks.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_completed_chunks.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_chunked_prefill_physical_budget.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "docker/phala-glm53-v0520/test_flashinfer_workspace_cleanup.py",
+          "args": [],
+          "env": {
+            "FLASHINFER_ALLREDUCE_SOURCE": "docker/phala-glm53-v0520/dependency-overlays/flashinfer/comm/allreduce.py"
+          },
+          "exit_code": 0
+        }
+      ],
+      "tests_executed": true
+    },
+    {
+      "profile": "profiles\\v0.5.20\\glm-5.3-host-async-ack.yaml",
+      "profile_sha256": "e2e8af0a6986a5331dfba7cade8918e553c8c480c634ab029d3874b73e4c3a72",
+      "upstream_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+      "complete_tree": "b94fe8aa0d10337de5fd8f7fe34add60fbddb811",
+      "python_tree": "8a338c56e057d5e73f5280f2b1aa16711be19563",
+      "patches": [
+        {
+          "id": "glm53-atomic-tools",
+          "sha256": "048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d",
+          "source_commit": "0317dda785acf89c934e7a26327ab48f72c92edb",
+          "source_parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+        },
+        {
+          "id": "glm53-reasoning-usage",
+          "sha256": "85e7ce6d0c8f921d4ef4d9a6e057a9f85f31e52f0c01b36dc95388b17948d142",
+          "source_commit": "09c9094d197fc5021533a9541df75593e84c196f",
+          "source_parent": "0317dda785acf89c934e7a26327ab48f72c92edb"
+        },
+        {
+          "id": "glm53-dsa-host-budget",
+          "sha256": "f884a075f239640b50770a7200459eed387c28a696bf9124a92442e519582743",
+          "source_commit": "6ac0087cbe182df62a871b29905183c60163a823",
+          "source_parent": "09c9094d197fc5021533a9541df75593e84c196f"
+        },
+        {
+          "id": "glm53-idle-dp-gauge",
+          "sha256": "26c0d376f8fa6918aacc8c095cbfbf17cbef835885165a50956bccf8fb0287b0",
+          "source_commit": "f5b2896f4b7cc64997eb999ca54e7646c89b9d0e",
+          "source_parent": "6ac0087cbe182df62a871b29905183c60163a823"
+        },
+        {
+          "id": "glm53-mooncake-ssd-ranks",
+          "sha256": "812500fbeda8c4b5e7b7ee710aca46d4108c1cbeee98c7d10e99f698c5ae8a9e",
+          "source_commit": "5131ac5344737595ca9aa7cd794247f210583ba7",
+          "source_parent": "f5b2896f4b7cc64997eb999ca54e7646c89b9d0e"
+        },
+        {
+          "id": "glm53-completed-chunks",
+          "sha256": "b8d569d9072eb0b892f660363c63373cb2d1d1e43e330beeaad7beab56758535",
+          "source_commit": "05b7ae76048eace20a32481af5669b63935cc6d2",
+          "source_parent": "5131ac5344737595ca9aa7cd794247f210583ba7"
+        },
+        {
+          "id": "glm53-flashinfer-cleanup",
+          "sha256": "7be9deff809de3ba198b46c67056b004755c4b162bbb7397721f5897288bff4b",
+          "source_commit": "76d35078fa769bd340104a6a06e5b412fc29696c",
+          "source_parent": "05b7ae76048eace20a32481af5669b63935cc6d2"
+        },
+        {
+          "id": "glm53-physical-kv-budget",
+          "sha256": "60c3d6fc8ce165acff3e3f62ef64cb614308bdb2ad6731325077ed2f901c6136",
+          "source_commit": "d9651dc87c1eb15ef91b9d9cd10f02f1b8db3140",
+          "source_parent": "76d35078fa769bd340104a6a06e5b412fc29696c"
+        },
+        {
+          "id": "glm53-host-async-ack",
+          "sha256": "ed27b429c5fdf55992b2804e181ba44715e41d73cdfe5ea87cf3d18fef80d544",
+          "source_commit": "c09bbad9c98f9ee3a14ca3b8992e8f687816cf95",
+          "source_parent": "d9651dc87c1eb15ef91b9d9cd10f02f1b8db3140"
+        },
+        {
+          "id": "glm53-host-async-ack-spawn-test",
+          "sha256": "007d6794b62d9cdd0bcea158b7f6fae7d14e82812aab0138dcf68ab3e2b0039f",
+          "source_commit": "d3c8af2c2800970b17b97a03d0ec9d051ccedd53",
+          "source_parent": "c09bbad9c98f9ee3a14ca3b8992e8f687816cf95"
+        }
+      ],
+      "regressions": [
+        {
+          "path": "test/manual/test_glm53_atomic_tools.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_reasoning_usage.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_dsa_host_budget.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_idle_dp_gauge.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_mooncake_ssd_ranks.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_glm53_completed_chunks.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_chunked_prefill_physical_budget.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "test/manual/test_hicache_async_ack_sync.py",
+          "args": [],
+          "env": {},
+          "exit_code": 0
+        },
+        {
+          "path": "docker/phala-glm53-v0520/test_flashinfer_workspace_cleanup.py",
+          "args": [],
+          "env": {
+            "FLASHINFER_ALLREDUCE_SOURCE": "docker/phala-glm53-v0520/dependency-overlays/flashinfer/comm/allreduce.py"
+          },
+          "exit_code": 0
+        }
+      ],
+      "tests_executed": true
+    }
+  ]
+}

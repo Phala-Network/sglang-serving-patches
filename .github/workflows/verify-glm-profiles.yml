@@ -1,0 +1,77 @@
+name: Verify GLM source exports and profiles
+
+on:
+  pull_request:
+    paths:
+      - 'profiles/**/glm*.yaml'
+      - 'patches/sglang/**/common/glm53-*'
+      - 'patches/sglang/**/models/glm*/**'
+      - 'patches/sglang/**/external/flashinfer/glm53-*'
+      - 'scripts/verify_glm_profiles.py'
+      - 'scripts/test_verify_glm_profiles.py'
+      - '.github/workflows/verify-glm-profiles.yml'
+  push:
+    paths:
+      - 'profiles/**/glm*.yaml'
+      - 'patches/sglang/**/common/glm53-*'
+      - 'patches/sglang/**/models/glm*/**'
+      - 'patches/sglang/**/external/flashinfer/glm53-*'
+      - 'scripts/verify_glm_profiles.py'
+      - 'scripts/test_verify_glm_profiles.py'
+      - '.github/workflows/verify-glm-profiles.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise verifier rejection cases
+        run: python -m unittest discover -s scripts -p test_verify_glm_profiles.py
+      - name: Fetch pinned source commits and verify both profiles
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          profiles = [Path('profiles/v0.5.20/glm-5.3-mooncake.yaml'),
+                      Path('profiles/v0.5.20/glm-5.3-host-async-ack.yaml')]
+          with tempfile.TemporaryDirectory(prefix='glm-source-') as directory:
+              source = Path(directory)
+              subprocess.run(['git', 'init', '--quiet', str(source)], check=True)
+              commits = set()
+              for profile in profiles:
+                  data = json.loads(profile.read_bytes())
+                  if data['source_repository'].removesuffix('.git') != 'https://github.com/Phala-Network/sglang':
+                      raise SystemExit('Unexpected source repository')
+                  commits.add(data['upstream']['commit'])
+                  for patch in data['patches']:
+                      commits.update([patch['source_commit'], patch['source_parent']])
+              for commit in sorted(commits):
+                  import re
+                  if not re.fullmatch('[0-9a-f]{40}', commit):
+                      raise SystemExit('Expected immutable full commit')
+                  subprocess.run(['git', '-C', str(source), 'fetch', '--no-tags', '--depth=2',
+                                  'https://github.com/Phala-Network/sglang.git', commit], check=True)
+              command = [sys.executable, 'scripts/verify_glm_profiles.py', '--source-repo', str(source),
+                         '--output', 'verification/glm-profiles.json']
+              for profile in profiles:
+                  command += ['--profile', str(profile)]
+              subprocess.run(command, check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glm-profile-verification
+          path: verification/glm-profiles.json
+          if-no-files-found: error
