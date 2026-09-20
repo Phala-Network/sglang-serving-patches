@@ -1,0 +1,286 @@
+{
+  "schema": "phala.sglang-serving-profile.v1",
+  "id": "deepseek-v4.1-flash",
+  "status": "source_export_candidate",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20",
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+  },
+  "expected_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+  "applicability": {
+    "model_family": "DeepSeek-V4.1",
+    "model_variant": "Flash",
+    "qualification": "Source tree identity only; image, topology and model artifact acceptance are separate release-lock gates.",
+    "common_selection": "Explicit listed patches only; no implicit common or Qwen profile inclusion.",
+    "runtime_dependencies": {
+      "flashinfer": "0.6.18",
+      "torch": "2.13.0+cu130",
+      "rust_toolchain": "1.92.0"
+    }
+  },
+  "components": {
+    "governor": "not_included",
+    "tail": "not_included"
+  },
+  "patches": [
+    {
+      "id": "dsv41-0001-rust-interfaces",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0001-rust-interfaces.patch",
+      "sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146",
+      "source_commit": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+      "dependencies": []
+    },
+    {
+      "id": "dsv41-0002-standalone-kernels",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0002-standalone-kernels.patch",
+      "sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35",
+      "source_commit": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+      "dependencies": [
+        "5392a7324f23e0f1d960edb2c60e4fd9020978e9"
+      ]
+    },
+    {
+      "id": "dsv41-0003-topk-candidates",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0003-topk-candidates.patch",
+      "sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392",
+      "source_commit": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+      "dependencies": [
+        "6842c9135a8a2af8458f836bb81ac6ff83e33c32"
+      ]
+    },
+    {
+      "id": "dsv41-0004-communication-kernels",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0004-communication-kernels.patch",
+      "sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14",
+      "source_commit": "2058fb0a106ef3e9a1431f6400d512333643f618",
+      "dependencies": [
+        "ae829a492f29d50286ca62e524f66bdab7a314b3"
+      ]
+    },
+    {
+      "id": "dsv41-0005-compression-kv-io",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0005-compression-kv-io.patch",
+      "sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f",
+      "source_commit": "d25d72a68e5b240851a0b645b98582d7924b540f",
+      "dependencies": [
+        "2058fb0a106ef3e9a1431f6400d512333643f618"
+      ]
+    },
+    {
+      "id": "dsv41-0006-candidate-indexer",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0006-candidate-indexer.patch",
+      "sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af",
+      "source_commit": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+      "dependencies": [
+        "d25d72a68e5b240851a0b645b98582d7924b540f"
+      ]
+    },
+    {
+      "id": "dsv41-0007-rope-fp4-packing",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0007-rope-fp4-packing.patch",
+      "sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8",
+      "source_commit": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+      "dependencies": [
+        "df74a3ed2401723ff865b514f5bba23a5a0164e4"
+      ]
+    },
+    {
+      "id": "dsv41-0008-hopper-fp8",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0008-hopper-fp8.patch",
+      "sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a",
+      "source_commit": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+      "dependencies": [
+        "79a3ac5416bfa512b95d7e615c901eaf9dd63482"
+      ]
+    },
+    {
+      "id": "dsv41-0009-mhc-projections",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0009-mhc-projections.patch",
+      "sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5",
+      "source_commit": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+      "dependencies": [
+        "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e"
+      ]
+    },
+    {
+      "id": "dsv41-0010-vision-preprocessing",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0010-vision-preprocessing.patch",
+      "sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d",
+      "source_commit": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+      "dependencies": [
+        "a55765773e792cb3a7dbbf152a0968eb31c74354"
+      ]
+    },
+    {
+      "id": "dsv41-0011-chat-encoding",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0011-chat-encoding.patch",
+      "sha256": "947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85",
+      "source_commit": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+      "dependencies": [
+        "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e"
+      ]
+    },
+    {
+      "id": "dsv41-0012-engram-history",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0012-engram-history.patch",
+      "sha256": "49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c",
+      "source_commit": "22d54075f900b0c78d677d8a28d4db855e274c4a",
+      "dependencies": [
+        "137f96a5cc08d3fd74c5c6cc8055aec73c59af07"
+      ]
+    },
+    {
+      "id": "dsv41-0013-compress-ratios",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0013-compress-ratios.patch",
+      "sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a",
+      "source_commit": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+      "dependencies": [
+        "22d54075f900b0c78d677d8a28d4db855e274c4a"
+      ]
+    },
+    {
+      "id": "dsv41-0014-ue8m0-mxfp8",
+      "category": "common",
+      "path": "common/dsv41-0014-ue8m0-mxfp8.patch",
+      "sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d",
+      "source_commit": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+      "dependencies": [
+        "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95"
+      ]
+    },
+    {
+      "id": "dsv41-0015-native-integration",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0015-native-integration.patch",
+      "sha256": "a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb",
+      "source_commit": "9af234a4891a8facbe92626a2c54fffce5f04637",
+      "dependencies": [
+        "e53312611f87fe7fffa895c1e0259f3f7e665e07"
+      ]
+    },
+    {
+      "id": "dsv41-0016-dense-prefill",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0016-dense-prefill.patch",
+      "sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d",
+      "source_commit": "5645663683f25062e10596ac09661d6a169a1993",
+      "dependencies": [
+        "9af234a4891a8facbe92626a2c54fffce5f04637"
+      ]
+    },
+    {
+      "id": "dsv41-0017-dense-prefill-tests",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0017-dense-prefill-tests.patch",
+      "sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c",
+      "source_commit": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+      "dependencies": [
+        "5645663683f25062e10596ac09661d6a169a1993"
+      ]
+    },
+    {
+      "id": "dsv41-0018-hicache-completed-chunks",
+      "category": "common",
+      "path": "common/dsv41-0018-hicache-completed-chunks.patch",
+      "sha256": "dc04af00257bf83a3c22a83e254539479b1a10d3a7a6bc313610930ba4a6cf2d",
+      "source_commit": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+      "dependencies": [
+        "3c0eb7c73d9c51baf236faebd649ea14c6482ecb"
+      ]
+    },
+    {
+      "id": "dsv41-0019-common-service-contracts",
+      "category": "common",
+      "path": "common/dsv41-0019-common-service-contracts.patch",
+      "sha256": "e2782d425bb4918917819a3549a09140ece7fcdc98181a1921c0b930551ac0d4",
+      "source_commit": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+      "dependencies": [
+        "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8"
+      ]
+    },
+    {
+      "id": "dsv41-0020-model-protocol-contracts",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0020-model-protocol-contracts.patch",
+      "sha256": "36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4",
+      "source_commit": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+      "dependencies": [
+        "5ad27e1db0d14d17d920e9040599f20655fbe9df"
+      ]
+    },
+    {
+      "id": "dsv41-0021-medium-finalize",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0021-medium-finalize.patch",
+      "sha256": "273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02",
+      "source_commit": "ecd9f93317e41aa19487948ddab05f754556a990",
+      "dependencies": [
+        "437b982abfdfa1b563122e061ead1a1cd1211c29"
+      ]
+    },
+    {
+      "id": "dsv41-0022-transplant-closure",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0022-transplant-closure.patch",
+      "sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0",
+      "source_commit": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+      "dependencies": [
+        "ecd9f93317e41aa19487948ddab05f754556a990"
+      ]
+    },
+    {
+      "id": "dsv41-0023-mxfp4-padding",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0023-mxfp4-padding.patch",
+      "sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26",
+      "source_commit": "81b67d8f1736b387aff2f908a2cddf011803367a",
+      "dependencies": [
+        "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27"
+      ]
+    },
+    {
+      "id": "dsv41-0024-protocol-selftest",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0024-protocol-selftest.patch",
+      "sha256": "7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56",
+      "source_commit": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+      "dependencies": [
+        "81b67d8f1736b387aff2f908a2cddf011803367a"
+      ]
+    },
+    {
+      "id": "dsv41-0025-routed-weight-abi",
+      "category": "common",
+      "path": "common/dsv41-0025-routed-weight-abi.patch",
+      "sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179",
+      "source_commit": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+      "dependencies": [
+        "127a3646891cdefc09b1d59cf1a7fb11e4f23f12"
+      ]
+    },
+    {
+      "id": "dsv41-0026-candidate-bitmap",
+      "category": "model",
+      "path": "models/deepseek_v41/dsv41-0026-candidate-bitmap.patch",
+      "sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc",
+      "source_commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+      "dependencies": [
+        "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057"
+      ]
+    }
+  ]
+}

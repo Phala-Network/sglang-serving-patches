@@ -1,0 +1,753 @@
+diff --git a/python/sglang/srt/layers/attention/deepseek_v4_backend.py b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+index 8133295e96f1467d949e093cdf9fea7a7b2d718f..25f810b8ee2b4108185d0a78e1a57bf37c3d224d 100644
+--- a/python/sglang/srt/layers/attention/deepseek_v4_backend.py
++++ b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+@@ -19,7 +19,6 @@ import msgspec
+ import torch
+ import torch.nn.functional as F
+ 
+-from sglang.kernels.ops.attention.dsv4 import topk_transform_ragged_v2
+ from sglang.kernels.ops.attention.dsv4.decode_attention_sm100 import (
+     can_use_swapab_attention,
+ )
+@@ -61,6 +60,7 @@ from sglang.srt.layers.attention.dsv4.candidate_indexer import (
+     CandidateMasks,
+     CandidateMetadata,
+     IndexerInputs,
++    PrefillCandidateBlocks,
+     make_candidate_indexer,
+     mask_topk_scores,
+     published_masks,
+@@ -71,6 +71,7 @@ from sglang.srt.layers.attention.dsv4.compressor_v2 import (
+     FusedCompressMetadata,
+     create_paged_compressor_data,
+ )
++from sglang.srt.layers.attention.dsv4.dense_prefill_indexer import dense_prefill_topk
+ from sglang.srt.layers.attention.dsv4.dsv41_sparse import (
+     _rope_fq4,
+     token_req_indices,
+@@ -313,21 +314,6 @@ def _has_dense_fp4_indexer() -> bool:
+     return hasattr(deep_gemm, "fp8_fp4_mqa_logits")
+ 
+ 
+-def _dense_fp4_mqa_logits(
+-    q_fp4: Tuple[torch.Tensor, torch.Tensor],
+-    kv_fp4: Tuple[torch.Tensor, torch.Tensor],
+-    weights: torch.Tensor,
+-    ks: torch.Tensor,
+-    ke: torch.Tensor,
+-    max_seqlen_k: int,
+-) -> torch.Tensor:
+-    from deep_gemm import fp8_fp4_mqa_logits as fn
+-
+-    # q (int8 [T, H, 64], int32 [T, H]) x kv (int8 [L, 64], int32 [L]) -> fp32
+-    # [T, max_seqlen_k]; row t column j is k[ks_t + j], garbage past ke_t - ks_t.
+-    return fn(q_fp4, kv_fp4, weights, ks, ke, False, max_seqlen_k)
+-
+-
+ def _low_ratio_source_projections(layer, x, q_lora, positions, bufs):
+     from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
+         get_tc_piecewise_forward_context,
+@@ -1761,7 +1747,9 @@ class DeepseekV4AttnBackend(
+         # TODO(candidate): goes away once the source publishes its tail rows straight
+         # onto the tail metadata (publish_prefill); until then cut the full masks.
+         full_masks = self.forward_metadata.candidate_metadata
+-        if isinstance(full_masks, CandidateMasks) and full_masks.request_masks:
++        if isinstance(full_masks, PrefillCandidateBlocks):
++            tail_metadata.candidate_metadata = full_masks.tail(tail_lens_cpu)
++        elif isinstance(full_masks, CandidateMasks) and full_masks.request_masks:
+             tail_metadata.candidate_metadata = CandidateMasks(
+                 request_masks=[
+                     mask[mask.shape[0] - t :]
+@@ -3237,13 +3225,14 @@ class DeepseekV4AttnBackend(
+                 // ratio
+             )
+             start += lc
+-        empty_mask = torch.zeros(0, 0, dtype=torch.bool, device=device)
+         num_tokens = pos.shape[0]
+-        # TODO(candidate): move this to candidate indexer
+         if not slot_chunks or num_tokens == 0:
+             if indexer.is_candidate_source:
+-                self.forward_metadata.candidate_metadata = CandidateMasks(
+-                    request_masks=[empty_mask for _ in lc_per_req]
++                self.forward_metadata.candidate_metadata = PrefillCandidateBlocks(
++                    request_blocks=[
++                        torch.empty((length, 0), dtype=torch.int32, device=device)
++                        for length in q_lens_cpu
++                    ]
+                 )
+             return
+         k_slots = torch.cat(slot_chunks)
+@@ -3261,26 +3250,26 @@ class DeepseekV4AttnBackend(
+             q_lens.to(torch.int64),
+             output_size=num_tokens,
+         )
+-        logits = _dense_fp4_mqa_logits(
+-            (q_fp4, q_sf),
+-            (k_fp4, k_sf),
+-            weights,
+-            ks,
+-            ks + compress_lens,
+-            # the fused top-k reads score rows through 16-byte vectors
+-            ceil_align(max(lc_per_req), 4),
+-        )
+-        if indexer.is_candidate_source or indexer.uses_candidates:
+-            self._publish_or_consume_candidates(
+-                indexer, logits, compress_lens, lc_per_req, q_lens_cpu, empty_mask
+-            )
+-        topk = indexer.index_topk
+-        selected = torch.empty((num_tokens, topk), dtype=torch.int32, device=device)
+-        topk_transform_ragged_v2(
+-            logits, compress_lens, out_offsets=ks, out_indices=selected
+-        )
++        candidates = None
+         if indexer.uses_candidates and not indexer.is_candidate_source:
+-            selected = mask_topk_scores(logits, selected, ks)
++            candidates = self.forward_metadata.candidate_metadata
++            assert isinstance(candidates, PrefillCandidateBlocks)
++        topk = indexer.index_topk
++        selected, published = dense_prefill_topk(
++            q=(q_fp4, q_sf),
++            kv=(k_fp4, k_sf),
++            weights=weights,
++            starts=ks,
++            lengths=compress_lens,
++            request_lengths=list(zip(q_lens_cpu, lc_per_req)),
++            topk=topk,
++            candidate_topk_blocks=indexer.candidate_topk_blocks,
++            candidate_block_size=indexer.candidate_block_size,
++            publish_candidates=indexer.is_candidate_source,
++            candidates=candidates,
++        )
++        if published is not None:
++            self.forward_metadata.candidate_metadata = published
+         # ascending positions, padding last: the layout the consumers expect
+         unselected = torch.iinfo(torch.int32).max
+         selected = selected.masked_fill(selected < 0, unselected).sort(dim=-1).values
+@@ -3293,50 +3282,6 @@ class DeepseekV4AttnBackend(
+                 chosen, selected - ks[:, None], -1
+             )
+ 
+-    # TODO(candidate): dense-prefill level one / level two inline with masks; move
+-    # into the candidate indexer as publish_prefill / select_prefill.
+-    def _publish_or_consume_candidates(
+-        self, indexer, logits, compress_lens, lc_per_req, q_lens_cpu, empty_mask
+-    ) -> None:
+-        publish = [] if indexer.is_candidate_source else None
+-        consume = (
+-            None
+-            if publish is not None
+-            else published_masks(self.forward_metadata.candidate_metadata)
+-        )
+-        j = torch.arange(logits.shape[1], device=logits.device)
+-        tok_start = 0
+-        for b, (lc, t_len) in enumerate(zip(lc_per_req, q_lens_cpu)):
+-            rows = slice(tok_start, tok_start + t_len)
+-            tok_start += t_len
+-            if lc == 0 or t_len == 0:
+-                if publish is not None:
+-                    publish.append(empty_mask)
+-                continue
+-            scores = logits[rows, :lc]
+-            if publish is None:
+-                scores.masked_fill_(~consume.request_masks[b], -torch.inf)
+-                continue
+-            lens = compress_lens[rows, None]
+-            # the block selection tells unreachable positions apart by -inf
+-            scores.masked_fill_(j[None, :lc] >= lens, -torch.inf)
+-            # the block selection pads and pools a copy of its rows; bound that copy
+-            step = max(1, _TORCH_INDEXER_SCORE_BUDGET_BYTES // (lc * 4))
+-            masks = [
+-                select_candidate_blocks(
+-                    scores[start : start + step],
+-                    lens[start : start + step],
+-                    topk_blocks=indexer.candidate_topk_blocks,
+-                    block_size=indexer.candidate_block_size,
+-                )
+-                for start in range(0, t_len, step)
+-            ]
+-            publish.append(masks[0] if len(masks) == 1 else torch.cat(masks))
+-        if publish is not None:
+-            self.forward_metadata.candidate_metadata = CandidateMasks(
+-                request_masks=publish
+-            )
+-
+     def _low_ratio_index_topk_prefill_graph(self, layer, pos, q, w) -> None:
+         from sglang.kernels.ops.attention.dsv4.fp4_indexer import (
+             quantize_fp4_indexer_tensor,
+diff --git a/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py b/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
+index 9ee739a758532194804e76c5a6c17d7362d8db48..81466f86526ff2995a95e7ca0b6ae282399f37ea 100644
+--- a/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
++++ b/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING, List, Optional, Union
+ 
++import msgspec
+ import torch
+ import torch.nn.functional as F
+ 
+@@ -70,6 +71,18 @@ class CandidateMasks(CandidateMetadata):
+     request_masks: Optional[List[torch.Tensor]] = None  # prefill: [rows_b, lc_b] each
+ 
+ 
++class PrefillCandidateBlocks(CandidateMetadata, msgspec.Struct):
++    request_blocks: List[torch.Tensor]
++
++    def tail(self, lengths: List[int]) -> PrefillCandidateBlocks:
++        return PrefillCandidateBlocks(
++            request_blocks=[
++                blocks[blocks.shape[0] - length :]
++                for blocks, length in zip(self.request_blocks, lengths)
++            ]
++        )
++
++
+ def published_masks(candidate) -> CandidateMasks:
+     assert isinstance(candidate, CandidateMasks), "candidate masks missing"
+     return candidate
+@@ -91,18 +104,15 @@ def mask_topk_scores(
+     return indices.masked_fill(~valid, -1)
+ 
+ 
+-def select_candidate_blocks(
++def _candidate_block_topk(
+     logits: torch.Tensor,
+     compress_lens: Union[torch.Tensor, int],
+     topk_blocks: int,
+     block_size: int,
+-) -> torch.Tensor:
+-    """Level one of the two-level top-k: a bool mask over positions keeping the
+-    topk_blocks best-scoring blocks per query. Unreachable positions are already -inf
+-    in logits, so an all -inf block means not reachable yet; the block holding the
+-    query's newest position is always kept."""
++) -> torch.return_types.topk:
+     width = logits.size(-1)
+-    scores = F.pad(logits, (0, -width % block_size), value=-torch.inf)
++    padding = -width % block_size
++    scores = F.pad(logits, (0, padding), value=-torch.inf) if padding else logits
+     scores = scores.unflatten(-1, (-1, block_size)).amax(dim=-1)
+     num_blocks = scores.size(-1)
+ 
+@@ -111,8 +121,50 @@ def select_candidate_blocks(
+         torch.arange(num_blocks, device=logits.device) == last, torch.inf
+     )
+ 
+-    top = scores.topk(min(topk_blocks, num_blocks), dim=-1)
+-    keep = torch.zeros_like(scores, dtype=torch.bool).scatter_(
+-        -1, top.indices, top.values > -torch.inf
++    return scores.topk(min(topk_blocks, num_blocks), dim=-1)
++
++
++def select_candidate_block_ids(
++    logits: torch.Tensor,
++    compress_lens: Union[torch.Tensor, int],
++    topk_blocks: int,
++    block_size: int,
++) -> torch.Tensor:
++    top = _candidate_block_topk(
++        logits=logits,
++        compress_lens=compress_lens,
++        topk_blocks=topk_blocks,
++        block_size=block_size,
++    )
++    return top.indices.to(torch.int32).masked_fill_(~(top.values > -torch.inf), -1)
++
++
++def candidate_block_mask(
++    blocks: torch.Tensor, width: int, block_size: int
++) -> torch.Tensor:
++    num_blocks = (width + block_size - 1) // block_size
++    keep = torch.zeros(
++        (*blocks.shape[:-1], num_blocks + 1), dtype=torch.bool, device=blocks.device
++    )
++    keep.scatter_(-1, blocks.to(torch.int64).masked_fill(blocks < 0, num_blocks), True)
++    return keep[..., :num_blocks].repeat_interleave(block_size, dim=-1)[..., :width]
++
++
++def select_candidate_blocks(
++    logits: torch.Tensor,
++    compress_lens: Union[torch.Tensor, int],
++    topk_blocks: int,
++    block_size: int,
++) -> torch.Tensor:
++    top = _candidate_block_topk(
++        logits=logits,
++        compress_lens=compress_lens,
++        topk_blocks=topk_blocks,
++        block_size=block_size,
+     )
++    width = logits.shape[-1]
++    num_blocks = (width + block_size - 1) // block_size
++    keep = torch.zeros(
++        (*logits.shape[:-1], num_blocks), dtype=torch.bool, device=logits.device
++    ).scatter_(-1, top.indices, top.values > -torch.inf)
+     return keep.repeat_interleave(block_size, dim=-1)[..., :width]
+diff --git a/python/sglang/srt/layers/attention/dsv4/dense_prefill_indexer.py b/python/sglang/srt/layers/attention/dsv4/dense_prefill_indexer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e936b4363fef63661c525d601255a236bd131cfe
+--- /dev/null
++++ b/python/sglang/srt/layers/attention/dsv4/dense_prefill_indexer.py
+@@ -0,0 +1,128 @@
++from __future__ import annotations
++
++import torch
++
++from sglang.srt.layers.attention.dsv4.candidate_indexer import (
++    PrefillCandidateBlocks,
++    candidate_block_mask,
++    mask_topk_scores,
++    select_candidate_block_ids,
++)
++
++_SCORE_BUDGET_BYTES = 2 << 30
++
++
++def dense_prefill_topk(
++    *,
++    q: tuple[torch.Tensor, torch.Tensor],
++    kv: tuple[torch.Tensor, torch.Tensor],
++    weights: torch.Tensor,
++    starts: torch.Tensor,
++    lengths: torch.Tensor,
++    request_lengths: list[tuple[int, int]],
++    topk: int,
++    candidate_topk_blocks: int,
++    candidate_block_size: int,
++    publish_candidates: bool,
++    candidates: PrefillCandidateBlocks | None,
++) -> tuple[torch.Tensor, PrefillCandidateBlocks | None]:
++    selected = torch.full(
++        (q[0].shape[0], topk), -1, dtype=torch.int32, device=weights.device
++    )
++    published = (
++        PrefillCandidateBlocks(request_blocks=[]) if publish_candidates else None
++    )
++    request_ranges = []
++    row = 0
++    for query_length, context_length in request_lengths:
++        request_ranges.append((row, row + query_length, context_length))
++        if published is not None:
++            num_blocks = (
++                context_length + candidate_block_size - 1
++            ) // candidate_block_size
++            published.request_blocks.append(
++                torch.empty(
++                    (query_length, min(candidate_topk_blocks, num_blocks)),
++                    dtype=torch.int32,
++                    device=weights.device,
++                )
++            )
++        row += query_length
++    width = (max((n for _, n in request_lengths), default=0) + 3) // 4 * 4
++    step = max(1, _SCORE_BUDGET_BYTES // max(4 * width, 1))
++    for offset in range(0, row if width else 0, step):
++        rows = slice(offset, min(offset + step, row))
++        _select_tile(
++            q=(q[0][rows], q[1][rows]),
++            kv=kv,
++            weights=weights[rows],
++            starts=starts[rows],
++            lengths=lengths[rows],
++            width=width,
++            selected=selected[rows],
++            block_size=candidate_block_size,
++            row_offset=offset,
++            request_ranges=request_ranges,
++            publish=published,
++            consume=candidates,
++        )
++    return selected, published
++
++
++def _select_tile(
++    *,
++    q: tuple[torch.Tensor, torch.Tensor],
++    kv: tuple[torch.Tensor, torch.Tensor],
++    weights: torch.Tensor,
++    starts: torch.Tensor,
++    lengths: torch.Tensor,
++    width: int,
++    selected: torch.Tensor,
++    block_size: int,
++    row_offset: int,
++    request_ranges: list[tuple[int, int, int]],
++    publish: PrefillCandidateBlocks | None,
++    consume: PrefillCandidateBlocks | None,
++) -> None:
++    from deep_gemm import fp8_fp4_mqa_logits
++
++    from sglang.kernels.ops.attention.dsv4 import topk_transform_ragged_v2
++
++    logits = fp8_fp4_mqa_logits(q, kv, weights, starts, starts + lengths, False, width)
++    if publish is not None or consume is not None:
++        for request, (start, end, context_length) in enumerate(request_ranges):
++            begin, stop = max(start, row_offset), min(end, row_offset + logits.shape[0])
++            if begin >= stop or context_length == 0:
++                continue
++            rows = slice(begin - row_offset, stop - row_offset)
++            request_rows = slice(begin - start, stop - start)
++            scores = logits[rows, :context_length]
++            if publish is not None:
++                lens = lengths[rows, None]
++                scores.masked_fill_(
++                    torch.arange(context_length, device=logits.device)[None, :] >= lens,
++                    -torch.inf,
++                )
++                blocks = publish.request_blocks[request][request_rows]
++                blocks.copy_(
++                    select_candidate_block_ids(
++                        logits=scores,
++                        compress_lens=lens,
++                        topk_blocks=blocks.shape[1],
++                        block_size=block_size,
++                    )
++                )
++            else:
++                scores.masked_fill_(
++                    ~candidate_block_mask(
++                        blocks=consume.request_blocks[request][request_rows],
++                        width=context_length,
++                        block_size=block_size,
++                    ),
++                    -torch.inf,
++                )
++    topk_transform_ragged_v2(logits, lengths, out_offsets=starts, out_indices=selected)
++    if consume is not None:
++        selected.copy_(
++            mask_topk_scores(scores=logits, indices=selected, offsets=starts)
++        )
+diff --git a/test/registered/kernel/attention/dsv4/test_dense_prefill_indexer.py b/test/registered/kernel/attention/dsv4/test_dense_prefill_indexer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fbc86625bfc7eace374b1b02ed0e7fcdd237b567
+--- /dev/null
++++ b/test/registered/kernel/attention/dsv4/test_dense_prefill_indexer.py
+@@ -0,0 +1,236 @@
++import unittest
++from unittest.mock import patch
++
++import torch
++
++from sglang.kernels.ops.attention.dsv4.fp4_indexer import quantize_fp4_indexer_tensor
++from sglang.srt.layers.attention.dsv4 import dense_prefill_indexer
++from sglang.srt.layers.attention.dsv4.candidate_indexer import candidate_block_mask
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=120, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++
++def make_inputs(request_lengths, ratio=1, zero_queries=False):
++    torch.manual_seed(17)
++    rows = sum(q for q, _ in request_lengths)
++    q = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device="cuda")
++    if zero_queries:
++        q.zero_()
++    packed, scales = quantize_fp4_indexer_tensor(q.flatten(0, 1), rne=True)
++    kv = quantize_fp4_indexer_tensor(
++        torch.randn(
++            (sum(n for _, n in request_lengths), 128),
++            dtype=torch.bfloat16,
++            device="cuda",
++        ),
++        rne=True,
++    )
++    starts, lengths = [], []
++    start = 0
++    for queries, context in request_lengths:
++        starts.extend([start] * queries)
++        lengths.extend(
++            (position + 1) // ratio
++            for position in range(context * ratio - queries, context * ratio)
++        )
++        start += context
++    return dict(
++        q=(packed.view(rows, 32, 64), scales.view(rows, 32)),
++        kv=kv,
++        weights=torch.rand((rows, 32), dtype=torch.float32, device="cuda"),
++        starts=torch.tensor(starts, dtype=torch.int32, device="cuda"),
++        lengths=torch.tensor(lengths, dtype=torch.int32, device="cuda"),
++        request_lengths=request_lengths,
++        topk=512,
++        candidate_topk_blocks=2,
++        candidate_block_size=8,
++    )
++
++
++def dense_scores(inputs):
++    from deep_gemm import fp8_fp4_mqa_logits
++
++    width = (max(n for _, n in inputs["request_lengths"]) + 3) // 4 * 4
++    scores = fp8_fp4_mqa_logits(
++        inputs["q"],
++        inputs["kv"],
++        inputs["weights"],
++        inputs["starts"],
++        inputs["starts"] + inputs["lengths"],
++        False,
++        width,
++    )
++    return scores.masked_fill_(
++        torch.arange(width, device="cuda")[None, :] >= inputs["lengths"][:, None],
++        -torch.inf,
++    )
++
++
++@unittest.skipUnless(
++    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
++    "requires SM100",
++)
++class TestDensePrefillIndexer(CustomTestCase):
++    def assert_topk(self, inputs, selected, scores):
++        columns = (selected - inputs["starts"][:, None]).long()
++        valid = selected >= 0
++        expected_count = torch.isfinite(scores).sum(-1).clamp_max(inputs["topk"])
++        torch.testing.assert_close(valid.sum(-1), expected_count)
++        self.assertTrue(
++            (~valid | ((columns >= 0) & (columns < inputs["lengths"][:, None]))).all()
++        )
++        actual = scores.gather(1, columns.clamp(0, scores.shape[1] - 1)).masked_fill(
++            ~valid, -torch.inf
++        )
++        expected = scores.topk(min(inputs["topk"], scores.shape[1]), dim=-1).values
++        expected = torch.nn.functional.pad(
++            expected, (0, inputs["topk"] - expected.shape[1]), value=-torch.inf
++        )
++        torch.testing.assert_close(
++            actual.sort(descending=True).values, expected, rtol=1e-5, atol=1e-5
++        )
++        ordered = (
++            columns.masked_fill(~valid, torch.iinfo(torch.int64).max).sort().values
++        )
++        self.assertTrue(
++            (
++                (ordered[:, 1:] != ordered[:, :-1])
++                | (ordered[:, 1:] == torch.iinfo(torch.int64).max)
++            ).all()
++        )
++
++    def test_ragged_source_consumer_and_replay(self):
++        for ratio in (1, 2):
++            for zero_queries in (False, True):
++                with self.subTest(ratio=ratio, zero_queries=zero_queries):
++                    inputs = make_inputs(
++                        [(0, 0), (1, 1), (33, 511), (257, 4097)],
++                        ratio=ratio,
++                        zero_queries=zero_queries,
++                    )
++                    scores = dense_scores(inputs)
++                    with patch.object(
++                        dense_prefill_indexer, "_SCORE_BUDGET_BYTES", 32768
++                    ):
++                        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                            **inputs, publish_candidates=True, candidates=None
++                        )
++                        self.assert_topk(inputs, selected, scores)
++                        row = 0
++                        for (queries, context), blocks in zip(
++                            inputs["request_lengths"], candidates.request_blocks
++                        ):
++                            local = scores[row : row + queries, :context]
++                            if queries and context:
++                                padded = torch.nn.functional.pad(
++                                    local, (0, -context % 8), value=-torch.inf
++                                )
++                                block_scores = padded.unflatten(-1, (-1, 8)).amax(-1)
++                                last = (inputs["lengths"][row : row + queries] - 1) // 8
++                                block_scores.masked_fill_(
++                                    torch.arange(block_scores.shape[1], device="cuda")[
++                                        None, :
++                                    ]
++                                    == last[:, None],
++                                    torch.inf,
++                                )
++                                chosen_scores = block_scores.gather(
++                                    1, blocks.long().clamp_min(0)
++                                ).masked_fill(blocks < 0, -torch.inf)
++                                torch.testing.assert_close(
++                                    chosen_scores.sort(descending=True).values,
++                                    block_scores.topk(blocks.shape[1]).values,
++                                    rtol=1e-5,
++                                    atol=1e-5,
++                                )
++                                scores[row : row + queries, :context].masked_fill_(
++                                    ~candidate_block_mask(
++                                        blocks=blocks, width=context, block_size=8
++                                    ),
++                                    -torch.inf,
++                                )
++                            row += queries
++                        selected, published = dense_prefill_indexer.dense_prefill_topk(
++                            **inputs, publish_candidates=False, candidates=candidates
++                        )
++                        self.assertIsNone(published)
++                        self.assert_topk(inputs, selected, scores)
++                        tail_lengths = [0, 0, 7, 31]
++                        rows, row = [], 0
++                        for (queries, _), tail in zip(
++                            inputs["request_lengths"], tail_lengths
++                        ):
++                            rows.extend(range(row + queries - tail, row + queries))
++                            row += queries
++                        rows = torch.tensor(rows, dtype=torch.int64, device="cuda")
++                        tail_inputs = dict(
++                            inputs,
++                            q=tuple(t[rows] for t in inputs["q"]),
++                            weights=inputs["weights"][rows],
++                            starts=inputs["starts"][rows],
++                            lengths=inputs["lengths"][rows],
++                            request_lengths=list(
++                                zip(
++                                    tail_lengths,
++                                    [n for _, n in inputs["request_lengths"]],
++                                )
++                            ),
++                        )
++                        selected, _ = dense_prefill_indexer.dense_prefill_topk(
++                            **tail_inputs,
++                            publish_candidates=False,
++                            candidates=candidates.tail(tail_lengths),
++                        )
++                        self.assert_topk(tail_inputs, selected, scores[rows])
++
++    def test_unfiltered_and_zero_length_requests(self):
++        for request_lengths in ([(257, 8192)], [(1, 0), (1, 1), (0, 7)]):
++            for publish in (False, True):
++                with self.subTest(request_lengths=request_lengths, publish=publish):
++                    inputs = make_inputs(request_lengths)
++                    selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                        **inputs, publish_candidates=publish, candidates=None
++                    )
++                    self.assert_topk(inputs, selected, dense_scores(inputs))
++                    if publish:
++                        self.assertEqual(
++                            [b.shape[0] for b in candidates.request_blocks],
++                            [q for q, _ in request_lengths],
++                        )
++
++    def test_empty_queries(self):
++        inputs = make_inputs([(0, 0), (0, 17)])
++        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++            **inputs, publish_candidates=True, candidates=None
++        )
++        self.assertEqual(tuple(selected.shape), (0, 512))
++        self.assertEqual(
++            [tuple(b.shape) for b in candidates.request_blocks], [(0, 0), (0, 2)]
++        )
++
++    def test_score_memory_is_bounded(self):
++        for context, limit_gib in ((65536, 3), (65535, 5)):
++            with self.subTest(context=context):
++                inputs = make_inputs([(16384, context)])
++                inputs["candidate_topk_blocks"] = 2048
++                torch.cuda.synchronize()
++                torch.cuda.reset_peak_memory_stats()
++                baseline = torch.cuda.memory_allocated()
++                selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                    **inputs, publish_candidates=True, candidates=None
++                )
++                torch.cuda.synchronize()
++                self.assertLess(
++                    torch.cuda.max_memory_allocated() - baseline, limit_gib << 30
++                )
++                self.assertEqual(tuple(selected.shape), (16384, 512))
++                self.assertEqual(
++                    tuple(candidates.request_blocks[0].shape), (16384, 2048)
++                )
++                del inputs, selected, candidates
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/layers/test_dsv41_candidate_blocks.py b/test/registered/unit/layers/test_dsv41_candidate_blocks.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..79915cf5c29c9ac1faba7f10bfca32e6ead765ce
+--- /dev/null
++++ b/test/registered/unit/layers/test_dsv41_candidate_blocks.py
+@@ -0,0 +1,86 @@
++import unittest
++
++import torch
++
++from sglang.srt.layers.attention.dsv4.candidate_indexer import (
++    PrefillCandidateBlocks,
++    candidate_block_mask,
++    select_candidate_block_ids,
++    select_candidate_blocks,
++)
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=3, suite="base-a-test-cpu")
++
++
++class TestPrefillCandidateBlocks(CustomTestCase):
++    def test_causal_partial_blocks_and_forced_newest_block(self):
++        scores = torch.tensor([[100.0] * 8 + [50.0] * 8 + [-10.0] * 3] * 4)
++        lengths = torch.tensor([[0], [1], [9], [19]])
++        scores.masked_fill_(torch.arange(19)[None, :] >= lengths, -torch.inf)
++        original_scores = scores.clone()
++        expected = torch.tensor(
++            [
++                [False] * 19,
++                [True] * 8 + [False] * 11,
++                [True] * 16 + [False] * 3,
++                [True] * 8 + [False] * 8 + [True] * 3,
++            ]
++        )
++        blocks = select_candidate_block_ids(
++            logits=scores, compress_lens=lengths, topk_blocks=2, block_size=8
++        )
++        self.assertEqual(blocks.dtype, torch.int32)
++        self.assertEqual(tuple(blocks.shape), (4, 2))
++        torch.testing.assert_close(blocks[0], torch.tensor([-1, -1], dtype=torch.int32))
++        torch.testing.assert_close(
++            candidate_block_mask(blocks=blocks, width=19, block_size=8), expected
++        )
++        torch.testing.assert_close(
++            select_candidate_blocks(
++                logits=scores, compress_lens=lengths, topk_blocks=2, block_size=8
++            ),
++            expected,
++        )
++        torch.testing.assert_close(scores, original_scores)
++
++    def test_underfilled_and_empty_candidates(self):
++        for width in (0, 1, 7, 8, 9):
++            with self.subTest(width=width):
++                scores = torch.zeros((2, width))
++                blocks = select_candidate_block_ids(
++                    logits=scores, compress_lens=width, topk_blocks=2048, block_size=8
++                )
++                torch.testing.assert_close(
++                    candidate_block_mask(blocks=blocks, width=width, block_size=8),
++                    torch.ones_like(scores, dtype=torch.bool),
++                )
++        blocks = torch.full((3, 2), -1, dtype=torch.int32)
++        self.assertFalse(
++            candidate_block_mask(blocks=blocks, width=19, block_size=8).any()
++        )
++
++    def test_replay_tail_keeps_request_boundaries_and_empty_tails(self):
++        requests = [torch.arange(n * 2).reshape(n, 2) for n in (5, 0, 3)]
++        candidates = PrefillCandidateBlocks(request_blocks=requests)
++        tail = candidates.tail([2, 0, 0])
++        self.assertEqual(
++            [tuple(b.shape) for b in tail.request_blocks], [(2, 2), (0, 2), (0, 2)]
++        )
++        torch.testing.assert_close(tail.request_blocks[0], requests[0][3:])
++        self.assertEqual(tail.request_blocks[0].data_ptr(), requests[0][3:].data_ptr())
++        self.assertEqual([b.shape[0] for b in candidates.request_blocks], [5, 0, 3])
++
++    def test_nonfinite_blocks_match_mask_selection(self):
++        logits = torch.tensor([[float("nan")] * 8 + [1.0] * 8 + [-torch.inf] * 8])
++        kwargs = dict(logits=logits, compress_lens=24, topk_blocks=3, block_size=8)
++        blocks = select_candidate_block_ids(**kwargs)
++        torch.testing.assert_close(
++            candidate_block_mask(blocks=blocks, width=24, block_size=8),
++            select_candidate_blocks(**kwargs),
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

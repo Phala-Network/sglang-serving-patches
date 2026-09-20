@@ -1,0 +1,1687 @@
+{
+  "schema": "phala.sglang-serving-patches.v1",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20",
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+  },
+  "status": "source_export_candidate",
+  "frozen_source": {
+    "commit": "9acba212f3376c215a9b48a44dcbace15c0982b7",
+    "classified_commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+    "tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f"
+  },
+  "common": [
+    {
+      "id": "dsv41-0014-ue8m0-mxfp8",
+      "path": "common/dsv41-0014-ue8m0-mxfp8.patch",
+      "sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d",
+      "title": "[Quant] Serve 32-wide-K ue8m0 block-FP8 linears through the FlashInfer MXFP8 GEMMs (#40039)",
+      "category": "common",
+      "changed_files": [
+        "python/sglang/srt/layers/quantization/fp8.py",
+        "python/sglang/srt/layers/quantization/fp8_utils.py",
+        "python/sglang/srt/layers/quantization/mxfp8_input.py",
+        "python/sglang/srt/models/deepseek_v4.py",
+        "test/registered/quant/test_fp8_utils.py",
+        "test/registered/unit/layers/quantization/test_flashinfer_trtllm_fp8_fallback.py",
+        "test/registered/unit/layers/quantization/test_fp8_blockwise_linear_backends.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+        "parent": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+        "tree": "490924331c36cded7ef019e6ac241a214d1c6ae6",
+        "dependencies": [
+          "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95"
+        ],
+        "review_pr": "pending",
+        "review_status": "pending_source_pr",
+        "original_source_commits": [],
+        "donor_commits": [
+          "1b200ffaaadc8039f0af84eac5271447a151c138"
+        ],
+        "original_review_prs": [
+          "https://github.com/sgl-project/sglang/pull/40039"
+        ]
+      },
+      "export": {
+        "arguments": [
+          "git",
+          "-c",
+          "core.autocrlf=false",
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          "--binary",
+          "--full-index",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "--no-renames",
+          "--unified=3",
+          "--diff-algorithm=myers",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+          "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+          "--"
+        ],
+        "format": "raw Git diff bytes",
+        "git_version": "git version 2.38.0.windows.1"
+      },
+      "scope": "Semantic common; explicit DeepSeek selection only, not universal qualification"
+    },
+    {
+      "id": "dsv41-0018-hicache-completed-chunks",
+      "path": "common/dsv41-0018-hicache-completed-chunks.patch",
+      "sha256": "dc04af00257bf83a3c22a83e254539479b1a10d3a7a6bc313610930ba4a6cf2d",
+      "title": "fix(hicache): back up completed write-through chunks",
+      "category": "common",
+      "changed_files": [
+        "python/sglang/srt/mem_cache/unified_radix_cache.py",
+        "test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+        "parent": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+        "tree": "37667617c4ed35f01475d5a0c179f0a10b8eb3aa",
+        "dependencies": [
+          "3c0eb7c73d9c51baf236faebd649ea14c6482ecb"
+        ],
+        "review_pr": "pending",
+        "review_status": "pending_source_pr",
+        "original_source_commits": [],
+        "donor_commits": [
+          "1cfea70cea7ded5447fd06ced313e0145a50cf5c"
+        ],
+        "original_review_prs": []
+      },
+      "export": {
+        "arguments": [
+          "git",
+          "-c",
+          "core.autocrlf=false",
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          "--binary",
+          "--full-index",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "--no-renames",
+          "--unified=3",
+          "--diff-algorithm=myers",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+          "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+          "--"
+        ],
+        "format": "raw Git diff bytes",
+        "git_version": "git version 2.38.0.windows.1"
+      },
+      "scope": "Semantic common; explicit DeepSeek selection only, not universal qualification"
+    },
+    {
+      "id": "dsv41-0019-common-service-contracts",
+      "path": "common/dsv41-0019-common-service-contracts.patch",
+      "sha256": "e2782d425bb4918917819a3549a09140ece7fcdc98181a1921c0b930551ac0d4",
+      "title": "fix(serving): isolate common async, usage and media contracts",
+      "category": "common",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_base.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/managers/async_dynamic_batch_tokenizer.py",
+        "python/sglang/srt/managers/schedule_batch.py",
+        "python/sglang/srt/multimodal/processors/base_processor.py",
+        "python/sglang/srt/phala_compat/__init__.py",
+        "python/sglang/srt/phala_compat/dsv41_media_hardening.py",
+        "python/sglang/srt/phala_compat/dsv41_tool_choice_none.py",
+        "python/sglang/srt/utils/__init__.py",
+        "python/sglang/srt/utils/common.py",
+        "test/phala_deepseek_v41/selftest.py",
+        "test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+        "parent": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+        "tree": "448e0f9395a4ea5e5c570dec4de71c9ea146d2dd",
+        "dependencies": [
+          "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8"
+        ],
+        "review_pr": "pending",
+        "review_status": "pending_source_pr",
+        "original_source_commits": [
+          "2f5debb52ddbaa5eddf7f712be22b903766c17fa"
+        ],
+        "donor_commits": [
+          "52210a6e2b3f095b3a5ce6a50c241b8f9114e866",
+          "aa54beb47f1953d0a9bda2dc19ccd96783220b8c"
+        ],
+        "original_review_prs": []
+      },
+      "export": {
+        "arguments": [
+          "git",
+          "-c",
+          "core.autocrlf=false",
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          "--binary",
+          "--full-index",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "--no-renames",
+          "--unified=3",
+          "--diff-algorithm=myers",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+          "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+          "--"
+        ],
+        "format": "raw Git diff bytes",
+        "git_version": "git version 2.38.0.windows.1"
+      },
+      "scope": "Semantic common; explicit DeepSeek selection only, not universal qualification"
+    },
+    {
+      "id": "dsv41-0025-routed-weight-abi",
+      "path": "common/dsv41-0025-routed-weight-abi.patch",
+      "sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179",
+      "title": "fix(dsv41): preserve native FlashInfer routed weight ABI",
+      "category": "common",
+      "changed_files": [
+        "PORTING-V0520.md",
+        "python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py",
+        "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+        "test/phala_deepseek_v41/test_flashinfer_deferred_finalize_abi.py",
+        "test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+        "parent": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+        "tree": "3461f5380ddcf971e6ca28783754f58f6733b3cd",
+        "dependencies": [
+          "127a3646891cdefc09b1d59cf1a7fb11e4f23f12"
+        ],
+        "review_pr": "pending",
+        "review_status": "pending_source_pr",
+        "original_source_commits": [],
+        "donor_commits": [
+          "0ccc40dfd8ceb0fbe56cb68e1dce2890c21cc8bd",
+          "0dabef3d30714cca1fb047eaf8e5f9d54ee2ea53"
+        ],
+        "original_review_prs": [
+          "https://github.com/sgl-project/sglang/pull/39574"
+        ]
+      },
+      "export": {
+        "arguments": [
+          "git",
+          "-c",
+          "core.autocrlf=false",
+          "-c",
+          "core.quotePath=false",
+          "diff",
+          "--binary",
+          "--full-index",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "--no-renames",
+          "--unified=3",
+          "--diff-algorithm=myers",
+          "--src-prefix=a/",
+          "--dst-prefix=b/",
+          "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+          "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+          "--"
+        ],
+        "format": "raw Git diff bytes",
+        "git_version": "git version 2.38.0.windows.1"
+      },
+      "scope": "Semantic common; explicit DeepSeek selection only, not universal qualification"
+    }
+  ],
+  "models": {
+    "deepseek_v41": [
+      {
+        "id": "dsv41-0001-rust-interfaces",
+        "path": "models/deepseek_v41/dsv41-0001-rust-interfaces.patch",
+        "sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146",
+        "title": "dsv4.1: Rust extension modules for image preprocessing, KV pool names, and PD bootstrap (#39677)",
+        "category": "model",
+        "changed_files": [
+          "rust/sglang-mm/src/dsv41/mod.rs",
+          "rust/sglang-mm/src/lib.rs",
+          "rust/sglang-radix-tree/src/python_bindings.rs",
+          "rust/sglang-radix-tree/src/unified_tree_core.rs",
+          "rust/sglang-server/src/api_server/disaggregation/bootstrap.rs"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+          "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+          "tree": "a463ed610a65a3ca5a85b49f0bf03cc2251630bf",
+          "dependencies": [],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "2f7d04da5d2a955cefe3423713f8d097295228be"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39677"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+            "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0002-standalone-kernels",
+        "path": "models/deepseek_v41/dsv41-0002-standalone-kernels.patch",
+        "sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35",
+        "title": "dsv4.1: standalone kernels and Python wrappers (#39646)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/deepseek_v4/flashmla_sched_meta.cuh",
+          "python/sglang/kernels/jit/csrc/gemm/small_gemm_bf16.cuh",
+          "python/sglang/kernels/jit/csrc/gemm/tiny_gemm.cuh",
+          "python/sglang/kernels/jit/include/sgl_kernel/gemm/dot_product.cuh",
+          "python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py",
+          "python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py",
+          "python/sglang/kernels/ops/attention/dsv4/indexer_postprocess.py",
+          "python/sglang/kernels/ops/attention/dsv4/q_rope_store.py",
+          "python/sglang/kernels/ops/attention/dsv4/wo_a_bf16.py",
+          "python/sglang/kernels/ops/embeddings/__init__.py",
+          "python/sglang/kernels/ops/embeddings/engram_gate.py",
+          "python/sglang/kernels/ops/embeddings/engram_gather.py",
+          "python/sglang/kernels/ops/embeddings/engram_hash.py",
+          "python/sglang/kernels/ops/gemm/__init__.py",
+          "python/sglang/kernels/ops/gemm/small_gemm_bf16.py",
+          "python/sglang/kernels/ops/layernorm/__init__.py",
+          "python/sglang/kernels/ops/layernorm/hc_combine_norm.py",
+          "python/sglang/kernels/ops/layernorm/mhc_post_split_h.py",
+          "python/sglang/kernels/ops/layernorm/mxfp8_epilogue.py",
+          "python/sglang/kernels/ops/layernorm/rmsnorm_fp32.py",
+          "python/sglang/kernels/ops/speculative/__init__.py",
+          "python/sglang/kernels/ops/speculative/row_argmax.py",
+          "test/registered/kernel/attention/test_dsv4_q_rope_store.py",
+          "test/registered/kernel/attention/test_flashmla_sched_meta.py",
+          "test/registered/kernel/layernorm/test_mxfp8_epilogue.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+          "parent": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+          "tree": "505d56e8c71682250e67cd284efc547b1682c7f8",
+          "dependencies": [
+            "5392a7324f23e0f1d960edb2c60e4fd9020978e9"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "91f691c4907739438e86ecb4e07dbd77cb93912f"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39646"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+            "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0003-topk-candidates",
+        "path": "models/deepseek_v41/dsv41-0003-topk-candidates.patch",
+        "sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392",
+        "title": "dsv4.1: Top-k kernels and candidate selection (#39648)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/deepseek_v4/block_amax.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/candidate_block_table.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/topk_bf16_small.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/topk_v2.cuh",
+          "python/sglang/kernels/jit/csrc/occupancy/cluster_probe.cuh",
+          "python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/topk_impl.cuh",
+          "python/sglang/kernels/jit/utils/occupancy.py",
+          "python/sglang/kernels/ops/attention/dsv4/candidate_table.py",
+          "python/sglang/kernels/ops/attention/dsv4/topk.py",
+          "python/sglang/test/kits/dsa_metadata_kit.py",
+          "test/registered/kernels/benchmark/attention/bench_topk.py",
+          "test/registered/kernels/ops/attention/test_topk_v2.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+          "parent": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+          "tree": "af1e62184e00d0c53184c4ea1e32701c04617f99",
+          "dependencies": [
+            "6842c9135a8a2af8458f836bb81ac6ff83e33c32"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "faaff1eca8876b8b77d8704f080c3ee2064b8b65"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39648"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+            "ae829a492f29d50286ca62e524f66bdab7a314b3",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0004-communication-kernels",
+        "path": "models/deepseek_v41/dsv41-0004-communication-kernels.patch",
+        "sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14",
+        "title": "dsv4.1: communication kernels and wrappers (#39653)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/distributed/all_reduce_fusion.cuh",
+          "python/sglang/kernels/jit/csrc/distributed/custom_all_reduce.cuh",
+          "python/sglang/kernels/jit/csrc/distributed/nvlink_comm.cuh",
+          "python/sglang/kernels/jit/include/sgl_kernel/distributed/ptx.cuh",
+          "python/sglang/kernels/ops/communication/all_reduce_fusion.py",
+          "python/sglang/kernels/ops/communication/all_reduce_mhc.py",
+          "python/sglang/kernels/ops/communication/nvlink_comm.py",
+          "python/sglang/kernels/ops/speculative/dspark/sharded_greedy.py",
+          "python/sglang/srt/distributed/device_communicators/vocab_gather.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "2058fb0a106ef3e9a1431f6400d512333643f618",
+          "parent": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+          "tree": "63220ce6ee5cfa2b51776284e5e4b1a21ff81643",
+          "dependencies": [
+            "ae829a492f29d50286ca62e524f66bdab7a314b3"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "7d5696b3a1638a7c980e46ed77eb876faad158a2"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39653"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "ae829a492f29d50286ca62e524f66bdab7a314b3",
+            "2058fb0a106ef3e9a1431f6400d512333643f618",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0005-compression-kv-io",
+        "path": "models/deepseek_v41/dsv41-0005-compression-kv-io.patch",
+        "sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f",
+        "title": "dsv4.1: compression, KV I/O, and metadata kernels (#39652)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/deepseek_v4/c1.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/c2.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh",
+          "python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh",
+          "python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/fp4_utils.cuh",
+          "python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/kv_layout.cuh",
+          "python/sglang/kernels/ops/attention/dsv4/attn.py",
+          "python/sglang/kernels/ops/attention/dsv4/compress.py",
+          "python/sglang/kernels/ops/attention/dsv4/dequant_k_cache.py",
+          "python/sglang/kernels/ops/attention/dsv4/elementwise.py",
+          "python/sglang/kernels/ops/attention/dsv4/kv_layout.py",
+          "python/sglang/kernels/ops/attention/dsv4/low_ratio_compress.py",
+          "python/sglang/kernels/ops/attention/dsv4/metadata_kernel.py",
+          "python/sglang/kernels/ops/attention/dsv4/torch_quant.py",
+          "python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py",
+          "test/registered/kernel/attention/test_deepseek_v4_compress_plan_bounds.py",
+          "test/registered/kernels/ops/attention/test_deepseek_v4_compress_plan_draft_pad.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "d25d72a68e5b240851a0b645b98582d7924b540f",
+          "parent": "2058fb0a106ef3e9a1431f6400d512333643f618",
+          "tree": "c3954df1342b5748e7594e24d9eb77f61729dea7",
+          "dependencies": [
+            "2058fb0a106ef3e9a1431f6400d512333643f618"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "13d593b6cf885c5c4d50eea88c82b9e28cf5941e"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39652"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "2058fb0a106ef3e9a1431f6400d512333643f618",
+            "d25d72a68e5b240851a0b645b98582d7924b540f",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0006-candidate-indexer",
+        "path": "models/deepseek_v41/dsv41-0006-candidate-indexer.patch",
+        "sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af",
+        "title": "dsv4.1: candidate indexer library (#39671)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py",
+          "python/sglang/kernels/ops/attention/dsv4/indexer_postprocess.py",
+          "python/sglang/srt/layers/attention/dsv4/candidate_indexer.py",
+          "python/sglang/srt/layers/attention/dsv4/candidate_indexer_deep_gemm.py",
+          "python/sglang/srt/layers/attention/dsv4/indexer.py",
+          "python/sglang/srt/layers/deep_gemm_wrapper/configurer.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+          "parent": "d25d72a68e5b240851a0b645b98582d7924b540f",
+          "tree": "3662e562789ba43e0ebdebfefa4d4afa9fa46e5d",
+          "dependencies": [
+            "d25d72a68e5b240851a0b645b98582d7924b540f"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "35b7589e1abcc1d68b487b61c773cdb420229037"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39671"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "d25d72a68e5b240851a0b645b98582d7924b540f",
+            "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0007-rope-fp4-packing",
+        "path": "models/deepseek_v41/dsv41-0007-rope-fp4-packing.patch",
+        "sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8",
+        "title": "dsv4.1: RoPE and FP4 packing kernels (#39656)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/deepseek_v4/fp4_indexer_rope.cuh",
+          "python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py",
+          "python/sglang/kernels/ops/attention/dsv4/fp4_indexer_rope.py",
+          "python/sglang/kernels/ops/attention/dsv4/fp4_rope_fake_quant.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+          "parent": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+          "tree": "5dc5d0218ce988407cd94f9851d7b25bedccee46",
+          "dependencies": [
+            "df74a3ed2401723ff865b514f5bba23a5a0164e4"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "c2443458e1793deb72073a29f6cb7c53113ba695"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39656"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+            "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0008-hopper-fp8",
+        "path": "models/deepseek_v41/dsv41-0008-hopper-fp8.patch",
+        "sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a",
+        "title": "dsv4.1: Hopper FP8 matmul kernels and tuning (#39657)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/ops/quantization/configs/N=1152,K=5120,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=1792,K=5120,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=25600,K=6144,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=4096,K=1280,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=5120,K=2048,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=5120,K=576,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/configs/N=8192,K=1280,device_name=NVIDIA_H200,dtype=fp8_w8a8,block_shape=[32, 32].json",
+          "python/sglang/kernels/ops/quantization/fp8_kernel.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+          "parent": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+          "tree": "1928f67e1eb7c605c6df7deafc65736617fcaeb9",
+          "dependencies": [
+            "79a3ac5416bfa512b95d7e615c901eaf9dd63482"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "46ae84df159e261fa67d5cce3647f3342fe365a7"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39657"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+            "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0009-mhc-projections",
+        "path": "models/deepseek_v41/dsv41-0009-mhc-projections.patch",
+        "sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5",
+        "title": "dsv4.1: mHC computation and compensated projections (#39664)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/ops/layernorm/mhc.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+          "parent": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+          "tree": "bb0c53eb165b7811dbc7e5cb0c56ea985b802b6c",
+          "dependencies": [
+            "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "408d2334c34d387a36a26398dff9a8f004328344"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39664"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+            "a55765773e792cb3a7dbbf152a0968eb31c74354",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0010-vision-preprocessing",
+        "path": "models/deepseek_v41/dsv41-0010-vision-preprocessing.patch",
+        "sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d",
+        "title": "dsv4.1: vision tower and image preprocessing (#39668)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/srt/configs/model_config.py",
+          "python/sglang/srt/models/deepseek_v41_vit.py",
+          "python/sglang/srt/multimodal/deepseek_v41_image_processing.py",
+          "python/sglang/srt/multimodal/processors/deepseek_v41.py",
+          "python/sglang/srt/utils/hf_transformers/processor.py",
+          "test/registered/unit/multimodal/test_processor_async_call_sites.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+          "parent": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+          "tree": "e966dccd5b89314f1644a5099e1ff8a2fb25a7f1",
+          "dependencies": [
+            "a55765773e792cb3a7dbbf152a0968eb31c74354"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "c89c63fa38951346c9fd6bc601807c23e8180c81"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39668"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "a55765773e792cb3a7dbbf152a0968eb31c74354",
+            "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0011-chat-encoding",
+        "path": "models/deepseek_v41/dsv41-0011-chat-encoding.patch",
+        "sha256": "947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85",
+        "title": "dsv4.1: chat encoding and tool parsing (#39665)",
+        "category": "model",
+        "changed_files": [
+          "docs/docs/references/environment_variables.mdx",
+          "python/sglang/srt/entrypoints/openai/chat_encoding.py",
+          "python/sglang/srt/entrypoints/openai/encoding_dsv41.py",
+          "python/sglang/srt/entrypoints/openai/protocol.py",
+          "python/sglang/srt/entrypoints/openai/serving_chat.py",
+          "python/sglang/srt/environ.py",
+          "python/sglang/srt/function_call/deepseekv32_detector.py",
+          "python/sglang/srt/function_call/deepseekv41_detector.py",
+          "python/sglang/srt/function_call/deepseekv4_detector.py",
+          "python/sglang/srt/function_call/function_call_parser.py",
+          "python/sglang/srt/parser/reasoning_parser.py",
+          "python/sglang/srt/parser/template_detection.py",
+          "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+          "parent": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+          "tree": "5b1d7872a4d946be4f24adb67fa05abbf8d06235",
+          "dependencies": [
+            "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "464fffbec8d033de5658447667e7679a20773f2a"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39665"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+            "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0012-engram-history",
+        "path": "models/deepseek_v41/dsv41-0012-engram-history.patch",
+        "sha256": "49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c",
+        "title": "dsv4.1: Engram module and request history support (#39666)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/srt/configs/model_config.py",
+          "python/sglang/srt/environ.py",
+          "python/sglang/srt/layers/engram.py",
+          "python/sglang/srt/managers/schedule_batch.py",
+          "python/sglang/srt/model_executor/forward_batch_info.py",
+          "python/sglang/srt/model_executor/model_runner_components/ngram_embedding_manager.py",
+          "test/registered/unit/hardware_backend/mlx/test_attn_dp_request_capacity.py",
+          "test/registered/unit/hardware_backend/mlx/test_max_running_requests.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "22d54075f900b0c78d677d8a28d4db855e274c4a",
+          "parent": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+          "tree": "2e1c8ac60bf5b8972a848dbf2b3b3bbec4a02ab6",
+          "dependencies": [
+            "137f96a5cc08d3fd74c5c6cc8055aec73c59af07"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "3401b75240d7eb85ac961c58adcaa910d9e0e286"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39666"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+            "22d54075f900b0c78d677d8a28d4db855e274c4a",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0013-compress-ratios",
+        "path": "models/deepseek_v41/dsv41-0013-compress-ratios.patch",
+        "sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a",
+        "title": "[DSV4] Generalize attention metadata, sparse prefill, and KV pool over compress ratios (#39921)",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/ops/attention/dsv4/sparse_prefill_kernels.py",
+          "python/sglang/srt/disaggregation/decode.py",
+          "python/sglang/srt/disaggregation/prefill.py",
+          "python/sglang/srt/disaggregation/utils.py",
+          "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_allocator.py",
+          "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_common_hooks.py",
+          "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_memory_pool.py",
+          "python/sglang/srt/layers/attention/deepseek_v4_backend.py",
+          "python/sglang/srt/layers/attention/deepseek_v4_backend_hip_radix.py",
+          "python/sglang/srt/layers/attention/dsv4/sparse_prefill_utils.py",
+          "python/sglang/srt/mem_cache/deepseek_v4_compress_state.py",
+          "python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py",
+          "python/sglang/test/kits/attention_unittest/attention_methods/dsv4_attention.py",
+          "test/registered/attention/unittests/dsv4/test_deepseek_v4.py",
+          "test/registered/kernel/attention/test_combine_topk_swa_indices.py",
+          "test/registered/kernels/ops/attention/test_q8kv8_sparse_prefill_backend.py",
+          "test/registered/unit/disaggregation/test_disaggregation_wire.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+          "parent": "22d54075f900b0c78d677d8a28d4db855e274c4a",
+          "tree": "78df09762c4ebb5276fb72794f4226816925812d",
+          "dependencies": [
+            "22d54075f900b0c78d677d8a28d4db855e274c4a"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "1f0c73e9bd3d2b7c5f72b86304d1936b2ff6adc1"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39921"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "22d54075f900b0c78d677d8a28d4db855e274c4a",
+            "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0015-native-integration",
+        "path": "models/deepseek_v41/dsv41-0015-native-integration.patch",
+        "sha256": "a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb",
+        "title": "dsv4.1: remaining model and runtime integration (#38798)",
+        "category": "model",
+        "changed_files": [
+          "docs/docs/advanced_features/server_arguments.mdx",
+          "docs/src/snippets/configs/deepseek-ai/deepseek-v4_1.jsx",
+          "python/sglang/kernels/ops/attention/dsv4/__init__.py",
+          "python/sglang/kernels/ops/attention/dsv4/c2_decode_pool.py",
+          "python/sglang/kernels/ops/attention/dsv4/decode_attention_sm100.py",
+          "python/sglang/kernels/ops/attention/dsv4/decode_attention_sm100_gluon.py",
+          "python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py",
+          "python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py",
+          "python/sglang/kernels/ops/moe/moe_fused_gate.py",
+          "python/sglang/kernels/ops/speculative/dspark/commit_swa.py",
+          "python/sglang/kernels/ops/speculative/dspark/dspark_accept.py",
+          "python/sglang/kernels/ops/speculative/dspark/dspark_draft_model.py",
+          "python/sglang/srt/arg_groups/cuda_graph_hook.py",
+          "python/sglang/srt/arg_groups/deepseek_v4_hook.py",
+          "python/sglang/srt/arg_groups/fields/exec_.py",
+          "python/sglang/srt/arg_groups/fields/schedule.py",
+          "python/sglang/srt/arg_groups/kv_cache_hook.py",
+          "python/sglang/srt/arg_groups/model_hook.py",
+          "python/sglang/srt/arg_groups/model_overrides/deepseek_v4.py",
+          "python/sglang/srt/arg_groups/overrides.py",
+          "python/sglang/srt/batch_overlap/two_batch_overlap.py",
+          "python/sglang/srt/configs/deepseek_v4.py",
+          "python/sglang/srt/configs/deepseek_v41.py",
+          "python/sglang/srt/disaggregation/common/conn.py",
+          "python/sglang/srt/disaggregation/decode.py",
+          "python/sglang/srt/disaggregation/utils.py",
+          "python/sglang/srt/entrypoints/http_server.py",
+          "python/sglang/srt/environ.py",
+          "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_memory_pool.py",
+          "python/sglang/srt/layers/attention/deepseek_v4_backend.py",
+          "python/sglang/srt/layers/attention/dsv4/compressor_v2.py",
+          "python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py",
+          "python/sglang/srt/layers/attention/dsv4/metadata.py",
+          "python/sglang/srt/layers/attention/graph_variants.py",
+          "python/sglang/srt/layers/cp/interleave.py",
+          "python/sglang/srt/layers/flashinfer_comm_fusion.py",
+          "python/sglang/srt/layers/logits_processor.py",
+          "python/sglang/srt/layers/moe/fused_moe_triton/layer.py",
+          "python/sglang/srt/layers/moe/mhc_post_fusion.py",
+          "python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py",
+          "python/sglang/srt/layers/moe/token_dispatcher/standard.py",
+          "python/sglang/srt/layers/moe/topk.py",
+          "python/sglang/srt/layers/quantization/fp8.py",
+          "python/sglang/srt/layers/quantization/fp8_utils.py",
+          "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+          "python/sglang/srt/managers/schedule_batch.py",
+          "python/sglang/srt/managers/schedule_policy.py",
+          "python/sglang/srt/managers/scheduler_components/metrics_reporter.py",
+          "python/sglang/srt/managers/tokenizer_manager.py",
+          "python/sglang/srt/managers/tp_worker.py",
+          "python/sglang/srt/mem_cache/common.py",
+          "python/sglang/srt/mem_cache/deepseek_v4_compress_state.py",
+          "python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py",
+          "python/sglang/srt/mem_cache/dsv41_request_window.py",
+          "python/sglang/srt/mem_cache/hicache_storage.py",
+          "python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py",
+          "python/sglang/srt/mem_cache/kv_cache_builder.py",
+          "python/sglang/srt/mem_cache/kv_cache_configurator.py",
+          "python/sglang/srt/mem_cache/kv_index_translator.py",
+          "python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py",
+          "python/sglang/srt/model_executor/cuda_graph_config.py",
+          "python/sglang/srt/model_executor/encoder_swa_replay.py",
+          "python/sglang/srt/model_executor/forward_batch_info.py",
+          "python/sglang/srt/model_executor/model_runner_components/weight_updater.py",
+          "python/sglang/srt/model_executor/pool_configurator.py",
+          "python/sglang/srt/model_executor/runner/base_runner.py",
+          "python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py",
+          "python/sglang/srt/model_executor/runner/flashinfer_autotune.py",
+          "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py",
+          "python/sglang/srt/model_executor/runner/shape_key.py",
+          "python/sglang/srt/model_executor/runner_utils/capture_mode.py",
+          "python/sglang/srt/models/deepseek_v2.py",
+          "python/sglang/srt/models/deepseek_v4.py",
+          "python/sglang/srt/models/deepseek_v4_dspark.py",
+          "python/sglang/srt/models/deepseek_v4_nextn.py",
+          "python/sglang/srt/multimodal/dsv41/__init__.py",
+          "python/sglang/srt/multimodal/dsv41/vl_routing.py",
+          "python/sglang/srt/speculative/dflash_info.py",
+          "python/sglang/srt/speculative/dspark_components/dspark_draft_sampler.py",
+          "python/sglang/srt/speculative/dspark_components/dspark_kv_inject.py",
+          "python/sglang/srt/speculative/dspark_components/dspark_verify.py",
+          "python/sglang/srt/speculative/dspark_components/dspark_worker_v2.py",
+          "python/sglang/srt/utils/hf_transformers/common.py",
+          "python/sglang/srt/utils/hf_transformers/config.py",
+          "python/sglang/test/kits/attention_unittest/attention_methods/dsv4_attention.py",
+          "test/registered/attention/unittests/dsv4/test_deepseek_v4.py",
+          "test/registered/kernels/ops/attention/test_q8kv8_sparse_prefill_backend.py",
+          "test/registered/spec/dspark/test_dspark_draft_path_default.py",
+          "test/registered/unit/disaggregation/test_disaggregation_wire.py",
+          "test/registered/unit/layers/quantization/test_fp8_blockwise_linear_backends.py",
+          "test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py",
+          "test/registered/unit/layers/test_dsv4_nonpaged_indexer.py",
+          "test/registered/unit/managers/test_priority_scheduling_disaggregation.py",
+          "test/registered/unit/mem_cache/test_dsv4_compressed_pools.py",
+          "test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py",
+          "test/registered/unit/model_executor/runner/test_flashinfer_autotune_sync.py",
+          "test/registered/unit/model_executor/test_compensated_mhc_update_guard.py",
+          "test/registered/unit/model_executor/test_pool_configurator.py",
+          "test/registered/unit/models/test_deepseek_v4_rope_policy.py",
+          "test/registered/unit/models/test_deepseek_v4_shared_expert_fusion.py",
+          "test/registered/unit/models/test_deepseek_v4_unified_fp8_q_pair.py",
+          "test/registered/unit/test_model_overrides.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "9af234a4891a8facbe92626a2c54fffce5f04637",
+          "parent": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+          "tree": "45de451a395e591c40c554508de5ab68bf8ff897",
+          "dependencies": [
+            "e53312611f87fe7fffa895c1e0259f3f7e665e07"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "a6cf05817f11d22023fd951a76255ef50fb09f49"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/38798"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+            "9af234a4891a8facbe92626a2c54fffce5f04637",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0016-dense-prefill",
+        "path": "models/deepseek_v41/dsv41-0016-dense-prefill.patch",
+        "sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d",
+        "title": "Bound DeepSeek-V4.1 dense prefill indexer memory",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/srt/layers/attention/deepseek_v4_backend.py",
+          "python/sglang/srt/layers/attention/dsv4/candidate_indexer.py",
+          "python/sglang/srt/layers/attention/dsv4/dense_prefill_indexer.py",
+          "test/registered/kernel/attention/dsv4/test_dense_prefill_indexer.py",
+          "test/registered/unit/layers/test_dsv41_candidate_blocks.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "5645663683f25062e10596ac09661d6a169a1993",
+          "parent": "9af234a4891a8facbe92626a2c54fffce5f04637",
+          "tree": "07f4954a652e1592e0114bea7f5a7fc4f6727d80",
+          "dependencies": [
+            "9af234a4891a8facbe92626a2c54fffce5f04637"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "7061256028c67c0cb8dab77e9cc00eecb2d4b8dc"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/40217"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "9af234a4891a8facbe92626a2c54fffce5f04637",
+            "5645663683f25062e10596ac09661d6a169a1993",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0017-dense-prefill-tests",
+        "path": "models/deepseek_v41/dsv41-0017-dense-prefill-tests.patch",
+        "sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c",
+        "title": "Strengthen dense prefill consumer correctness and memory tests",
+        "category": "model",
+        "changed_files": [
+          "test/registered/kernel/attention/dsv4/test_dense_prefill_indexer.py",
+          "test/registered/kernels/ops/attention/test_dense_prefill_indexer.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+          "parent": "5645663683f25062e10596ac09661d6a169a1993",
+          "tree": "508b1ac86e76e281ba4ce804cfde34090456c6d1",
+          "dependencies": [
+            "5645663683f25062e10596ac09661d6a169a1993"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "6cec021d06fd47e3a54aef323817ec6e1af13bb1"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/40217"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "5645663683f25062e10596ac09661d6a169a1993",
+            "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0020-model-protocol-contracts",
+        "path": "models/deepseek_v41/dsv41-0020-model-protocol-contracts.patch",
+        "sha256": "36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4",
+        "title": "fix(dsv41): isolate model reasoning, roles and async opt-in",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/srt/entrypoints/openai/encoding_dsv41.py",
+          "python/sglang/srt/entrypoints/openai/protocol.py",
+          "python/sglang/srt/entrypoints/openai/serving_chat.py",
+          "python/sglang/srt/entrypoints/openai/usage_processor.py",
+          "python/sglang/srt/phala_compat/dsv41_message_roles.py",
+          "python/sglang/srt/phala_compat/dsv41_protocol_compat.py",
+          "python/sglang/srt/phala_compat/dsv41_reasoning_effort.py",
+          "test/phala_deepseek_v41/selftest.py",
+          "test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+          "parent": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+          "tree": "9b0473a9b0355dff7df6c10a9467042495c4d77f",
+          "dependencies": [
+            "5ad27e1db0d14d17d920e9040599f20655fbe9df"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [
+            "2f5debb52ddbaa5eddf7f712be22b903766c17fa"
+          ],
+          "donor_commits": [
+            "52210a6e2b3f095b3a5ce6a50c241b8f9114e866",
+            "aa54beb47f1953d0a9bda2dc19ccd96783220b8c"
+          ],
+          "original_review_prs": []
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+            "437b982abfdfa1b563122e061ead1a1cd1211c29",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0021-medium-finalize",
+        "path": "models/deepseek_v41/dsv41-0021-medium-finalize.patch",
+        "sha256": "273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02",
+        "title": "perf(dsv41): isolate medium target finalize plane",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/ops/communication/all_reduce_fusion.py",
+          "python/sglang/srt/environ.py",
+          "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+          "python/sglang/srt/models/deepseek_v2.py",
+          "test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py",
+          "test/registered/unit/models/test_dsv41_medium_finalize_selection.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "ecd9f93317e41aa19487948ddab05f754556a990",
+          "parent": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+          "tree": "652ce49212294edf536bfed81206ff522b1408f5",
+          "dependencies": [
+            "437b982abfdfa1b563122e061ead1a1cd1211c29"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "7766836cbd42a520eee76be14ff6d3ed5071ee6d",
+            "580fbdb87c120469ea58b8541a1ae4884f4c9296"
+          ],
+          "original_review_prs": [
+            "https://github.com/sgl-project/sglang/pull/39704"
+          ]
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "437b982abfdfa1b563122e061ead1a1cd1211c29",
+            "ecd9f93317e41aa19487948ddab05f754556a990",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0022-transplant-closure",
+        "path": "models/deepseek_v41/dsv41-0022-transplant-closure.patch",
+        "sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0",
+        "title": "fix(dsv41): close stable transplant imports and document qualification boundaries",
+        "category": "model",
+        "changed_files": [
+          "PORTING-V0520.md",
+          "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+          "python/sglang/srt/model_executor/runner/base_runner.py",
+          "python/sglang/srt/models/deepseek_v4.py",
+          "test/phala_deepseek_v41/audit_v0520_source.py",
+          "test/phala_deepseek_v41/test_cpu_contracts_v0520.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+          "parent": "ecd9f93317e41aa19487948ddab05f754556a990",
+          "tree": "c195099036cdee8da9b98c515ea74408acf90ecd",
+          "dependencies": [
+            "ecd9f93317e41aa19487948ddab05f754556a990"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "2d625cffb8c7ce1ee47cd5948589c0e0f4980798"
+          ],
+          "original_review_prs": []
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "ecd9f93317e41aa19487948ddab05f754556a990",
+            "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0023-mxfp4-padding",
+        "path": "models/deepseek_v41/dsv41-0023-mxfp4-padding.patch",
+        "sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26",
+        "title": "fix(dsv41): restore MXFP4 padding before weight shuffle",
+        "category": "model",
+        "changed_files": [
+          "PORTING-V0520.md",
+          "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+          "test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py",
+          "test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "81b67d8f1736b387aff2f908a2cddf011803367a",
+          "parent": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+          "tree": "29dcad4ff04a0d46bca379f0211d3ef52560a970",
+          "dependencies": [
+            "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "70733f2ee7e565bed635cac4e8682a5fc75c9641"
+          ],
+          "original_review_prs": []
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+            "81b67d8f1736b387aff2f908a2cddf011803367a",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0024-protocol-selftest",
+        "path": "models/deepseek_v41/dsv41-0024-protocol-selftest.patch",
+        "sha256": "7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56",
+        "title": "test(dsv41): use current reasoning parser in protocol selftest",
+        "category": "model",
+        "changed_files": [
+          "test/phala_deepseek_v41/selftest.py",
+          "test/phala_deepseek_v41/test_cpu_contracts_v0520.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+          "parent": "81b67d8f1736b387aff2f908a2cddf011803367a",
+          "tree": "bab9d3f50ab6c6a0afc7126e57cded8ab4b0b3da",
+          "dependencies": [
+            "81b67d8f1736b387aff2f908a2cddf011803367a"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "c213efb15ff1bd658d9d0b04bdc0651794cf2402"
+          ],
+          "original_review_prs": []
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "81b67d8f1736b387aff2f908a2cddf011803367a",
+            "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      },
+      {
+        "id": "dsv41-0026-candidate-bitmap",
+        "path": "models/deepseek_v41/dsv41-0026-candidate-bitmap.patch",
+        "sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc",
+        "title": "fix(dsv41): size candidate bitmap for speculative scratch extent",
+        "category": "model",
+        "changed_files": [
+          "python/sglang/kernels/jit/csrc/deepseek_v4/candidate_block_table.cuh",
+          "test/phala_deepseek_v41/test_candidate_bitmap_boundary_gpu.py"
+        ],
+        "source": {
+          "repository": "https://github.com/Phala-Network/sglang",
+          "commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+          "parent": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+          "tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+          "dependencies": [
+            "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057"
+          ],
+          "review_pr": "pending",
+          "review_status": "pending_source_pr",
+          "original_source_commits": [],
+          "donor_commits": [
+            "9acba212f3376c215a9b48a44dcbace15c0982b7"
+          ],
+          "original_review_prs": []
+        },
+        "export": {
+          "arguments": [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--unified=3",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+            "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+            "--"
+          ],
+          "format": "raw Git diff bytes",
+          "git_version": "git version 2.38.0.windows.1"
+        },
+        "scope": "DeepSeek-V4.1 model/runtime closure"
+      }
+    ]
+  }
+}

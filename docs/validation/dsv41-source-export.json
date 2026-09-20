@@ -1,0 +1,501 @@
+{
+  "additional_patches": [],
+  "canonical_diff": {
+    "arguments": [
+      "git",
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "--binary",
+      "--full-index",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--no-renames",
+      "--unified=3",
+      "--diff-algorithm=myers",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "PARENT",
+      "COMMIT",
+      "--"
+    ],
+    "bytes_checked_against": "selected patch files"
+  },
+  "computed_composed_tree": null,
+  "computed_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+  "expected_composed_tree": null,
+  "manifest": {
+    "schema": "phala.sglang-serving-patches.v1",
+    "sha256": "ad213944de72532bef454461fbed251ef30f6aa58780048a8b94921796dc848c"
+  },
+  "objects": {
+    "complete_tree_blobs_checked": 9298,
+    "lazy_fetch": "disabled"
+  },
+  "ordered_patches": [
+    {
+      "canonical_diff_sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146",
+      "id": "dsv41-0001-rust-interfaces",
+      "patch_sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146",
+      "path": "models/deepseek_v41/dsv41-0001-rust-interfaces.patch",
+      "position": 1,
+      "source": {
+        "commit": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+        "dependencies": [],
+        "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "a463ed610a65a3ca5a85b49f0bf03cc2251630bf"
+      }
+    },
+    {
+      "canonical_diff_sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35",
+      "id": "dsv41-0002-standalone-kernels",
+      "patch_sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35",
+      "path": "models/deepseek_v41/dsv41-0002-standalone-kernels.patch",
+      "position": 2,
+      "source": {
+        "commit": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+        "dependencies": [
+          "5392a7324f23e0f1d960edb2c60e4fd9020978e9"
+        ],
+        "parent": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "505d56e8c71682250e67cd284efc547b1682c7f8"
+      }
+    },
+    {
+      "canonical_diff_sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392",
+      "id": "dsv41-0003-topk-candidates",
+      "patch_sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392",
+      "path": "models/deepseek_v41/dsv41-0003-topk-candidates.patch",
+      "position": 3,
+      "source": {
+        "commit": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+        "dependencies": [
+          "6842c9135a8a2af8458f836bb81ac6ff83e33c32"
+        ],
+        "parent": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "af1e62184e00d0c53184c4ea1e32701c04617f99"
+      }
+    },
+    {
+      "canonical_diff_sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14",
+      "id": "dsv41-0004-communication-kernels",
+      "patch_sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14",
+      "path": "models/deepseek_v41/dsv41-0004-communication-kernels.patch",
+      "position": 4,
+      "source": {
+        "commit": "2058fb0a106ef3e9a1431f6400d512333643f618",
+        "dependencies": [
+          "ae829a492f29d50286ca62e524f66bdab7a314b3"
+        ],
+        "parent": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "63220ce6ee5cfa2b51776284e5e4b1a21ff81643"
+      }
+    },
+    {
+      "canonical_diff_sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f",
+      "id": "dsv41-0005-compression-kv-io",
+      "patch_sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f",
+      "path": "models/deepseek_v41/dsv41-0005-compression-kv-io.patch",
+      "position": 5,
+      "source": {
+        "commit": "d25d72a68e5b240851a0b645b98582d7924b540f",
+        "dependencies": [
+          "2058fb0a106ef3e9a1431f6400d512333643f618"
+        ],
+        "parent": "2058fb0a106ef3e9a1431f6400d512333643f618",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "c3954df1342b5748e7594e24d9eb77f61729dea7"
+      }
+    },
+    {
+      "canonical_diff_sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af",
+      "id": "dsv41-0006-candidate-indexer",
+      "patch_sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af",
+      "path": "models/deepseek_v41/dsv41-0006-candidate-indexer.patch",
+      "position": 6,
+      "source": {
+        "commit": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+        "dependencies": [
+          "d25d72a68e5b240851a0b645b98582d7924b540f"
+        ],
+        "parent": "d25d72a68e5b240851a0b645b98582d7924b540f",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "3662e562789ba43e0ebdebfefa4d4afa9fa46e5d"
+      }
+    },
+    {
+      "canonical_diff_sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8",
+      "id": "dsv41-0007-rope-fp4-packing",
+      "patch_sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8",
+      "path": "models/deepseek_v41/dsv41-0007-rope-fp4-packing.patch",
+      "position": 7,
+      "source": {
+        "commit": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+        "dependencies": [
+          "df74a3ed2401723ff865b514f5bba23a5a0164e4"
+        ],
+        "parent": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "5dc5d0218ce988407cd94f9851d7b25bedccee46"
+      }
+    },
+    {
+      "canonical_diff_sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a",
+      "id": "dsv41-0008-hopper-fp8",
+      "patch_sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a",
+      "path": "models/deepseek_v41/dsv41-0008-hopper-fp8.patch",
+      "position": 8,
+      "source": {
+        "commit": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+        "dependencies": [
+          "79a3ac5416bfa512b95d7e615c901eaf9dd63482"
+        ],
+        "parent": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "1928f67e1eb7c605c6df7deafc65736617fcaeb9"
+      }
+    },
+    {
+      "canonical_diff_sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5",
+      "id": "dsv41-0009-mhc-projections",
+      "patch_sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5",
+      "path": "models/deepseek_v41/dsv41-0009-mhc-projections.patch",
+      "position": 9,
+      "source": {
+        "commit": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+        "dependencies": [
+          "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e"
+        ],
+        "parent": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "bb0c53eb165b7811dbc7e5cb0c56ea985b802b6c"
+      }
+    },
+    {
+      "canonical_diff_sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d",
+      "id": "dsv41-0010-vision-preprocessing",
+      "patch_sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d",
+      "path": "models/deepseek_v41/dsv41-0010-vision-preprocessing.patch",
+      "position": 10,
+      "source": {
+        "commit": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+        "dependencies": [
+          "a55765773e792cb3a7dbbf152a0968eb31c74354"
+        ],
+        "parent": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "e966dccd5b89314f1644a5099e1ff8a2fb25a7f1"
+      }
+    },
+    {
+      "canonical_diff_sha256": "947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85",
+      "id": "dsv41-0011-chat-encoding",
+      "patch_sha256": "947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85",
+      "path": "models/deepseek_v41/dsv41-0011-chat-encoding.patch",
+      "position": 11,
+      "source": {
+        "commit": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+        "dependencies": [
+          "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e"
+        ],
+        "parent": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "5b1d7872a4d946be4f24adb67fa05abbf8d06235"
+      }
+    },
+    {
+      "canonical_diff_sha256": "49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c",
+      "id": "dsv41-0012-engram-history",
+      "patch_sha256": "49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c",
+      "path": "models/deepseek_v41/dsv41-0012-engram-history.patch",
+      "position": 12,
+      "source": {
+        "commit": "22d54075f900b0c78d677d8a28d4db855e274c4a",
+        "dependencies": [
+          "137f96a5cc08d3fd74c5c6cc8055aec73c59af07"
+        ],
+        "parent": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "2e1c8ac60bf5b8972a848dbf2b3b3bbec4a02ab6"
+      }
+    },
+    {
+      "canonical_diff_sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a",
+      "id": "dsv41-0013-compress-ratios",
+      "patch_sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a",
+      "path": "models/deepseek_v41/dsv41-0013-compress-ratios.patch",
+      "position": 13,
+      "source": {
+        "commit": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+        "dependencies": [
+          "22d54075f900b0c78d677d8a28d4db855e274c4a"
+        ],
+        "parent": "22d54075f900b0c78d677d8a28d4db855e274c4a",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "78df09762c4ebb5276fb72794f4226816925812d"
+      }
+    },
+    {
+      "canonical_diff_sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d",
+      "id": "dsv41-0014-ue8m0-mxfp8",
+      "patch_sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d",
+      "path": "common/dsv41-0014-ue8m0-mxfp8.patch",
+      "position": 14,
+      "source": {
+        "commit": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+        "dependencies": [
+          "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95"
+        ],
+        "parent": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "490924331c36cded7ef019e6ac241a214d1c6ae6"
+      }
+    },
+    {
+      "canonical_diff_sha256": "a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb",
+      "id": "dsv41-0015-native-integration",
+      "patch_sha256": "a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb",
+      "path": "models/deepseek_v41/dsv41-0015-native-integration.patch",
+      "position": 15,
+      "source": {
+        "commit": "9af234a4891a8facbe92626a2c54fffce5f04637",
+        "dependencies": [
+          "e53312611f87fe7fffa895c1e0259f3f7e665e07"
+        ],
+        "parent": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "45de451a395e591c40c554508de5ab68bf8ff897"
+      }
+    },
+    {
+      "canonical_diff_sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d",
+      "id": "dsv41-0016-dense-prefill",
+      "patch_sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d",
+      "path": "models/deepseek_v41/dsv41-0016-dense-prefill.patch",
+      "position": 16,
+      "source": {
+        "commit": "5645663683f25062e10596ac09661d6a169a1993",
+        "dependencies": [
+          "9af234a4891a8facbe92626a2c54fffce5f04637"
+        ],
+        "parent": "9af234a4891a8facbe92626a2c54fffce5f04637",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "07f4954a652e1592e0114bea7f5a7fc4f6727d80"
+      }
+    },
+    {
+      "canonical_diff_sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c",
+      "id": "dsv41-0017-dense-prefill-tests",
+      "patch_sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c",
+      "path": "models/deepseek_v41/dsv41-0017-dense-prefill-tests.patch",
+      "position": 17,
+      "source": {
+        "commit": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+        "dependencies": [
+          "5645663683f25062e10596ac09661d6a169a1993"
+        ],
+        "parent": "5645663683f25062e10596ac09661d6a169a1993",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "508b1ac86e76e281ba4ce804cfde34090456c6d1"
+      }
+    },
+    {
+      "canonical_diff_sha256": "dc04af00257bf83a3c22a83e254539479b1a10d3a7a6bc313610930ba4a6cf2d",
+      "id": "dsv41-0018-hicache-completed-chunks",
+      "patch_sha256": "dc04af00257bf83a3c22a83e254539479b1a10d3a7a6bc313610930ba4a6cf2d",
+      "path": "common/dsv41-0018-hicache-completed-chunks.patch",
+      "position": 18,
+      "source": {
+        "commit": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+        "dependencies": [
+          "3c0eb7c73d9c51baf236faebd649ea14c6482ecb"
+        ],
+        "parent": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "37667617c4ed35f01475d5a0c179f0a10b8eb3aa"
+      }
+    },
+    {
+      "canonical_diff_sha256": "e2782d425bb4918917819a3549a09140ece7fcdc98181a1921c0b930551ac0d4",
+      "id": "dsv41-0019-common-service-contracts",
+      "patch_sha256": "e2782d425bb4918917819a3549a09140ece7fcdc98181a1921c0b930551ac0d4",
+      "path": "common/dsv41-0019-common-service-contracts.patch",
+      "position": 19,
+      "source": {
+        "commit": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+        "dependencies": [
+          "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8"
+        ],
+        "parent": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "448e0f9395a4ea5e5c570dec4de71c9ea146d2dd"
+      }
+    },
+    {
+      "canonical_diff_sha256": "36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4",
+      "id": "dsv41-0020-model-protocol-contracts",
+      "patch_sha256": "36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4",
+      "path": "models/deepseek_v41/dsv41-0020-model-protocol-contracts.patch",
+      "position": 20,
+      "source": {
+        "commit": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+        "dependencies": [
+          "5ad27e1db0d14d17d920e9040599f20655fbe9df"
+        ],
+        "parent": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "9b0473a9b0355dff7df6c10a9467042495c4d77f"
+      }
+    },
+    {
+      "canonical_diff_sha256": "273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02",
+      "id": "dsv41-0021-medium-finalize",
+      "patch_sha256": "273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02",
+      "path": "models/deepseek_v41/dsv41-0021-medium-finalize.patch",
+      "position": 21,
+      "source": {
+        "commit": "ecd9f93317e41aa19487948ddab05f754556a990",
+        "dependencies": [
+          "437b982abfdfa1b563122e061ead1a1cd1211c29"
+        ],
+        "parent": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "652ce49212294edf536bfed81206ff522b1408f5"
+      }
+    },
+    {
+      "canonical_diff_sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0",
+      "id": "dsv41-0022-transplant-closure",
+      "patch_sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0",
+      "path": "models/deepseek_v41/dsv41-0022-transplant-closure.patch",
+      "position": 22,
+      "source": {
+        "commit": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+        "dependencies": [
+          "ecd9f93317e41aa19487948ddab05f754556a990"
+        ],
+        "parent": "ecd9f93317e41aa19487948ddab05f754556a990",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "c195099036cdee8da9b98c515ea74408acf90ecd"
+      }
+    },
+    {
+      "canonical_diff_sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26",
+      "id": "dsv41-0023-mxfp4-padding",
+      "patch_sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26",
+      "path": "models/deepseek_v41/dsv41-0023-mxfp4-padding.patch",
+      "position": 23,
+      "source": {
+        "commit": "81b67d8f1736b387aff2f908a2cddf011803367a",
+        "dependencies": [
+          "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27"
+        ],
+        "parent": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "29dcad4ff04a0d46bca379f0211d3ef52560a970"
+      }
+    },
+    {
+      "canonical_diff_sha256": "7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56",
+      "id": "dsv41-0024-protocol-selftest",
+      "patch_sha256": "7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56",
+      "path": "models/deepseek_v41/dsv41-0024-protocol-selftest.patch",
+      "position": 24,
+      "source": {
+        "commit": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+        "dependencies": [
+          "81b67d8f1736b387aff2f908a2cddf011803367a"
+        ],
+        "parent": "81b67d8f1736b387aff2f908a2cddf011803367a",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "bab9d3f50ab6c6a0afc7126e57cded8ab4b0b3da"
+      }
+    },
+    {
+      "canonical_diff_sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179",
+      "id": "dsv41-0025-routed-weight-abi",
+      "patch_sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179",
+      "path": "common/dsv41-0025-routed-weight-abi.patch",
+      "position": 25,
+      "source": {
+        "commit": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+        "dependencies": [
+          "127a3646891cdefc09b1d59cf1a7fb11e4f23f12"
+        ],
+        "parent": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "3461f5380ddcf971e6ca28783754f58f6733b3cd"
+      }
+    },
+    {
+      "canonical_diff_sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc",
+      "id": "dsv41-0026-candidate-bitmap",
+      "patch_sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc",
+      "path": "models/deepseek_v41/dsv41-0026-candidate-bitmap.patch",
+      "position": 26,
+      "source": {
+        "commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+        "dependencies": [
+          "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057"
+        ],
+        "parent": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "pending",
+        "tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f"
+      }
+    }
+  ],
+  "profile": {
+    "expected_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+    "id": "deepseek-v4.1-flash",
+    "sha256": "2d15220b899ea94b7bf17219c6035a1b5fb8092b5611efa13d3c9caa125e39ae"
+  },
+  "provenance_scope": "selected serving profile source commits and exported patch bytes",
+  "provenance_verified": true,
+  "review_approval": {
+    "reason": "Git export verification does not evaluate PR reviews or repository rules.",
+    "status": "not_checked",
+    "verified": false
+  },
+  "schema": "phala.sglang-source-export-verification.v1",
+  "source_repository": "https://github.com/Phala-Network/sglang",
+  "upstream": {
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20"
+  },
+  "verifier_identity": {
+    "sha256": "b518d763dc86a9a1d02afddf9955d8a04756d1a9a6ec2e5430f781653c64893c",
+    "status": "shared verifier working copy; commit and CI integration pending"
+  }
+}
