@@ -495,7 +495,10 @@
     "tag": "v0.5.20"
   },
   "verifier_identity": {
+    "repository": "https://github.com/Phala-Network/sglang-serving-patches",
+    "commit": "69f1e36febe163c58044b9b7738048e3abd43d4d",
+    "path": "scripts/verify_source_export.py",
     "sha256": "b518d763dc86a9a1d02afddf9955d8a04756d1a9a6ec2e5430f781653c64893c",
-    "status": "shared verifier working copy; commit and CI integration pending"
+    "status": "tracked shared verifier; GitHub CI execution recorded separately"
   }
 }

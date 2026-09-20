@@ -23,7 +23,21 @@ permissions:
 
 jobs:
   verify:
+    name: Verify ${{ matrix.id }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: qwen3.8-27b
+            manifest: patches/sglang/v0.5.20/manifest.json
+            profile: profiles/v0.5.20/qwen3.8-27b.yaml
+          - id: deepseek-v4.1-flash
+            manifest: patches/sglang/v0.5.20/manifest-deepseek-v4.1-flash.json
+            profile: profiles/v0.5.20/deepseek-v4.1-flash.yaml
+    env:
+      MANIFEST_PATH: ${{ matrix.manifest }}
+      PROFILE_PATH: ${{ matrix.profile }}
     steps:
       - name: Checkout patch metadata only
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -49,14 +63,15 @@ jobs:
 
           python3 - "$SOURCE_DIR" "$SOURCE_REPOSITORY" <<'PY'
           import json
+          import os
           from pathlib import Path
           import re
           import sys
 
           source_dir = Path(sys.argv[1])
           expected_repository = sys.argv[2]
-          manifest = json.loads(Path("patches/sglang/v0.5.20/manifest.json").read_text())
-          profile = json.loads(Path("profiles/v0.5.20/qwen3.8-27b.yaml").read_text())
+          manifest = json.loads(Path(os.environ["MANIFEST_PATH"]).read_text())
+          profile = json.loads(Path(os.environ["PROFILE_PATH"]).read_text())
           entries = {entry["id"]: entry for entry in manifest["common"]}
           for model_entries in manifest["models"].values():
               entries.update({entry["id"]: entry for entry in model_entries})
@@ -90,5 +105,5 @@ jobs:
           set -euo pipefail
           python3 scripts/verify_source_export.py \
             --source-repo "$SOURCE_DIR" \
-            --manifest patches/sglang/v0.5.20/manifest.json \
-            --profile profiles/v0.5.20/qwen3.8-27b.yaml
+            --manifest "$MANIFEST_PATH" \
+            --profile "$PROFILE_PATH"

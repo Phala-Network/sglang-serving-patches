@@ -65,10 +65,12 @@ the manifest; the profile keeps the same 26 exports and full source tree.
 
 ## Deterministic verification
 
-Use the shared `scripts/verify_source_export.py` from the coordinated verifier
-change once available in this repository. It currently lives in that change's
-working checkout, and this candidate records its exact file SHA-256. This
-addition does not copy a second verifier or claim CI integration is complete.
+Use the shared `scripts/verify_source_export.py`, introduced by coordinated
+commit `69f1e36febe163c58044b9b7738048e3abd43d4d`. Its tracked bytes match the
+previously used working-file SHA-256. The common read-only CI workflow now
+selects Qwen and DeepSeek as independent matrix entries, each with its own
+manifest/profile; no category-wide patch inclusion is added. Actual GitHub
+execution results are recorded separately from this configuration change.
 
 ```sh
 python scripts/verify_source_export.py \
