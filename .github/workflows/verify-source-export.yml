@@ -94,10 +94,12 @@ jobs:
           (source_dir / "required-commits.txt").write_text("\n".join(ordered) + "\n")
           PY
 
+          refspecs=()
           while IFS= read -r commit; do
-            git -C "$SOURCE_DIR" fetch --no-tags --depth=1 \
-              "$SOURCE_REPOSITORY" "$commit:refs/verify/$commit"
+            refspecs+=("$commit:refs/verify/$commit")
           done < "$SOURCE_DIR/required-commits.txt"
+          git -C "$SOURCE_DIR" -c maintenance.auto=false -c gc.auto=0 \
+            fetch --no-tags --depth=1 "$SOURCE_REPOSITORY" "${refspecs[@]}"
 
       - name: Verify canonical exports and profile tree offline
         shell: bash
