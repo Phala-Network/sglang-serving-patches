@@ -98,7 +98,7 @@ jobs:
           while IFS= read -r commit; do
             refspecs+=("$commit:refs/verify/$commit")
           done < "$SOURCE_DIR/required-commits.txt"
-          git -C "$SOURCE_DIR" -c maintenance.auto=false -c gc.auto=0 \
+          git -C "$SOURCE_DIR" -c gc.auto=0 -c maintenance.auto=false \
             fetch --no-tags --depth=1 "$SOURCE_REPOSITORY" "${refspecs[@]}"
 
       - name: Verify canonical exports and profile tree offline
