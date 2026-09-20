@@ -642,6 +642,9 @@
     "documentation": "SELECTOR_MANIFEST.md",
     "verification": "selector-verification.json",
     "model_selection_is_optional": true,
-    "complete_engine_remains": "Phala-Network/sglang"
+    "complete_engine_remains": "Phala-Network/sglang",
+    "source_of_truth": "Phala-Network/sglang immutable fork commit/tree",
+    "patches_are": "deterministic exports from fork commit ranges for audit/external consumers",
+    "rebase_rule": "Rebase the fork source first, then regenerate selectors/patches and re-verify target trees; never hand-edit a parallel implementation"
   }
 }

@@ -6,11 +6,20 @@
     "commit": "4281309187007db579a2195f40adfd4baa538528",
     "tree": "83dcb00885129cc2afefdce2e169ebba697a9a67"
   },
+  "source_of_truth": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "fork": "Phala-Network/sglang",
+    "rule": "Future implementation lives in an immutable fork commit/tree; patch files are deterministic exports for audit and external consumers."
+  },
   "selectors": {
     "kimi-k3-v0520-candidate": {
       "model_family": "kimi-k3",
       "version": "v0.5.20",
       "topology": ["TP8", "DCP1", "DCP8"],
+      "fork_commit": "83d8dc47eee91a277e67c02291d9d1c6874f54c3",
+      "fork_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd",
+      "fork_branch": "codex/unified-serving-model-completion-v0520",
+      "source_parent": "4281309187007db579a2195f40adfd4baa538528",
       "patches": [
         {"id":"be54243a76","path":"patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch","sha256":"3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"},
         {"id":"bc60e5ce93","path":"patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch","sha256":"2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"},
@@ -27,6 +36,10 @@
       "model_family": "muse-glimmer",
       "version": "v0.5.20",
       "topology": ["model-guarded"],
+      "fork_commit": "83d8dc47eee91a277e67c02291d9d1c6874f54c3",
+      "fork_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd",
+      "fork_branch": "codex/unified-serving-model-completion-v0520",
+      "source_parent": "4281309187007db579a2195f40adfd4baa538528",
       "patches": [{"id":"d486b6fe7a","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"}],
       "pending_historical_patch_directory": "patches/models/muse",
       "status": "pending_linux_cpu_validation",
@@ -59,6 +72,9 @@
         {"id":"dsv41-0024","path":"patches/models/deepseek/dsv41-0024-protocol-selftest.patch","sha256":"7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56"},
         {"id":"dsv41-0026","path":"patches/models/deepseek/dsv41-0026-candidate-bitmap.patch","sha256":"cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"}
       ],
+      "fork_commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+      "fork_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+      "fork_branch": "codex/dsv41-v0520-profile-20260920",
       "status": "blocked_native_closure_recipe_and_abi_validation",
       "required_closure": "sglang-mm, radix-tree C1/C2, candidate/indexer kernels, compression pools, routed-weight ABI and model/runtime integration"
     },
@@ -81,6 +97,9 @@
       "model_family": "glm-5.3",
       "version": "v0.5.20",
       "topology": ["TP8", "host-ACK-guarded", "Mooncake-guarded"],
+      "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
+      "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "fork_branch": "codex/unified-serving-v0520",
       "patches": [
         {"id":"0021","path":"patches/models/glm/0021-publish-glm-tool-calls-atomically-after-the-closing-marker.patch","sha256":"048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d"},
         {"id":"0030","path":"patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch","sha256":"984ec91c39d024b7ba560837c00c76bd4c0acaf2c24d0f3da42cc60709830787"}
@@ -92,6 +111,9 @@
       "model_family": "qwen3-family",
       "version": "v0.5.20",
       "topology": ["model-guarded"],
+      "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
+      "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "fork_branch": "codex/unified-serving-v0520",
       "patches": [
         {"id":"0017","path":"patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch","sha256":"fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24"},
         {"id":"0018","path":"patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch","sha256":"a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32"}

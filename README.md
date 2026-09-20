@@ -78,6 +78,16 @@ DeepSeek stores its real native/model patch closure but replay stops at
 Gemma retain real historical material or an explicit empty boundary selector.
 These states preserve actual bytes and failures without calling them accepted.
 
+The immutable Phala fork is the implementation source of truth. Each ready or
+candidate selector records its fork commit/tree, branch for navigation only,
+source parent, ordered patch IDs and hashes. The branch is movable convenience
+metadata; commit and tree are the binding identity. Patch files in this repo are
+deterministic exports for audit and external consumers, not a second maintained
+implementation. Rebase workflow: update the fork source, create a new immutable
+commit/tree, regenerate the selector exports and provenance, then replay each
+selected set from the pinned upstream base. Do not hand-edit patches to diverge
+from the fork or treat a moving branch as a release input.
+
 Runtime image releases belong to `ghcr.io/phala-network/sglang` and bind to the
 complete engine source commit. This repository does not establish image or
 production acceptance.
