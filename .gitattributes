@@ -9,3 +9,4 @@ patches/sglang/v0.5.20/kimi-k3.manifest.json -text
 tools/*.py text eol=lf
 tests/*.py text eol=lf
 .github/workflows/kimi-profile.yml text eol=lf
+docs/validation/kimi-historical/*.json -text

@@ -1,0 +1,369 @@
+{
+  "schema": "phala.kimi.r12.final-cuda.v1",
+  "utc": "2026-09-19T10:12:59.072720+00:00",
+  "pass": true,
+  "image_id": "sha256:4ede23d2335d9ff2afcc5834f4529a6c9a6768ebededebee6d0793f5a171b111",
+  "source_commit": "739b517714012a8766a7d09d473f82aabd7f4d28",
+  "cpu_sha256": "6350653174254d79fabb6e80ce1c546769b2cb0a77936067ebc0e98a4b1d83e5",
+  "prestop_sha256": "60eb9e8dc8a49988929890bbcc465b2d146e9c924cf3b5570db062104b7bc120",
+  "returncode": 0,
+  "counts": {
+    "tests": 58,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 22
+  },
+  "cases": [
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.TestChunkedWriteThroughBackupIntegration",
+      "name": "test_completed_chunk_is_backed_up_through_existing_ack_path",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.TestChunkedWriteThroughBackupIntegration",
+      "name": "test_subpage_chunk_stays_at_root_without_backup",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_load_back_swa_window_charged_at_admission",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_only_load_back_drops_on_sibling_published_span",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_only_load_back_fail_stops_on_post_check_overlap",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_only_load_back_reuses_partial_masked_full",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_only_load_back_trims_head_published_by_sibling",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_buffer_only_load_back_uses_full_behind_swa_tombstone",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_build_backup_kv_action_orders_ancestors_first",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_cache_unfinished_req",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_dec_swa_lock_only_hicache_child_on_host_treated_as_device_leaf",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_backup_continuity",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_evict_device_leaf_aborts_demote_when_backup_fails",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_evict_drops_unlocked_node_when_backup_fails",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_evict_to_host",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_evict_to_host_updates_aux_lru",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_full_temp_lock_covers_evicted_anchor_and_mirrors_on_release",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_host_leaf_eviction",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_l3_prefetch",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_l3_write_storage",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_load_back_restores_data",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_mamba_host_best_match_keeps_device_anchor",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_mamba_temp_lock_does_not_release_restored_tombstone",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_match_through_evicted_node",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_mixed_backup_evict_insert",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_partial_match_splits_evicted_backed_up_node",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_backup_window_stops_at_pending_ancestor",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_commit_load_back_rebuilds_mapping",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_finalize_anchored_on_best_match_node",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_finalize_match_result",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_host_best_match_keeps_device_anchor",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_load_back_anchored_on_best_match_node",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_load_back_min_suffix",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_load_back_rejects_foreign_pinned_window",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_load_back_uses_full_pool_capacity",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_swa_temp_lock_does_not_release_restored_tombstone",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_write_back_drop_respects_pins_then_frees_subtree",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_write_back_evict_drops_unbacked_leaf_when_host_full",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_write_back_leaf_backup",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_hicache_write_through_offloads_swa_split_leaf",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_load_back_abort_frees_unpublished_mamba_slot",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_load_back_abort_keeps_preexisting_mamba_slot",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_load_back_load_failure_frees_unpublished_mamba_slot",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_load_back_success_copies_mamba_state_into_request_slot",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_load_back_success_publishes_fresh_mamba_slot",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_mamba_branching_seqlen_disabled_under_hicache",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_mamba_branching_seqlen_uses_device_full_hit_under_hicache",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_match_prefix_best_and_device_node_without_hicache",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_prepare_load_back_mamba",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_prepare_load_back_mamba_pool_exhausted",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_prepare_load_back_skips_device_present_node",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_scheduler_hicache_aux_only_load_back_appends_full_device_indices",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_scheduler_hicache_full_mamba_init_load_back_appends_new_indices",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_scheduler_hicache_load_back_fallback_keeps_old_anchor",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_scheduler_hicache_load_back_rolls_back_mamba_on_capacity_failure",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_scheduler_hicache_load_back_rolls_back_mamba_on_load_failure",
+      "skipped": false,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_swa_backup_collector_is_shared_by_both_call_sites",
+      "skipped": true,
+      "failed": false
+    },
+    {
+      "class": "registered.unit.mem_cache.test_unified_radix_cache_unittest.Test_FULL_MAMBA_ps1",
+      "name": "test_swa_deep_tree_backup_evict_loadback_stress",
+      "skipped": true,
+      "failed": false
+    }
+  ],
+  "source_or_executable_mounts": false,
+  "worker_remained_stopped": true,
+  "scope": "final-image cache CUDA components; model serving acceptance still pending"
+}

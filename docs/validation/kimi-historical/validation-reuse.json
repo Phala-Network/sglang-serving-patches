@@ -1,0 +1,153 @@
+{
+  "schema": "phala.kimi.frozen-validation-reuse.v1",
+  "scope": "Historical component execution evidence reused only after full Git tree and changed-blob equality; not review approval or a new composed-image build/publication",
+  "official_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "frozen_source_commit": "739b517714012a8766a7d09d473f82aabd7f4d28",
+  "reorganized_source_commit": "b873d248cdfb2ac62e9bbb1d14f45925c152f053",
+  "complete_engine_git_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574",
+  "historical_image_id": "sha256:4ede23d2335d9ff2afcc5834f4529a6c9a6768ebededebee6d0793f5a171b111",
+  "base_image": "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f",
+  "receipts": {
+    "historical-r12-final-cpu.json": "6350653174254d79fabb6e80ce1c546769b2cb0a77936067ebc0e98a4b1d83e5",
+    "historical-r12-final-cuda.json": "b1b30774827e6fde5ff66674d5a6815313583f75e30f941cdd67e4f70481374a"
+  },
+  "cpu_suites": [
+    {
+      "name": "prefill-cap",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 23,
+        "failures": [],
+        "errors": [],
+        "skipped": []
+      }
+    },
+    {
+      "name": "file-lru",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 49,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "file-prefix",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 9,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "prefix-gloo",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 4,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "chunk-backup",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 4,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "mamba-depth",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 6,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "tokenizer-lifecycle",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 32,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "stream-close",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 6,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    },
+    {
+      "name": "kimi-parser",
+      "returncode": 0,
+      "qualified": true,
+      "result": {
+        "tests_run": 59,
+        "failures": [],
+        "errors": [],
+        "skipped": [],
+        "pass": true
+      }
+    }
+  ],
+  "cuda_counts": {
+    "tests": 58,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 22
+  },
+  "counting_boundary": "Suite test-method counts as recorded, not independent workload runs; skipped CUDA cases are not passes; do not combine CPU and CUDA into a de-duplicated coverage count.",
+  "source_or_executable_mounts": false,
+  "governor": {
+    "enabled": false,
+    "introduced_for_migration": false,
+    "combined_validation": "not applicable to this selected profile"
+  },
+  "runtime_dependencies": {
+    "policy": "Inherited immutable official base without added runtime dependency patches",
+    "torch": "2.13.0+cu130",
+    "flashinfer": "0.6.18",
+    "mooncake": "0.3.13",
+    "sglang_kernel": "0.4.7",
+    "external_dependency_patches": [],
+    "mooncake_reference_source": "e5598b0992cc258b06d22f24d875480e8931a28e",
+    "mooncake_wheel_commit": "unknown; reference source commit is not a verified wheel build identity"
+  },
+  "omissions": [
+    "No source PR approval claim",
+    "No new composed image or registry publication",
+    "No claim of all-model or Governor qualification",
+    "Model-level Mooncake integration remains pending; small FileStorage probes are not cold NVMe performance proof",
+    "AIPerf client patches are separate external benchmark-tool work, not SGLang implementation and not selected by this engine profile"
+  ]
+}

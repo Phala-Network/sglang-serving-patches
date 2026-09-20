@@ -1,0 +1,295 @@
+{
+  "schema": "phala.kimi.r12.final-cpu.v1",
+  "utc": "2026-09-19T10:11:37.584379+00:00",
+  "pass": true,
+  "image_id": "sha256:4ede23d2335d9ff2afcc5834f4529a6c9a6768ebededebee6d0793f5a171b111",
+  "source_commit": "739b517714012a8766a7d09d473f82aabd7f4d28",
+  "build_result_sha256": "a26db41f6ccb306402812ce6549087091a09efd9049466dae02244a9388d3d71",
+  "source_manifest_sha256": "07a107827e1119e7af752d1059e09b8ca3d1a831c4f3e12f1f1a1fae305f2851",
+  "individual_readonly_weight_mounts": 97,
+  "source_or_executable_mounts": false,
+  "installed_regressions": {
+    "schema": "phala.kimi.v0520.installed-source-mode.v1",
+    "mode": "green",
+    "pass": true,
+    "installed_only": true,
+    "source_manifest_sha256": "07a107827e1119e7af752d1059e09b8ca3d1a831c4f3e12f1f1a1fae305f2851",
+    "checked_files": [
+      "python/sglang/srt/arg_groups/cuda_graph_hook.py",
+      "python/sglang/srt/arg_groups/fields/exec_.py",
+      "python/sglang/srt/entrypoints/openai/serving_chat.py",
+      "python/sglang/srt/managers/cache_controller.py",
+      "python/sglang/srt/managers/schedule_batch.py",
+      "python/sglang/srt/managers/scheduler_components/dp_attn.py",
+      "python/sglang/srt/managers/tokenizer_manager.py",
+      "python/sglang/srt/mem_cache/hicache_storage.py",
+      "python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py",
+      "python/sglang/srt/mem_cache/unified_radix_cache.py",
+      "python/sglang/srt/model_executor/cuda_graph_config.py",
+      "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py",
+      "test/manual/phala/test_prefill_seq_cap_v0520.py",
+      "test/registered/unit/entrypoints/openai/test_serving_chat_stream_close.py",
+      "test/registered/unit/managers/test_mamba_checkpoint_depth.py",
+      "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py",
+      "test/registered/unit/mem_cache/test_hicache_file_lru_unit.py",
+      "test/registered/unit/mem_cache/test_hicache_file_prefix.py",
+      "test/registered/unit/mem_cache/test_hicache_prefix_sync.py",
+      "test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py",
+      "test/registered/unit/parser/test_kimik3_reasoning_parser.py"
+    ],
+    "suites": [
+      {
+        "name": "prefill-cap",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/sgl-workspace/sglang/test/manual/phala/test_prefill_seq_cap_v0520.py",
+          "--suite",
+          "green",
+          "--manifest",
+          "/tmp/final-inputs/cap-manifest.json",
+          "--summary",
+          "/final-output/green-prefill-cap.json"
+        ],
+        "result": {
+          "suite": "green",
+          "scope": "v0.5.20 installed imports plus real msgspec CLI/graph resolution/namespace and CPU replay eligibility/local DP vote; no model/GPU init or collectives",
+          "source_head_before_overlay": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+          "installed_hashes": {
+            "python/sglang/srt/arg_groups/fields/exec_.py": "587de55f98f00b6e1fa2454925311098dc47cfb7ae4844b79cdfb908b42ac7b5",
+            "python/sglang/srt/arg_groups/cuda_graph_hook.py": "906a26aa8e9bdf3ff5726f6e588c4c2c34044262f82c8d2b89a2f4548ac769e7",
+            "python/sglang/srt/model_executor/cuda_graph_config.py": "644b38eb368ab26e90a05ced5751d84dc812a0f03241a80596f37c4ec530b967",
+            "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py": "0ea9cbfb448db81fe9a46622bd0a67b3c6b287059a3ccc948cf7c5a94453b655",
+            "python/sglang/srt/managers/scheduler_components/dp_attn.py": "89d52aace555ebbde518022bd669fd357a8f64275329dd4f251cf27424e59dbf"
+          },
+          "guarded_overlay": false,
+          "import_origins": {
+            "ServerArgs": "/sgl-workspace/sglang/python/sglang/srt/server_args.py",
+            "PrefillCudaGraphRunner": "/sgl-workspace/sglang/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py",
+            "ScheduleBatch": "/sgl-workspace/sglang/python/sglang/srt/managers/schedule_batch.py",
+            "ForwardBatch": "/sgl-workspace/sglang/python/sglang/srt/model_executor/forward_batch_info.py",
+            "dp_vote": "/sgl-workspace/sglang/python/sglang/srt/managers/scheduler_components/dp_attn.py",
+            "exec_graph_fields": "/sgl-workspace/sglang/python/sglang/srt/arg_groups/fields/exec_.py"
+          },
+          "torch_version": "2.13.0+cu130",
+          "tests_run": 23,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "exit_code": 0
+        },
+        "qualified": true
+      },
+      {
+        "name": "file-lru",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/mem_cache/test_hicache_file_lru_unit.py",
+          "--result",
+          "/final-output/green-file-lru.json"
+        ],
+        "result": {
+          "tests_run": 49,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "file-prefix",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/mem_cache/test_hicache_file_prefix.py",
+          "--result",
+          "/final-output/green-file-prefix.json"
+        ],
+        "result": {
+          "tests_run": 9,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "prefix-gloo",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/mem_cache/test_hicache_prefix_sync.py",
+          "--result",
+          "/final-output/green-prefix-gloo.json"
+        ],
+        "result": {
+          "tests_run": 4,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "chunk-backup",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py",
+          "--result",
+          "/final-output/green-chunk-backup.json",
+          "--case",
+          "TestChunkedWriteThroughBackupDecision"
+        ],
+        "result": {
+          "tests_run": 4,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "mamba-depth",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/managers/test_mamba_checkpoint_depth.py",
+          "--result",
+          "/final-output/green-mamba-depth.json"
+        ],
+        "result": {
+          "tests_run": 6,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "tokenizer-lifecycle",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py",
+          "--result",
+          "/final-output/green-tokenizer-lifecycle.json"
+        ],
+        "result": {
+          "tests_run": 32,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "stream-close",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "suite",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/entrypoints/openai/test_serving_chat_stream_close.py",
+          "--result",
+          "/final-output/green-stream-close.json"
+        ],
+        "result": {
+          "tests_run": 6,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "cuda_initialized": false,
+          "pass": true
+        },
+        "qualified": true
+      },
+      {
+        "name": "kimi-parser",
+        "returncode": 0,
+        "command": [
+          "/opt/sglang/bin/python3",
+          "/tmp/final-inputs/source_gate_inner.py",
+          "pytest",
+          "--file",
+          "/sgl-workspace/sglang/test/registered/unit/parser/test_kimik3_reasoning_parser.py",
+          "--result",
+          "/final-output/green-kimi-parser.json"
+        ],
+        "result": {
+          "tests_run": 59,
+          "failures": [],
+          "errors": [],
+          "skipped": [],
+          "pass": true,
+          "junit_xml": "/final-output/green-kimi-parser.xml"
+        },
+        "qualified": true
+      }
+    ]
+  },
+  "checks": {
+    "installed-hashes": {
+      "returncode": 0,
+      "log_sha256": "2b7154dec49a7bdf07f660b04f6257b50b1768b98f81b6bca112080a996ad97e"
+    },
+    "hf-help": {
+      "returncode": 0,
+      "log_sha256": "6f1aee09ee88101393e1d3d65157d8ab85cfac04a57e697c79f42e51d3ca9e46"
+    },
+    "hf-download-help": {
+      "returncode": 0,
+      "log_sha256": "552dd2b042b2ace237bb38693a6a571af4543ad30bec9e24a1ebe6ecb8370577"
+    },
+    "curl": {
+      "returncode": 0,
+      "log_sha256": "12c60ec704630abfa480967dd2432609d086ebf360cdd9094db7d113aa3bcecf"
+    },
+    "model-code-readonly": {
+      "returncode": 0,
+      "log_sha256": "8e7d62476613fd31406b213b76ddcacb06d66cb14dc54419de8d85eb05760950"
+    },
+    "installed-regressions": {
+      "returncode": 0,
+      "log_sha256": "ec04b57d566e0ed880bc76cdb8049aa1d76c702bbf2e4ad9f027aca79fb521b8"
+    },
+    "installed-hashes-after": {
+      "returncode": 0,
+      "log_sha256": "2b7154dec49a7bdf07f660b04f6257b50b1768b98f81b6bca112080a996ad97e"
+    }
+  },
+  "scope": "final immutable image CPU/package/model-code checks; GPU/serving acceptance pending"
+}
