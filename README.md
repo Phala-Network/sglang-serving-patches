@@ -38,6 +38,13 @@ records every original commit, parent, patch hash, replay predecessor and
 intermediate tree. Replay ordering is not a claim of semantic dependence between
 unrelated repairs. See [VALIDATION.md](VALIDATION.md) for scope and limitations.
 
+The [model maintenance coverage audit](docs/COVERAGE.md), with
+[110 source records](docs/COVERAGE.json), distinguishes fixes actually present
+in this frozen engine from upstream-covered changes, known residuals and pending
+semantic migration. A complete checkout does not mean every historical model
+fix is included. The next candidate is isolated and is not substituted for the
+engine commit or patch collection recorded above.
+
 Regenerate using the small [export script](scripts/export.py), then verify:
 
 ```sh
