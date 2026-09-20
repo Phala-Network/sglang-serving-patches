@@ -70,6 +70,14 @@ including real historical Nemotron/Muse files and the blocked DeepSeek native
 closure. A directory containing historical patches does not make them selected
 or replayable against v0.5.20.
 
+The current selector expansion is recorded in `selector-verification.json`:
+Kimi has six v0.5.20 candidate patches and Muse has one native v0.5.20 candidate
+that replay cleanly against the frozen 428 base after line-ending normalization.
+DeepSeek stores its real native/model patch closure but replay stops at
+`dsv41-0011-chat-encoding.patch`, so its selector is blocked. Nemotron and
+Gemma retain real historical material or an explicit empty boundary selector.
+These states preserve actual bytes and failures without calling them accepted.
+
 Runtime image releases belong to `ghcr.io/phala-network/sglang` and bind to the
 complete engine source commit. This repository does not establish image or
 production acceptance.
