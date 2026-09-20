@@ -2,7 +2,7 @@
 
 Upstream: `sgl-project/sglang@94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
 [manifest.json](manifest.json) freezes the ordered patch hashes. Profiles explicitly select common repairs first,
-then selected model packs. Common is not an implicit apply-all default. Nothing in this repository requires
+then selected model packs and record their complete pure-serving `expected_tree`. Common is not an implicit apply-all default. Nothing in this repository requires
 installing or enabling Governor.
 
 | Directory | Scope |

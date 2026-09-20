@@ -2,7 +2,7 @@
 
 Official SGLang v0.5.20: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e.
 
-[Full serving source compare](https://github.com/Phala-Network/sglang/compare/94602c9c2b7cbdb8efd5c52802dac6a1c180089e...514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836). Governor hooks are not part of that serving source.
+[Full serving source compare](https://github.com/Phala-Network/sglang/compare/94602c9c2b7cbdb8efd5c52802dac6a1c180089e...3c76218a6f3c9621f0cc08af1bf325c7633429ce). Governor hooks are not part of that serving source.
 
 | Repair | Source PR (draft) |
 | --- | --- |
@@ -24,13 +24,17 @@ Official SGLang v0.5.20: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e.
 | 0016-watchdog-recovery | [Source diff](https://github.com/Phala-Network/sglang/pull/17) |
 | 0017-qwen3_5-template | [Source diff](https://github.com/Phala-Network/sglang/pull/18) |
 | 0018-qwen3_coder-parser | [Source diff](https://github.com/Phala-Network/sglang/pull/19) |
+| 0019-schema-reference-isolation | [Source diff](https://github.com/Phala-Network/sglang/pull/41) |
+| 0020-allowed-tools-output | [Source diff](https://github.com/Phala-Network/sglang/pull/42) |
 
-[Explicit model profile](../profiles/v0.5.20/qwen3.8-27b.yaml) selects all 18 repair patches by hash and order. The manifest records exact parent and source commits; the PR stack makes each problem visible as an original-file diff. Draft status is not approval.
+[Explicit model profile](../profiles/v0.5.20/qwen3.8-27b.yaml) selects 20 repair patches by hash and order. The manifest records exact parent and source commits; the PR stack makes each problem visible as an original-file diff. Draft status is not approval.
 
 [Git verification](validation/serving-git-export-check-r1.json) proves every exported stage reconstructs the complete source commit tree. [No-Governor CPU results](validation/common-no-governor-cpu-r1.json) cover 24 groups with 312 JUnit cases including subtests, zero skips. Four Qwen model groups passed separately; a Governor routing test with a hardcoded source path was corrected and rerun, with the failed evidence preserved.
 
-The historical 59-file source behavior remains unchanged; the source chain additionally places the already-tested generic correlation regression in SGLang. New composed-image qualification and e4 deployment remain pending. Strict dynamic-platform and model/launch-measurement gaps remain disclosed.
+The initial split preserved the historical 59 files; the current candidate additionally repairs external schema resolution and out-of-subset tool emission. These intentional behavior changes are covered by new red/green tests, not by the older equivalence claim. New composed-image qualification and e4 deployment remain pending. Strict dynamic-platform and model/launch-measurement gaps remain disclosed.
 
 Runtime image publication target: ghcr.io/phala-network/sglang, associated with Phala-Network/sglang. No new immutable image is claimed by this review index.
 
-[Complete engine compare including Governor](https://github.com/Phala-Network/sglang/compare/94602c9c2b7cbdb8efd5c52802dac6a1c180089e...cb88b5675f50a26090407f2dc155de8bdd0e42fd) is a generated, noneditable review view. Governor source is 42f3ac9d25faa72d6dba66969eaec23097f4e2bd; composed engine tree is d2b5d9abb5487f644b7a71e18b9caa9cce9b71d1. All 59 historical file blobs match exactly; the only additional source file is the generic correlation regression.
+[Complete engine compare including Governor](https://github.com/Phala-Network/sglang/compare/94602c9c2b7cbdb8efd5c52802dac6a1c180089e...828500b641b57a3e67508aad327397657f8be1f9) is a generated, noneditable review view. The generated view records Governor hook source f9706ed838d472cb20eb468730ef59fbc85f85b8; the runtime Governor component version is independently pinned in the deployment lock; composed engine tree is 0d1590277a2bd6f2f7233b51e7629d0b0988e286. The current engine includes both review fixes; original equivalence evidence remains historical.
+
+The reusable Git-only verifier passed nine boundary tests and the actual 20-patch profile, producing pure serving tree 56f78eb969e50a2eccd8e295d1c6535c7001c00b. The two fixes together passed 40 tests plus 24 subtests; the separate red/green cases and the rejected initial fixture are retained in evidence. CI does not treat these Git checks as human review approval.

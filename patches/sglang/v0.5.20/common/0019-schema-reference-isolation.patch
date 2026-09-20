@@ -1,0 +1,177 @@
+diff --git a/python/sglang/srt/function_call/utils.py b/python/sglang/srt/function_call/utils.py
+index 3b4e94daa85069289a9feb72d4c76d77f41c9dc8..98e7b158a6f43726487eb1c6cfc7e121696db01b 100644
+--- a/python/sglang/srt/function_call/utils.py
++++ b/python/sglang/srt/function_call/utils.py
+@@ -13,11 +13,26 @@ import orjson
+ import partial_json_parser
+ from jsonschema import Draft202012Validator
+ from partial_json_parser.core.options import Allow
++from referencing import Registry
++from referencing.exceptions import NoSuchResource
+ 
+ from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++def _deny_schema_retrieval(uri: str):
++    """Keep client-provided tool schemas from resolving remote resources."""
++    raise NoSuchResource(ref=uri)
++
++
++# ``jsonschema`` otherwise uses a registry that retrieves unknown references.
++# An explicit denying registry still crawls this schema's local ``$defs`` and
++# embedded ``$id`` resources, while unresolved local or remote references use
++# the existing coercion fallback below.
++_NO_NETWORK_SCHEMA_REGISTRY = Registry(retrieve=_deny_schema_retrieval)
++
++
+ _STANDARD_JSON_SCHEMA_TYPES = {
+     "null",
+     "boolean",
+@@ -416,17 +431,6 @@ def _is_finite_json_value(value: Any) -> bool:
+     return value is None or isinstance(value, (str, bool, int))
+ 
+ 
+-def _has_external_schema_ref(schema: Any) -> bool:
+-    if isinstance(schema, dict):
+-        ref = schema.get("$ref")
+-        if isinstance(ref, str) and not ref.startswith("#"):
+-            return True
+-        return any(_has_external_schema_ref(value) for value in schema.values())
+-    if isinstance(schema, list):
+-        return any(_has_external_schema_ref(value) for value in schema)
+-    return False
+-
+-
+ def _schema_value_candidates(raw_value: str, schema: dict) -> List[Any]:
+     """Build conservative JSON-compatible candidates from raw argument text."""
+     stripped = raw_value.strip()
+@@ -535,12 +539,11 @@ def _schema_value_candidates(raw_value: str, schema: dict) -> List[Any]:
+ 
+ def coerce_argument_to_schema(raw_value: str, schema: dict) -> Tuple[Any, bool]:
+     """Return a schema-valid candidate without inventing values from the schema."""
+-    if _has_external_schema_ref(schema):
+-        return raw_value, False
+-
+     try:
+         Draft202012Validator.check_schema(schema)
+-        validator = Draft202012Validator(schema)
++        validator = Draft202012Validator(
++            schema, registry=_NO_NETWORK_SCHEMA_REGISTRY
++        )
+         valid_candidates = [
+             candidate
+             for candidate in _schema_value_candidates(raw_value, schema)
+diff --git a/test/registered/unit/function_call/test_schema_reference_isolation.py b/test/registered/unit/function_call/test_schema_reference_isolation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5edadecd3e97fd1fcecc63d61116bdb613e79f7e
+--- /dev/null
++++ b/test/registered/unit/function_call/test_schema_reference_isolation.py
+@@ -0,0 +1,106 @@
++import urllib.request
++
++import jsonschema.validators
++import pytest
++from jsonschema import Draft202012Validator
++
++from sglang.srt.function_call.utils import coerce_argument_to_schema
++
++
++def _install_urlopen_guard(monkeypatch):
++    urlopen_calls = []
++
++    def unexpected_urlopen(request, *args, **kwargs):
++        urlopen_calls.append(getattr(request, "full_url", request))
++        raise AssertionError("tool schema validation must not retrieve URLs")
++
++    monkeypatch.setattr(urllib.request, "urlopen", unexpected_urlopen)
++    monkeypatch.setattr(
++        jsonschema.validators, "urlopen", unexpected_urlopen, raising=False
++    )
++    return urlopen_calls
++
++
++def _assert_default_validator_attempts_urlopen(schema, expected_uri, urlopen_calls):
++    with pytest.raises(Exception):
++        Draft202012Validator(schema).is_valid("7")
++    assert urlopen_calls == [expected_uri]
++    urlopen_calls.clear()
++
++
++@pytest.mark.parametrize(
++    ("schema", "expected_uri"),
++    [
++        (
++            {"$ref": "https://schema.example/static.json"},
++            "https://schema.example/static.json",
++        ),
++        (
++            {"$dynamicRef": "https://schema.example/direct.json"},
++            "https://schema.example/direct.json",
++        ),
++        (
++            {
++                "allOf": [
++                    {"$dynamicRef": "https://schema.example/nested.json"},
++                ],
++            },
++            "https://schema.example/nested.json",
++        ),
++        (
++            {
++                "$id": "https://schema.example/root.json",
++                "$defs": {
++                    "nested": {
++                        "$id": "nested.json",
++                        "$dynamicRef": "remote.json",
++                    },
++                },
++                "$ref": "#/$defs/nested",
++            },
++            "https://schema.example/remote.json",
++        ),
++    ],
++    ids=["static-ref", "dynamic-ref", "nested-dynamic-ref", "id-rebased"],
++)
++def test_external_references_fall_back_without_urlopen(
++    monkeypatch, schema, expected_uri
++):
++    urlopen_calls = _install_urlopen_guard(monkeypatch)
++
++    _assert_default_validator_attempts_urlopen(schema, expected_uri, urlopen_calls)
++
++    assert coerce_argument_to_schema("7", schema) == ("7", False)
++    assert urlopen_calls == []
++
++
++@pytest.mark.parametrize(
++    "schema",
++    [
++        {
++            "$defs": {"integer": {"type": "integer"}},
++            "$ref": "#/$defs/integer",
++        },
++        {
++            "$defs": {"integer": {"type": "integer"}},
++            "$dynamicRef": "#/$defs/integer",
++        },
++        {
++            "$id": "https://schema.example/root.json",
++            "$defs": {
++                "argument": {
++                    "$id": "arguments/value.json",
++                    "$defs": {"integer": {"type": "integer"}},
++                    "$ref": "#/$defs/integer",
++                },
++            },
++            "$ref": "arguments/value.json",
++        },
++    ],
++    ids=["local-defs", "local-dynamic-ref", "local-id-rebased"],
++)
++def test_local_references_coerce_without_retrieval(monkeypatch, schema):
++    urlopen_calls = _install_urlopen_guard(monkeypatch)
++
++    assert coerce_argument_to_schema("7", schema) == (7, True)
++    assert urlopen_calls == []

@@ -11,6 +11,11 @@ here focuses on applicability, model profile, order/dependencies and evidence;
 CI must compare exported bytes with source and reproduce the selected final tree.
 A hash field alone is not provenance verification.
 
+Each explicit profile records its pure-serving `expected_tree`; optional
+Governor composition is a separate later input and has its own resulting-tree
+check. The Git verifier reports source-export proof only and does not treat a
+review PR URL or draft/open/merged state as approval.
+
 common/ means semantic scope, not automatically selected or universally tested.
 A profile explicitly selects every patch. Family packs are shared once when
 their applicability is stated; model-specific behavior never becomes a default

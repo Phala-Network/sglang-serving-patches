@@ -2,6 +2,7 @@
   "schema": "phala.sglang-serving-profile.v1",
   "id": "qwen3.8-27b",
   "status": "extraction_candidate",
+  "expected_tree": "56f78eb969e50a2eccd8e295d1c6535c7001c00b",
   "upstream": {
     "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
     "repository": "https://github.com/sgl-project/sglang",
@@ -16,112 +17,124 @@
   },
   "patches": [
     {
-      "category": "common",
-      "path": "common/0001-control-correlation.patch",
       "sha256": "5d4d3db08a006c9957dd18641260d3ca5f315e2cac5a45229c73dc2f71ab68b6",
-      "id": "0001-control-correlation"
+      "category": "common",
+      "id": "0001-control-correlation",
+      "path": "common/0001-control-correlation.patch"
     },
     {
-      "category": "common",
-      "path": "common/0002-request-cleanup.patch",
       "sha256": "a75b8fc3736ded7241cc3a9586e6f88405fb3ec7db9c4eff0a4c28e9aa03998a",
-      "id": "0002-request-cleanup"
+      "category": "common",
+      "id": "0002-request-cleanup",
+      "path": "common/0002-request-cleanup.patch"
     },
     {
-      "category": "common",
-      "path": "common/0003-worker-extend-metadata.patch",
       "sha256": "f75021294ba946755c6b3942f9b53b2e28645ff79736d28338b44029b2ee4e1d",
-      "id": "0003-worker-extend-metadata"
+      "category": "common",
+      "id": "0003-worker-extend-metadata",
+      "path": "common/0003-worker-extend-metadata.patch"
     },
     {
-      "category": "common",
-      "path": "common/0004-identity-grammar-mask.patch",
       "sha256": "66a4d3412e6e1c37c68f1d308a765d4c7b954a9f5dd02cb8e3f2e51e658283f8",
-      "id": "0004-identity-grammar-mask"
+      "category": "common",
+      "id": "0004-identity-grammar-mask",
+      "path": "common/0004-identity-grammar-mask.patch"
     },
     {
-      "category": "common",
-      "path": "common/0005-lifecycle-observation.patch",
       "sha256": "c9071d42523bfa8e099b7728774702fb4c9a091c758ed7a1c0a4268b47a3876f",
-      "id": "0005-lifecycle-observation"
+      "category": "common",
+      "id": "0005-lifecycle-observation",
+      "path": "common/0005-lifecycle-observation.patch"
     },
     {
-      "category": "common",
-      "path": "common/0006-parallel-sampling-owners.patch",
       "sha256": "4fc36f4ccf9e191e7fa39d3c28f2f8936826e109e32ad60d510610a3d7af8c8b",
-      "id": "0006-parallel-sampling-owners"
+      "category": "common",
+      "id": "0006-parallel-sampling-owners",
+      "path": "common/0006-parallel-sampling-owners.patch"
     },
     {
-      "category": "common",
-      "path": "common/0007-token-auth-redaction.patch",
       "sha256": "9c7c649b3c9109f0b71d0a6316ee50225fad989b5848f73d794931837cb1e30c",
-      "id": "0007-token-auth-redaction"
+      "category": "common",
+      "id": "0007-token-auth-redaction",
+      "path": "common/0007-token-auth-redaction.patch"
     },
     {
-      "category": "common",
-      "path": "common/0008-schema-normalization.patch",
       "sha256": "806b1891459e9f3d4ab6a895a31927280dc0933307290dfb967e75baa12b0102",
-      "id": "0008-schema-normalization"
+      "category": "common",
+      "id": "0008-schema-normalization",
+      "path": "common/0008-schema-normalization.patch"
     },
     {
-      "category": "common",
-      "path": "common/0009-schema-argument-coercion.patch",
       "sha256": "ff74a3f318debca905356b0b1fd1b1f4e98a9ca7011837931917490f0d973b6d",
-      "id": "0009-schema-argument-coercion"
+      "category": "common",
+      "id": "0009-schema-argument-coercion",
+      "path": "common/0009-schema-argument-coercion.patch"
     },
     {
-      "category": "common",
-      "path": "common/0010-xgrammar-schema-rejection.patch",
       "sha256": "e721d990f587d3a572bd07adf19b14d9816c54969ffe4396a8f08376a0c46af1",
-      "id": "0010-xgrammar-schema-rejection"
+      "category": "common",
+      "id": "0010-xgrammar-schema-rejection",
+      "path": "common/0010-xgrammar-schema-rejection.patch"
     },
     {
-      "category": "common",
-      "path": "common/0011-allowed-tool-subsets.patch",
       "sha256": "da197a3316e17df3fc3165e2a41d7fd8a6e8e43e37b59fea85cd1a805464fe4a",
-      "id": "0011-allowed-tool-subsets"
+      "category": "common",
+      "id": "0011-allowed-tool-subsets",
+      "path": "common/0011-allowed-tool-subsets.patch"
     },
     {
-      "category": "common",
-      "path": "common/0012-reasoning-visibility-bounds.patch",
       "sha256": "179901d4b4cae66f7959ed7bfab74df6a3f6045e5142367a33279aa4416f03d9",
-      "id": "0012-reasoning-visibility-bounds"
+      "category": "common",
+      "id": "0012-reasoning-visibility-bounds",
+      "path": "common/0012-reasoning-visibility-bounds.patch"
     },
     {
-      "category": "common",
-      "path": "common/0013-orphan-tool-deltas.patch",
       "sha256": "4e3e4e0529cd956c713fb4cd23fcfc1172c0c3d4a237b7d0f478d36b2c2fec6d",
-      "id": "0013-orphan-tool-deltas"
+      "category": "common",
+      "id": "0013-orphan-tool-deltas",
+      "path": "common/0013-orphan-tool-deltas.patch"
     },
     {
-      "category": "common",
-      "path": "common/0014-pre-mm-token-budget.patch",
       "sha256": "fa23ee162826a8b5419f8cfdaf470a679b9d270c6c23b9a21ec5e16f71ecf659",
-      "id": "0014-pre-mm-token-budget"
+      "category": "common",
+      "id": "0014-pre-mm-token-budget",
+      "path": "common/0014-pre-mm-token-budget.patch"
     },
     {
-      "category": "common",
-      "path": "common/0015-image-input-errors.patch",
       "sha256": "e96cb465a237eee934f2038a219318bfe0f7c2d1e6d37c0e154c82b214faa2d3",
-      "id": "0015-image-input-errors"
-    },
-    {
       "category": "common",
-      "path": "common/0016-watchdog-recovery.patch",
+      "id": "0015-image-input-errors",
+      "path": "common/0015-image-input-errors.patch"
+    },
+    {
       "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
-      "id": "0016-watchdog-recovery"
+      "category": "common",
+      "id": "0016-watchdog-recovery",
+      "path": "common/0016-watchdog-recovery.patch"
     },
     {
-      "category": "model",
-      "path": "models/qwen3_5/0017-qwen3_5-template.patch",
+      "sha256": "a1a53212c7cda28f764fb1a235c8011e7a297689baa726e9f3d8e2a377ec4798",
+      "category": "common",
+      "id": "0019-schema-reference-isolation",
+      "path": "common/0019-schema-reference-isolation.patch"
+    },
+    {
+      "sha256": "4848970e341c403b2577861c1a893c2073ddc16972d5d50a13e2bdbf6352d043",
+      "category": "common",
+      "id": "0020-allowed-tools-output",
+      "path": "common/0020-allowed-tools-output.patch"
+    },
+    {
       "sha256": "fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24",
-      "id": "0017-qwen3_5-template"
+      "category": "model",
+      "id": "0017-qwen3_5-template",
+      "path": "models/qwen3_5/0017-qwen3_5-template.patch"
     },
     {
-      "category": "model",
-      "path": "models/qwen3_coder/0018-qwen3_coder-parser.patch",
       "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
-      "id": "0018-qwen3_coder-parser"
+      "category": "model",
+      "id": "0018-qwen3_coder-parser",
+      "path": "models/qwen3_coder/0018-qwen3_coder-parser.patch"
     }
   ]
 }
