@@ -1,0 +1,153 @@
+{
+  "prior_remote_verifier": "r1 local clone failed before patch verification, preserved; independent complete Git worktree/index verification used instead",
+  "checks": [
+    {
+      "id": "0001-control-correlation",
+      "patch_sha256": "5d4d3db08a006c9957dd18641260d3ca5f315e2cac5a45229c73dc2f71ab68b6",
+      "source_commit": "fbd7f3c617461b0360f31fa519b3910be642377f",
+      "tree": "381658d756437673cc6fdd7f78f91dd4e856ea48",
+      "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0002-request-cleanup",
+      "patch_sha256": "a75b8fc3736ded7241cc3a9586e6f88405fb3ec7db9c4eff0a4c28e9aa03998a",
+      "source_commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+      "tree": "de63aa043e75cdf5301ea4734b0d8e5a963d7fb7",
+      "parent": "fbd7f3c617461b0360f31fa519b3910be642377f",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0003-worker-extend-metadata",
+      "patch_sha256": "f75021294ba946755c6b3942f9b53b2e28645ff79736d28338b44029b2ee4e1d",
+      "source_commit": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+      "tree": "aacd99168460121a5283ec180c0b94ac93f8d9a7",
+      "parent": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0004-identity-grammar-mask",
+      "patch_sha256": "66a4d3412e6e1c37c68f1d308a765d4c7b954a9f5dd02cb8e3f2e51e658283f8",
+      "source_commit": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+      "tree": "86920eaf65af53a88dbfe6537c67c8801aa5c8da",
+      "parent": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0005-lifecycle-observation",
+      "patch_sha256": "c9071d42523bfa8e099b7728774702fb4c9a091c758ed7a1c0a4268b47a3876f",
+      "source_commit": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+      "tree": "30acf7abadc65ceea9ccd12f608c3bab25d15d70",
+      "parent": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0006-parallel-sampling-owners",
+      "patch_sha256": "4fc36f4ccf9e191e7fa39d3c28f2f8936826e109e32ad60d510610a3d7af8c8b",
+      "source_commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+      "tree": "69f2a8125142cd620a4d1497d032c10a262cedea",
+      "parent": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0007-token-auth-redaction",
+      "patch_sha256": "9c7c649b3c9109f0b71d0a6316ee50225fad989b5848f73d794931837cb1e30c",
+      "source_commit": "0750682477e0c0aebcc055fc748a3b682b172af7",
+      "tree": "3824dc35d875b322f8c7b772ef7b0d2078ae7d0c",
+      "parent": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0008-schema-normalization",
+      "patch_sha256": "806b1891459e9f3d4ab6a895a31927280dc0933307290dfb967e75baa12b0102",
+      "source_commit": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+      "tree": "ba9a89a0242605ccdbfb24a5975e32b5b2eafc6a",
+      "parent": "0750682477e0c0aebcc055fc748a3b682b172af7",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0009-schema-argument-coercion",
+      "patch_sha256": "ff74a3f318debca905356b0b1fd1b1f4e98a9ca7011837931917490f0d973b6d",
+      "source_commit": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+      "tree": "172de663865db6b6ec04da0ef04ff6e4e4b7aeee",
+      "parent": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0010-xgrammar-schema-rejection",
+      "patch_sha256": "e721d990f587d3a572bd07adf19b14d9816c54969ffe4396a8f08376a0c46af1",
+      "source_commit": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+      "tree": "00e8a9232dd2759530e5a5cdea054a8aaa5ac431",
+      "parent": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0011-allowed-tool-subsets",
+      "patch_sha256": "da197a3316e17df3fc3165e2a41d7fd8a6e8e43e37b59fea85cd1a805464fe4a",
+      "source_commit": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+      "tree": "2f15078d5755ab3d4377ed18f287ab77933d85a7",
+      "parent": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0012-reasoning-visibility-bounds",
+      "patch_sha256": "179901d4b4cae66f7959ed7bfab74df6a3f6045e5142367a33279aa4416f03d9",
+      "source_commit": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+      "tree": "c6b564a308e465f58400c4682a827484f0064580",
+      "parent": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0013-orphan-tool-deltas",
+      "patch_sha256": "4e3e4e0529cd956c713fb4cd23fcfc1172c0c3d4a237b7d0f478d36b2c2fec6d",
+      "source_commit": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+      "tree": "076b5d9ede9cec8ad763b690ab0e115530c6fecd",
+      "parent": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0014-pre-mm-token-budget",
+      "patch_sha256": "fa23ee162826a8b5419f8cfdaf470a679b9d270c6c23b9a21ec5e16f71ecf659",
+      "source_commit": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+      "tree": "656f849d54241ce3e2f96cb43da1842a2450a1f6",
+      "parent": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0015-image-input-errors",
+      "patch_sha256": "e96cb465a237eee934f2038a219318bfe0f7c2d1e6d37c0e154c82b214faa2d3",
+      "source_commit": "6a673233e9f7bac86b130977a967bdb77926239a",
+      "tree": "b37866f4f2b71341673832663a8e10420d97db3a",
+      "parent": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0016-watchdog-recovery",
+      "patch_sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
+      "source_commit": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+      "tree": "7d4989f82cd82dd1ee9b8c119b1e688d2248dfbe",
+      "parent": "6a673233e9f7bac86b130977a967bdb77926239a",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0017-qwen3_5-template",
+      "patch_sha256": "fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24",
+      "source_commit": "348b3066f561fcf9748bae2659327107f1002d18",
+      "tree": "940f557385b3fd78a6439b82366697b0b194725f",
+      "parent": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+      "applied_full_git_tree_matches_source_commit": true
+    },
+    {
+      "id": "0018-qwen3_coder-parser",
+      "patch_sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
+      "source_commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+      "tree": "e80c25bf69a989d3d41501bf20b5afea8ecaab48",
+      "parent": "348b3066f561fcf9748bae2659327107f1002d18",
+      "applied_full_git_tree_matches_source_commit": true
+    }
+  ],
+  "scope": "Windows Git/index/archive integrity only; source execution regressions run separately on fixed remote CPU image",
+  "final_tree": "e80c25bf69a989d3d41501bf20b5afea8ecaab48",
+  "passed": true,
+  "schema": "phala.serving-git-export-check.v1"
+}

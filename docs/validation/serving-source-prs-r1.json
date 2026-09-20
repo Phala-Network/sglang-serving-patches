@@ -1,0 +1,164 @@
+[
+  {
+    "draft": true,
+    "commit": "fbd7f3c617461b0360f31fa519b3910be642377f",
+    "id": "0001-control-correlation",
+    "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+    "url": "https://github.com/Phala-Network/sglang/pull/2",
+    "head": "codex/serving-v0520-0001-control-correlation-r1",
+    "base": "codex/serving-v0520-upstream-r1"
+  },
+  {
+    "draft": true,
+    "commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+    "id": "0002-request-cleanup",
+    "parent": "fbd7f3c617461b0360f31fa519b3910be642377f",
+    "url": "https://github.com/Phala-Network/sglang/pull/3",
+    "head": "codex/serving-v0520-0002-request-cleanup-r1",
+    "base": "codex/serving-v0520-0001-control-correlation-r1"
+  },
+  {
+    "draft": true,
+    "commit": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+    "id": "0003-worker-extend-metadata",
+    "parent": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+    "url": "https://github.com/Phala-Network/sglang/pull/4",
+    "head": "codex/serving-v0520-0003-worker-extend-metadata-r1",
+    "base": "codex/serving-v0520-0002-request-cleanup-r1"
+  },
+  {
+    "draft": true,
+    "commit": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+    "id": "0004-identity-grammar-mask",
+    "parent": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+    "url": "https://github.com/Phala-Network/sglang/pull/5",
+    "head": "codex/serving-v0520-0004-identity-grammar-mask-r1",
+    "base": "codex/serving-v0520-0003-worker-extend-metadata-r1"
+  },
+  {
+    "draft": true,
+    "commit": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+    "id": "0005-lifecycle-observation",
+    "parent": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+    "url": "https://github.com/Phala-Network/sglang/pull/6",
+    "head": "codex/serving-v0520-0005-lifecycle-observation-r1",
+    "base": "codex/serving-v0520-0004-identity-grammar-mask-r1"
+  },
+  {
+    "draft": true,
+    "commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+    "id": "0006-parallel-sampling-owners",
+    "parent": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+    "url": "https://github.com/Phala-Network/sglang/pull/7",
+    "head": "codex/serving-v0520-0006-parallel-sampling-owners-r1",
+    "base": "codex/serving-v0520-0005-lifecycle-observation-r1"
+  },
+  {
+    "draft": true,
+    "commit": "0750682477e0c0aebcc055fc748a3b682b172af7",
+    "id": "0007-token-auth-redaction",
+    "parent": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+    "url": "https://github.com/Phala-Network/sglang/pull/8",
+    "head": "codex/serving-v0520-0007-token-auth-redaction-r1",
+    "base": "codex/serving-v0520-0006-parallel-sampling-owners-r1"
+  },
+  {
+    "draft": true,
+    "commit": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+    "id": "0008-schema-normalization",
+    "parent": "0750682477e0c0aebcc055fc748a3b682b172af7",
+    "url": "https://github.com/Phala-Network/sglang/pull/9",
+    "head": "codex/serving-v0520-0008-schema-normalization-r1",
+    "base": "codex/serving-v0520-0007-token-auth-redaction-r1"
+  },
+  {
+    "draft": true,
+    "commit": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+    "id": "0009-schema-argument-coercion",
+    "parent": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+    "url": "https://github.com/Phala-Network/sglang/pull/10",
+    "head": "codex/serving-v0520-0009-schema-argument-coercion-r1",
+    "base": "codex/serving-v0520-0008-schema-normalization-r1"
+  },
+  {
+    "draft": true,
+    "commit": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+    "id": "0010-xgrammar-schema-rejection",
+    "parent": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+    "url": "https://github.com/Phala-Network/sglang/pull/11",
+    "head": "codex/serving-v0520-0010-xgrammar-schema-rejection-r1",
+    "base": "codex/serving-v0520-0009-schema-argument-coercion-r1"
+  },
+  {
+    "draft": true,
+    "commit": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+    "id": "0011-allowed-tool-subsets",
+    "parent": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+    "url": "https://github.com/Phala-Network/sglang/pull/12",
+    "head": "codex/serving-v0520-0011-allowed-tool-subsets-r1",
+    "base": "codex/serving-v0520-0010-xgrammar-schema-rejection-r1"
+  },
+  {
+    "draft": true,
+    "commit": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+    "id": "0012-reasoning-visibility-bounds",
+    "parent": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+    "url": "https://github.com/Phala-Network/sglang/pull/13",
+    "head": "codex/serving-v0520-0012-reasoning-visibility-bounds-r1",
+    "base": "codex/serving-v0520-0011-allowed-tool-subsets-r1"
+  },
+  {
+    "draft": true,
+    "commit": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+    "id": "0013-orphan-tool-deltas",
+    "parent": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+    "url": "https://github.com/Phala-Network/sglang/pull/14",
+    "head": "codex/serving-v0520-0013-orphan-tool-deltas-r1",
+    "base": "codex/serving-v0520-0012-reasoning-visibility-bounds-r1"
+  },
+  {
+    "draft": true,
+    "commit": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+    "id": "0014-pre-mm-token-budget",
+    "parent": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+    "url": "https://github.com/Phala-Network/sglang/pull/15",
+    "head": "codex/serving-v0520-0014-pre-mm-token-budget-r1",
+    "base": "codex/serving-v0520-0013-orphan-tool-deltas-r1"
+  },
+  {
+    "draft": true,
+    "commit": "6a673233e9f7bac86b130977a967bdb77926239a",
+    "id": "0015-image-input-errors",
+    "parent": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+    "url": "https://github.com/Phala-Network/sglang/pull/16",
+    "head": "codex/serving-v0520-0015-image-input-errors-r1",
+    "base": "codex/serving-v0520-0014-pre-mm-token-budget-r1"
+  },
+  {
+    "draft": true,
+    "commit": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+    "id": "0016-watchdog-recovery",
+    "parent": "6a673233e9f7bac86b130977a967bdb77926239a",
+    "url": "https://github.com/Phala-Network/sglang/pull/17",
+    "head": "codex/serving-v0520-0016-watchdog-recovery-r1",
+    "base": "codex/serving-v0520-0015-image-input-errors-r1"
+  },
+  {
+    "draft": true,
+    "commit": "348b3066f561fcf9748bae2659327107f1002d18",
+    "id": "0017-qwen3_5-template",
+    "parent": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+    "url": "https://github.com/Phala-Network/sglang/pull/18",
+    "head": "codex/serving-v0520-0017-qwen3_5-template-r1",
+    "base": "codex/serving-v0520-0016-watchdog-recovery-r1"
+  },
+  {
+    "draft": true,
+    "commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+    "id": "0018-qwen3_coder-parser",
+    "parent": "348b3066f561fcf9748bae2659327107f1002d18",
+    "url": "https://github.com/Phala-Network/sglang/pull/19",
+    "head": "codex/serving-v0520-0018-qwen3_coder-parser-r1",
+    "base": "codex/serving-v0520-0017-qwen3_5-template-r1"
+  }
+]

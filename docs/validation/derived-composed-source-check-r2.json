@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "serving_commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+  "governor_commit": "42f3ac9d25faa72d6dba66969eaec23097f4e2bd",
+  "derived_commit": "cb88b5675f50a26090407f2dc155de8bdd0e42fd",
+  "derived_tree": "d2b5d9abb5487f644b7a71e18b9caa9cce9b71d1",
+  "historical_files_checked": 59,
+  "historical_files_exact": true,
+  "archive_git_option": "core.autocrlf=false",
+  "prior_failed_archive": "r1 inherited Windows core.autocrlf=true and converted archive output to CRLF; Git blobs were LF; no source commit changed",
+  "extra_test": "test/registered/unit/managers/test_control_reply_correlation.py",
+  "compare": "https://github.com/Phala-Network/sglang/compare/94602c9c2b7cbdb8efd5c52802dac6a1c180089e...cb88b5675f50a26090407f2dc155de8bdd0e42fd",
+  "derived_view_only": true,
+  "manual_edits_allowed": false
+}

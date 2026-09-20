@@ -1,0 +1,393 @@
+{
+  "schema": "phala.sglang-serving-patches.v1",
+  "upstream": {
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20"
+  },
+  "historical_source": {
+    "commit": "b24dbadb3a8a9a1c701bb8cac12bd7648a0bb157",
+    "manifest_sha256": "ce5384182634b4b7410fcd6ad631e1397642c15c2b2cdb560469149d1cf899fe",
+    "repository": "https://github.com/Phala-Network/phala-inference-governor"
+  },
+  "common": [
+    {
+      "path": "common/0001-control-correlation.patch",
+      "changed_files": [
+        "python/sglang/srt/managers/communicator.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_control_mixin.py",
+        "test/registered/unit/managers/test_control_reply_correlation.py"
+      ],
+      "source": {
+        "dependencies": null,
+        "commit": "fbd7f3c617461b0360f31fa519b3910be642377f",
+        "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/2",
+        "tree": "381658d756437673cc6fdd7f78f91dd4e856ea48",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "5d4d3db08a006c9957dd18641260d3ca5f315e2cac5a45229c73dc2f71ab68b6",
+      "id": "0001-control-correlation"
+    },
+    {
+      "path": "common/0002-request-cleanup.patch",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_base.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/entrypoints/openai/serving_completions.py",
+        "python/sglang/srt/entrypoints/openai/serving_responses.py",
+        "python/sglang/srt/entrypoints/request_disconnect.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/test_request_disconnect_cleanup.py"
+      ],
+      "source": {
+        "dependencies": "fbd7f3c617461b0360f31fa519b3910be642377f",
+        "commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+        "parent": "fbd7f3c617461b0360f31fa519b3910be642377f",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/3",
+        "tree": "de63aa043e75cdf5301ea4734b0d8e5a963d7fb7",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "a75b8fc3736ded7241cc3a9586e6f88405fb3ec7db9c4eff0a4c28e9aa03998a",
+      "id": "0002-request-cleanup"
+    },
+    {
+      "path": "common/0003-worker-extend-metadata.patch",
+      "changed_files": [
+        "python/sglang/srt/managers/tp_worker.py",
+        "python/sglang/srt/managers/utils.py",
+        "python/sglang/srt/model_executor/forward_batch_info.py",
+        "python/sglang/srt/speculative/eagle_worker_common.py",
+        "python/sglang/srt/speculative/eagle_worker_v2.py",
+        "test/registered/unit/model_executor/test_draft_extend_device_metadata.py",
+        "test/registered/unit/model_executor/test_prefill_metadata_handoff.py"
+      ],
+      "source": {
+        "dependencies": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+        "commit": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+        "parent": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/4",
+        "tree": "aacd99168460121a5283ec180c0b94ac93f8d9a7",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "f75021294ba946755c6b3942f9b53b2e28645ff79736d28338b44029b2ee4e1d",
+      "id": "0003-worker-extend-metadata"
+    },
+    {
+      "path": "common/0004-identity-grammar-mask.patch",
+      "changed_files": [
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/sampling/sampling_batch_info.py",
+        "python/sglang/srt/speculative/spec_utils.py",
+        "test/registered/unit/sampling/test_identity_grammar_mask.py"
+      ],
+      "source": {
+        "dependencies": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+        "commit": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+        "parent": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/5",
+        "tree": "86920eaf65af53a88dbfe6537c67c8801aa5c8da",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "66a4d3412e6e1c37c68f1d308a765d4c7b954a9f5dd02cb8e3f2e51e658283f8",
+      "id": "0004-identity-grammar-mask"
+    },
+    {
+      "path": "common/0005-lifecycle-observation.patch",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/http_server.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/observability/req_time_stats.py",
+        "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py",
+        "test/registered/unit/observability/test_queue_time_retract.py"
+      ],
+      "source": {
+        "dependencies": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+        "commit": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+        "parent": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/6",
+        "tree": "30acf7abadc65ceea9ccd12f608c3bab25d15d70",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "c9071d42523bfa8e099b7728774702fb4c9a091c758ed7a1c0a4268b47a3876f",
+      "id": "0005-lifecycle-observation"
+    },
+    {
+      "path": "common/0006-parallel-sampling-owners.patch",
+      "changed_files": [
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_parallel_sampling_owner_lifecycle.py"
+      ],
+      "source": {
+        "dependencies": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+        "commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+        "parent": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/7",
+        "tree": "69f2a8125142cd620a4d1497d032c10a262cedea",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "4fc36f4ccf9e191e7fa39d3c28f2f8936826e109e32ad60d510610a3d7af8c8b",
+      "id": "0006-parallel-sampling-owners"
+    },
+    {
+      "path": "common/0007-token-auth-redaction.patch",
+      "changed_files": [
+        "python/sglang/srt/arg_groups/fields/serving.py",
+        "python/sglang/srt/arg_groups/pipeline.py",
+        "python/sglang/srt/arg_groups/resolution_hooks.py",
+        "python/sglang/srt/arg_groups/token_auth.py",
+        "python/sglang/srt/entrypoints/engine.py",
+        "python/sglang/srt/entrypoints/grpc_bridge.py",
+        "python/sglang/srt/entrypoints/http_server.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/server_args.py",
+        "test/registered/unit/utils/test_token_env_auth.py"
+      ],
+      "source": {
+        "dependencies": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+        "commit": "0750682477e0c0aebcc055fc748a3b682b172af7",
+        "parent": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/8",
+        "tree": "3824dc35d875b322f8c7b772ef7b0d2078ae7d0c",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "9c7c649b3c9109f0b71d0a6316ee50225fad989b5848f73d794931837cb1e30c",
+      "id": "0007-token-auth-redaction"
+    },
+    {
+      "path": "common/0008-schema-normalization.patch",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/function_call/test_normalize_json_schema_types.py"
+      ],
+      "source": {
+        "dependencies": "0750682477e0c0aebcc055fc748a3b682b172af7",
+        "commit": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+        "parent": "0750682477e0c0aebcc055fc748a3b682b172af7",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/9",
+        "tree": "ba9a89a0242605ccdbfb24a5975e32b5b2eafc6a",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "806b1891459e9f3d4ab6a895a31927280dc0933307290dfb967e75baa12b0102",
+      "id": "0008-schema-normalization"
+    },
+    {
+      "path": "common/0009-schema-argument-coercion.patch",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py"
+      ],
+      "source": {
+        "dependencies": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+        "commit": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+        "parent": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/10",
+        "tree": "172de663865db6b6ec04da0ef04ff6e4e4b7aeee",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "ff74a3f318debca905356b0b1fd1b1f4e98a9ca7011837931917490f0d973b6d",
+      "id": "0009-schema-argument-coercion"
+    },
+    {
+      "path": "common/0010-xgrammar-schema-rejection.patch",
+      "changed_files": [
+        "python/sglang/srt/constrained/xgrammar_backend.py",
+        "python/sglang/srt/constrained/xgrammar_schema.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/constrained/test_xgrammar_unsupported_schema.py"
+      ],
+      "source": {
+        "dependencies": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+        "commit": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+        "parent": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/11",
+        "tree": "00e8a9232dd2759530e5a5cdea054a8aaa5ac431",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "e721d990f587d3a572bd07adf19b14d9816c54969ffe4396a8f08376a0c46af1",
+      "id": "0010-xgrammar-schema-rejection"
+    },
+    {
+      "path": "common/0011-allowed-tool-subsets.patch",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/function_call/test_allowed_tools_choice.py"
+      ],
+      "source": {
+        "dependencies": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+        "commit": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+        "parent": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/12",
+        "tree": "2f15078d5755ab3d4377ed18f287ab77933d85a7",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "da197a3316e17df3fc3165e2a41d7fd8a6e8e43e37b59fea85cd1a805464fe4a",
+      "id": "0011-allowed-tool-subsets"
+    },
+    {
+      "path": "common/0012-reasoning-visibility-bounds.patch",
+      "changed_files": [
+        "python/sglang/srt/constrained/grammar_manager.py",
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/constrained/test_grammar_manager.py",
+        "test/registered/unit/constrained/test_reasoner_grammar_backend.py",
+        "test/registered/unit/entrypoints/openai/test_protocol.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py",
+        "test/registered/unit/managers/test_io_struct.py"
+      ],
+      "source": {
+        "dependencies": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+        "commit": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+        "parent": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/13",
+        "tree": "c6b564a308e465f58400c4682a827484f0064580",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "179901d4b4cae66f7959ed7bfab74df6a3f6045e5142367a33279aa4416f03d9",
+      "id": "0012-reasoning-visibility-bounds"
+    },
+    {
+      "path": "common/0013-orphan-tool-deltas.patch",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "source": {
+        "dependencies": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+        "commit": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+        "parent": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/14",
+        "tree": "076b5d9ede9cec8ad763b690ab0e115530c6fecd",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "4e3e4e0529cd956c713fb4cd23fcfc1172c0c3d4a237b7d0f478d36b2c2fec6d",
+      "id": "0013-orphan-tool-deltas"
+    },
+    {
+      "path": "common/0014-pre-mm-token-budget.patch",
+      "changed_files": [
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py"
+      ],
+      "source": {
+        "dependencies": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+        "commit": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+        "parent": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/15",
+        "tree": "656f849d54241ce3e2f96cb43da1842a2450a1f6",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "fa23ee162826a8b5419f8cfdaf470a679b9d270c6c23b9a21ec5e16f71ecf659",
+      "id": "0014-pre-mm-token-budget"
+    },
+    {
+      "path": "common/0015-image-input-errors.patch",
+      "changed_files": [
+        "python/sglang/srt/utils/common.py",
+        "test/registered/unit/multimodal/test_base_processor_bad_input.py"
+      ],
+      "source": {
+        "dependencies": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+        "commit": "6a673233e9f7bac86b130977a967bdb77926239a",
+        "parent": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/16",
+        "tree": "b37866f4f2b71341673832663a8e10420d97db3a",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "e96cb465a237eee934f2038a219318bfe0f7c2d1e6d37c0e154c82b214faa2d3",
+      "id": "0015-image-input-errors"
+    },
+    {
+      "path": "common/0016-watchdog-recovery.patch",
+      "changed_files": [
+        "python/sglang/srt/utils/cudacore_pyspy_dump_utils.py",
+        "python/sglang/srt/utils/watchdog.py",
+        "test/registered/unit/test_watchdog_fail_hard.py",
+        "test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py"
+      ],
+      "source": {
+        "dependencies": "6a673233e9f7bac86b130977a967bdb77926239a",
+        "commit": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+        "parent": "6a673233e9f7bac86b130977a967bdb77926239a",
+        "repository": "https://github.com/Phala-Network/sglang",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/17",
+        "tree": "7d4989f82cd82dd1ee9b8c119b1e688d2248dfbe",
+        "review_status": "draft_pending_review"
+      },
+      "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
+      "id": "0016-watchdog-recovery"
+    }
+  ],
+  "models": {
+    "qwen3_5": [
+      {
+        "path": "models/qwen3_5/0017-qwen3_5-template.patch",
+        "changed_files": [
+          "python/sglang/srt/entrypoints/openai/serving_chat.py",
+          "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+        ],
+        "source": {
+          "dependencies": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+          "commit": "348b3066f561fcf9748bae2659327107f1002d18",
+          "parent": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+          "repository": "https://github.com/Phala-Network/sglang",
+          "review_pr": "https://github.com/Phala-Network/sglang/pull/18",
+          "tree": "940f557385b3fd78a6439b82366697b0b194725f",
+          "review_status": "draft_pending_review"
+        },
+        "sha256": "fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24",
+        "id": "0017-qwen3_5-template"
+      }
+    ],
+    "qwen3_coder": [
+      {
+        "path": "models/qwen3_coder/0018-qwen3_coder-parser.patch",
+        "changed_files": [
+          "python/sglang/srt/function_call/qwen3_coder_detector.py",
+          "test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py",
+          "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py",
+          "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+        ],
+        "source": {
+          "dependencies": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+          "commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+          "parent": "348b3066f561fcf9748bae2659327107f1002d18",
+          "repository": "https://github.com/Phala-Network/sglang",
+          "review_pr": "https://github.com/Phala-Network/sglang/pull/19",
+          "tree": "e80c25bf69a989d3d41501bf20b5afea8ecaab48",
+          "review_status": "draft_pending_review"
+        },
+        "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
+        "id": "0018-qwen3_coder-parser"
+      }
+    ]
+  },
+  "selection_policy": "Profiles explicitly select every common/model patch and its order. common is semantic scope, not implicit inclusion or universal qualification.",
+  "validation": {
+    "patch_reproduction": "../../../docs/validation/split-reproduction-r1.json",
+    "execution_regressions": "common 24 groups passed (312 JUnit cases including subtests); 4 model groups passed; Governor routing fixture corrected and failed check rerun passed; evidence packaging pending"
+  },
+  "source_export_status": "source_commits_and_exported_full_trees_verified_draft_PRs_open"
+}

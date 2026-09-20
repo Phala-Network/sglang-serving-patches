@@ -1,0 +1,313 @@
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 1d79b8c3348cc00a0d67920b2544c0be407234dc..04e1da818d927da20ad15c1aeeaee6075af83fe1 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -37,6 +37,9 @@ from sglang.srt.constrained.base_grammar_backend import (
+     InvalidGrammarObject,
+ )
+ from sglang.srt.constrained.utils import is_legacy_structural_tag
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
+ from sglang.srt.utils import is_hip
+ from sglang.srt.utils.common import is_pin_memory_available
+ 
+@@ -339,6 +342,14 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                 # Note: This builtin JSON grammar includes *all* valid JSON (including, for example, arrays at the root)
+                 ctx = self.grammar_compiler.compile_builtin_json_grammar()
+             else:
++                schema = json.loads(key_string)
++                if isinstance(schema, dict) and has_xgrammar_unsupported_json_features(
++                    schema
++                ):
++                    raise RuntimeError(
++                        "JSON schema uses features unsupported by xgrammar; "
++                        "the constraint would otherwise be silently ignored"
++                    )
+                 ctx = self.grammar_compiler.compile_json_schema(
+                     schema=key_string, any_whitespace=self.any_whitespace
+                 )
+diff --git a/python/sglang/srt/constrained/xgrammar_schema.py b/python/sglang/srt/constrained/xgrammar_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd4ca0131b7a0d91e85db89c004d9ae8d1f18743
+--- /dev/null
++++ b/python/sglang/srt/constrained/xgrammar_schema.py
+@@ -0,0 +1,56 @@
++"""Fail-closed checks for JSON Schema features XGrammar cannot enforce."""
++
++
++def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
++    """Return whether XGrammar would silently ignore a schema constraint."""
++
++    schema_array_keywords = ("allOf", "anyOf", "oneOf", "prefixItems")
++    schema_keywords = (
++        "additionalItems",
++        "additionalProperties",
++        "else",
++        "if",
++        "items",
++        "not",
++        "then",
++        "unevaluatedItems",
++        "unevaluatedProperties",
++    )
++    schema_map_keywords = ("$defs", "definitions", "properties")
++    unsupported_keywords = (
++        "contains",
++        "dependentSchemas",
++        "maxContains",
++        "minContains",
++        "multipleOf",
++        "patternProperties",
++        "propertyNames",
++        "uniqueItems",
++    )
++
++    def check_schema(obj) -> bool:
++        if not isinstance(obj, dict):
++            return False
++
++        if any(key in obj for key in unsupported_keywords):
++            return True
++
++        for key in schema_keywords:
++            if check_schema(obj.get(key)):
++                return True
++
++        for key in schema_array_keywords:
++            value = obj.get(key)
++            if isinstance(value, list) and any(check_schema(item) for item in value):
++                return True
++
++        for key in schema_map_keywords:
++            value = obj.get(key)
++            if isinstance(value, dict) and any(
++                check_schema(item) for item in value.values()
++            ):
++                return True
++
++        return False
++
++    return check_schema(schema)
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 8d57edfb4f89cf932c4efd620128bfb2ffab8dae..53f7b06271bc27bc09b29ed7bba50078c84c06f2 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -39,6 +39,9 @@ _CHAT_TEMPLATE_CLIENT_ERRORS: tuple[type[BaseException], ...] = (
+ from fastapi.responses import ORJSONResponse, StreamingResponse
+ from jsonschema import Draft202012Validator, SchemaError
+ 
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
+ from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv32
+ from sglang.srt.entrypoints.openai.protocol import (
+     ChatCompletionMessageContentTextPart,
+@@ -270,6 +273,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         self.template_manager = template_manager
+         self.tool_call_parser = self.tokenizer_manager.config_value("tool_call_parser")
+         self.reasoning_parser = self.tokenizer_manager.config_value("reasoning_parser")
++        self._grammar_backend = self.tokenizer_manager.config_value("grammar_backend")
+         self.default_chat_template_kwargs = (
+             get_serving().default_chat_template_kwargs or {}
+         )
+@@ -999,6 +1003,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                 # a 400 instead of crashing into a 500.
+                 normalize_json_schema_types(tool.function.parameters)
+                 Draft202012Validator.check_schema(tool.function.parameters)
++                if self._grammar_backend == "xgrammar" and (
++                    has_xgrammar_unsupported_json_features(tool.function.parameters)
++                ):
++                    return (
++                        f"Tool {i} function has a 'parameters' schema containing "
++                        "features unsupported by xgrammar."
++                    )
+             except SchemaError as e:
+                 return f"Tool {i} function has invalid 'parameters' schema: {str(e)}"
+             except RecursionError:
+@@ -1023,6 +1034,17 @@ class OpenAIServingChat(OpenAIServingBase):
+             schema = getattr(request.response_format.json_schema, "schema_", None)
+             if schema is None:
+                 return "schema_ is required for json_schema response format request."
++            try:
++                Draft202012Validator.check_schema(schema)
++            except SchemaError as e:
++                return f"Invalid response_format JSON schema: {str(e)}"
++            if self._grammar_backend == "xgrammar" and (
++                has_xgrammar_unsupported_json_features(schema)
++            ):
++                return (
++                    "response_format JSON schema contains features unsupported "
++                    "by xgrammar."
++                )
+ 
+         return None
+ 
+diff --git a/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py b/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb1867ff034f203d829c0813f4a2feb86a8eb9f1
+--- /dev/null
++++ b/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py
+@@ -0,0 +1,162 @@
++"""Regression tests for fail-closed XGrammar JSON Schema validation."""
++
++import json
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++from sglang.srt.constrained.base_grammar_backend import InvalidGrammarObject
++from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++
++
++class TestHasXGrammarUnsupportedJsonFeatures(unittest.TestCase):
++    def test_supported_schema(self):
++        schema = {
++            "type": "object",
++            "properties": {
++                "name": {"type": "string"},
++                "age": {"type": "integer", "minimum": 0},
++                "tags": {"type": "array", "items": {"type": "string"}},
++            },
++            "required": ["name"],
++            "additionalProperties": False,
++        }
++        self.assertFalse(has_xgrammar_unsupported_json_features(schema))
++
++    def test_unsupported_keywords(self):
++        cases = [
++            {"multipleOf": 2},
++            {"uniqueItems": True},
++            {"contains": {"type": "integer"}},
++            {"minContains": 1},
++            {"maxContains": 2},
++            {"patternProperties": {"^x": {"type": "string"}}},
++            {"propertyNames": {"pattern": "^x"}},
++            {"dependentSchemas": {"mode": {"required": ["value"]}}},
++        ]
++        for schema in cases:
++            with self.subTest(schema=schema):
++                self.assertTrue(has_xgrammar_unsupported_json_features(schema))
++
++    def test_unsupported_feature_nested_in_schema_positions(self):
++        schema = {
++            "type": "object",
++            "$defs": {
++                "row": {
++                    "type": "object",
++                    "properties": {
++                        "values": {
++                            "type": "array",
++                            "items": {"type": "integer", "multipleOf": 3},
++                        }
++                    },
++                }
++            },
++            "properties": {"row": {"$ref": "#/$defs/row"}},
++        }
++        self.assertTrue(has_xgrammar_unsupported_json_features(schema))
++
++    def test_property_names_that_match_keywords_are_allowed(self):
++        schema = {
++            "type": "object",
++            "properties": {
++                "multipleOf": {"type": "number"},
++                "uniqueItems": {"type": "boolean"},
++                "contains": {"type": "string"},
++                "dependentSchemas": {"type": "object"},
++                "patternProperties": {
++                    "type": "object",
++                    "properties": {"value": {"type": "string"}},
++                },
++            },
++        }
++        self.assertFalse(has_xgrammar_unsupported_json_features(schema))
++
++    def test_dispatch_rejects_before_compile(self):
++        backend = XGrammarGrammarBackend.__new__(XGrammarGrammarBackend)
++        backend.grammar_compiler = MagicMock()
++        backend.any_whitespace = True
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++
++        result = backend.dispatch_json(json.dumps(schema))
++
++        self.assertIsInstance(result, InvalidGrammarObject)
++        self.assertIn("unsupported by xgrammar", result.error_message)
++        backend.grammar_compiler.compile_json_schema.assert_not_called()
++
++
++class TestOpenAIChatFailClosedValidation(unittest.TestCase):
++    def setUp(self):
++        model_patch = patch(
++            "sglang.srt.entrypoints.openai.serving_chat.get_model",
++            return_value=SimpleNamespace(context_length=262144),
++        )
++        serving_patch = patch(
++            "sglang.srt.entrypoints.openai.serving_chat.get_serving",
++            return_value=SimpleNamespace(allow_auto_truncate=False),
++        )
++        model_patch.start()
++        serving_patch.start()
++        self.addCleanup(model_patch.stop)
++        self.addCleanup(serving_patch.stop)
++
++    @staticmethod
++    def _serving(backend: str):
++        serving = OpenAIServingChat.__new__(OpenAIServingChat)
++        serving._grammar_backend = backend
++        serving.tokenizer_manager = SimpleNamespace()
++        serving._validate_media_content = lambda request: None
++        serving._effective_tools = lambda request: []
++        return serving
++
++    @staticmethod
++    def _request(schema):
++        return SimpleNamespace(
++            messages=[object()],
++            return_sampling_mask=False,
++            return_meta_info=False,
++            tool_choice=None,
++            max_completion_tokens=None,
++            max_tokens=64,
++            response_format=SimpleNamespace(
++                type="json_schema",
++                json_schema=SimpleNamespace(schema_=schema),
++            ),
++        )
++
++    def test_xgrammar_response_format_rejected_before_generation(self):
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++        error = self._serving("xgrammar")._validate_request(self._request(schema))
++        self.assertIn("unsupported by xgrammar", error)
++
++    def test_supported_response_format_passes(self):
++        schema = {
++            "type": "object",
++            "properties": {"value": {"type": "integer"}},
++            "required": ["value"],
++            "additionalProperties": False,
++        }
++        error = self._serving("xgrammar")._validate_request(self._request(schema))
++        self.assertIsNone(error)
++
++    def test_other_backend_not_rejected_as_xgrammar(self):
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++        error = self._serving("llguidance")._validate_request(self._request(schema))
++        self.assertIsNone(error)
++
++
++if __name__ == "__main__":
++    unittest.main()

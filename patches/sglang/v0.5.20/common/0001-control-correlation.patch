@@ -1,0 +1,215 @@
+diff --git a/python/sglang/srt/managers/communicator.py b/python/sglang/srt/managers/communicator.py
+index e56ed66d97a62d509e18061e6897d2736ee455d3..92343d38268c2d02a2701f84730fec613d869231 100644
+--- a/python/sglang/srt/managers/communicator.py
++++ b/python/sglang/srt/managers/communicator.py
+@@ -4,6 +4,7 @@ import asyncio
+ import copy
+ import logging
+ from typing import Callable, Generic, List, Optional, TypeVar
++from uuid import uuid4
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -27,6 +28,7 @@ class FanOutCommunicator(Generic[T]):
+         send: Callable[[T], None],
+         fan_out: int,
+         mode: str = "queueing",
++        correlate: bool = False,
+     ):
+         self._send = send
+         self._fan_out = fan_out
+@@ -35,8 +37,12 @@ class FanOutCommunicator(Generic[T]):
+         self._result_values: Optional[List[T]] = None
+         self._result_fan_out: Optional[int] = None
+         self._queueing_lock = asyncio.Lock()
++        self._correlate = correlate
++        self._nonce = None
+ 
+         assert mode in ["queueing", "watching"]
++        if correlate and mode != "queueing":
++            raise ValueError("Correlated control requires queueing mode")
+ 
+     async def queueing_call(self, obj: T):
+         # asyncio.Lock is FIFO-fair: a new caller cannot acquire while earlier
+@@ -44,17 +50,20 @@ class FanOutCommunicator(Generic[T]):
+         # arrival order. It also releases on exception/cancellation, so a
+         # failed caller never blocks the callers queued behind it.
+         async with self._queueing_lock:
+-            if obj is not None:
+-                self._send(obj)
+-
+             self._result_event = asyncio.Event()
+             self._result_values = []
+             self._result_fan_out = self._fan_out
+-            await self._result_event.wait()
+-            result_values = self._result_values
+-            self._result_event = self._result_values = None
+-            self._result_fan_out = None
+-            return result_values
++            self._nonce = uuid4().hex if self._correlate else None
++            try:
++                if obj is not None:
++                    if self._correlate:
++                        obj.control_nonce = self._nonce
++                    self._send(obj)
++                await self._result_event.wait()
++                return self._result_values
++            finally:
++                self._result_event = self._result_values = None
++                self._result_fan_out = self._nonce = None
+ 
+     async def watching_call(self, obj):
+         if self._result_event is None:
+@@ -88,6 +97,10 @@ class FanOutCommunicator(Generic[T]):
+         self._fan_out = fan_out
+ 
+     def handle_recv(self, recv_obj: T):
++        if self._correlate and (
++            self._nonce is None or getattr(recv_obj, "control_nonce", None) != self._nonce
++        ):
++            return
+         if (
+             self._result_values is None
+             or self._result_event is None
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index d3f13eba8917d3b0dcb8a03e19a76ca02092471e..98e3314941e0ff8cfdf55bd59753464e19f669ce 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -2100,7 +2100,7 @@ class ScaleElasticEPReqOutput(BaseReq, kw_only=True):
+ 
+ 
+ class GetInternalStateReq(BaseReq, kw_only=True):
+-    pass
++    control_nonce: Optional[str] = None
+ 
+ 
+ class GetInternalStateReqOutput(BaseReq, kw_only=True):
+@@ -2108,15 +2108,18 @@ class GetInternalStateReqOutput(BaseReq, kw_only=True):
+     # producer sanitizes it with msgspec_to_builtins so every value is
+     # msgpack-native.
+     internal_state: Dict[str, Any]
++    control_nonce: Optional[str] = None
+ 
+ 
+ class SetInternalStateReq(BaseReq, kw_only=True):
+     # Only numeric scheduler knobs are accepted (see Scheduler.set_internal_state).
+     server_args: Dict[str, Union[int, float]]
++    control_nonce: Optional[str] = None
+ 
+ 
+ class SetInternalStateReqOutput(BaseReq, kw_only=True):
+     updated: bool
++    control_nonce: Optional[str] = None
+ 
+ 
+ class ProfileReqType(Enum):
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 743c8afe067f83b5cd8bbf9cdaf79b59900194bf..b2f2e16135bc6c6f93d09190482defd3846b6f48 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -5068,7 +5068,7 @@ class Scheduler(
+         # consumes it.
+         ret.pop("custom_sigquit_handler", None)
+ 
+-        return GetInternalStateReqOutput(internal_state=msgspec_to_builtins(ret))
++        return GetInternalStateReqOutput(internal_state=msgspec_to_builtins(ret), control_nonce=recv_req.control_nonce)
+ 
+     def set_internal_state(self, recv_req: SetInternalStateReq):
+         server_args_dict = recv_req.server_args
+@@ -5148,7 +5148,7 @@ class Scheduler(
+                 get_context().override(source="update_server_args", **remaining)
+             logger.info(f"Config updated via context override: {remaining}")
+ 
+-        return SetInternalStateReqOutput(updated=if_success)
++        return SetInternalStateReqOutput(updated=if_success, control_nonce=recv_req.control_nonce)
+ 
+     def save_remote_model(self, **kwargs):
+         self.weight_updater.save_remote_model(kwargs)
+diff --git a/python/sglang/srt/managers/tokenizer_control_mixin.py b/python/sglang/srt/managers/tokenizer_control_mixin.py
+index 69ef86803b8d1542cb09a2131d6428791ebd12ef..6f95ac7ff50dc2d786f3dd4d355b8f4cc38ed78c 100644
+--- a/python/sglang/srt/managers/tokenizer_control_mixin.py
++++ b/python/sglang/srt/managers/tokenizer_control_mixin.py
+@@ -168,6 +168,7 @@ class TokenizerControlMixin:
+                 self._dispatch_to_scheduler,
+                 get_parallel().dp_size,
+                 mode,
++                correlate=name in ("get_internal_state", "set_internal_state"),
+             )
+             setattr(self, f"{name}_communicator", comm)
+             dispatch_pairs.append((resp_type, comm.handle_recv))
+diff --git a/test/registered/unit/managers/test_control_reply_correlation.py b/test/registered/unit/managers/test_control_reply_correlation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0084acee7870aaa3d5a18690b57cc14a938bf750
+--- /dev/null
++++ b/test/registered/unit/managers/test_control_reply_correlation.py
+@@ -0,0 +1,70 @@
++"""Late control replies cannot complete a later admin command."""
++import asyncio
++import unittest
++import msgspec
++from sglang.srt.managers.communicator import FanOutCommunicator
++from sglang.srt.managers.io_struct import (
++    GetInternalStateReq, GetInternalStateReqOutput,
++    SetInternalStateReq, SetInternalStateReqOutput,
++)
++
++
++class CorrelationTests(unittest.IsolatedAsyncioTestCase):
++    async def test_cancelled_native_read_cannot_satisfy_plugin_read(self):
++        sent = asyncio.Queue()
++        channel = FanOutCommunicator(sent.put_nowait, 1, correlate=True)
++        first = asyncio.create_task(channel(GetInternalStateReq()))
++        old = await sent.get()
++        first.cancel()
++        with self.assertRaises(asyncio.CancelledError): await first
++        second = asyncio.create_task(channel(GetInternalStateReq()))
++        new = await sent.get()
++        self.assertNotEqual(old.control_nonce, new.control_nonce)
++        channel.handle_recv(GetInternalStateReqOutput(internal_state={'old':True},control_nonce=old.control_nonce))
++        await asyncio.sleep(0)
++        self.assertFalse(second.done())
++        channel.handle_recv(GetInternalStateReqOutput(internal_state={'new':True},control_nonce=new.control_nonce))
++        self.assertEqual((await second)[0].internal_state, {'new':True})
++
++    async def test_old_success_cannot_confirm_rejected_patch(self):
++        sent = asyncio.Queue()
++        channel = FanOutCommunicator(sent.put_nowait, 1, correlate=True)
++        one = asyncio.create_task(channel(SetInternalStateReq(server_args={})))
++        old = await sent.get(); one.cancel()
++        with self.assertRaises(asyncio.CancelledError): await one
++        two = asyncio.create_task(channel(SetInternalStateReq(server_args={})))
++        new = await sent.get()
++        channel.handle_recv(SetInternalStateReqOutput(updated=True, control_nonce=old.control_nonce))
++        channel.handle_recv(SetInternalStateReqOutput(updated=True))
++        await asyncio.sleep(0); self.assertFalse(two.done())
++        reply = SetInternalStateReqOutput(updated=False,control_nonce=new.control_nonce)
++        reply = msgspec.msgpack.decode(msgspec.msgpack.encode(reply),type=SetInternalStateReqOutput)
++        channel.handle_recv(reply)
++        self.assertFalse((await two)[0].updated)
++
++    async def test_sync_send_reply_and_send_failure_leave_valid_state(self):
++        def send(request):
++            channel.handle_recv(GetInternalStateReqOutput(internal_state={},control_nonce=request.control_nonce))
++        channel = FanOutCommunicator(send, 1, correlate=True)
++        self.assertEqual(len(await channel(GetInternalStateReq())),1)
++        def failing(_request): raise OSError('synthetic send failure')
++        channel._send = failing
++        with self.assertRaises(OSError): await channel(GetInternalStateReq())
++        self.assertIsNone(channel._nonce)
++        self.assertIsNone(channel._result_event)
++        channel._send = send
++        self.assertEqual(len(await channel(GetInternalStateReq())),1)
++
++    async def test_fanout_requires_all_current_nonce_replies(self):
++        sent = asyncio.Queue()
++        channel = FanOutCommunicator(sent.put_nowait, 2, correlate=True)
++        task = asyncio.create_task(channel(GetInternalStateReq()))
++        req = await sent.get()
++        channel.handle_recv(GetInternalStateReqOutput(internal_state={},control_nonce='wrong'))
++        channel.handle_recv(GetInternalStateReqOutput(internal_state={'rank':0},control_nonce=req.control_nonce))
++        await asyncio.sleep(0); self.assertFalse(task.done())
++        channel.handle_recv(GetInternalStateReqOutput(internal_state={'rank':1},control_nonce=req.control_nonce))
++        self.assertEqual(len(await task),2)
++
++
++if __name__ == '__main__': unittest.main()

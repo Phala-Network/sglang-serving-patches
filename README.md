@@ -1,38 +1,44 @@
 # SGLang Serving Patches
 
-Version-pinned SGLang serving and model compatibility fixes maintained by
-Phala Network, independently of
-[Phala Inference Governor](https://github.com/Phala-Network/phala-inference-governor).
+Version-pinned, deterministic exports of serving fixes developed and reviewed
+in [Phala-Network/sglang](https://github.com/Phala-Network/sglang). This repository
+owns patch applicability, dependencies, order and model profiles; it is not a
+second place to hand-edit the same implementation.
 
-## Scope
+## Use and scope
 
-This repository is the destination for downstream fixes that remain necessary
-when Governor is disabled. Examples include request lifecycle and resource
-cleanup, worker metadata, grammar and schema handling, model-specific tool
-calling and reasoning compatibility, and serving diagnostics.
+Select an explicit versioned profile, such as
+[Qwen3.8-27B on v0.5.20](profiles/v0.5.20/qwen3.8-27b.yaml).
+It lists every selected patch in order with its hash. Patches are separated into
+[common](patches/sglang/v0.5.20/common), Qwen
+[template](patches/sglang/v0.5.20/models/qwen3_5) and
+[parser](patches/sglang/v0.5.20/models/qwen3_coder) directories.
+Common describes semantic scope, not automatic inclusion or universal
+model/GPU/topology validation.
 
-Governor retains its Rust controller, Python adapter, policy API and the minimal
-SGLang hooks needed to integrate those components. TAIL retains its transport and
-attestation responsibilities. Deployment configuration composes independently
-pinned versions of these projects.
+Each [manifest entry](patches/sglang/v0.5.20/manifest.json) records the real source
+commit, parent, dependencies and original-source review PR. Governor's Rust
+core, Python adapter, policy API and minimal hooks remain in
+[its own repository](https://github.com/Phala-Network/phala-inference-governor).
+TAIL owns transport and attestation.
 
-## Patch organization
+Deployment build configuration in phala-models-compose pins these sources
+independently. Composed images publish to **ghcr.io/phala-network/sglang**,
+associated with Phala-Network/sglang.
 
-Keep generic serving fixes separate from model-specific compatibility changes.
-For each supported SGLang version, record the exact upstream commit, ordered
-patches, patch hashes, upstream issue or PR references where available, and
-targeted validation evidence. Model-specific patches should identify the model
-and behavior they affect instead of becoming an implicit dependency for all
-models.
+## Current candidate
 
-On upstream upgrades, review fixes individually and retire a patch only after
-confirming equivalent upstream behavior and running the relevant regression.
-Do not move Governor integration code here merely because it touches SGLang.
+[Qwen3.8-27B review index](docs/QWEN38_REVIEW_INDEX.md) links 18 source draft PRs,
+the explicit profile, full serving/combined-engine compares, deterministic Git
+tree checks, CPU regression scope and known gaps. The historical 59 source files
+are preserved exactly; the generic correlation regression is now in the source
+repair commit. Source approval, final composed-image qualification and the
+authorized e4 test deployment remain pending.
 
-## Migration status
+The historically qualified initial Governor topology is TP1/PP1/DP1,
+non-overlap and no PD, with text/images and radix cache. Do not extrapolate it
+to other profiles. Strict dynamic-platform and launch/model measurement gaps
+remain disclosed.
 
-Repository boundary established; patch migration is pending. No patches or
-runtime images are released from this repository yet. Existing Governor and
-model build inputs have not been changed by this initial repository creation.
-Migration must preserve patch provenance and passing evidence, then update the
-build dependency references without modifying an in-progress frozen build.
+See [CONTRIBUTING](CONTRIBUTING.md) for the single source-maintenance workflow
+and [migration provenance](docs/MIGRATION.md) for the extraction history.
