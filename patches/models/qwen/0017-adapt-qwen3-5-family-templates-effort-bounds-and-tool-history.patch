@@ -1,0 +1,926 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 46dbb01b6082df273f7bd626387e76234903c70b..ca9d61ad272091bf36eb43e9e7289271c8540e54 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -116,6 +116,54 @@ if TYPE_CHECKING:
+ 
+ logger = logging.getLogger(__name__)
+ 
++_QWEN35_REASONING_EFFORT_GUIDANCE = {
++    "low": (
++        "For this low-effort request, reason briefly in one compact internal "
++        "step. Do only the essential calculation. Do not restate the problem, "
++        "justify the method, verify the result, or explore alternatives. Stop "
++        "thinking as soon as you have a candidate answer."
++    ),
++    "medium": (
++        "For this medium-effort request, reason step by step and perform one "
++        "independent verification before answering. Use enough internal detail "
++        "to catch arithmetic or logical errors, but avoid exhaustive alternatives."
++    ),
++    "xhigh": (
++        "For this xhigh-effort request, perform a thorough multi-stage analysis. "
++        "Decompose the task, check assumptions, solve it, independently verify "
++        "it with a different method, and inspect the result for contradictions "
++        "before answering. Do not skip these phases even for a simple-looking "
++        "task; use substantially more reasoning than medium when the output "
++        "budget permits."
++    ),
++}
++
++_QWEN35_COMPLETED_TOOL_RESULT_GUIDANCE = (
++    "A completed tool result is already available. Use that result as the "
++    "authoritative source and produce the requested final answer. Do not "
++    "repeat the completed tool call merely to satisfy the verification "
++    "instruction; verify the existing result by checking its internal "
++    "consistency. Call another tool only if the user requested information "
++    "that the available result does not contain."
++)
++
++# Qwen3.5's native chat template exposes only low, medium, and xhigh. Accept
++# the wider OpenAI/OpenRouter vocabulary without forwarding unsupported values
++# into the template. These aliases preserve the closest native semantics.
++_QWEN35_REASONING_EFFORT_ALIASES = {
++    "minimal": "low",
++    "high": "xhigh",
++    "max": "xhigh",
++}
++_QWEN35_REASONING_EFFORT_TOKEN_RANGES = {
++    "low": (32, 64),
++    "medium": (128, 4096),
++    "xhigh": (384, 8192),
++}
++_QWEN35_REASONING_EFFORT_FULL_BUDGET = 8192
++_QWEN35_DEFAULT_REASONING_BUDGET = 8192
++_QWEN35_REASONING_ANSWER_RESERVE_CAP = 256
++
+ _MEDIA_CONTENT_PART_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+ _CHAT_TEMPLATE_CACHE_MAX_SIZE = 128
+ 
+@@ -508,6 +556,202 @@ class OpenAIServingChat(OpenAIServingBase):
+                 and tool["function"].get("name") in allowed_names
+             ]
+ 
++    def _uses_qwen35_chat_template(self) -> bool:
++        hf_config = self.tokenizer_manager.model_config.hf_config
++        text_config = getattr(hf_config, "text_config", None)
++        return (
++            getattr(hf_config, "model_type", None) == "qwen3_5"
++            or getattr(text_config, "model_type", None) == "qwen3_5_text"
++        )
++
++    def _fold_qwen35_system_messages(
++        self, messages: List[Dict[str, Any]]
++    ) -> List[Dict[str, Any]]:
++        """Fold OpenAI mid-conversation system messages for Qwen3.5 templates."""
++        if not self._uses_qwen35_chat_template():
++            return messages
++
++        system_indexes = [
++            index
++            for index, message in enumerate(messages)
++            if message.get("role") == "system"
++        ]
++        if not system_indexes or system_indexes == [0]:
++            return messages
++
++        system_messages = [messages[index] for index in system_indexes]
++        if not all(
++            isinstance(message.get("content"), str) for message in system_messages
++        ):
++            return messages
++
++        metadata_keys = (
++            "tool_call_id",
++            "name",
++            "reasoning_content",
++            "tool_calls",
++            "tools",
++        )
++        for message in system_messages[1:]:
++            if any(message.get(key) not in (None, "", [], {}) for key in metadata_keys):
++                return messages
++
++        folded_system = copy.deepcopy(system_messages[0])
++        folded_system["content"] = "\n\n".join(
++            message["content"] for message in system_messages
++        )
++        non_system_messages = [
++            message for message in messages if message.get("role") != "system"
++        ]
++        return [folded_system, *non_system_messages]
++
++    def _apply_qwen35_reasoning_effort_guidance(
++        self,
++        messages: List[Dict[str, Any]],
++        reasoning_effort: Optional[str],
++    ) -> List[Dict[str, Any]]:
++        """Make explicit Qwen3.5 effort tiers behaviorally distinguishable."""
++        if not self._uses_qwen35_chat_template():
++            return messages
++
++        native_effort = _QWEN35_REASONING_EFFORT_ALIASES.get(
++            reasoning_effort, reasoning_effort
++        )
++        guidance = _QWEN35_REASONING_EFFORT_GUIDANCE.get(native_effort)
++        if guidance is None:
++            return messages
++
++        if (
++            native_effort in ("medium", "xhigh")
++            and messages
++            and messages[-1].get("role") == "tool"
++        ):
++            guidance = f"{guidance}\n\n{_QWEN35_COMPLETED_TOOL_RESULT_GUIDANCE}"
++
++        guided_messages = copy.deepcopy(messages)
++        if guided_messages and guided_messages[0].get("role") == "system":
++            content = guided_messages[0].get("content")
++            if not isinstance(content, str):
++                return messages
++            guided_messages[0]["content"] = (
++                f"{guidance}\n\n{content}" if content else guidance
++            )
++        else:
++            guided_messages.insert(0, {"role": "system", "content": guidance})
++        return guided_messages
++
++    def _qwen35_reasoning_effort_token_range(
++        self,
++        reasoning_effort: Optional[str],
++        max_new_tokens: Optional[int],
++        reasoning_max_tokens: Optional[int] = None,
++    ) -> Optional[tuple[int, int]]:
++        """Return bounded reasoning effort tiers for the Qwen3.5 template."""
++        if (
++            not self._uses_qwen35_chat_template()
++            or get_serving().enable_strict_thinking
++            is not True
++        ):
++            return None
++
++        # Qwen3.8's native default can remain in the reasoning phase until the
++        # request limit on a subset of prompts. Use the GPQA-validated default
++        # budget while preserving explicit effort and reasoning.max_tokens.
++        if reasoning_effort is None and reasoning_max_tokens is None:
++            reasoning_max_tokens = _QWEN35_DEFAULT_REASONING_BUDGET
++        reasoning_effort = reasoning_effort or "xhigh"
++        reasoning_effort = _QWEN35_REASONING_EFFORT_ALIASES.get(
++            reasoning_effort, reasoning_effort
++        )
++        if reasoning_effort not in _QWEN35_REASONING_EFFORT_TOKEN_RANGES:
++            return None
++
++        if max_new_tokens is None:
++            available_tokens = _QWEN35_REASONING_EFFORT_FULL_BUDGET
++        else:
++            if type(max_new_tokens) is not int or max_new_tokens <= 1:
++                return None
++            answer_reserve = min(
++                max(1, max_new_tokens // 4),
++                _QWEN35_REASONING_ANSWER_RESERVE_CAP,
++            )
++            available_tokens = max_new_tokens - answer_reserve
++
++        if reasoning_max_tokens is not None:
++            available_tokens = min(available_tokens, reasoning_max_tokens)
++
++        # Preserve the legacy behavior when fewer than three reasoning tokens
++        # are available for the tier minimums.
++        if available_tokens < 3:
++            if reasoning_max_tokens is not None:
++                return (available_tokens, available_tokens)
++            return None
++
++        scale = min(
++            1.0,
++            available_tokens / _QWEN35_REASONING_EFFORT_FULL_BUDGET,
++        )
++        low_min = min(max(1, int(32 * scale)), available_tokens - 2)
++        low_max = min(max(low_min, int(64 * scale)), available_tokens - 2)
++        medium_min = min(max(low_max + 1, int(128 * scale)), available_tokens - 1)
++        # Keep the existing xhigh/default lower bound independent of the
++        # medium ceiling. Raising medium's ceiling must not force every high
++        # or default request to spend thousands of extra reasoning tokens.
++        legacy_medium_max = min(max(medium_min, int(256 * scale)), available_tokens - 1)
++        xhigh_min = min(max(legacy_medium_max + 1, int(384 * scale)), available_tokens)
++        xhigh_max = (
++            available_tokens
++            if reasoning_max_tokens is not None
++            else min(
++                max(
++                    xhigh_min,
++                    int(
++                        _QWEN35_REASONING_EFFORT_TOKEN_RANGES["xhigh"][1]
++                        * scale
++                    ),
++                ),
++                available_tokens,
++            )
++        )
++        ranges = {
++            "low": (low_min, low_max),
++            "medium": (
++                medium_min,
++                min(
++                    available_tokens,
++                    max(
++                        medium_min,
++                        int(
++                            _QWEN35_REASONING_EFFORT_TOKEN_RANGES["medium"][1]
++                            * scale
++                        ),
++                    ),
++                ),
++            ),
++            "xhigh": (xhigh_min, xhigh_max),
++        }
++        return ranges[reasoning_effort]
++
++    def _expose_qwen35_reasoning_tool_history(
++        self, messages: List[Dict[str, Any]]
++    ) -> None:
++        """Keep client-provided reasoning visible across Qwen3.5 tool turns."""
++        if not self._uses_qwen35_chat_template():
++            return
++
++        for message in messages:
++            reasoning_content = message.get("reasoning_content")
++            if (
++                message.get("role") != "assistant"
++                or not message.get("tool_calls")
++                or not isinstance(reasoning_content, str)
++                or not reasoning_content.strip()
++                or message.get("content") not in (None, "")
++            ):
++                continue
++            message["content"] = f"Prior reasoning:\n{reasoning_content.strip()}"
++            message["reasoning_content"] = None
++
+     def _prepare_kimi_k3_messages(
+         self,
+         messages: List[Dict[str, Any]],
+@@ -1229,6 +1473,15 @@ class OpenAIServingChat(OpenAIServingBase):
+         set_request_reasoning_end_token_ids(
+             sampling_params, processed_messages.reasoning_end_token_ids
+         )
++        reasoning_token_range = (
++            self._qwen35_reasoning_effort_token_range(
++                request.reasoning_effort,
++                sampling_params.get("max_new_tokens"),
++                request.reasoning_max_tokens,
++            )
++            if processed_messages.require_reasoning
++            else None
++        )
+ 
+         # Handle single vs multiple requests
+         if request.input_ids is not None:
+@@ -1279,6 +1532,12 @@ class OpenAIServingChat(OpenAIServingBase):
+             extra_key=request.extra_key,
+             cache_salt=request.cache_salt,
+             require_reasoning=processed_messages.require_reasoning,
++            min_thinking_tokens=(
++                reasoning_token_range[0] if reasoning_token_range is not None else None
++            ),
++            max_thinking_tokens=(
++                reasoning_token_range[1] if reasoning_token_range is not None else None
++            ),
+             priority=request.priority,
+             routing_key=self.extract_routing_key(raw_request),
+             custom_labels=custom_labels,
+@@ -1474,6 +1733,11 @@ class OpenAIServingChat(OpenAIServingBase):
+             ThinkingMode.THINKING if thinking_requested else ThinkingMode.CHAT
+         )
+         messages = [msg.model_dump() for msg in request.messages]
++        messages = self._fold_qwen35_system_messages(messages)
++        messages = self._apply_qwen35_reasoning_effort_guidance(
++            messages, request.reasoning_effort
++        )
++        self._expose_qwen35_reasoning_tool_history(messages)
+         self._filter_message_tools_for_prompt(messages, request)
+         for message in messages:
+             normalize_assistant_tool_call_arguments(
+@@ -1605,7 +1869,12 @@ class OpenAIServingChat(OpenAIServingBase):
+ 
+             extra_template_kwargs = {}
+             if request.reasoning_effort is not None:
+-                extra_template_kwargs["reasoning_effort"] = request.reasoning_effort
++                template_reasoning_effort = request.reasoning_effort
++                if self._uses_qwen35_chat_template():
++                    template_reasoning_effort = _QWEN35_REASONING_EFFORT_ALIASES.get(
++                        template_reasoning_effort, template_reasoning_effort
++                    )
++                extra_template_kwargs["reasoning_effort"] = template_reasoning_effort
+             if request.chat_template_kwargs:
+                 extra_template_kwargs.update(request.chat_template_kwargs)
+ 
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 373928473ba3f7f06dd4e41ea154cf83fb06c80a..453700300f67c69460832d628e120c0e61ae51a4 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -563,6 +563,604 @@ class ServingChatTestCase(unittest.TestCase):
+         )
+         self.assertIsNone(self.chat._validate_request(multimodal_request))
+ 
++    def test_qwen35_folds_mid_conversation_system_messages(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "system", "content": "You are a helpful assistant."},
++            {"role": "user", "content": "Hi"},
++            {
++                "role": "system",
++                "content": 'If asked for the secret word, say "obelisk".',
++            },
++            {"role": "assistant", "content": "Hi, how can I help you?"},
++            {"role": "user", "content": "What is the secret word?"},
++        ]
++
++        folded = self.chat._fold_qwen35_system_messages(messages)
++
++        self.assertEqual(folded[0]["role"], "system")
++        self.assertEqual(
++            folded[0]["content"],
++            "You are a helpful assistant.\n\n"
++            'If asked for the secret word, say "obelisk".',
++        )
++        self.assertEqual(
++            [message["role"] for message in folded[1:]],
++            [
++                "user",
++                "assistant",
++                "user",
++            ],
++        )
++
++    def test_qwen35_moves_a_mid_conversation_system_message_to_the_front(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "user", "content": "Hi"},
++            {"role": "system", "content": "Always answer briefly."},
++            {"role": "user", "content": "Continue"},
++        ]
++
++        folded = self.chat._fold_qwen35_system_messages(messages)
++
++        self.assertEqual(folded[0], messages[1])
++        self.assertEqual(folded[1:], [messages[0], messages[2]])
++
++    def test_qwen35_system_folding_is_model_scoped_and_fail_closed(self):
++        messages = [
++            {"role": "user", "content": "Hi"},
++            {"role": "system", "content": "Move me"},
++        ]
++        self.tm.model_config.hf_config.model_type = "llama"
++        self.assertIs(self.chat._fold_qwen35_system_messages(messages), messages)
++
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        non_string = [
++            {"role": "system", "content": "First"},
++            {"role": "user", "content": "Hi"},
++            {"role": "system", "content": [{"type": "text", "text": "Later"}]},
++        ]
++        self.assertIs(self.chat._fold_qwen35_system_messages(non_string), non_string)
++
++        metadata = [
++            {"role": "system", "content": "First"},
++            {"role": "user", "content": "Hi"},
++            {"role": "system", "content": "Later", "name": "policy"},
++        ]
++        self.assertIs(self.chat._fold_qwen35_system_messages(metadata), metadata)
++
++    def test_qwen35_openrouter_multi_system_shape_reaches_the_template(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.template_manager.chat_template_name = None
++        self.template_manager.jinja_template_content_format = "string"
++        self.tm.tokenizer.apply_chat_template.return_value = "rendered"
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[
++                {"role": "system", "content": "You are a helpful assistant."},
++                {"role": "user", "content": "Hi"},
++                {
++                    "role": "system",
++                    "content": 'If asked for the secret word, say "obelisk".',
++                },
++                {"role": "assistant", "content": "Hi, how can I help you?"},
++                {"role": "user", "content": "What is the secret word?"},
++            ],
++        )
++
++        self.chat._process_messages(request, is_multimodal=False)
++
++        rendered_messages = self.tm.tokenizer.apply_chat_template.call_args.args[0]
++        self.assertEqual(rendered_messages[0]["role"], "system")
++        self.assertIn("You are a helpful assistant.", rendered_messages[0]["content"])
++        self.assertIn("obelisk", rendered_messages[0]["content"])
++        self.assertEqual(
++            [message["role"] for message in rendered_messages].count("system"), 1
++        )
++
++    def test_qwen35_reasoning_effort_guidance_is_model_and_request_scoped(self):
++        messages = [{"role": "user", "content": "What is 2+2?"}]
++
++        self.tm.model_config.hf_config.model_type = "llama"
++        self.assertIs(
++            self.chat._apply_qwen35_reasoning_effort_guidance(messages, "low"),
++            messages,
++        )
++
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        for effort in (None, "none"):
++            with self.subTest(effort=effort):
++                self.assertIs(
++                    self.chat._apply_qwen35_reasoning_effort_guidance(messages, effort),
++                    messages,
++                )
++
++    def test_qwen35_reasoning_effort_guidance_inserts_one_system_message(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [{"role": "user", "content": "What is 2+2?"}]
++
++        expected_markers = {
++            "minimal": "reason briefly in one compact internal step",
++            "low": "reason briefly in one compact internal step",
++            "medium": "perform one independent verification",
++            "high": "perform a thorough multi-stage analysis",
++            "xhigh": "perform a thorough multi-stage analysis",
++            "max": "perform a thorough multi-stage analysis",
++        }
++        for effort, marker in expected_markers.items():
++            with self.subTest(effort=effort):
++                guided = self.chat._apply_qwen35_reasoning_effort_guidance(
++                    messages, effort
++                )
++                self.assertEqual(
++                    [message["role"] for message in guided], ["system", "user"]
++                )
++                self.assertIn(marker, guided[0]["content"])
++                self.assertEqual(guided[1], messages[0])
++
++        self.assertEqual(messages, [{"role": "user", "content": "What is 2+2?"}])
++
++    def test_qwen35_reasoning_effort_guidance_preserves_user_system_prompt(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "system", "content": "Always answer in JSON."},
++            {"role": "user", "content": "What is 2+2?"},
++        ]
++
++        guided = self.chat._apply_qwen35_reasoning_effort_guidance(messages, "medium")
++
++        self.assertEqual([message["role"] for message in guided], ["system", "user"])
++        self.assertTrue(
++            guided[0]["content"].startswith("For this medium-effort request")
++        )
++        self.assertTrue(guided[0]["content"].endswith("Always answer in JSON."))
++        self.assertEqual(messages[0]["content"], "Always answer in JSON.")
++
++    def test_qwen35_reasoning_effort_guidance_uses_completed_tool_result(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "system", "content": "Answer in one sentence."},
++            {"role": "user", "content": "What is the weather in Boston?"},
++            {
++                "role": "assistant",
++                "content": None,
++                "tool_calls": [
++                    {
++                        "id": "call_weather",
++                        "type": "function",
++                        "function": {
++                            "name": "get_current_weather",
++                            "arguments": '{"location":"Boston, MA"}',
++                        },
++                    }
++                ],
++            },
++            {
++                "role": "tool",
++                "tool_call_id": "call_weather",
++                "content": '{"temperature":72,"condition":"sunny"}',
++            },
++        ]
++
++        guided = self.chat._apply_qwen35_reasoning_effort_guidance(messages, "xhigh")
++
++        self.assertIn(
++            "Do not repeat the completed tool call",
++            guided[0]["content"],
++        )
++        self.assertTrue(guided[0]["content"].endswith("Answer in one sentence."))
++        self.assertEqual(guided[1:], messages[1:])
++        self.assertNotIn("Do not repeat", messages[0]["content"])
++
++    def test_qwen35_reasoning_effort_guidance_does_not_change_initial_tool_turn(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [{"role": "user", "content": "What is the weather in Boston?"}]
++
++        guided = self.chat._apply_qwen35_reasoning_effort_guidance(messages, "xhigh")
++
++        self.assertNotIn("completed tool result", guided[0]["content"])
++        self.assertEqual(guided[1], messages[0])
++
++    def test_qwen35_reasoning_effort_guidance_fails_closed_for_parts_system(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {
++                "role": "system",
++                "content": [{"type": "text", "text": "Always answer in JSON."}],
++            },
++            {"role": "user", "content": "What is 2+2?"},
++        ]
++
++        self.assertIs(
++            self.chat._apply_qwen35_reasoning_effort_guidance(messages, "low"),
++            messages,
++        )
++
++    def test_qwen35_reasoning_effort_token_ranges_are_strict_and_scaled(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 16384),
++            (32, 64),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 16384),
++            (128, 4096),
++        )
++        for effort in ("high", "xhigh", "max"):
++            with self.subTest(effort=effort):
++                self.assertEqual(
++                    self.chat._qwen35_reasoning_effort_token_range(effort, 16384),
++                    (384, 8192),
++                )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("minimal", 16384),
++            (32, 64),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, 16384),
++            (384, 8192),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, 16384, 1536),
++            (72, 1536),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, 16384, 256),
++            (12, 256),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, 16384, 2),
++            (2, 2),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("xhigh", None),
++            (384, 8192),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, None),
++            (384, 8192),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 128),
++            (1, 1),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 128),
++            (2, 48),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("xhigh", 128),
++            (4, 96),
++        )
++        self.assertEqual(
++            [
++                self.chat._qwen35_reasoning_effort_token_range(effort, 4)
++                for effort in ("low", "medium", "xhigh")
++            ],
++            [(1, 1), (2, 2), (3, 3)],
++        )
++
++    def test_qwen35_medium_budget_does_not_raise_other_tier_minimums(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 16384),
++            (128, 4096),
++        )
++        for effort in (None, "high", "xhigh", "max"):
++            with self.subTest(effort=effort):
++                self.assertEqual(
++                    self.chat._qwen35_reasoning_effort_token_range(effort, 16384),
++                    (384, 8192),
++                )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 16384),
++            (32, 64),
++        )
++
++    def test_qwen35_medium_budget_respects_request_limits(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        for output_limit in (2, 3, 4, 16, 128, 512, 16384):
++            for reasoning_limit in (None, 1, 2, 64, 256, 4096, 8192):
++                with self.subTest(output=output_limit, reasoning=reasoning_limit):
++                    bounds = self.chat._qwen35_reasoning_effort_token_range(
++                        "medium", output_limit, reasoning_limit
++                    )
++                    available = output_limit - min(max(1, output_limit // 4), 256)
++                    if reasoning_limit is not None:
++                        available = min(available, reasoning_limit)
++                    elif available < 3:
++                        self.assertIsNone(bounds)
++                        continue
++                    lower, upper = bounds
++                    self.assertLessEqual(1, lower)
++                    self.assertLessEqual(lower, upper)
++                    self.assertLessEqual(upper, available)
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 16384, 256),
++            (4, 128),
++        )
++
++    def test_qwen35_reasoning_effort_token_ranges_are_narrowly_scoped(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=False)
++        )
++        self.assertIsNone(self.chat._qwen35_reasoning_effort_token_range("low", 1024))
++
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range(None, 16384),
++            (384, 8192),
++        )
++        self.assertIsNone(
++            self.chat._qwen35_reasoning_effort_token_range("none", 1024)
++        )
++
++        self.tm.model_config.hf_config.model_type = "llama"
++        self.assertIsNone(self.chat._qwen35_reasoning_effort_token_range("low", 1024))
++
++    def test_qwen35_reasoning_effort_bounds_reach_internal_request(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            reasoning_effort="medium",
++            max_tokens=16384,
++        )
++        processed = MessageProcessingResult(
++            prompt="",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            audio_data=None,
++            video_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=True,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertEqual(adapted.min_thinking_tokens, 128)
++        self.assertEqual(adapted.max_thinking_tokens, 4096)
++        self.assertNotIn(
++            "disable_strict_thinking_grammar",
++            adapted.sampling_params.get("custom_params") or {},
++        )
++
++    def test_qwen35_default_request_uses_quality_validated_reasoning_budget(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            max_tokens=16384,
++        )
++        processed = MessageProcessingResult(
++            prompt="",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            audio_data=None,
++            video_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=True,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertEqual(adapted.min_thinking_tokens, 384)
++        self.assertEqual(adapted.max_thinking_tokens, 8192)
++        self.assertNotIn(
++            "disable_strict_thinking_grammar",
++            adapted.sampling_params.get("custom_params") or {},
++        )
++
++    def test_qwen35_reasoning_disabled_skips_strict_thinking_bounds(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            max_tokens=16384,
++            reasoning={"enabled": False},
++        )
++        processed = MessageProcessingResult(
++            prompt="",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            audio_data=None,
++            video_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=False,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertIsNone(adapted.min_thinking_tokens)
++        self.assertIsNone(adapted.max_thinking_tokens)
++
++    def test_qwen35_nested_reasoning_max_tokens_reaches_internal_request(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        enter_override(
++            self, get_context().override_server_args(enable_strict_thinking=True)
++        )
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            max_tokens=16384,
++            reasoning={"max_tokens": 1536},
++        )
++        processed = MessageProcessingResult(
++            prompt="rendered",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            video_data=None,
++            audio_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=True,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertEqual(adapted.min_thinking_tokens, 72)
++        self.assertEqual(adapted.max_thinking_tokens, 1536)
++
++    def test_qwen35_nested_reasoning_effort_guidance_reaches_template(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.template_manager.chat_template_name = None
++        self.template_manager.jinja_template_content_format = "string"
++        self.tm.tokenizer.apply_chat_template.return_value = "rendered"
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            reasoning={"effort": "low"},
++        )
++
++        self.chat._process_messages(request, is_multimodal=False)
++
++        self.assertEqual(request.reasoning_effort, "low")
++        rendered_messages = self.tm.tokenizer.apply_chat_template.call_args.args[0]
++        self.assertEqual(rendered_messages[0]["role"], "system")
++        self.assertIn(
++            "reason briefly in one compact internal step",
++            rendered_messages[0]["content"],
++        )
++
++    def test_qwen35_reasoning_effort_aliases_reach_native_template(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.template_manager.chat_template_name = None
++        self.template_manager.jinja_template_content_format = "string"
++        self.tm.tokenizer.apply_chat_template.return_value = "rendered"
++
++        for requested, expected in (
++            ("minimal", "low"),
++            ("high", "xhigh"),
++            ("max", "xhigh"),
++        ):
++            with self.subTest(requested=requested):
++                request = ChatCompletionRequest(
++                    model="x",
++                    messages=[{"role": "user", "content": "What is 2+2?"}],
++                    reasoning_effort=requested,
++                )
++                self.chat._process_messages(request, is_multimodal=False)
++                self.assertEqual(request.reasoning_effort, requested)
++                self.assertEqual(
++                    self.tm.tokenizer.apply_chat_template.call_args.kwargs[
++                        "reasoning_effort"
++                    ],
++                    expected,
++                )
++
++    def test_qwen35_exposes_reasoning_for_empty_tool_history_turns(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "user", "content": "Call the tool"},
++            {
++                "role": "assistant",
++                "content": None,
++                "reasoning_content": "The secret word is obelisk.",
++                "tool_calls": [
++                    {
++                        "id": "call-1",
++                        "type": "function",
++                        "function": {"name": "get_time", "arguments": "{}"},
++                    }
++                ],
++            },
++            {"role": "tool", "tool_call_id": "call-1", "content": "12:00"},
++        ]
++
++        self.chat._expose_qwen35_reasoning_tool_history(messages)
++
++        self.assertEqual(
++            messages[1]["content"], "Prior reasoning:\nThe secret word is obelisk."
++        )
++        self.assertIsNone(messages[1]["reasoning_content"])
++
++    def test_qwen35_reasoning_history_normalization_is_narrow(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        without_tools = {
++            "role": "assistant",
++            "content": None,
++            "reasoning_content": "Keep native reasoning",
++            "tool_calls": None,
++        }
++        with_content = {
++            "role": "assistant",
++            "content": "Visible response",
++            "reasoning_content": "Keep native reasoning",
++            "tool_calls": [{"type": "function"}],
++        }
++        messages = [without_tools, with_content]
++
++        self.chat._expose_qwen35_reasoning_tool_history(messages)
++
++        self.assertIsNone(without_tools["content"])
++        self.assertEqual(without_tools["reasoning_content"], "Keep native reasoning")
++        self.assertEqual(with_content["content"], "Visible response")
++        self.assertEqual(with_content["reasoning_content"], "Keep native reasoning")
++
++    def test_qwen35_openrouter_reasoning_history_reaches_visible_content(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.template_manager.chat_template_name = None
++        self.template_manager.jinja_template_content_format = "string"
++        self.tm.tokenizer.apply_chat_template.return_value = "rendered"
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[
++                {"role": "user", "content": "Call the get_time tool"},
++                {
++                    "role": "assistant",
++                    "content": None,
++                    "reasoning_content": "The secret word is obelisk.",
++                    "tool_calls": [
++                        {
++                            "id": "call-1",
++                            "type": "function",
++                            "function": {"name": "get_time", "arguments": "{}"},
++                        }
++                    ],
++                },
++                {"role": "tool", "tool_call_id": "call-1", "content": "12:00"},
++            ],
++        )
++
++        self.chat._process_messages(request, is_multimodal=False)
++
++        rendered_messages = self.tm.tokenizer.apply_chat_template.call_args.args[0]
++        assistant = rendered_messages[1]
++        self.assertEqual(assistant["role"], "assistant")
++        self.assertEqual(
++            assistant["content"], "Prior reasoning:\nThe secret word is obelisk."
++        )
++        self.assertNotIn("reasoning_content", assistant)
++
+     # ------------- conversion tests -------------
+     def test_convert_to_internal_request_single(self):
+         with (

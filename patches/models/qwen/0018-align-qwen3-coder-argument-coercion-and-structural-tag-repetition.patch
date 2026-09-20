@@ -1,0 +1,636 @@
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 01c52631921bbd276047b4e7d08e53931bf69c5e..7a84609aa9a9495712ff100181572420681e46b4 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -1,16 +1,21 @@
+ import json
+ import logging
+ import re
+-from typing import Any, List, Optional
++from typing import Any, List, Literal, Optional, Union
+ 
+-from sglang.srt.entrypoints.openai.protocol import Tool
+-from sglang.srt.function_call.base_format_detector import BaseFormatDetector
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.base_format_detector import (
++    BaseFormatDetector,
++    StructuralTag,
++)
+ from sglang.srt.function_call.core_types import (
+     StreamingParseResult,
+     ToolCallItem,
+     _GetInfoFunc,
+ )
+ from sglang.srt.function_call.utils import (
++    coerce_argument_to_schema,
++    get_argument_schema,
+     get_schema_properties,
+     infer_type_from_json_schema,
+     safe_literal_eval,
+@@ -19,6 +24,34 @@ from sglang.srt.function_call.utils import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _align_required_tool_call_repetition(
++    structural_tag: StructuralTag, parallel_tool_calls: bool
++) -> StructuralTag:
++    """Match Qwen's trained separator and enforce the request's call limit."""
++    value = structural_tag.model_dump()
++    repetitions = []
++
++    def visit(node: Any) -> None:
++        if isinstance(node, dict):
++            if node.get("type") == "tags_with_separator":
++                repetitions.append(node)
++            for child in node.values():
++                visit(child)
++        elif isinstance(node, list):
++            for child in node:
++                visit(child)
++
++    visit(value)
++    if len(repetitions) != 1:
++        raise ValueError(
++            "Qwen3 Coder required structural tag must contain one repeated-tag format"
++        )
++
++    repetitions[0]["separator"] = "\n"
++    repetitions[0]["stop_after_first"] = not parallel_tool_calls
++    return StructuralTag.model_validate(value)
++
++
+ class Qwen3CoderDetector(BaseFormatDetector):
+     def __init__(self):
+         super().__init__()
+@@ -99,9 +132,40 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         return str(inferred_type).strip().lower()
+ 
+     def _convert_param_value(
+-        self, param_value: str, param_name: str, param_config: dict, func_name: str
++        self,
++        param_value: str,
++        param_name: str,
++        param_config: dict,
++        func_name: str,
++        tools: Optional[List[Tool]] = None,
+     ) -> Any:
+         """Convert parameter value based on its type in the schema."""
++        argument_schema = get_argument_schema(func_name, param_name, tools or [])
++        if argument_schema is None:
++            for tool in tools or []:
++                if tool.function.name != func_name:
++                    continue
++                schema = tool.function.parameters
++                if not isinstance(schema, dict) or schema.get("patternProperties"):
++                    break
++                if param_name in get_schema_properties(schema):
++                    break
++                additional = schema.get(
++                    "additionalProperties", schema.get("unevaluatedProperties")
++                )
++                if isinstance(additional, dict):
++                    argument_schema = dict(additional)
++                    for key in ("$defs", "definitions"):
++                        if key in schema and key not in argument_schema:
++                            argument_schema[key] = schema[key]
++                break
++        if argument_schema is not None:
++            converted, schema_valid = coerce_argument_to_schema(
++                param_value, argument_schema
++            )
++            if schema_valid:
++                return converted
++
+         # Handle null value for any type
+         if param_value.lower() == "null":
+             return None
+@@ -219,7 +283,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                             p_val = p_val[:-1]
+ 
+                         parsed_params[p_name] = self._convert_param_value(
+-                            p_val, p_name, param_config, func_name
++                            p_val, p_name, param_config, func_name, tools
+                         )
+ 
+                     calls.append(
+@@ -359,7 +423,11 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                             self.current_func_name, tools
+                         )
+                         converted_val = self._convert_param_value(
+-                            raw_value, param_name, param_config, self.current_func_name
++                            raw_value,
++                            param_name,
++                            param_config,
++                            self.current_func_name,
++                            tools,
+                         )
+ 
+                         # Construct JSON fragment: "key": value
+@@ -476,6 +544,25 @@ class Qwen3CoderDetector(BaseFormatDetector):
+     def supports_structural_tag(self) -> bool:
+         return True
+ 
++    def get_structural_tag(
++        self,
++        tools: Union[List[Tool], None] = None,
++        tool_choice: Union[ToolChoice, Literal["auto", "required"]] = "auto",
++        thinking_mode: bool = False,
++        parallel_tool_calls: bool = True,
++    ) -> Optional[StructuralTag]:
++        structural_tag = super().get_structural_tag(
++            tools=tools,
++            tool_choice=tool_choice,
++            thinking_mode=thinking_mode,
++            parallel_tool_calls=parallel_tool_calls,
++        )
++        if structural_tag is None or tool_choice != "required":
++            return structural_tag
++        return _align_required_tool_call_repetition(
++            structural_tag, parallel_tool_calls=parallel_tool_calls
++        )
++
+     def structure_info(self) -> _GetInfoFunc:
+         raise NotImplementedError
+ 
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..02021c75b9e1d7ccb572c0d5703c28c1f857b2de
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+@@ -0,0 +1,84 @@
++import xgrammar as xgr
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool():
++    return Tool(
++        type="function",
++        function=Function(
++            name="search_catalog",
++            description="Search the product catalog",
++            strict=True,
++            parameters={
++                "type": "object",
++                "properties": {
++                    "query": {"type": "string"},
++                    "max_results": {"type": "integer"},
++                },
++                "required": ["query", "max_results"],
++                "additionalProperties": False,
++            },
++        ),
++    )
++
++
++def _repetition(structural_tag):
++    matches = []
++
++    def visit(value):
++        if isinstance(value, dict):
++            if value.get("type") == "tags_with_separator":
++                matches.append(value)
++            for child in value.values():
++                visit(child)
++        elif isinstance(value, list):
++            for child in value:
++                visit(child)
++
++    visit(structural_tag.model_dump())
++    assert len(matches) == 1
++    return matches[0]
++
++
++def test_required_parallel_uses_official_template_separator():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=True,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is False
++
++
++def test_required_serial_stops_after_first_call():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=False,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is True
++
++
++def test_required_reasoning_prefix_is_preserved():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=True,
++        parallel_tool_calls=True,
++    )
++    serialized = tag.model_dump_json()
++
++    assert "</think>" in serialized
++    assert "\\n\\n" in serialized
++    assert _repetition(tag)["separator"] == "\n"
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f890dc0c766de5e0e9c5b402f88e4291888bfac
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+@@ -0,0 +1,207 @@
++import json
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool(name, properties, **parameter_overrides):
++    parameters = {"type": "object", "properties": properties}
++    parameters.update(parameter_overrides)
++    return Tool(
++        type="function",
++        function=Function(name=name, description="test", parameters=parameters),
++    )
++
++
++def _call(name, *parameters):
++    body = "".join(
++        f"<parameter={key}>\n{value}\n</parameter>\n" for key, value in parameters
++    )
++    return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
++
++
++def _stream(detector, text, tools, chunk_size):
++    calls = []
++    for start in range(0, len(text), chunk_size):
++        calls.extend(
++            detector.parse_streaming_increment(
++                text[start : start + chunk_size], tools
++            ).calls
++        )
++    grouped = {}
++    for call in calls:
++        item = grouped.setdefault(call.tool_index, {"name": "", "parameters": ""})
++        if call.name:
++            item["name"] = call.name
++        if call.parameters:
++            item["parameters"] += call.parameters
++    return [grouped[index] for index in sorted(grouped)]
++
++
++def test_named_defs_ref_nested_object_non_streaming():
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                    "required": ["lat", "lon"],
++                }
++            }
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++@pytest.mark.parametrize("chunk_size", [1, 7, 64])
++def test_named_defs_ref_nested_object_streaming(chunk_size):
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                }
++            }
++        },
++    )
++    calls = _stream(
++        Qwen3CoderDetector(),
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++        chunk_size,
++    )
++
++    assert len(calls) == 1
++    assert json.loads(calls[0]["parameters"]) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++def test_mixed_union_enum_const_uses_schema_valid_scalar_types():
++    tool = _tool(
++        "record_union_values",
++        {
++            "retry": {"type": ["integer", "null"]},
++            "payload": {"oneOf": [{"type": "string"}, {"type": "integer"}], "const": 7},
++            "state": {"enum": ["ready", "queued"]},
++            "selector": {"enum": ["alpha", 2, False], "const": False},
++            "mode": {"type": "string", "const": "safe"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "record_union_values",
++            ("retry", "null"),
++            ("payload", "7"),
++            ("state", "ready"),
++            ("selector", "false"),
++            ("mode", "safe"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "retry": None,
++        "payload": 7,
++        "state": "ready",
++        "selector": False,
++        "mode": "safe",
++    }
++
++
++def test_ambiguous_union_preserves_genuine_numeric_string():
++    tool = _tool(
++        "lookup",
++        {
++            "union_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "enum_id": {"enum": ["7", 7]},
++            "quoted_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "quoted_const": {
++                "oneOf": [{"type": "string"}, {"type": "integer"}],
++                "const": 7,
++            },
++            "integer_id": {"type": "integer"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "lookup",
++            ("union_id", "7"),
++            ("enum_id", "7"),
++            ("quoted_id", '"7"'),
++            ("quoted_const", '"7"'),
++            ("integer_id", "7"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "union_id": "7",
++        "enum_id": "7",
++        "quoted_id": "7",
++        "quoted_const": 7,
++        "integer_id": 7,
++    }
++
++
++def test_invalid_value_is_not_replaced_with_schema_const():
++    tool = _tool("record_const", {"payload": {"type": "integer", "const": 7}})
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("record_const", ("payload", "8")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 8}
++
++
++def test_top_level_oneof_parameter_lookup_preserves_local_defs():
++    tool = Tool(
++        type="function",
++        function=Function(
++            name="resolve_branch",
++            description="test",
++            parameters={
++                "$defs": {"seven": {"type": "integer", "const": 7}},
++                "oneOf": [
++                    {
++                        "type": "object",
++                        "properties": {"payload": {"$ref": "#/$defs/seven"}},
++                    },
++                    {
++                        "type": "object",
++                        "properties": {"message": {"type": "string"}},
++                    },
++                ],
++            },
++        ),
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("resolve_branch", ("payload", "7")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 7}
+diff --git a/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bedc1c5448110cf211b995eab1cded0c8f74ffc6
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+@@ -0,0 +1,173 @@
++"""Exercise the installed native compiler, not just structural-tag serialization."""
++
++import copy
++import json
++
++import pytest
++import xgrammar as xgr
++from xgrammar.structural_tag import JSONSchemaFormat, StructuralTag
++from xgrammar.testing import _is_grammar_accept_string
++
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++from sglang.srt.function_call.utils import normalize_json_schema_types
++
++
++def tool(schema):
++    # Match OpenAIServingChat's real validation order. Tool.model_validate by
++    # itself deliberately does not perform the request-level null normalization.
++    schema = copy.deepcopy(schema)
++    normalize_json_schema_types(schema)
++    return Tool.model_validate(
++        {"type": "function", "function": {"name": "probe", "strict": True, "parameters": schema}}
++    )
++
++
++def grammar(schema, choice="named", parallel=False):
++    item = tool(copy.deepcopy(schema))
++    selected = (
++        ToolChoice.model_validate({"type": "function", "function": {"name": "probe"}})
++        if choice == "named"
++        else choice
++    )
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [item], selected, thinking_mode=False, parallel_tool_calls=parallel
++    )
++    return xgr.Grammar.from_structural_tag(tag)
++
++
++def call(body="", name="probe"):
++    return f"<tool_call>\n<function={name}>\n{body}\n</function>\n</tool_call>"
++
++
++def parameter(name="city", value="Paris"):
++    return f"<parameter={name}>{value}</parameter>"
++
++
++EMPTY_SCHEMAS = [
++    {"type": "object", "additionalProperties": False},
++    {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
++    {"type": "object", "properties": None, "required": None, "additionalProperties": False},
++    {"type": "object", "properties": {}, "required": []},
++    {"type": "object", "additionalProperties": True, "maxProperties": 0},
++]
++
++
++@pytest.mark.parametrize("schema", EMPTY_SCHEMAS)
++@pytest.mark.parametrize("choice", ["named", "required"])
++def test_empty_tool_has_no_whitespace_only_parameter_zone(schema, choice):
++    compiled = grammar(schema, choice)
++    assert _is_grammar_accept_string(compiled, call())
++    for whitespace in [" ", "\n", "\t", "\t" * 64, " \n\t"]:
++        assert not _is_grammar_accept_string(compiled, call(whitespace))
++    assert not _is_grammar_accept_string(compiled, call(parameter()))
++
++
++@pytest.mark.parametrize("properties", ["omitted", None, {}])
++@pytest.mark.parametrize("additional", ["omitted", True, {"type": "string"}])
++def test_undeclared_required_property_is_not_discarded(properties, additional):
++    schema = {"type": "object", "required": ["city"]}
++    if properties != "omitted":
++        schema["properties"] = properties
++    if additional != "omitted":
++        schema["additionalProperties"] = additional
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++    assert not _is_grammar_accept_string(compiled, call())
++    assert not _is_grammar_accept_string(compiled, call(parameter("country", "France")))
++
++
++@pytest.mark.parametrize("schema", [
++    {"type": "object", "required": ["city"], "additionalProperties": False},
++    {"type": "object", "properties": {}, "required": ["city"], "additionalProperties": False},
++    {"type": "object", "required": ["city"], "unevaluatedProperties": False},
++    {"type": "object", "required": ["city"], "maxProperties": 0},
++])
++def test_unsatisfiable_required_property_rejected_before_generation(schema):
++    with pytest.raises((RuntimeError, ValueError)):
++        grammar(schema)
++
++
++def test_typed_additional_required_property_remains_typed():
++    schema = {"type": "object", "required": ["count"], "additionalProperties": {"type": "integer"}}
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("count", "7")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("count", "wrong")))
++    assert not _is_grammar_accept_string(compiled, call())
++
++
++@pytest.mark.parametrize("streaming", [False, True])
++@pytest.mark.parametrize("keyword", ["additionalProperties", "unevaluatedProperties"])
++def test_typed_additional_parameter_parser(streaming, keyword):
++    schema = {"type": "object", "required": ["count"], keyword: {"type": "integer"}}
++    detector = Qwen3CoderDetector()
++    tools = [tool(schema)]
++    text = call(parameter("count", "7"))
++    if streaming:
++        chunks = [detector.parse_streaming_increment(text[i:i + 3], tools) for i in range(0, len(text), 3)]
++        arguments = "".join(item.parameters or "" for chunk in chunks for item in chunk.calls)
++    else:
++        arguments = detector.detect_and_parse(text, tools).calls[0].parameters
++    assert json.loads(arguments) == {"count": 7}
++
++
++def test_declared_and_undeclared_required_fields_both_enforced():
++    schema = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city", "country"]}
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter() + parameter("country", "France")))
++    assert not _is_grammar_accept_string(compiled, call(parameter()))
++
++
++def test_optional_nonempty_tool_keeps_its_parameter_branch():
++    schema = {"type": "object", "properties": {"city": {"type": "string"}}, "required": [], "additionalProperties": False}
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call())
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++    assert not _is_grammar_accept_string(compiled, call(parameter("wrong")))
++
++
++def test_required_parallel_empty_calls_keep_template_separator():
++    compiled = grammar(EMPTY_SCHEMAS[0], "required", parallel=True)
++    assert _is_grammar_accept_string(compiled, call() + "\n" + call())
++    assert not _is_grammar_accept_string(grammar(EMPTY_SCHEMAS[0], "required"), call() + "\n" + call())
++
++
++def test_nested_empty_object_keeps_json_braces_and_ref():
++    schema = {"type": "object", "properties": {"config": {"$ref": "#/$defs/Empty"}}, "required": ["config"],
++              "additionalProperties": False, "$defs": {"Empty": EMPTY_SCHEMAS[0]}}
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("config", "{}")))
++    assert _is_grammar_accept_string(compiled, call(parameter("config", "{ \n\t}")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("config", "")))
++
++
++def test_plain_json_empty_object_is_unchanged():
++    compiled = xgr.Grammar.from_structural_tag(StructuralTag(format=JSONSchemaFormat(json_schema=EMPTY_SCHEMAS[0])))
++    assert _is_grammar_accept_string(compiled, "{}")
++    assert _is_grammar_accept_string(compiled, "{ \n\t}")
++    assert not _is_grammar_accept_string(compiled, "")
++
++
++def test_open_object_not_collapsed_to_no_arguments():
++    compiled = grammar({"type": "object", "additionalProperties": True})
++    assert _is_grammar_accept_string(compiled, call())
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++
++
++@pytest.mark.parametrize("extra", [
++    {"patternProperties": {"^city$": {"type": "string"}}},
++    {"propertyNames": {"enum": ["city"]}},
++])
++def test_undeclared_required_complex_key_constraints_fail_closed(extra):
++    with pytest.raises((RuntimeError, ValueError), match="Undeclared required"):
++        grammar({"type": "object", "required": ["city"], **extra})
++
++
++def test_typed_additional_ref_preserved_in_parser():
++    schema = {"type": "object", "required": ["count"], "additionalProperties": {"$ref": "#/$defs/Count"},
++              "$defs": {"Count": {"type": "integer", "minimum": 1}}}
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("count", "7")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("count", "0")))
++    parsed = Qwen3CoderDetector().detect_and_parse(call(parameter("count", "7")), [tool(schema)])
++    assert json.loads(parsed.calls[0].parameters) == {"count": 7}

@@ -1,0 +1,747 @@
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 94ebde3181e2c52ce2f67f05daeadf80b25c342f..eebfc29a9050ea06ec12937aca0085f874c02c33 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -749,6 +749,8 @@ class Envs:
+     SGLANG_MLA_DEDUP_CHUNK_TOKENS = EnvInt(2048)
+     SGLANG_HICACHE_HF3FS_CONFIG_PATH = EnvStr(None)
+     SGLANG_HICACHE_DECODE_OFFLOAD_STRIDE = EnvInt(None)
++    # Opt-in host-only ACK pipeline; unsupported cache/topology modes stay sync.
++    SGLANG_ENABLE_HICACHE_ASYNC_ACK_SYNC = EnvBool(False)
+     SGLANG_HICACHE_SKIP_HOST_DUPLICATE_RECLAIM = EnvBool(False)
+     SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR = EnvStr(None)
+     # File-backend LRU eviction (opt-in; sizes accept SI/IEC suffixes, "0" disables).
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index ea77923ee92bbfc22608c594ba5df6a18435f9d0..b61fcfbbc8907dcf69710a6545f90736260ea718 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -88,7 +88,13 @@ from sglang.srt.observability.metrics_collector import (
+     StorageMetrics,
+     StorageMetricsCollector,
+ )
+-from sglang.srt.runtime_context import get_memory, get_model, get_observability
++from sglang.srt.runtime_context import (
++    get_disagg,
++    get_memory,
++    get_model,
++    get_observability,
++    get_parallel,
++)
+ from sglang.srt.session.streaming_session import StreamingSession
+ from sglang.srt.utils.common import ceil_align
+ 
+@@ -257,6 +263,14 @@ class UnifiedRadixCache(BasePrefixCache):
+         self.pp_rank = params.pp_rank
+         self.pp_size = params.pp_size
+         self.work_list: list[torch.distributed.Work] = []
++        self._ready_counts_group = self._single_ready_counts_group()
++        self._hicache_async_ack_sync_requested = (
++            envs.SGLANG_ENABLE_HICACHE_ASYNC_ACK_SYNC.get()
++        )
++        self._pending_ready_counts: Optional[
++            tuple[torch.distributed.Work, torch.Tensor, tuple[PoolName, ...], int]
++        ] = None
++        self._hicache_async_ack_sync_logged = False
+ 
+         # HiCache D↔H defaults (overridden by init_hicache)
+         self.cache_controller: Optional[HybridCacheController] = None
+@@ -300,6 +314,19 @@ class UnifiedRadixCache(BasePrefixCache):
+             f"Tree Core: {type(self.tree_core).__name__}"
+         )
+ 
++    def _single_ready_counts_group(self):
++        """Return the one process group eligible for pipelined ack sync."""
++        groups = [
++            group
++            for group in (self.attn_cp_group, self.attn_tp_group)
++            if group is not None and torch.distributed.get_world_size(group=group) > 1
++        ]
++        if len(groups) == 1:
++            return groups[0]
++        if not groups and self.tp_world_size > 1:
++            return self.tp_group
++        return None
++
+     def _all_reduce_attn_groups(self, tensor: torch.Tensor, op):
+         reduced = False
+         for group in (self.attn_cp_group, self.attn_tp_group):
+@@ -368,9 +395,11 @@ class UnifiedRadixCache(BasePrefixCache):
+ 
+     def init_cache_linker(self, cache_linker: UnifiedCacheLinker) -> None:
+         """Attach an external KV store directly to the device pools."""
++        self._drain_pending_ready_counts()
+         self.linker = UnifiedCacheLinkerWrapper(self, cache_linker)
+ 
+     def reset(self) -> None:
++        self._drain_pending_ready_counts()
+         if self.linker is not None:
+             self.linker.reset()
+         self._reset_full()
+@@ -543,6 +572,7 @@ class UnifiedRadixCache(BasePrefixCache):
+         self.sidecar_pool_specs.append(spec)
+ 
+     def release_host_resources(self) -> None:
++        self._drain_pending_ready_counts()
+         if self.linker is not None:
+             self.linker.close()
+         if self.host_pool_group is not None:
+@@ -3032,6 +3062,7 @@ class UnifiedRadixCache(BasePrefixCache):
+         hicache_write_policy: Optional[str] = None,
+     ) -> tuple[bool, str]:
+         """Attach (enable) the HiCache storage backend at runtime."""
++        self._drain_pending_ready_counts()
+         if self._storage_attachment is None:
+             return (
+                 False,
+@@ -3048,6 +3079,7 @@ class UnifiedRadixCache(BasePrefixCache):
+ 
+     def detach_storage_backend(self) -> tuple[bool, str]:
+         """Detach (disable) the HiCache storage backend at runtime."""
++        self._drain_pending_ready_counts()
+         if self._storage_attachment is None:
+             return False, "HiCache storage backend is not initialized."
+         return self._storage_attachment.detach()
+@@ -3077,9 +3109,8 @@ class UnifiedRadixCache(BasePrefixCache):
+             ready_count += 1
+         return ready_count
+ 
+-    def _sync_hicache_ready_counts(
+-        self,
+-    ) -> tuple[int, int, tuple[int, ...], tuple[PoolName, ...]]:
++    def _ready_counts_tensor(self) -> tuple[torch.Tensor, tuple[PoolName, ...], int]:
++        """Build local ack counts using the current upstream PP/storage layout."""
+         cc = self.cache_controller
+         extra_release_queues = getattr(cc, "extra_host_mem_release_queues", {})
+         extra_pool_names = tuple(extra_release_queues) if self.enable_storage else ()
+@@ -3121,8 +3152,14 @@ class UnifiedRadixCache(BasePrefixCache):
+             dtype=torch.int64,
+             device="cpu",
+         )
+-        self._all_reduce(ready_counts, torch.distributed.ReduceOp.MIN)
++        return ready_counts, extra_pool_names, digest
+ 
++    @staticmethod
++    def _parse_ready_counts(
++        ready_counts: torch.Tensor,
++        extra_pool_names: tuple[PoolName, ...],
++        digest: int,
++    ) -> tuple[int, int, tuple[int, ...], tuple[PoolName, ...]]:
+         count_values = list(map(int, ready_counts.tolist()))
+         assert digest == count_values[-2] and digest == -count_values[-1], (
+             "write_back duplicate-reclaim victims diverged across PP/TP ranks"
+@@ -3134,6 +3171,65 @@ class UnifiedRadixCache(BasePrefixCache):
+             extra_pool_names,
+         )
+ 
++    def _sync_hicache_ready_counts(
++        self,
++    ) -> tuple[int, int, tuple[int, ...], tuple[PoolName, ...]]:
++        ready_counts, extra_pool_names, digest = self._ready_counts_tensor()
++        self._all_reduce(ready_counts, torch.distributed.ReduceOp.MIN)
++        return self._parse_ready_counts(ready_counts, extra_pool_names, digest)
++
++    def _async_ready_counts_eligible(self) -> bool:
++        """Narrow canary guard for the queue lifecycle validated on GLM-5.3."""
++        return (
++            self._hicache_async_ack_sync_requested
++            and self.pp_size == 1
++            and get_parallel().dp_size == 1
++            and self._ready_counts_group is not None
++            and self.cache_controller is not None
++            and get_memory().hicache_write_policy == "write_through"
++            and self.cache_controller.write_policy == "write_through"
++            and not self.is_write_back
++            and get_disagg().disaggregation_mode == "null"
++            and self.host_memory_mode == "cache"
++            and self.buffer_pipeline is None
++            and not self.enable_storage
++            and self.linker is None
++        )
++
++    def _issue_async_ready_counts(self) -> None:
++        assert self._pending_ready_counts is None
++        ready_counts, extra_pool_names, digest = self._ready_counts_tensor()
++        work = torch.distributed.all_reduce(
++            ready_counts,
++            op=torch.distributed.ReduceOp.MIN,
++            group=self._ready_counts_group,
++            async_op=True,
++        )
++        self._pending_ready_counts = (
++            work,
++            ready_counts,
++            extra_pool_names,
++            digest,
++        )
++
++    def _consume_async_ready_counts(
++        self,
++    ) -> Optional[tuple[int, int, tuple[int, ...], tuple[PoolName, ...]]]:
++        pending = self._pending_ready_counts
++        if pending is None:
++            return None
++        work, ready_counts, extra_pool_names, digest = pending
++        work.wait()
++        self._pending_ready_counts = None
++        return self._parse_ready_counts(ready_counts, extra_pool_names, digest)
++
++    def _drain_pending_ready_counts(self) -> None:
++        if getattr(self, "_pending_ready_counts", None) is None:
++            return
++        ready = self._consume_async_ready_counts()
++        if ready is not None:
++            self._apply_ready_counts(*ready)
++
+     def writing_check(
+         self, write_back: bool = False, finish_count: Optional[int] = None
+     ) -> None:
+@@ -3297,6 +3393,7 @@ class UnifiedRadixCache(BasePrefixCache):
+     def check_hicache_events(self) -> None:
+         """Called per scheduler step to poll async HiCache events."""
+         if self.linker is not None:
++            self._drain_pending_ready_counts()
+             finish_counts = torch.tensor(
+                 [
+                     self.linker.num_completed_loads(),
+@@ -3320,20 +3417,54 @@ class UnifiedRadixCache(BasePrefixCache):
+         # Reap the previous round's PP-sync sends before issuing new ones.
+         self._drain_async_work()
+ 
+-        (
+-            write_finish_count,
+-            load_finish_count,
+-            storage_queue_sizes,
+-            extra_pool_names,
+-        ) = self._sync_hicache_ready_counts()
++        async_ready_counts = self._async_ready_counts_eligible()
++        if not self._hicache_async_ack_sync_logged:
++            logger.info(
++                "HiCache async ack sync is %s (requested=%s)",
++                "enabled" if async_ready_counts else "disabled",
++                self._hicache_async_ack_sync_requested,
++            )
++            self._hicache_async_ack_sync_logged = True
++
++        if async_ready_counts:
++            ready = self._consume_async_ready_counts()
++            if ready is not None:
++                self._apply_ready_counts(*ready)
++            self._issue_async_ready_counts()
++        else:
++            self._drain_pending_ready_counts()
++            self._apply_ready_counts(*self._sync_hicache_ready_counts())
++        if self.buffer_pipeline is not None:
++            self.buffer_pipeline.flush_pending_writes()
++        if self.enable_storage_metrics and self.storage_metrics_collector is not None:
++            storage_metrics = self.cache_controller.storage_backend.get_stats()
++            if storage_metrics is None:
++                storage_metrics = StorageMetrics()
++            if not hasattr(storage_metrics, "prefetch_stats"):
++                storage_metrics.prefetch_stats = self.prefetch_outcome_stats_snapshot()
++            self.storage_metrics_collector.log_storage_metrics(storage_metrics)
++
++    def _apply_ready_counts(
++        self,
++        write_finish_count: int,
++        load_finish_count: int,
++        storage_queue_sizes: tuple[int, ...],
++        extra_pool_names: tuple[PoolName, ...],
++    ) -> None:
++        """Consume the queue entries agreed by every rank."""
+         self.writing_check(finish_count=write_finish_count)
+         self.loading_check(finish_count=load_finish_count)
+ 
+         if self.enable_storage and storage_queue_sizes:
+-            n_storage_hit, n_ack_prefetch, n_backup, n_release = storage_queue_sizes[:4]
++            n_storage_hit, n_ack_prefetch, n_backup, n_release = storage_queue_sizes[
++                :4
++            ]
+             extra_release_counts = {
+                 pool_name: count
+-                for pool_name, count in zip(extra_pool_names, storage_queue_sizes[4:])
++                for pool_name, count in zip(
++                    extra_pool_names,
++                    storage_queue_sizes[4:],
++                )
+             }
+             self._drain_storage_control_queues_impl(
+                 n_storage_hit=n_storage_hit,
+@@ -3343,15 +3474,6 @@ class UnifiedRadixCache(BasePrefixCache):
+                 extra_release_counts=extra_release_counts,
+                 log_metrics=True,
+             )
+-        if self.buffer_pipeline is not None:
+-            self.buffer_pipeline.flush_pending_writes()
+-        if self.enable_storage_metrics and self.storage_metrics_collector is not None:
+-            storage_metrics = self.cache_controller.storage_backend.get_stats()
+-            if storage_metrics is None:
+-                storage_metrics = StorageMetrics()
+-            if not hasattr(storage_metrics, "prefetch_stats"):
+-                storage_metrics.prefetch_stats = self.prefetch_outcome_stats_snapshot()
+-            self.storage_metrics_collector.log_storage_metrics(storage_metrics)
+ 
+     def ready_to_load_host_cache(self) -> int:
+         """Notify the cache controller to start the KV cache loading."""
+diff --git a/test/manual/test_hicache_async_ack_sync.py b/test/manual/test_hicache_async_ack_sync.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..534642f448267810ec67ba4e1bdf55c435a189e6
+--- /dev/null
++++ b/test/manual/test_hicache_async_ack_sync.py
+@@ -0,0 +1,457 @@
++"""Execute selected cache source methods without importing the SGLang runtime.
++
++Default mode uses CPU collective/tensor stand-ins. Pass --gloo to use real
++PyTorch tensors and run a real two-rank CPU Gloo MIN collective as well.
++An optional first positional argument selects a checkout or installed-source
++shadow root, matching test_chunked_prefill_physical_budget.py.
++"""
++
++import ast
++import logging
++import os
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++SOURCE = (
++    Path(sys.argv.pop(1))
++    if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
++    else Path(os.environ.get("HICACHE_ACK_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
++)
++RUN_GLOO = "--gloo" in sys.argv or os.environ.get("HICACHE_ACK_TEST_GLOO") == "1"
++# Spawn imports this file afresh after the CLI arguments have been consumed.
++# Preserve the selected installed-source shadow and real-tensor mode in workers.
++os.environ["HICACHE_ACK_TEST_SOURCE_ROOT"] = str(SOURCE.resolve())
++os.environ["HICACHE_ACK_TEST_GLOO"] = "1" if RUN_GLOO else "0"
++if RUN_GLOO:
++    if "--gloo" in sys.argv:
++        sys.argv.remove("--gloo")
++    import torch
++    import torch.distributed as dist
++    import torch.multiprocessing as mp
++else:
++    class Tensor:
++        def __init__(self, values):
++            self.values = list(values)
++
++        def tolist(self):
++            return self.values.copy()
++
++        def clone(self):
++            return Tensor(self.values)
++
++        def __getitem__(self, index):
++            return SimpleNamespace(item=lambda: self.values[index])
++
++        def __setitem__(self, index, value):
++            self.values[index] = value
++
++    dist = SimpleNamespace(
++        all_reduce=MagicMock(), get_world_size=MagicMock(),
++        ReduceOp=SimpleNamespace(MIN="MIN"),
++    )
++    torch = SimpleNamespace(
++        tensor=lambda values, **kwargs: Tensor(values),
++        int64="int64", int="int", distributed=dist,
++    )
++
++logger = logging.getLogger(__name__)
++get_memory = lambda: SimpleNamespace(hicache_write_policy="write_through")
++get_disagg = lambda: SimpleNamespace(disaggregation_mode="null")
++get_parallel = lambda: SimpleNamespace(dp_size=1)
++UnifiedCacheLinkerWrapper = lambda cache, linker: linker
++METHODS = {
++    "_single_ready_counts_group", "_ready_counts_tensor", "_parse_ready_counts",
++    "_sync_hicache_ready_counts", "_async_ready_counts_eligible",
++    "_issue_async_ready_counts", "_consume_async_ready_counts",
++    "_drain_pending_ready_counts", "_count_ready_acks", "_apply_ready_counts",
++    "check_hicache_events", "reset", "release_host_resources",
++    "init_cache_linker", "attach_storage_backend", "detach_storage_backend",
++    "enable_storage", "is_write_back",
++}
++source_path = SOURCE / "python/sglang/srt/mem_cache/unified_radix_cache.py"
++tree = ast.parse(source_path.read_text(encoding="utf-8"))
++cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnifiedRadixCache")
++cls.bases = []
++cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in METHODS]
++exec(compile(ast.fix_missing_locations(ast.Module(body=[
++    ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), cls
++], type_ignores=[])), str(source_path), "exec"), globals())
++
++
++def _gloo_min_worker(rank, world_size, init_method):
++    dist.init_process_group(
++        backend="gloo",
++        init_method=init_method,
++        rank=rank,
++        world_size=world_size,
++    )
++    try:
++        cache = object.__new__(UnifiedRadixCache)
++        cache.tree_core = SimpleNamespace(
++            enable_storage=False,
++            write_back_duplicate_reclaim_digest=17,
++        )
++        cache.cache_controller = SimpleNamespace(
++            ack_write_queue=[
++                SimpleNamespace(
++                    finish_event=SimpleNamespace(query=lambda: True)
++                )
++                for _ in range(2 if rank == 0 else 1)
++            ],
++            ack_load_queue=[],
++            extra_host_mem_release_queues={},
++        )
++        cache.pp_rank = 0
++        cache._ready_counts_group = dist.group.WORLD
++        cache._pending_ready_counts = None
++
++        cache._issue_async_ready_counts()
++        ready = cache._consume_async_ready_counts()
++
++        assert ready is not None
++        assert ready[0] == 1
++        assert ready[1:] == (0, (), ())
++        assert cache._pending_ready_counts is None
++    finally:
++        dist.destroy_process_group()
++
++
++class _FakeWork:
++    def __init__(self, on_wait=None):
++        self.waited = False
++        self.on_wait = on_wait
++
++    def wait(self):
++        self.waited = True
++        if self.on_wait is not None:
++            self.on_wait()
++
++
++class TestHiCacheAsyncAckSync(unittest.TestCase):
++    def _cache(self, write_ready=(True, True, False), load_ready=()):
++        cache = object.__new__(UnifiedRadixCache)
++        cache.tree_core = SimpleNamespace(
++            enable_storage=False,
++            is_write_back=False,
++            write_back_duplicate_reclaim_digest=0,
++        )
++        cache.pp_rank = 0
++        cache.pp_size = 1
++        cache.work_list = []
++        cache.enable_storage_metrics = False
++        cache.storage_metrics_collector = None
++        cache.buffer_pipeline = None
++        cache.linker = None
++        cache.host_memory_mode = "cache"
++        cache._ready_counts_group = object()
++        cache._hicache_async_ack_sync_requested = True
++        cache._hicache_async_ack_sync_logged = True
++        cache._pending_ready_counts = None
++        cache._drain_async_work = MagicMock()
++        cache._async_ready_counts_eligible = MagicMock(return_value=True)
++        cache.cache_controller = SimpleNamespace(
++            ack_write_queue=[
++                SimpleNamespace(
++                    finish_event=SimpleNamespace(query=MagicMock(return_value=ready))
++                )
++                for ready in write_ready
++            ],
++            ack_load_queue=[
++                SimpleNamespace(
++                    finish_event=SimpleNamespace(query=MagicMock(return_value=ready))
++                )
++                for ready in load_ready
++            ],
++            extra_host_mem_release_queues={},
++            write_policy="write_through",
++        )
++        cache.write_counts = []
++        cache.load_counts = []
++
++        def writing_check(*, finish_count):
++            cache.write_counts.append(finish_count)
++            for _ in range(finish_count):
++                cache.cache_controller.ack_write_queue.pop(0)
++
++        def loading_check(*, finish_count):
++            cache.load_counts.append(finish_count)
++            for _ in range(finish_count):
++                cache.cache_controller.ack_load_queue.pop(0)
++
++        cache.writing_check = writing_check
++        cache.loading_check = loading_check
++        return cache
++
++    def test_pops_previous_counts_before_reducing_remainder(self):
++        cache = self._cache()
++        issued = []
++
++        def all_reduce(tensor, *, op, group, async_op):
++            self.assertTrue(async_op)
++            issued.append(tensor.clone())
++            return _FakeWork()
++
++        with patch.object(torch.distributed, "all_reduce", all_reduce):
++            cache.check_hicache_events()
++            self.assertEqual(cache.write_counts, [])
++            self.assertEqual(issued[0][0].item(), 2)
++
++            cache.check_hicache_events()
++            self.assertEqual(cache.write_counts, [2])
++            self.assertEqual(len(cache.cache_controller.ack_write_queue), 1)
++            self.assertEqual(issued[1][0].item(), 0)
++
++    def test_waits_before_parsing_and_applying_reduced_count(self):
++        cache = self._cache(write_ready=(True,))
++        works = []
++
++        def all_reduce(tensor, *, op, group, async_op):
++            # Simulate another rank reporting zero ready acks. Parsing before
++            # wait would incorrectly consume the local ready ack.
++            work = _FakeWork(lambda: tensor.__setitem__(0, 0))
++            works.append(work)
++            return work
++
++        with patch.object(torch.distributed, "all_reduce", all_reduce):
++            cache.check_hicache_events()
++            self.assertFalse(works[0].waited)
++            cache.check_hicache_events()
++
++        self.assertTrue(works[0].waited)
++        self.assertEqual(cache.write_counts, [0])
++        self.assertEqual(len(cache.cache_controller.ack_write_queue), 1)
++
++    def test_reset_drains_pending_work_before_resetting_tree(self):
++        cache = self._cache(write_ready=(True,))
++        work = _FakeWork()
++        cache._pending_ready_counts = (
++            work,
++            torch.tensor([1, 0, 0, 0], dtype=torch.int64),
++            (),
++            0,
++        )
++
++        def assert_drained_before_reset():
++            self.assertTrue(work.waited)
++            self.assertIsNone(cache._pending_ready_counts)
++            self.assertEqual(cache.write_counts, [1])
++            self.assertEqual(cache.cache_controller.ack_write_queue, [])
++
++        cache._reset_full = MagicMock(side_effect=assert_drained_before_reset)
++
++        cache.reset()
++
++        self.assertTrue(work.waited)
++        self.assertIsNone(cache._pending_ready_counts)
++        cache._reset_full.assert_called_once_with()
++
++    def test_release_host_resources_drains_before_destroy(self):
++        cache = self._cache(write_ready=(True,))
++        work = _FakeWork()
++        cache._pending_ready_counts = (
++            work,
++            torch.tensor([1, 0, 0, 0], dtype=torch.int64),
++            (),
++            0,
++        )
++        cache.host_pool_group = MagicMock()
++
++        def assert_drained_before_destroy():
++            self.assertTrue(work.waited)
++            self.assertIsNone(cache._pending_ready_counts)
++            self.assertEqual(cache.write_counts, [1])
++            self.assertEqual(cache.cache_controller.ack_write_queue, [])
++
++        cache.host_pool_group.destroy.side_effect = assert_drained_before_destroy
++
++        cache.release_host_resources()
++
++        self.assertTrue(work.waited)
++        cache.host_pool_group.destroy.assert_called_once_with()
++
++    def test_write_back_and_pd_modes_are_not_eligible(self):
++        cache = self._cache(write_ready=())
++        cache._async_ready_counts_eligible = (
++            UnifiedRadixCache._async_ready_counts_eligible.__get__(cache)
++        )
++
++        memory = SimpleNamespace(hicache_write_policy="write_through")
++        disagg = SimpleNamespace(disaggregation_mode="null")
++        with (
++            patch(
++                __name__ + ".get_memory",
++                return_value=memory,
++            ),
++            patch(
++                __name__ + ".get_disagg",
++                return_value=disagg,
++            ),
++        ):
++            self.assertTrue(cache._async_ready_counts_eligible())
++            cache.tree_core.is_write_back = True
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache.tree_core.is_write_back = False
++            disagg.disaggregation_mode = "decode"
++            self.assertFalse(cache._async_ready_counts_eligible())
++
++    def test_unsupported_cache_modes_and_topologies_are_not_eligible(self):
++        cache = self._cache(write_ready=())
++        cache._async_ready_counts_eligible = (
++            UnifiedRadixCache._async_ready_counts_eligible.__get__(cache)
++        )
++        memory = SimpleNamespace(hicache_write_policy="write_through")
++        disagg = SimpleNamespace(disaggregation_mode="null")
++
++        with (
++            patch(
++                __name__ + ".get_memory",
++                return_value=memory,
++            ),
++            patch(
++                __name__ + ".get_disagg",
++                return_value=disagg,
++            ),
++        ):
++            cache._hicache_async_ack_sync_requested = False
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache._hicache_async_ack_sync_requested = True
++
++            cache.pp_size = 2
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache.pp_size = 1
++            cache._ready_counts_group = None
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache._ready_counts_group = object()
++
++            cache.tree_core.enable_storage = True
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache.tree_core.enable_storage = False
++            cache.buffer_pipeline = object()
++            self.assertFalse(cache._async_ready_counts_eligible())
++            cache.buffer_pipeline = None
++            cache.linker = object()
++            self.assertFalse(cache._async_ready_counts_eligible())
++
++    def test_dp_buffer_only_and_write_policy_guards(self):
++        cache = self._cache(write_ready=())
++        eligible = UnifiedRadixCache._async_ready_counts_eligible.__get__(cache)
++        with patch(__name__ + ".get_parallel", return_value=SimpleNamespace(dp_size=2)):
++            self.assertFalse(eligible())
++        cache.host_memory_mode = "buffer_only"
++        self.assertFalse(eligible())
++        cache.host_memory_mode = "cache"
++        cache.cache_controller.write_policy = "write_back"
++        self.assertFalse(eligible())
++        cache.cache_controller.write_policy = "write_through"
++        with patch(__name__ + ".get_memory", return_value=SimpleNamespace(hicache_write_policy="write_back")):
++            self.assertFalse(eligible())
++
++    def test_single_process_group_selection(self):
++        cache = self._cache()
++        cache.attn_cp_group, cache.attn_tp_group, cache.tp_group = object(), object(), object()
++        cache.tp_world_size = 8
++        with patch.object(dist, "get_world_size", side_effect=lambda group: 1 if group is cache.attn_cp_group else 8):
++            self.assertIs(cache._single_ready_counts_group(), cache.attn_tp_group)
++        with patch.object(dist, "get_world_size", return_value=2):
++            self.assertIsNone(cache._single_ready_counts_group())
++        cache.attn_cp_group = cache.attn_tp_group = None
++        self.assertIs(cache._single_ready_counts_group(), cache.tp_group)
++        cache.tp_world_size = 1
++        self.assertIsNone(cache._single_ready_counts_group())
++
++    def test_storage_pp_placeholder_shape_and_synchronous_dispatch(self):
++        cache = self._cache(write_ready=(True,))
++        cache.tree_core.enable_storage = True
++        cc = cache.cache_controller
++        for name, count in [("prefetch_hit_queue", 3), ("ack_prefetch_queue", 4), ("ack_backup_queue", 5), ("host_mem_release_queue", 6)]:
++            setattr(cc, name, SimpleNamespace(qsize=lambda count=count: count))
++        cc.extra_host_mem_release_queues = {"mamba": SimpleNamespace(qsize=lambda: 7)}
++        tensor, names, digest = cache._ready_counts_tensor()
++        self.assertEqual(tensor.tolist(), [1, 0, 3, 4, 5, 6, 7, 0, 0])
++        self.assertEqual(names, ("mamba",))
++        cache.pp_rank = 1
++        self.assertEqual(cache._ready_counts_tensor()[0].tolist(), [0] * 9)
++        cache.pp_rank = 0
++        cache._async_ready_counts_eligible.return_value = False
++        cache._all_reduce = MagicMock()
++        cache._drain_storage_control_queues_impl = MagicMock()
++        cache.buffer_pipeline = SimpleNamespace(flush_pending_writes=MagicMock())
++        cache.check_hicache_events()
++        cache._all_reduce.assert_called_once()
++        cache._drain_storage_control_queues_impl.assert_called_once_with(
++            n_storage_hit=3, n_ack_prefetch=4, n_backup=5, n_release=6,
++            extra_release_counts={"mamba": 7}, log_metrics=True,
++        )
++        cache.buffer_pipeline.flush_pending_writes.assert_called_once()
++        self.assertIsNone(cache._pending_ready_counts)
++
++    def test_fallback_drains_pending_then_syncs_remaining_queues(self):
++        cache = self._cache(write_ready=(True, True))
++        with patch.object(dist, "all_reduce", return_value=_FakeWork()):
++            cache.check_hicache_events()
++        cache._async_ready_counts_eligible.return_value = False
++        cache._all_reduce = MagicMock()
++        cache.check_hicache_events()
++        self.assertEqual(cache.write_counts, [2, 0])
++        self.assertIsNone(cache._pending_ready_counts)
++
++    def test_storage_and_linker_attach_drain_before_mutation(self):
++        for operation in ("attach", "detach", "linker"):
++            with self.subTest(operation=operation):
++                cache = self._cache(write_ready=(True,))
++                work = _FakeWork()
++                cache._pending_ready_counts = (work, torch.tensor([1, 0, 0, 0]), (), 0)
++                def observe(**kwargs):
++                    self.assertTrue(work.waited)
++                    self.assertEqual(cache.write_counts, [1])
++                    self.assertIsNone(cache._pending_ready_counts)
++                    return True, "ok"
++                cache._storage_attachment = SimpleNamespace(attach=MagicMock(side_effect=observe), detach=MagicMock(side_effect=observe))
++                if operation == "attach":
++                    self.assertEqual(cache.attach_storage_backend("file"), (True, "ok"))
++                elif operation == "detach":
++                    self.assertEqual(cache.detach_storage_backend(), (True, "ok"))
++                else:
++                    linker = object()
++                    cache.init_cache_linker(linker)
++                    observe()
++                    self.assertIs(cache.linker, linker)
++
++    def test_digest_mismatch_rejected_and_issue_time_digest_retained(self):
++        cache = self._cache(write_ready=())
++        cache.tree_core.write_back_duplicate_reclaim_digest = 17
++        with patch.object(dist, "all_reduce", return_value=_FakeWork()):
++            cache._issue_async_ready_counts()
++        cache.tree_core.write_back_duplicate_reclaim_digest = 23
++        self.assertEqual(cache._consume_async_ready_counts(), (0, 0, (), ()))
++        with self.assertRaisesRegex(AssertionError, "diverged"):
++            cache._parse_ready_counts(torch.tensor([0, 0, 17, -18]), (), 17)
++
++    def test_load_counts_wait_and_pop_once(self):
++        cache = self._cache(write_ready=(), load_ready=(True, False, True))
++        with patch.object(dist, "all_reduce", return_value=_FakeWork()):
++            cache.check_hicache_events()
++            cache.check_hicache_events()
++            cache._drain_pending_ready_counts()
++        self.assertEqual(cache.load_counts, [1, 0])
++        self.assertEqual(len(cache.cache_controller.ack_load_queue), 2)
++
++    @unittest.skipUnless(RUN_GLOO, "use --gloo with PyTorch for a real collective")
++    def test_real_two_rank_gloo_min_reduce(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            init_method = "file://" + os.path.join(tmp, "gloo-init")
++            mp.spawn(
++                _gloo_min_worker,
++                args=(2, init_method),
++                nprocs=2,
++                join=True,
++            )
++
++
++if __name__ == "__main__":
++    print(f"source={SOURCE}; real_gloo={RUN_GLOO}")
++    unittest.main(verbosity=2)

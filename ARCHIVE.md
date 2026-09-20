@@ -1,6 +1,6 @@
 # Superseded proposals: 2026-09-20
 
-The repository moved from independent profiles/patch exports to optional exports
+The repository moved from independent profiles/patch exports to generated exports
 from the complete engine source in `Phala-Network/sglang`. These proposals are
 closed without merging. Lightweight archive tags preserve their exact branch
 heads, all files and reachable history. Tags do not imply release acceptance.
@@ -23,3 +23,9 @@ The five branches were retired because they represent the superseded maintenance
 process. No source proposal was force-merged or declared accepted. Archive refs
 preserve unique implementation, validation and failure evidence. Existing local
 worktrees and deployment inputs are outside this cleanup.
+
+The initial documentation-only main at880cf9b was an overcorrection. The current
+main restores actual ordered patches generated from complete engine4281309187;
+the five historical branches remain archived because their duplicated profile
+maintenance is still superseded. Restoring the current source export does not
+mean merging or accepting those archived model proposals.

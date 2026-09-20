@@ -1,0 +1,19 @@
+{
+  "schema": "phala.sglang.export-verification.v1",
+  "verified_date": "2026-09-20",
+  "passed": true,
+  "verification": "scripts/export.py --check; clean temporary Git index replay with every intermediate tree checked",
+  "upstream_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "engine_commit": "4281309187007db579a2195f40adfd4baa538528",
+  "engine_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+  "manifest_sha256": "bf215af35643232f6347432a6846d7433808c9a84b2632f73e9fd630d2262eb6",
+  "serving_patches": 30,
+  "governor_hook_steps": 1,
+  "verified_intermediate_trees": 31,
+  "governor_commit": "631a53919c62e10c57e7b960bc4d443f39818276",
+  "governor_hook_sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6",
+  "source_cpu_evidence_sha256": "d35716c93541b16c06f20aff1b1043a3c11ea1857701899f9c068c13eff7a587",
+  "new_gpu_tests": false,
+  "final_image_acceptance": false,
+  "production_acceptance": false
+}

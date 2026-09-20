@@ -1,0 +1,640 @@
+{
+  "schema": "phala.sglang.source-export.v1",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.20",
+    "commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+  },
+  "engine": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "commit": "4281309187007db579a2195f40adfd4baa538528",
+    "tree": "83dcb00885129cc2afefdce2e169ebba697a9a67"
+  },
+  "serving_result": {
+    "commit": "63a21f09fcc26892a6d30c76945b783aa0eb3149",
+    "tree": "0a1c456602e7dbadacc55449bc64625b2797c3bc"
+  },
+  "governor": {
+    "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
+    "hooks_only": true,
+    "component_installation_required": true
+  },
+  "ordering": "apply_after records exact replay dependencies, not semantic dependence between unrelated fixes",
+  "qualification": "See VALIDATION.md; source/tree reproduction does not imply model or final-image acceptance",
+  "patches": [
+    {
+      "id": "0001",
+      "path": "patches/common/0001-correlate-internal-state-control-replies-and-clean-cancellation-state.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Correlate internal-state control replies and clean cancellation state",
+      "source_commit": "fbd7f3c617461b0360f31fa519b3910be642377f",
+      "source_parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+      "result_tree": "381658d756437673cc6fdd7f78f91dd4e856ea48",
+      "apply_after": [],
+      "sha256": "5d4d3db08a006c9957dd18641260d3ca5f315e2cac5a45229c73dc2f71ab68b6",
+      "changed_files": [
+        "python/sglang/srt/managers/communicator.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_control_mixin.py",
+        "test/registered/unit/managers/test_control_reply_correlation.py"
+      ]
+    },
+    {
+      "id": "0002",
+      "path": "patches/common/0002-close-disconnected-generators-and-release-undispatched-or-aborted-mm-ownership.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Close disconnected generators and release undispatched or aborted MM ownership",
+      "source_commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+      "source_parent": "fbd7f3c617461b0360f31fa519b3910be642377f",
+      "result_tree": "de63aa043e75cdf5301ea4734b0d8e5a963d7fb7",
+      "apply_after": [
+        "0001"
+      ],
+      "sha256": "a75b8fc3736ded7241cc3a9586e6f88405fb3ec7db9c4eff0a4c28e9aa03998a",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_base.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/entrypoints/openai/serving_completions.py",
+        "python/sglang/srt/entrypoints/openai/serving_responses.py",
+        "python/sglang/srt/entrypoints/request_disconnect.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/test_request_disconnect_cleanup.py"
+      ]
+    },
+    {
+      "id": "0003",
+      "path": "patches/common/0003-reuse-bounded-worker-extend-metadata-on-supported-non-overlap-paths.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Reuse bounded worker extend metadata on supported non-overlap paths",
+      "source_commit": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+      "source_parent": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+      "result_tree": "aacd99168460121a5283ec180c0b94ac93f8d9a7",
+      "apply_after": [
+        "0002"
+      ],
+      "sha256": "f75021294ba946755c6b3942f9b53b2e28645ff79736d28338b44029b2ee4e1d",
+      "changed_files": [
+        "python/sglang/srt/managers/tp_worker.py",
+        "python/sglang/srt/managers/utils.py",
+        "python/sglang/srt/model_executor/forward_batch_info.py",
+        "python/sglang/srt/speculative/eagle_worker_common.py",
+        "python/sglang/srt/speculative/eagle_worker_v2.py",
+        "test/registered/unit/model_executor/test_draft_extend_device_metadata.py",
+        "test/registered/unit/model_executor/test_prefill_metadata_handoff.py"
+      ]
+    },
+    {
+      "id": "0004",
+      "path": "patches/common/0004-skip-identity-grammar-masks-while-preserving-grammar-state-bookkeeping.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Skip identity grammar masks while preserving grammar state bookkeeping",
+      "source_commit": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+      "source_parent": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+      "result_tree": "86920eaf65af53a88dbfe6537c67c8801aa5c8da",
+      "apply_after": [
+        "0003"
+      ],
+      "sha256": "66a4d3412e6e1c37c68f1d308a765d4c7b954a9f5dd02cb8e3f2e51e658283f8",
+      "changed_files": [
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/sampling/sampling_batch_info.py",
+        "python/sglang/srt/speculative/spec_utils.py",
+        "test/registered/unit/sampling/test_identity_grammar_mask.py"
+      ]
+    },
+    {
+      "id": "0005",
+      "path": "patches/common/0005-report-native-request-ownership-and-first-admission-queue-timing.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Report native request ownership and first-admission queue timing",
+      "source_commit": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+      "source_parent": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+      "result_tree": "30acf7abadc65ceea9ccd12f608c3bab25d15d70",
+      "apply_after": [
+        "0004"
+      ],
+      "sha256": "c9071d42523bfa8e099b7728774702fb4c9a091c758ed7a1c0a4268b47a3876f",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/http_server.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/observability/req_time_stats.py",
+        "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py",
+        "test/registered/unit/observability/test_queue_time_retract.py"
+      ]
+    },
+    {
+      "id": "0006",
+      "path": "patches/common/0006-register-only-logical-parents-before-parallel-sampling-expansion.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Register only logical parents before parallel-sampling expansion",
+      "source_commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+      "source_parent": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+      "result_tree": "69f2a8125142cd620a4d1497d032c10a262cedea",
+      "apply_after": [
+        "0005"
+      ],
+      "sha256": "4fc36f4ccf9e191e7fa39d3c28f2f8936826e109e32ad60d510610a3d7af8c8b",
+      "changed_files": [
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_parallel_sampling_owner_lifecycle.py"
+      ]
+    },
+    {
+      "id": "0007",
+      "path": "patches/common/0007-resolve-opt-in-environment-credentials-and-redact-diagnostic-copies.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Resolve opt-in environment credentials and redact diagnostic copies",
+      "source_commit": "0750682477e0c0aebcc055fc748a3b682b172af7",
+      "source_parent": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+      "result_tree": "3824dc35d875b322f8c7b772ef7b0d2078ae7d0c",
+      "apply_after": [
+        "0006"
+      ],
+      "sha256": "9c7c649b3c9109f0b71d0a6316ee50225fad989b5848f73d794931837cb1e30c",
+      "changed_files": [
+        "python/sglang/srt/arg_groups/fields/serving.py",
+        "python/sglang/srt/arg_groups/pipeline.py",
+        "python/sglang/srt/arg_groups/resolution_hooks.py",
+        "python/sglang/srt/arg_groups/token_auth.py",
+        "python/sglang/srt/entrypoints/engine.py",
+        "python/sglang/srt/entrypoints/grpc_bridge.py",
+        "python/sglang/srt/entrypoints/http_server.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/server_args.py",
+        "test/registered/unit/utils/test_token_env_auth.py"
+      ]
+    },
+    {
+      "id": "0008",
+      "path": "patches/common/0008-normalize-nullable-optional-json-schema-keywords.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Normalize nullable optional JSON Schema keywords",
+      "source_commit": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+      "source_parent": "0750682477e0c0aebcc055fc748a3b682b172af7",
+      "result_tree": "ba9a89a0242605ccdbfb24a5975e32b5b2eafc6a",
+      "apply_after": [
+        "0007"
+      ],
+      "sha256": "806b1891459e9f3d4ab6a895a31927280dc0933307290dfb967e75baa12b0102",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/function_call/test_normalize_json_schema_types.py"
+      ]
+    },
+    {
+      "id": "0009",
+      "path": "patches/common/0009-provide-schema-valid-tool-argument-lookup-and-conservative-coercion.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Provide schema-valid tool-argument lookup and conservative coercion",
+      "source_commit": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+      "source_parent": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+      "result_tree": "172de663865db6b6ec04da0ef04ff6e4e4b7aeee",
+      "apply_after": [
+        "0008"
+      ],
+      "sha256": "ff74a3f318debca905356b0b1fd1b1f4e98a9ca7011837931917490f0d973b6d",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py"
+      ]
+    },
+    {
+      "id": "0010",
+      "path": "patches/common/0010-reject-schema-constraints-that-xgrammar-cannot-enforce.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Reject schema constraints that XGrammar cannot enforce",
+      "source_commit": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+      "source_parent": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+      "result_tree": "00e8a9232dd2759530e5a5cdea054a8aaa5ac431",
+      "apply_after": [
+        "0009"
+      ],
+      "sha256": "e721d990f587d3a572bd07adf19b14d9816c54969ffe4396a8f08376a0c46af1",
+      "changed_files": [
+        "python/sglang/srt/constrained/xgrammar_backend.py",
+        "python/sglang/srt/constrained/xgrammar_schema.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/constrained/test_xgrammar_unsupported_schema.py"
+      ]
+    },
+    {
+      "id": "0011",
+      "path": "patches/common/0011-validate-and-enforce-allowed-tool-subsets-throughout-chat-serving.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Validate and enforce allowed-tool subsets throughout chat serving",
+      "source_commit": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+      "source_parent": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+      "result_tree": "2f15078d5755ab3d4377ed18f287ab77933d85a7",
+      "apply_after": [
+        "0010"
+      ],
+      "sha256": "da197a3316e17df3fc3165e2a41d7fd8a6e8e43e37b59fea85cd1a805464fe4a",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/function_call/test_allowed_tools_choice.py"
+      ]
+    },
+    {
+      "id": "0012",
+      "path": "patches/common/0012-preserve-reasoning-visibility-controls-and-enforce-request-thinking-bounds.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Preserve reasoning visibility controls and enforce request thinking bounds",
+      "source_commit": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+      "source_parent": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+      "result_tree": "c6b564a308e465f58400c4682a827484f0064580",
+      "apply_after": [
+        "0011"
+      ],
+      "sha256": "179901d4b4cae66f7959ed7bfab74df6a3f6045e5142367a33279aa4416f03d9",
+      "changed_files": [
+        "python/sglang/srt/constrained/grammar_manager.py",
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/constrained/test_grammar_manager.py",
+        "test/registered/unit/constrained/test_reasoner_grammar_backend.py",
+        "test/registered/unit/entrypoints/openai/test_protocol.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py",
+        "test/registered/unit/managers/test_io_struct.py"
+      ]
+    },
+    {
+      "id": "0013",
+      "path": "patches/common/0013-drop-streaming-tool-deltas-that-precede-a-valid-function-name.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Drop streaming tool deltas that precede a valid function name",
+      "source_commit": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+      "source_parent": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+      "result_tree": "076b5d9ede9cec8ad763b690ab0e115530c6fecd",
+      "apply_after": [
+        "0012"
+      ],
+      "sha256": "4e3e4e0529cd956c713fb4cd23fcfc1172c0c3d4a237b7d0f478d36b2c2fec6d",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ]
+    },
+    {
+      "id": "0014",
+      "path": "patches/common/0014-reject-excessive-text-budgets-before-decoding-media.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Reject excessive text budgets before decoding media",
+      "source_commit": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+      "source_parent": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+      "result_tree": "656f849d54241ce3e2f96cb43da1842a2450a1f6",
+      "apply_after": [
+        "0013"
+      ],
+      "sha256": "fa23ee162826a8b5419f8cfdaf470a679b9d270c6c23b9a21ec5e16f71ecf659",
+      "changed_files": [
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py"
+      ]
+    },
+    {
+      "id": "0015",
+      "path": "patches/common/0015-keep-malformed-image-decode-errors-request-local-while-preserving-os-faults.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Keep malformed image decode errors request-local while preserving OS faults",
+      "source_commit": "6a673233e9f7bac86b130977a967bdb77926239a",
+      "source_parent": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+      "result_tree": "b37866f4f2b71341673832663a8e10420d97db3a",
+      "apply_after": [
+        "0014"
+      ],
+      "sha256": "e96cb465a237eee934f2038a219318bfe0f7c2d1e6d37c0e154c82b214faa2d3",
+      "changed_files": [
+        "python/sglang/srt/utils/common.py",
+        "test/registered/unit/multimodal/test_base_processor_bad_input.py"
+      ]
+    },
+    {
+      "id": "0016",
+      "path": "patches/common/0016-bound-watchdog-diagnostics-and-recover-independently-of-diagnostic-success.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Bound watchdog diagnostics and recover independently of diagnostic success",
+      "source_commit": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+      "source_parent": "6a673233e9f7bac86b130977a967bdb77926239a",
+      "result_tree": "7d4989f82cd82dd1ee9b8c119b1e688d2248dfbe",
+      "apply_after": [
+        "0015"
+      ],
+      "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
+      "changed_files": [
+        "python/sglang/srt/utils/cudacore_pyspy_dump_utils.py",
+        "python/sglang/srt/utils/watchdog.py",
+        "test/registered/unit/test_watchdog_fail_hard.py",
+        "test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py"
+      ]
+    },
+    {
+      "id": "0017",
+      "path": "patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch",
+      "owner": "serving",
+      "scope": "qwen-family",
+      "title": "Adapt Qwen3.5-family templates, effort bounds and tool history",
+      "source_commit": "348b3066f561fcf9748bae2659327107f1002d18",
+      "source_parent": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+      "result_tree": "940f557385b3fd78a6439b82366697b0b194725f",
+      "apply_after": [
+        "0016"
+      ],
+      "sha256": "fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ]
+    },
+    {
+      "id": "0018",
+      "path": "patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch",
+      "owner": "serving",
+      "scope": "qwen-family",
+      "title": "Align Qwen3 Coder argument coercion and structural-tag repetition",
+      "source_commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+      "source_parent": "348b3066f561fcf9748bae2659327107f1002d18",
+      "result_tree": "e80c25bf69a989d3d41501bf20b5afea8ecaab48",
+      "apply_after": [
+        "0017"
+      ],
+      "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
+      "changed_files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py",
+        "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py",
+        "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+      ]
+    },
+    {
+      "id": "0019",
+      "path": "patches/common/0019-prevent-network-retrieval-during-tool-argument-schema-coercion.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Prevent network retrieval during tool argument schema coercion",
+      "source_commit": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+      "source_parent": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+      "result_tree": "c8b0d4c5022d3a6bbfb9efc8fabe1148414db83b",
+      "apply_after": [
+        "0018"
+      ],
+      "sha256": "a1a53212c7cda28f764fb1a235c8011e7a297689baa726e9f3d8e2a377ec4798",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/function_call/test_schema_reference_isolation.py"
+      ]
+    },
+    {
+      "id": "0020",
+      "path": "patches/common/0020-enforce-explicit-allowed-tools-subsets-at-response-emission.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Enforce explicit allowed-tools subsets at response emission",
+      "source_commit": "3c76218a6f3c9621f0cc08af1bf325c7633429ce",
+      "source_parent": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+      "result_tree": "56f78eb969e50a2eccd8e295d1c6535c7001c00b",
+      "apply_after": [
+        "0019"
+      ],
+      "sha256": "4848970e341c403b2577861c1a893c2073ddc16972d5d50a13e2bdbf6352d043",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_allowed_tools_output.py"
+      ]
+    },
+    {
+      "id": "0021",
+      "path": "patches/models/glm/0021-publish-glm-tool-calls-atomically-after-the-closing-marker.patch",
+      "owner": "serving",
+      "scope": "glm-parser",
+      "title": "Publish GLM tool calls atomically after the closing marker",
+      "source_commit": "2d12271ad4d2dbaabb093c8ae5c1fa9071923c3d",
+      "source_parent": "3c76218a6f3c9621f0cc08af1bf325c7633429ce",
+      "result_tree": "4c4731beff26681e69da033eecdf08051b63a4a5",
+      "apply_after": [
+        "0020"
+      ],
+      "sha256": "048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d",
+      "changed_files": [
+        "python/sglang/srt/function_call/glm47_moe_detector.py",
+        "test/manual/test_glm53_atomic_tools.py"
+      ]
+    },
+    {
+      "id": "0022",
+      "path": "patches/common/0022-cap-reported-reasoning-tokens-at-the-completed-output-length.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Cap reported reasoning tokens at the completed output length",
+      "source_commit": "1e645a80fb0eb09a5b071e056796de74835ecf94",
+      "source_parent": "2d12271ad4d2dbaabb093c8ae5c1fa9071923c3d",
+      "result_tree": "041fddbd405de1fc7e676cedcf72d49b96acda94",
+      "apply_after": [
+        "0021"
+      ],
+      "sha256": "85e7ce6d0c8f921d4ef4d9a6e057a9f85f31e52f0c01b36dc95388b17948d142",
+      "changed_files": [
+        "python/sglang/srt/managers/schedule_batch.py",
+        "test/manual/test_glm53_reasoning_usage.py"
+      ]
+    },
+    {
+      "id": "0023",
+      "path": "patches/common/0023-account-dsa-host-startup-allocations-and-enforce-requested-hugepages.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Account DSA host startup allocations and enforce requested hugepages",
+      "source_commit": "9e020f0cdf30d3470efada4a6dcc3aaae3b0222d",
+      "source_parent": "1e645a80fb0eb09a5b071e056796de74835ecf94",
+      "result_tree": "d4d15983e24efd707e08a9eee849f0ffbe178fd1",
+      "apply_after": [
+        "0022"
+      ],
+      "sha256": "f884a075f239640b50770a7200459eed387c28a696bf9124a92442e519582743",
+      "changed_files": [
+        "python/sglang/srt/environ.py",
+        "python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py",
+        "python/sglang/srt/mem_cache/pool_host/allocation_budget.py",
+        "python/sglang/srt/mem_cache/pool_host/base.py",
+        "python/sglang/srt/mem_cache/pool_host/common.py",
+        "python/sglang/srt/mem_cache/pool_host/dsa.py",
+        "python/sglang/srt/mem_cache/storage/mmap/mmap_allocator.py",
+        "test/manual/test_glm53_dsa_host_budget.py"
+      ]
+    },
+    {
+      "id": "0024",
+      "path": "patches/common/0024-refresh-an-idle-local-running-gauge-without-resetting-token-counters.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Refresh an idle local running gauge without resetting token counters",
+      "source_commit": "e84bb2a5c817e67d641c660cf1b015ddd0ce3da1",
+      "source_parent": "9e020f0cdf30d3470efada4a6dcc3aaae3b0222d",
+      "result_tree": "54f1caec72ef81d3ba54acb1a5e8b58b47cb66b4",
+      "apply_after": [
+        "0023"
+      ],
+      "sha256": "26c0d376f8fa6918aacc8c095cbfbf17cbef835885165a50956bccf8fb0287b0",
+      "changed_files": [
+        "python/sglang/srt/managers/scheduler_components/metrics_reporter.py",
+        "test/manual/test_glm53_idle_dp_gauge.py"
+      ]
+    },
+    {
+      "id": "0025",
+      "path": "patches/common/0025-isolate-mooncake-ssd-directories-by-physical-worker-rank.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Isolate Mooncake SSD directories by physical worker rank",
+      "source_commit": "f7a7d6333a01add812bd6631794c086c1f0acae5",
+      "source_parent": "e84bb2a5c817e67d641c660cf1b015ddd0ce3da1",
+      "result_tree": "58c54d777f33d567828be88df788198690211dd1",
+      "apply_after": [
+        "0024"
+      ],
+      "sha256": "812500fbeda8c4b5e7b7ee710aca46d4108c1cbeee98c7d10e99f698c5ae8a9e",
+      "changed_files": [
+        "python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py",
+        "test/manual/test_glm53_mooncake_ssd_ranks.py"
+      ]
+    },
+    {
+      "id": "0026",
+      "path": "patches/common/0026-back-up-completed-write-through-chunks-after-rotation-acceptance.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Back up completed write-through chunks after rotation acceptance",
+      "source_commit": "8efd135647f8cdd631ceddbe49e8ad0a4df260bc",
+      "source_parent": "f7a7d6333a01add812bd6631794c086c1f0acae5",
+      "result_tree": "2f9c2813f09cdd24fe1b2d134f2f79f93739e821",
+      "apply_after": [
+        "0025"
+      ],
+      "sha256": "b8d569d9072eb0b892f660363c63373cb2d1d1e43e330beeaad7beab56758535",
+      "changed_files": [
+        "python/sglang/srt/mem_cache/unified_radix_cache.py",
+        "test/manual/test_glm53_completed_chunks.py"
+      ]
+    },
+    {
+      "id": "0027",
+      "path": "patches/dependencies/flashinfer/0027-fix-release-flashinfer-workspace-retained-allocations.patch",
+      "owner": "serving",
+      "scope": "flashinfer-0.6.18-workspace",
+      "title": "fix: release FlashInfer workspace retained allocations",
+      "source_commit": "2f96c6101950d7caac632774d3d0418438325da2",
+      "source_parent": "8efd135647f8cdd631ceddbe49e8ad0a4df260bc",
+      "result_tree": "86d10dfdcb6858abac00a7c59497c31d60000b3a",
+      "apply_after": [
+        "0026"
+      ],
+      "sha256": "7be9deff809de3ba198b46c67056b004755c4b162bbb7397721f5897288bff4b",
+      "changed_files": [
+        "docker/phala-glm53-v0520/dependency-overlay-manifest.json",
+        "docker/phala-glm53-v0520/dependency-overlays/flashinfer/comm/allreduce.py",
+        "docker/phala-glm53-v0520/test_flashinfer_workspace_cleanup.py"
+      ]
+    },
+    {
+      "id": "0028",
+      "path": "patches/common/0028-fix-bound-chunk-continuation-by-physical-kv-capacity.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "fix: bound chunk continuation by physical KV capacity",
+      "source_commit": "c4ce9b560716c2ac4f53c63450c69fb38e3fbb17",
+      "source_parent": "2f96c6101950d7caac632774d3d0418438325da2",
+      "result_tree": "1523c2541c637e430049a596506c9b1234905119",
+      "apply_after": [
+        "0027"
+      ],
+      "sha256": "b79ba3eeda6668ab474dc450ab9eca4aa50ef116c1acf591ddf267a0e007fa0d",
+      "changed_files": [
+        "python/sglang/srt/managers/schedule_policy.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "test/manual/test_chunked_prefill_physical_budget.py"
+      ]
+    },
+    {
+      "id": "0029",
+      "path": "patches/common/0029-preserve-guarded-host-only-async-ack-with-spawn-safe-regression.patch",
+      "owner": "serving",
+      "scope": "common-with-runtime-guards",
+      "title": "Preserve guarded host-only async ACK with spawn-safe regression",
+      "source_commit": "5bae612858ac7935eb4321227268b0c2d6e07d61",
+      "source_parent": "c4ce9b560716c2ac4f53c63450c69fb38e3fbb17",
+      "result_tree": "f146db53a9c8db9a2e85adb0003b1b510d30ea92",
+      "apply_after": [
+        "0028"
+      ],
+      "sha256": "a42117d68d3f8fa00652cc7e32b15f3febe8153966788c85539440024fdc1fe7",
+      "changed_files": [
+        "python/sglang/srt/environ.py",
+        "python/sglang/srt/mem_cache/unified_radix_cache.py",
+        "test/manual/test_hicache_async_ack_sync.py"
+      ]
+    },
+    {
+      "id": "0030",
+      "path": "patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch",
+      "owner": "serving",
+      "scope": "glm-parser",
+      "title": "Apply recorded GLM parser regression formatting fixes",
+      "source_commit": "63a21f09fcc26892a6d30c76945b783aa0eb3149",
+      "source_parent": "5bae612858ac7935eb4321227268b0c2d6e07d61",
+      "result_tree": "0a1c456602e7dbadacc55449bc64625b2797c3bc",
+      "apply_after": [
+        "0029"
+      ],
+      "sha256": "984ec91c39d024b7ba560837c00c76bd4c0acaf2c24d0f3da42cc60709830787",
+      "changed_files": [
+        "python/sglang/srt/function_call/glm47_moe_detector.py",
+        "test/manual/test_glm53_atomic_tools.py"
+      ]
+    },
+    {
+      "id": "0031",
+      "path": "integrations/governor/0031-integrate-frozen-governor-v0-1-1-hooks-into-complete-engine-source.patch",
+      "owner": "governor",
+      "scope": "explicit-component-integration",
+      "title": "Integrate frozen Governor v0.1.1 hooks into complete engine source",
+      "source_commit": "4281309187007db579a2195f40adfd4baa538528",
+      "source_parent": "63a21f09fcc26892a6d30c76945b783aa0eb3149",
+      "result_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "apply_after": [
+        "0030"
+      ],
+      "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/http_server.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/scheduler.py"
+      ],
+      "component_source": {
+        "repository": "https://github.com/Phala-Network/phala-inference-governor",
+        "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
+        "path": "patches/sglang/v0.5.20/0001-governor-hooks.patch",
+        "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6"
+      }
+    }
+  ]
+}
