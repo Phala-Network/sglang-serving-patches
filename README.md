@@ -1,38 +1,42 @@
 # SGLang Serving Patches
 
-Version-pinned SGLang serving and model compatibility fixes maintained by
-Phala Network, independently of
-[Phala Inference Governor](https://github.com/Phala-Network/phala-inference-governor).
+Optional generated exports of Phala's SGLang changes. The authoritative engine
+source is the complete, real SGLang tree in
+[Phala-Network/sglang](https://github.com/Phala-Network/sglang).
+Develop, review, test and update engine changes there first.
 
 ## Scope
 
-This repository is the destination for downstream fixes that remain necessary
-when Governor is disabled. Examples include request lifecycle and resource
-cleanup, worker metadata, grammar and schema handling, model-specific tool
-calling and reasoning compatibility, and serving diagnostics.
+This repository is not a second implementation or a mandatory release stage.
+Common serving fixes and model-specific behavior belong in the complete engine
+source. Consolidating ownership does not prove every model or topology works.
 
 Governor retains its Rust controller, Python adapter, policy API and the minimal
 SGLang hooks needed to integrate those components. TAIL retains its transport and
 attestation responsibilities. Deployment configuration composes independently
 pinned versions of these projects.
 
-## Patch organization
+## Optional exports
 
-Keep generic serving fixes separate from model-specific compatibility changes.
-For each supported SGLang version, record the exact upstream commit, ordered
-patches, patch hashes, upstream issue or PR references where available, and
-targeted validation evidence. Model-specific patches should identify the model
-and behavior they affect instead of becoming an implicit dependency for all
-models.
+If a consumer needs patches, generate them from pinned upstream and complete
+engine commits. Record those commits, the engine tree, deterministic export
+procedure and relevant validation. The source repository owns that procedure
+and its checks. Do not add per-model profiles, independent model CI or duplicate
+manual maintenance here. An export is a derived artifact, not the source of
+truth. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-On upstream upgrades, review fixes individually and retire a patch only after
-confirming equivalent upstream behavior and running the relevant regression.
-Do not move Governor integration code here merely because it touches SGLang.
+Runtime image releases belong to `ghcr.io/phala-network/sglang` and bind to the
+complete engine source commit. This repository does not establish image or
+production acceptance.
 
-## Migration status
+## Historical proposals
 
-Repository boundary established; patch migration is pending. No patches or
-runtime images are released from this repository yet. Existing Governor and
-model build inputs have not been changed by this initial repository creation.
-Migration must preserve patch provenance and passing evidence, then update the
-build dependency references without modifying an in-progress frozen build.
+The superseded profile/export proposals are preserved through archive tags;
+[ARCHIVE.md](ARCHIVE.md) records original commits and PRs. Their source, tests
+and evidence remain available for selective reuse in the engine repository.
+Archival does not mean they were merged, tested together or production accepted.
+
+Main contains documentation, not an accepted patch stack. The four legacy
+profile/export Actions workflows remain disabled; main has no workflow files.
+Historical runs and evidence are retained. No replacement standalone CI is
+required for this optional export repository.
