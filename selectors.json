@@ -76,6 +76,57 @@
       "patches": [],
       "status": "no_replayable_gemma_only_patch",
       "validation_boundary": "Historical profile retained; no model-specific v0.5.20 patch bytes"
+    },
+    "glm-5.3-v0520-frozen": {
+      "model_family": "glm-5.3",
+      "version": "v0.5.20",
+      "topology": ["TP8", "host-ACK-guarded", "Mooncake-guarded"],
+      "patches": [
+        {"id":"0021","path":"patches/models/glm/0021-publish-glm-tool-calls-atomically-after-the-closing-marker.patch","sha256":"048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d"},
+        {"id":"0030","path":"patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch","sha256":"984ec91c39d024b7ba560837c00c76bd4c0acaf2c24d0f3da42cc60709830787"}
+      ],
+      "status": "selected_in_complete_engine_428",
+      "validation_boundary": "GLM CPU/Gloo evidence exists; no new GPU/Governor-on-GLM acceptance"
+    },
+    "qwen3-family-v0520": {
+      "model_family": "qwen3-family",
+      "version": "v0.5.20",
+      "topology": ["model-guarded"],
+      "patches": [
+        {"id":"0017","path":"patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch","sha256":"fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24"},
+        {"id":"0018","path":"patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch","sha256":"a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32"}
+      ],
+      "status": "selected_in_complete_engine_428",
+      "validation_boundary": "Common/Qwen source evidence; architecture/load-format guards remain required"
+    },
+    "qwen35-gguf-v0519-historical": {
+      "model_family": "qwen3.5-gguf",
+      "version": "v0.5.19",
+      "patches": [],
+      "pending_historical_patch_directory": "patches/models/qwen",
+      "status": "pending_v0520_semantic_migration",
+      "validation_boundary": "Legacy GGUF patches retained; not selected against v0.5.20"
+    },
+    "qwen38-27b-v0519-historical": {
+      "model_family": "qwen3.8-27b",
+      "version": "v0.5.19",
+      "patches": [],
+      "status": "pending_version_migration",
+      "validation_boundary": "Historical five-CVM lineage; no v0.5.20 selected model-only delta"
+    },
+    "qwen36-27b-v0519-historical": {
+      "model_family": "qwen3.6-27b",
+      "version": "v0.5.19",
+      "patches": [],
+      "status": "pending_version_migration",
+      "validation_boundary": "Historical five-CVM lineage; common behavior requires current-version review"
+    },
+    "qwen25-7b-v0519-historical": {
+      "model_family": "qwen2.5-7b",
+      "version": "v0.5.19",
+      "patches": [],
+      "status": "pending_version_migration",
+      "validation_boundary": "Do not infer Qwen3.5/GGUF applicability from shared image"
     }
   }
 }
