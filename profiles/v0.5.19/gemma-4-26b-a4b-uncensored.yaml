@@ -1,0 +1,294 @@
+{
+  "schema_version": 1,
+  "model": "gemma-4-26b-a4b-uncensored",
+  "sglang_version": "v0.5.19",
+  "upstream_commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+  "source_repository": "https://github.com/Phala-Network/sglang",
+  "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+  "expected_engine_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+  "governor": {
+    "enabled": false
+  },
+  "selection_scope": "Historical deployed image source footprint, not a minimal model requirement set. All inherited model patches are explicitly listed. No cross-model or topology qualification is inferred.",
+  "original_deployed_source": "82da9278e229402abcb50b46ee5a57e801bb651c",
+  "projection": "Full upstream tree plus all changes under python/, test/, sgl-kernel/, 3rdparty/. Historical packaging is preserved separately in Compose, not silently included.",
+  "patches": [
+    {
+      "id": "5404f7600755",
+      "path": "patches/sglang/v0.5.19/models/qwen-gguf/5404f7600755.patch",
+      "sha256": "e17c5cba9cf4fbc97c38a7a08fcc8ed3e8091b313f6fe02d0d8f8e9b4b5baac8",
+      "source_commit": "81881bd7c1a0d867513dbef9b650656fdc1fa9e2",
+      "source_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "source_tree": "ef801d9f1398ccff29fa71bbc0d5ec904c182395",
+      "original_commit": "5404f76007558048d16a458743fcc48afce37cc9",
+      "original_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Fix Qwen3.5 GGUF loading on official SGLang v0.5.19",
+      "ownership": "models/qwen-gguf",
+      "files": [
+        "python/sglang/srt/layers/linear.py",
+        "python/sglang/srt/model_loader/gguf_name_maps.py",
+        "python/sglang/srt/model_loader/loader.py",
+        "python/sglang/srt/models/qwen3_5.py",
+        "python/sglang/srt/models/qwen3_5_text.py",
+        "test/registered/unit/test_qwen35_gguf_weight_transform.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "0bcd822377da7b5718e674eaf9c870d349424dd1",
+        "81881bd7c1a0d867513dbef9b650656fdc1fa9e2"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "d67e821bd5ea",
+      "path": "patches/sglang/v0.5.19/models/qwen-gguf/d67e821bd5ea.patch",
+      "sha256": "2b4a34b1366c61da0fe67cd4c31cc310c8ad4525f285def2bb3f59dab81c915c",
+      "source_commit": "39eedc17eb620a3533ff4633141d73a0d5a89016",
+      "source_parent": "81881bd7c1a0d867513dbef9b650656fdc1fa9e2",
+      "source_tree": "2fa1ed5eab5c79d56ce5c32427c6fcb4f3c5da82",
+      "original_commit": "d67e821bd5ea95286a0f3d7896b6d46f41032df6",
+      "original_parent": "b511d6d28a6c9d987ee30573c29542c8f7421e5d",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Audit GGUF load completeness by shared parameter identity",
+      "ownership": "models/qwen-gguf",
+      "files": [
+        "python/sglang/srt/model_loader/gguf_name_maps.py",
+        "python/sglang/srt/model_loader/loader.py",
+        "test/registered/unit/test_qwen35_gguf_weight_transform.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "81881bd7c1a0d867513dbef9b650656fdc1fa9e2",
+        "39eedc17eb620a3533ff4633141d73a0d5a89016"
+      ],
+      "depends_on": [
+        "5404f7600755"
+      ]
+    },
+    {
+      "id": "ea31b4a3509f",
+      "path": "patches/sglang/v0.5.19/models/qwen-gguf/ea31b4a3509f.patch",
+      "sha256": "c8e30fa527384fc6b96a25222792974ad0e29a8eac6e39e4bd44ab565b8f556a",
+      "source_commit": "55c45e7499621201fbabe73e10ffdea401e0aa5e",
+      "source_parent": "39eedc17eb620a3533ff4633141d73a0d5a89016",
+      "source_tree": "c2e1d07a5d86e6baba0a8714d9b3bd2823926ecc",
+      "original_commit": "ea31b4a3509f09f9b91203d6e88b5bcd6d929926",
+      "original_parent": "d67e821bd5ea95286a0f3d7896b6d46f41032df6",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Preserve Qwen tool argument schemas and complete streaming calls",
+      "ownership": "models/qwen-gguf",
+      "files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "python/sglang/srt/function_call/schema_argument_coercion.py",
+        "test/registered/unit/test_qwen_coder_schema_contract.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "39eedc17eb620a3533ff4633141d73a0d5a89016",
+        "55c45e7499621201fbabe73e10ffdea401e0aa5e"
+      ],
+      "depends_on": [
+        "d67e821bd5ea"
+      ]
+    },
+    {
+      "id": "79e215cde60b",
+      "path": "patches/sglang/v0.5.19/common/79e215cde60b.patch",
+      "sha256": "d7907ec9103123bc25ab8cfb146ebc1e3b22fa7f7bff4db6ed4cf46a73d95f1c",
+      "source_commit": "97882c58422b6253ae994aa39f9d34825b038654",
+      "source_parent": "55c45e7499621201fbabe73e10ffdea401e0aa5e",
+      "source_tree": "44e2402e158773be029f568d7109655eff72e910",
+      "original_commit": "79e215cde60b968c002c8b819845c1c42e1a4f60",
+      "original_parent": "ea31b4a3509f09f9b91203d6e88b5bcd6d929926",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Supply llguidance mask callbacks to the reasoning wrapper",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/constrained/llguidance_backend.py",
+        "test/registered/unit/test_guidance_reasoner_callbacks.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "55c45e7499621201fbabe73e10ffdea401e0aa5e",
+        "97882c58422b6253ae994aa39f9d34825b038654"
+      ],
+      "depends_on": [
+        "ea31b4a3509f"
+      ]
+    },
+    {
+      "id": "e26b9f4dae32",
+      "path": "patches/sglang/v0.5.19/common/e26b9f4dae32.patch",
+      "sha256": "73abbe057aa8032d5a804d19292592d4d866156bda1741949dd32500c2aaa7c3",
+      "source_commit": "6ecc100728f6b85500800bb683fd2f9743340569",
+      "source_parent": "97882c58422b6253ae994aa39f9d34825b038654",
+      "source_tree": "efe9a5ad3f341b6602f29caa0281e6fc60177d4a",
+      "original_commit": "e26b9f4dae3205e280ae032f78dba468dd2b1dd5",
+      "original_parent": "79e215cde60b968c002c8b819845c1c42e1a4f60",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Preserve local schema reference roots for named tool choice",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/test_named_tool_reference_scope.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "97882c58422b6253ae994aa39f9d34825b038654",
+        "6ecc100728f6b85500800bb683fd2f9743340569"
+      ],
+      "depends_on": [
+        "79e215cde60b"
+      ]
+    },
+    {
+      "id": "f80677f937c5",
+      "path": "patches/sglang/v0.5.19/common/f80677f937c5.patch",
+      "sha256": "3ccb8606ff7487c754106e6a39e2b915f4b27793deb26827b042ffa643ac9b4f",
+      "source_commit": "5a9b0690dddaf0100acabc1ed0eadccb0e0d1255",
+      "source_parent": "6ecc100728f6b85500800bb683fd2f9743340569",
+      "source_tree": "42e00f02017ead40ff037ffad17596c8978cb8b5",
+      "original_commit": "f80677f937c580a3a55a568df1f65313190d2ca6",
+      "original_parent": "e26b9f4dae3205e280ae032f78dba468dd2b1dd5",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Honor checkpoint mode-specific sampling defaults and explicit overrides",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/mode_sampling_defaults.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/test_mode_sampling_defaults.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "6ecc100728f6b85500800bb683fd2f9743340569",
+        "5a9b0690dddaf0100acabc1ed0eadccb0e0d1255"
+      ],
+      "depends_on": [
+        "e26b9f4dae32"
+      ]
+    },
+    {
+      "id": "2b2584575aa5",
+      "path": "patches/sglang/v0.5.19/models/qwen-gguf/2b2584575aa5.patch",
+      "sha256": "675a71e7259891f2cd441da9b5918ff96942e91eadbe7536073c8e8ca5ade993",
+      "source_commit": "788a8983750cd29aaee5f07ce5f937e7ae1e623f",
+      "source_parent": "5a9b0690dddaf0100acabc1ed0eadccb0e0d1255",
+      "source_tree": "1c4b9e5be53162743f8a8fba7e2355197a3b3eb5",
+      "original_commit": "2b2584575aa53702ce331c60a70f96b038610665",
+      "original_parent": "f80677f937c580a3a55a568df1f65313190d2ca6",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Add audited Qwen3.5 GGUF vision projector loading",
+      "ownership": "models/qwen-gguf",
+      "files": [
+        "python/sglang/srt/model_loader/gguf_vision.py",
+        "python/sglang/srt/model_loader/loader.py",
+        "test/registered/unit/test_qwen35_gguf_vision.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "5a9b0690dddaf0100acabc1ed0eadccb0e0d1255",
+        "788a8983750cd29aaee5f07ce5f937e7ae1e623f"
+      ],
+      "depends_on": [
+        "f80677f937c5"
+      ]
+    },
+    {
+      "id": "c4afa9828243",
+      "path": "patches/sglang/v0.5.19/models/qwen-gguf/c4afa9828243.patch",
+      "sha256": "97ab8d86484a4f59dcc7677ab6c7bbf1f6a98350fbb5854e41415d9d1e1f0c50",
+      "source_commit": "be0e34807dfb65dda85877bb7ca9ec17b7a05430",
+      "source_parent": "788a8983750cd29aaee5f07ce5f937e7ae1e623f",
+      "source_tree": "3c0a40d6b6fc613d19d8deb38546d66db1752cb9",
+      "original_commit": "c4afa982824346428c8b6b90b7d241cec487da9d",
+      "original_parent": "2b2584575aa53702ce331c60a70f96b038610665",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Use tensor-core BF16 GEMM for large Q8_0 prefills",
+      "ownership": "models/qwen-gguf",
+      "files": [
+        "python/sglang/srt/layers/quantization/gguf.py",
+        "test/registered/unit/test_gguf_prefill_dispatch.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "788a8983750cd29aaee5f07ce5f937e7ae1e623f",
+        "be0e34807dfb65dda85877bb7ca9ec17b7a05430"
+      ],
+      "depends_on": [
+        "2b2584575aa5"
+      ]
+    },
+    {
+      "id": "82da9278e229",
+      "path": "patches/sglang/v0.5.19/common/82da9278e229.patch",
+      "sha256": "f40f012fac8eabc1802a4dc866fa883728779d7db7fd1a4e47965839145816a5",
+      "source_commit": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+      "source_parent": "be0e34807dfb65dda85877bb7ca9ec17b7a05430",
+      "source_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+      "original_commit": "82da9278e229402abcb50b46ee5a57e801bb651c",
+      "original_parent": "c4afa982824346428c8b6b90b7d241cec487da9d",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/29",
+      "review_status": "draft-not-approved",
+      "subject": "Backport upstream 35255 dispatched request cancellation repair",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/test_dispatched_cancel_cleanup.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "be0e34807dfb65dda85877bb7ca9ec17b7a05430",
+        "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571"
+      ],
+      "depends_on": [
+        "c4afa9828243"
+      ]
+    }
+  ]
+}

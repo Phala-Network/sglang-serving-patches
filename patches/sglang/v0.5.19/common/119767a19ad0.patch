@@ -1,0 +1,482 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 33740a344cd90429451dc9455e3ba1dc131e7792..b955f7c90f6066dc6926d48d02210520e195433e 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1031,6 +1031,15 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             contains_mm_input or is_mossvl
+         )
+ 
++        # Reject requests whose text alone already exhausts the context before
++        # media decoding or feature extraction can consume bounded worker/GPU
++        # resources. The post-MM validation below remains authoritative because
++        # media expansion can add tokens. Auto-truncation is intentionally left
++        # to that final validation so a multimodal prompt is never truncated
++        # before the processor has constructed its complete token sequence.
++        if should_run_mm_processor and not self.allow_auto_truncate:
++            self._validate_token_budget(obj, input_ids)
++
+         if should_run_mm_processor:
+             if obj.image_data is not None and not isinstance(obj.image_data, list):
+                 obj.image_data = [obj.image_data]
+@@ -1177,11 +1186,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             normalized.append(provided or embedded)
+         obj.mm_content_hashes = normalized
+ 
+-    def _validate_one_request(
++    def _validate_token_budget(
+         self, obj: Union[GenerateReqInput, EmbeddingReqInput], input_ids: List[int]
+     ) -> None:
+-        """Validates that the input token count and the requested token count doesn't exceed the model's context length."""
+-        # FIXME: unify the length validation logic with the one in the scheduler.
++        """Validate input and requested output tokens against the context length."""
+         _max_req_len = self.context_len
+         input_token_num = len(input_ids) if input_ids is not None else 0
+         input_token_num += self.num_reserved_tokens
+@@ -1229,6 +1237,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 )
+                 raise ValueError(error_msg)
+ 
++    def _validate_one_request(
++        self, obj: Union[GenerateReqInput, EmbeddingReqInput], input_ids: List[int]
++    ) -> None:
++        """Validate one fully tokenized request before scheduler dispatch."""
++        # FIXME: unify the length validation logic with the one in the scheduler.
++        self._validate_token_budget(obj, input_ids)
++
+         # Validate embedding requests
+         if isinstance(obj, EmbeddingReqInput) and self.is_generation:
+             raise ValueError(
+diff --git a/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py b/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
+index ea31a8166800482f83757cb50ec86a0333f51622..51474434272335480bac3755657ba3ab19d7a5bb 100644
+--- a/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
++++ b/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
+@@ -28,6 +28,8 @@ import psutil
+ 
+ logger = logging.getLogger(__name__)
+ 
++PYSPY_DUMP_TIMEOUT_SECONDS = 10
++
+ 
+ def _resolve_cuda_coredump_pipe_path(proc: psutil.Process) -> Path:
+     pipe_template = os.environ.get("CUDA_COREDUMP_PIPE")
+@@ -82,10 +84,24 @@ def pyspy_dump_schedulers(scheduler_only=False):
+             try:
+                 cmd = f"py-spy dump {native_flag} --pid {pid}".strip()
+                 result = subprocess.run(
+-                    cmd, shell=True, capture_output=True, text=True, check=True
++                    cmd,
++                    shell=True,
++                    capture_output=True,
++                    text=True,
++                    check=True,
++                    timeout=PYSPY_DUMP_TIMEOUT_SECONDS,
+                 )
+                 logger.error(f"Pyspy dump for PID {pid} ({cmd}):\n{result.stdout}")
+                 break
++            except subprocess.TimeoutExpired:
++                logger.error(
++                    "Pyspy timed out after %ss for PID %s (%s).",
++                    PYSPY_DUMP_TIMEOUT_SECONDS,
++                    pid,
++                    cmd,
++                )
++                if attempt == 1:
++                    logger.error(f"All pyspy dump attempts failed for PID {pid}.")
+             except subprocess.CalledProcessError as e:
+                 logger.error(f"Pyspy failed ({cmd}). Error: {e.stderr}")
+                 if attempt == 1:
+diff --git a/python/sglang/srt/utils/watchdog.py b/python/sglang/srt/utils/watchdog.py
+index 6c39d22e87ed6ddbd6f5ad3bed47674831c312ad..b6d3dc810def90b8867d2a8eef96aa410cf9bbb6 100644
+--- a/python/sglang/srt/utils/watchdog.py
++++ b/python/sglang/srt/utils/watchdog.py
+@@ -16,6 +16,8 @@ from sglang.srt.utils.cudacore_pyspy_dump_utils import pyspy_dump_schedulers
+ 
+ logger = logging.getLogger(__name__)
+ 
++HARD_WATCHDOG_GRACE_SECONDS = 5.0
++
+ 
+ class Watchdog:
+     @staticmethod
+@@ -146,10 +148,10 @@ class WatchdogRaw:
+                     watchdog_last_time = current
+             time.sleep(self.watchdog_timeout / 2)
+ 
+-        # Timeout diagnostics must be best-effort. In particular, a broken CUDA
+-        # context can make an invariant-check dump raise AcceleratorError. Do not
+-        # let a diagnostic failure kill this thread before a hard watchdog sends
+-        # SIGQUIT to the parent process.
++        self._handle_timeout()
++
++    def _run_diagnostics(self):
++        """Run best-effort diagnostics for a non-fatal soft watchdog timeout."""
+         if self.dump_info is not None:
+             try:
+                 info_msg = self.dump_info()
+@@ -169,17 +171,59 @@ class WatchdogRaw:
+                 f"{self.debug_name} failed to dump scheduler stacks: {e}",
+                 exc_info=True,
+             )
++
++    def _handle_timeout(self):
++        """Handle a detected timeout without letting diagnostics block recovery."""
+         logger.error(
+             f"{self.debug_name} watchdog timeout "
+             f"({self.watchdog_timeout=}, {self.soft=})"
+         )
+-        print(file=sys.stderr, flush=True)
+-        print(file=sys.stdout, flush=True)
++        sys.stderr.flush()
++        sys.stdout.flush()
+ 
+-        if not self.soft:
+-            # Wait for some time so that the parent process can print the error.
+-            time.sleep(5)
++        if self.soft:
++            self._run_diagnostics()
++            return
++
++        # Hard watchdog recovery is termination-first. A CUDA or native-code
++        # stall can also block invariant dumps and py-spy indefinitely, so do
++        # not run either before asking the launch process to tear down the tree.
++        try:
+             self.parent_process.send_signal(signal.SIGQUIT)
++        except psutil.NoSuchProcess:
++            return
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed to send SIGQUIT to parent: {e}",
++                exc_info=True,
++            )
++
++        try:
++            self.parent_process.wait(timeout=HARD_WATCHDOG_GRACE_SECONDS)
++            return
++        except psutil.NoSuchProcess:
++            return
++        except psutil.TimeoutExpired:
++            logger.error(
++                f"{self.debug_name} parent did not exit within "
++                f"{HARD_WATCHDOG_GRACE_SECONDS}s after SIGQUIT; sending SIGKILL"
++            )
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed while waiting for parent exit: {e}; "
++                "sending SIGKILL",
++                exc_info=True,
++            )
++
++        try:
++            self.parent_process.kill()
++        except psutil.NoSuchProcess:
++            pass
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed to send SIGKILL to parent: {e}",
++                exc_info=True,
++            )
+ 
+ 
+ class SubprocessWatchdog:
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py b/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..56d93414210119d789a7dc527c8d9872f0fe7e0e
+--- /dev/null
++++ b/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py
+@@ -0,0 +1,123 @@
++"""Regression tests for rejecting over-context requests before MM processing."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import asyncio
++import unittest
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock, patch
++
++from sglang.srt.managers.io_struct import GenerateReqInput
++from sglang.srt.managers.tokenizer_manager import TokenizerManager
++from sglang.test.test_utils import CustomTestCase
++
++
++class _MMProcessorEntered(RuntimeError):
++    pass
++
++
++def _make_manager(*, allow_auto_truncate=False):
++    manager = TokenizerManager.__new__(TokenizerManager)
++    manager.context_len = 8
++    manager.num_reserved_tokens = 1
++    manager.validate_total_tokens = True
++    manager.allow_auto_truncate = allow_auto_truncate
++    manager.tokenizer = MagicMock()
++    manager.max_req_input_len = 8
++    manager.server_args = SimpleNamespace(
++        language_model_only=False,
++        language_only=False,
++    )
++    manager.model_config = SimpleNamespace(
++        hf_config=SimpleNamespace(architectures=[]),
++    )
++    manager._validate_mm_limits = MagicMock()
++    manager.mm_processor = MagicMock()
++    manager.mm_processor.prefer_tokenized_input = True
++    manager.mm_processor.process_mm_data_async = AsyncMock(
++        side_effect=_MMProcessorEntered("mm processor entered")
++    )
++    return manager
++
++
++def _make_request(*, input_tokens, max_new_tokens=0, image_data=b"not-an-image"):
++    request = MagicMock(spec=GenerateReqInput)
++    request.text = "ignored because input_ids are supplied"
++    request.input_embeds = None
++    request.input_ids = [1] * input_tokens
++    request.image_data = image_data
++    request.video_data = None
++    request.audio_data = None
++    request.mm_content_hashes = None
++    request.sampling_params = {"max_new_tokens": max_new_tokens}
++    request.contains_mm_input.return_value = True
++    return request
++
++
++def _run_tokenize(manager, request):
++    with patch(
++        "sglang.srt.managers.tokenizer_manager.get_disagg",
++        return_value=SimpleNamespace(
++            language_only=False,
++            encoder_transfer_backend=None,
++        ),
++    ):
++        return asyncio.run(manager._tokenize_one_request(request))
++
++
++class TestPreMultimodalLengthValidation(CustomTestCase):
++    def test_text_budget_at_context_rejects_before_media_decode(self):
++        manager = _make_manager()
++        request = _make_request(input_tokens=7)
++
++        with self.assertRaisesRegex(ValueError, "longer than"):
++            _run_tokenize(manager, request)
++
++        manager._validate_mm_limits.assert_not_called()
++        manager.mm_processor.process_mm_data_async.assert_not_awaited()
++
++    def test_corrupt_media_is_not_touched_when_text_is_already_over_context(self):
++        manager = _make_manager()
++        request = _make_request(
++            input_tokens=8,
++            image_data=b"corrupt-jpeg-payload",
++        )
++
++        with self.assertRaisesRegex(ValueError, "longer than"):
++            _run_tokenize(manager, request)
++
++        manager.mm_processor.process_mm_data_async.assert_not_awaited()
++
++    def test_input_plus_requested_output_rejects_before_media_decode(self):
++        manager = _make_manager()
++        request = _make_request(input_tokens=5, max_new_tokens=3)
++
++        with self.assertRaisesRegex(ValueError, "Requested token count exceeds"):
++            _run_tokenize(manager, request)
++
++        manager.mm_processor.process_mm_data_async.assert_not_awaited()
++
++    def test_request_at_total_budget_reaches_media_processor(self):
++        manager = _make_manager()
++        request = _make_request(input_tokens=5, max_new_tokens=2)
++
++        with self.assertRaises(_MMProcessorEntered):
++            _run_tokenize(manager, request)
++
++        manager._validate_mm_limits.assert_called_once_with(request)
++        manager.mm_processor.process_mm_data_async.assert_awaited_once()
++
++    def test_auto_truncate_still_defers_to_post_mm_validation(self):
++        manager = _make_manager(allow_auto_truncate=True)
++        request = _make_request(input_tokens=8)
++
++        with self.assertRaises(_MMProcessorEntered):
++            _run_tokenize(manager, request)
++
++        manager.mm_processor.process_mm_data_async.assert_awaited_once()
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/test/registered/unit/test_watchdog_fail_hard.py b/test/registered/unit/test_watchdog_fail_hard.py
+index bba3fc49473510a5bb97e7998820ba882cd9b14c..693251deed02b557a6ede639da1d780b5726b5f4 100644
+--- a/test/registered/unit/test_watchdog_fail_hard.py
++++ b/test/registered/unit/test_watchdog_fail_hard.py
+@@ -1,4 +1,4 @@
+-"""Deterministic tests for watchdog fail-hard behavior after diagnostic faults."""
++"""Deterministic tests for termination-first hard watchdog behavior."""
+ 
+ from sglang.test.ci.ci_register import register_cpu_ci
+ 
+@@ -7,15 +7,13 @@ register_cpu_ci(est_time=5, suite="base-a-test-cpu")
+ import signal
+ from unittest.mock import MagicMock, patch
+ 
++import psutil
++
+ from sglang.srt.utils import watchdog as watchdog_module
+ from sglang.srt.utils.watchdog import WatchdogRaw
+ from sglang.test.test_utils import CustomTestCase
+ 
+ 
+-class FakeAcceleratorError(RuntimeError):
+-    """CUDA-like diagnostic failure without requiring an accelerator in CI."""
+-
+-
+ class TestWatchdogFailHard(CustomTestCase):
+     @staticmethod
+     def _raw(*, soft=False, dump_info=None):
+@@ -29,6 +27,7 @@ class TestWatchdogFailHard(CustomTestCase):
+         raw.soft = soft
+         raw.dump_info = dump_info
+         raw.parent_process = MagicMock()
++        raw.parent_process.wait.return_value = None
+         return raw
+ 
+     @staticmethod
+@@ -43,31 +42,48 @@ class TestWatchdogFailHard(CustomTestCase):
+         ):
+             raw._watchdog_once()
+ 
+-    def test_normal_diagnostics_still_fail_hard_once(self):
+-        raw = self._raw(dump_info=MagicMock(return_value="state"))
+-        self._run_once(raw)
++    def test_hard_timeout_signals_before_and_skips_diagnostics(self):
++        dump_info = MagicMock(side_effect=AssertionError("must not run"))
++        raw = self._raw(dump_info=dump_info)
++
++        with patch.object(watchdog_module, "pyspy_dump_schedulers") as pyspy:
++            raw._handle_timeout()
++
+         raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.wait.assert_called_once_with(
++            timeout=watchdog_module.HARD_WATCHDOG_GRACE_SECONDS
++        )
++        raw.parent_process.kill.assert_not_called()
++        dump_info.assert_not_called()
++        pyspy.assert_not_called()
+ 
+-    def test_cuda_diagnostic_failure_still_fail_hard_once(self):
+-        raw = self._raw(
+-            dump_info=MagicMock(
+-                side_effect=FakeAcceleratorError(
+-                    "CUDA error: unspecified launch failure"
+-                )
+-            )
++    def test_parent_still_alive_after_grace_receives_sigkill(self):
++        raw = self._raw(dump_info=MagicMock(return_value="state"))
++        raw.parent_process.wait.side_effect = psutil.TimeoutExpired(
++            watchdog_module.HARD_WATCHDOG_GRACE_SECONDS,
++            pid=123,
+         )
++
+         self._run_once(raw)
++
+         raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.kill.assert_called_once_with()
++
++    def test_parent_gone_after_sigquit_does_not_receive_sigkill(self):
++        raw = self._raw()
++        raw.parent_process.wait.side_effect = psutil.NoSuchProcess(pid=123)
++
++        self._run_once(raw)
+ 
+-    def test_pyspy_failure_still_fail_hard_once(self):
+-        raw = self._raw(dump_info=MagicMock(return_value="state"))
+-        self._run_once(raw, pyspy_side_effect=RuntimeError("pyspy failed"))
+         raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.kill.assert_not_called()
+ 
+     def test_soft_watchdog_never_signals_on_diagnostic_failure(self):
+-        raw = self._raw(
+-            soft=True,
+-            dump_info=MagicMock(side_effect=RuntimeError("diagnostic failed")),
+-        )
+-        self._run_once(raw)
++        dump_info = MagicMock(side_effect=RuntimeError("diagnostic failed"))
++        raw = self._raw(soft=True, dump_info=dump_info)
++        self._run_once(raw, pyspy_side_effect=RuntimeError("pyspy failed"))
++
+         raw.parent_process.send_signal.assert_not_called()
++        raw.parent_process.wait.assert_not_called()
++        raw.parent_process.kill.assert_not_called()
++        dump_info.assert_called_once_with()
+diff --git a/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py b/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eb70714d0c2a1ed8cc2b591c039db1ed8460d32
+--- /dev/null
++++ b/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py
+@@ -0,0 +1,64 @@
++"""Focused tests for bounded watchdog diagnostics and process reaping."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import inspect
++import subprocess
++import unittest
++from unittest.mock import MagicMock, patch
++
++from sglang.srt.utils import common
++from sglang.srt.utils import cudacore_pyspy_dump_utils as dump_utils
++from sglang.test.test_utils import CustomTestCase
++
++
++class TestPyspyTimeout(CustomTestCase):
++    def test_each_pyspy_attempt_has_a_bounded_timeout(self):
++        process = MagicMock(pid=123)
++        timeout = subprocess.TimeoutExpired("py-spy", 10)
++
++        with patch.object(dump_utils.psutil, "Process", return_value=process), patch.object(
++            dump_utils.subprocess,
++            "run",
++            side_effect=timeout,
++        ) as run:
++            dump_utils.pyspy_dump_schedulers()
++
++        self.assertEqual(run.call_count, 2)
++        for call in run.call_args_list:
++            self.assertEqual(
++                call.kwargs["timeout"], dump_utils.PYSPY_DUMP_TIMEOUT_SECONDS
++            )
++
++
++class TestKillProcessTreeReap(CustomTestCase):
++    def test_default_waits_for_reap(self):
++        default = inspect.signature(common.kill_process_tree).parameters[
++            "wait_timeout"
++        ].default
++        self.assertEqual(default, 60)
++
++        parent = MagicMock()
++        child = MagicMock(pid=456)
++        parent.children.return_value = [child]
++
++        with patch.object(common.psutil, "Process", return_value=parent), patch.object(
++            common, "_wait_for_reap_or_raise"
++        ) as wait:
++            common.kill_process_tree(123, include_parent=False)
++
++        child.kill.assert_called_once_with()
++        wait.assert_called_once_with([child], 60)
++
++    def test_target_disappearing_during_child_walk_is_ignored(self):
++        parent = MagicMock()
++        parent.children.side_effect = common.psutil.NoSuchProcess(pid=123)
++
++        with patch.object(common.psutil, "Process", return_value=parent):
++            common.kill_process_tree(123)
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)

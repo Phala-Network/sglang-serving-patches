@@ -1,0 +1,469 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index ed2ce6e53b8ca14f636433b5991bbeac354ecda7..eb70554364f171d2ad05f5941d5472bf206482e2 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -702,6 +702,9 @@ class ChatCompletionMessageGenericParam(BaseModel):
+     tool_call_id: Optional[str] = None
+     name: Optional[str] = None
+     reasoning_content: Optional[str] = None
++    # OpenRouter historically used ``reasoning`` for assistant history while
++    # SGLang and the OpenAI-compatible response use ``reasoning_content``.
++    reasoning: Optional[str] = Field(default=None, exclude=True)
+     tool_calls: Optional[List[ToolCall]] = Field(default=None, examples=[None])
+     tools: Optional[List[Tool]] = Field(default=None, examples=[None])
+ 
+@@ -718,6 +721,14 @@ class ChatCompletionMessageGenericParam(BaseModel):
+ 
+     @model_validator(mode="after")
+     def validate_thinking_parts_role(self):
++        if self.reasoning_content is None and self.reasoning is not None:
++            self.reasoning_content = self.reasoning
++        if self.role != "assistant" and (
++            self.reasoning_content is not None or self.reasoning is not None
++        ):
++            raise ValueError(
++                "reasoning and reasoning_content are only valid in assistant messages"
++            )
+         if self.role != "assistant" and isinstance(self.content, list):
+             for part in self.content:
+                 if isinstance(part, ChatCompletionMessageContentThinkingPart):
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 17ecfa782d65f161880d9489a6ba955a7a07c8b3..b749525a4a48c355e882d25d45d888252cad6ffb 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -4,6 +4,7 @@ import copy
+ import json
+ import logging
+ import math
++import re
+ import time
+ import uuid
+ from enum import Enum
+@@ -100,6 +101,9 @@ if TYPE_CHECKING:
+ logger = logging.getLogger(__name__)
+ 
+ _MEDIA_CONTENT_PART_TYPES = frozenset({"image_url", "video_url", "audio_url"})
++_COMPLETE_THINK_CONTENT_RE = re.compile(
++    r"\A\s*<think>(?P<reasoning>.*?)</think>\s*\Z", re.DOTALL
++)
+ 
+ 
+ def normalize_tool_content(role: str, content):
+@@ -162,6 +166,56 @@ def normalize_assistant_tool_call_arguments(
+                     raise
+ 
+ 
++def normalize_muse_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """Normalize OpenRouter history into the Muse Jinja contract.
++
++    Developer instructions are control messages, so move them into the system
++    instruction prefix instead of leaving them interleaved where the Muse
++    template would silently drop them. OpenRouter's legacy ``reasoning`` alias
++    and whole-content ``<think>`` history become ``reasoning_content``.
++    """
++    control_messages: List[Dict[str, Any]] = []
++    normalized: List[Dict[str, Any]] = []
++
++    for source in messages:
++        message = copy.deepcopy(source)
++        role = message.get("role")
++        if role in ("system", "developer"):
++            message["role"] = "system"
++            control_messages.append(message)
++            continue
++
++        if role == "assistant":
++            reasoning = message.get("reasoning_content")
++            if reasoning is None:
++                reasoning = message.get("reasoning")
++            if reasoning and not message.get("reasoning_content"):
++                message["reasoning_content"] = reasoning
++            if reasoning is None and isinstance(message.get("content"), str):
++                match = _COMPLETE_THINK_CONTENT_RE.fullmatch(message["content"])
++                if match is not None:
++                    message["reasoning_content"] = match.group("reasoning")
++                    message["content"] = ""
++            message.pop("reasoning", None)
++        normalized.append(message)
++
++    if control_messages and all(
++        isinstance(message.get("content"), str) for message in control_messages
++    ):
++        normalized.insert(
++            0,
++            {
++                "role": "system",
++                "content": "\n\n".join(
++                    message.get("content", "") for message in control_messages
++                ),
++            },
++        )
++    else:
++        normalized[0:0] = control_messages
++    return normalized
++
++
+ def _extract_max_dynamic_patch(request: ChatCompletionRequest):
+     img_vals = []
+     vid_vals = []
+@@ -1228,6 +1282,8 @@ class OpenAIServingChat(OpenAIServingBase):
+             ThinkingMode.THINKING if thinking_requested else ThinkingMode.CHAT
+         )
+         messages = [msg.model_dump() for msg in request.messages]
++        if self.tool_call_parser == "muse":
++            messages = normalize_muse_history(messages)
+         for message in messages:
+             normalize_assistant_tool_call_arguments(
+                 message, strict=self.chat_encoding_spec != "kimi_k3"
+@@ -2100,11 +2156,15 @@ class OpenAIServingChat(OpenAIServingBase):
+         # as constraint (mirrors the streaming path). For auto: always try.
+         if self.tool_call_parser:
+             parser = FunctionCallParser(
+-                tools, self.tool_call_parser, tokenizer=self.tokenizer_manager.tokenizer
++                tools,
++                self.tool_call_parser,
++                tokenizer=self.tokenizer_manager.tokenizer,
++                constrained_output=is_required,
+             )
+             detector_owns_format = (
+                 parser.detector.supports_structural_tag()
+                 or parser.detector.parses_required_natively()
++                or parser.detector.parses_constrained_output_natively()
+             )
+             should_try_parser = not is_required or detector_owns_format
+             if should_try_parser and parser.has_tool_call(text):
+@@ -2538,10 +2598,12 @@ class OpenAIServingChat(OpenAIServingBase):
+                         tools=effective_tools,
+                         tool_call_parser=self.tool_call_parser,
+                         tokenizer=self.tokenizer_manager.tokenizer,
++                        constrained_output=True,
+                     )
+                     use_native_parser = (
+                         probe.detector.supports_structural_tag()
+                         or probe.detector.parses_required_natively()
++                        or probe.detector.parses_constrained_output_natively()
+                     )
+                 if use_native_parser:
+                     parser_dict[index] = probe
+diff --git a/python/sglang/srt/function_call/base_format_detector.py b/python/sglang/srt/function_call/base_format_detector.py
+index dd848402efb6bbff164469e3bf585f044e0aa3d1..3e6ecb6db9cfb92a444a2e93f100b42884662891 100644
+--- a/python/sglang/srt/function_call/base_format_detector.py
++++ b/python/sglang/srt/function_call/base_format_detector.py
+@@ -367,6 +367,10 @@ class BaseFormatDetector(ABC):
+         constraints and parse the model's native output format instead."""
+         return False
+ 
++    def parses_constrained_output_natively(self) -> bool:
++        """Whether the detector parses JSON-constrained output in native framing."""
++        return False
++
+     @abstractmethod
+     def structure_info(self) -> _GetInfoFunc:
+         """
+diff --git a/python/sglang/srt/function_call/function_call_parser.py b/python/sglang/srt/function_call/function_call_parser.py
+index 090898b4122b52e948b68ffe7e724d579ccb30ff..4fc10df9e3bedb648c199bface60a933752bf453 100644
+--- a/python/sglang/srt/function_call/function_call_parser.py
++++ b/python/sglang/srt/function_call/function_call_parser.py
+@@ -104,7 +104,13 @@ class FunctionCallParser:
+         "inkling": InklingDetector,
+     }
+ 
+-    def __init__(self, tools: List[Tool], tool_call_parser: str, tokenizer=None):
++    def __init__(
++        self,
++        tools: List[Tool],
++        tool_call_parser: str,
++        tokenizer=None,
++        constrained_output: bool = False,
++    ):
+         detector_class = self.ToolCallParserEnum.get(tool_call_parser)
+         if detector_class:
+             kwargs = {}
+@@ -112,6 +118,8 @@ class FunctionCallParser:
+                 sig = inspect.signature(detector_class)
+                 if "tokenizer" in sig.parameters:
+                     kwargs["tokenizer"] = tokenizer
++            if "constrained_output" in inspect.signature(detector_class).parameters:
++                kwargs["constrained_output"] = constrained_output
+             detector = detector_class(**kwargs)
+         else:
+             raise ValueError(f"Unsupported tool_call_parser: {tool_call_parser}")
+diff --git a/python/sglang/srt/function_call/muse_glimmer_detector.py b/python/sglang/srt/function_call/muse_glimmer_detector.py
+index 61ad511f8118cb718571fcb6beea2971bf35baa9..57392792af2d2518e439715e7e3c72e04509e754 100644
+--- a/python/sglang/srt/function_call/muse_glimmer_detector.py
++++ b/python/sglang/srt/function_call/muse_glimmer_detector.py
+@@ -88,8 +88,9 @@ def _normalize_name(emitted: str, registered: Set[str]) -> str:
+ class MuseGlimmerDetector(BaseFormatDetector):
+     """Format detector for Muse Glimmer's ATEM tool-call blocks."""
+ 
+-    def __init__(self):
++    def __init__(self, constrained_output: bool = False):
+         super().__init__()
++        self._constrained_output = constrained_output
+         # Streaming channel state.
+         self._recipient: Optional[str] = None
+         self._in_body = False
+@@ -98,7 +99,14 @@ class MuseGlimmerDetector(BaseFormatDetector):
+         self._open_invoke: Optional[str] = None
+ 
+     def has_tool_call(self, text: str) -> bool:
+-        return has_atem_markers(text) or _has_tool_channel_header(text)
++        return (
++            has_atem_markers(text)
++            or _has_tool_channel_header(text)
++            or (
++                self._constrained_output
++                and ("[" in text or "{" in text)
++            )
++        )
+ 
+     def _registered_names(self, tools: Optional[List[Tool]]) -> Set[str]:
+         return {t.function.name for t in tools or [] if t.function and t.function.name}
+@@ -235,6 +243,11 @@ class MuseGlimmerDetector(BaseFormatDetector):
+         final: bool,
+     ) -> int:
+         if not _is_tool_channel(self._recipient):
++            if self._constrained_output and self._recipient != "self":
++                if not final:
++                    return 0
++                self._emit_json_calls(chunk, registered, calls, normal_parts)
++                return len(chunk)
+             normal_parts.append(chunk)
+             return len(chunk)
+ 
+@@ -321,13 +334,10 @@ class MuseGlimmerDetector(BaseFormatDetector):
+             normal_parts.append(chunk)
+ 
+     def parses_required_natively(self) -> bool:
+-        """Keep Muse channel framing for required/named tool choice.
++        return False
+ 
+-        A generic JSON grammar constrains only the body and leaves the model's
+-        channel header in front of it, which the generic required-tool fallback
+-        then tries (and fails) to parse as JSON.  The Muse detector understands
+-        the complete native frame and must own this path.
+-        """
++    def parses_constrained_output_natively(self) -> bool:
++        """Parse the JSON body after Muse's generated channel header."""
+         return True
+ 
+     def supports_structural_tag(self) -> bool:
+diff --git a/test/registered/unit/function_call/test_muse_glimmer_detector.py b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+index 93245e57efd8e20cfb0da818b3c9287977a57fa8..02e644978cbcb169749d22aed6537be2bc6d3578 100644
+--- a/test/registered/unit/function_call/test_muse_glimmer_detector.py
++++ b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+@@ -9,7 +9,12 @@ must never become a real tool call.
+ 
+ import json
+ 
+-from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.entrypoints.openai.protocol import (
++    Function,
++    Tool,
++    ToolChoice,
++    ToolChoiceFuncName,
++)
+ from sglang.srt.function_call.function_call_parser import FunctionCallParser
+ from sglang.srt.function_call.muse_glimmer_detector import MuseGlimmerDetector
+ from sglang.srt.parser.reasoning_parser import ReasoningParser
+@@ -129,8 +134,14 @@ class TestMuseGlimmerDetector(CustomTestCase):
+         reasoning, remainder = ReasoningParser(
+             "muse", tool_call_parser_active=True
+         ).parse_non_stream(raw)
+-        parser = FunctionCallParser(self.tools, "muse")
+-        self.assertTrue(parser.detector.parses_required_natively())
++        parser = FunctionCallParser(
++            self.tools, "muse", constrained_output=True
++        )
++        self.assertFalse(parser.detector.parses_required_natively())
++        self.assertTrue(parser.detector.parses_constrained_output_natively())
++        constraint = parser.get_structure_constraint("required")
++        self.assertEqual(constraint[0], "json_schema")
++        self.assertEqual(constraint[1]["minItems"], 1)
+         self.assertTrue(parser.has_tool_call(remainder))
+         content, calls = parser.parse_non_stream(remainder)
+         self.assertEqual(reasoning, "Need weather.")
+@@ -140,7 +151,9 @@ class TestMuseGlimmerDetector(CustomTestCase):
+             [("get_weather", {"city": "Paris"})],
+         )
+         for chunk_size in (1, 7, 100):
+-            s_reasoning, s_content, s_calls = self.pipeline_stream(raw, chunk_size)
++            s_reasoning, s_content, s_calls = self.pipeline_stream(
++                raw, chunk_size, constrained_output=True
++            )
+             self.assertEqual(s_reasoning, "Need weather.")
+             self.assertEqual(s_content, "")
+             self.assertEqual(s_calls, [("get_weather", {"city": "Paris"})])
+@@ -164,6 +177,68 @@ class TestMuseGlimmerDetector(CustomTestCase):
+         self.assertEqual(calls, [])
+         self.assertIn(quoted, content)
+ 
++    def test_required_json_array_without_tool_channel_header(self):
++        parser = FunctionCallParser(
++            self.tools, "muse", constrained_output=True
++        )
++        raw = '[{"name":"get_weather","parameters":{"city":"Paris"}}]'
++        content, calls = parser.parse_non_stream(raw)
++        self.assertEqual(content, "")
++        self.assertEqual(
++            [(call.name, json.loads(call.parameters)) for call in calls],
++            [("get_weather", {"city": "Paris"})],
++        )
++        for chunk_size in (1, 7, 100):
++            streaming_parser = FunctionCallParser(
++                self.tools, "muse", constrained_output=True
++            )
++            content_parts = []
++            streamed_calls = []
++            for start in range(0, len(raw), chunk_size):
++                content, chunk_calls = streaming_parser.parse_stream_chunk(
++                    raw[start : start + chunk_size]
++                )
++                content_parts.append(content)
++                streamed_calls.extend(chunk_calls)
++            end_content, end_calls = streaming_parser.parse_stream_end()
++            content_parts.append(end_content)
++            streamed_calls.extend(end_calls)
++            self.assertEqual("".join(content_parts), "")
++            self.assertEqual(
++                [
++                    (call.name, json.loads(call.parameters))
++                    for call in streamed_calls
++                    if call.name
++                ],
++                [("get_weather", {"city": "Paris"})],
++            )
++
++    def test_named_tool_choice_constraint_only_allows_selected_function(self):
++        tools = self.tools + [
++            Tool(
++                type="function",
++                function=Function(
++                    name="calculate",
++                    description="Calculate",
++                    parameters={
++                        "type": "object",
++                        "properties": {"expression": {"type": "string"}},
++                        "required": ["expression"],
++                    },
++                ),
++            )
++        ]
++        choice = ToolChoice(function=ToolChoiceFuncName(name="calculate"))
++        constraint = FunctionCallParser(
++            tools, "muse", constrained_output=True
++        ).get_structure_constraint(choice)
++        self.assertEqual(constraint[0], "json_schema")
++        schema = constraint[1]
++        self.assertEqual(schema["minItems"], 1)
++        self.assertEqual(
++            schema["items"]["properties"]["name"]["enum"], ["calculate"]
++        )
++
+     def test_namespaced_name_passes_through(self):
+         tools = [
+             Tool(
+@@ -316,10 +391,14 @@ class TestMuseGlimmerDetector(CustomTestCase):
+         self.assertEqual(calls, [])
+         self.assertIn("<atem:invoke", content)
+ 
+-    def pipeline_stream(self, raw, chunk_size, tool_call_parser_active=True):
++    def pipeline_stream(
++        self, raw, chunk_size, tool_call_parser_active=True, constrained_output=False
++    ):
+         """The real streaming order: reasoning deltas feed the tool parser."""
+         rp = ReasoningParser("muse", tool_call_parser_active=tool_call_parser_active)
+-        fp = FunctionCallParser(self.tools, "muse")
++        fp = FunctionCallParser(
++            self.tools, "muse", constrained_output=constrained_output
++        )
+         reasoning_parts, content_parts, calls = [], [], []
+         chunks = [raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)]
+         for i, chunk in enumerate(chunks):
+diff --git a/test/registered/unit/function_call/test_muse_openrouter_history.py b/test/registered/unit/function_call/test_muse_openrouter_history.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..22de4044fc8846030c02ff3786c0dc04b6709fb3
+--- /dev/null
++++ b/test/registered/unit/function_call/test_muse_openrouter_history.py
+@@ -0,0 +1,81 @@
++import unittest
++
++from pydantic import ValidationError
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionMessageGenericParam
++from sglang.srt.entrypoints.openai.serving_chat import normalize_muse_history
++
++
++class TestMuseOpenRouterHistory(unittest.TestCase):
++    def test_reasoning_alias_is_preserved(self):
++        message = ChatCompletionMessageGenericParam.model_validate(
++            {
++                "role": "assistant",
++                "content": None,
++                "reasoning": 'The secret word is "pistachio".',
++            }
++        )
++        self.assertEqual(message.reasoning_content, 'The secret word is "pistachio".')
++        self.assertNotIn("reasoning", message.model_dump())
++
++    def test_standard_reasoning_content_wins_over_alias(self):
++        message = ChatCompletionMessageGenericParam.model_validate(
++            {
++                "role": "assistant",
++                "content": None,
++                "reasoning_content": "standard",
++                "reasoning": "legacy",
++            }
++        )
++        self.assertEqual(message.reasoning_content, "standard")
++
++    def test_reasoning_is_rejected_outside_assistant_role(self):
++        with self.assertRaises(ValidationError):
++            ChatCompletionMessageGenericParam.model_validate(
++                {"role": "developer", "content": "x", "reasoning": "hidden"}
++            )
++
++    def test_complete_think_content_becomes_reasoning(self):
++        messages = normalize_muse_history(
++            [
++                {
++                    "role": "assistant",
++                    "content": '<think>The secret word is "sassafras".</think>',
++                    "tool_calls": [],
++                }
++            ]
++        )
++        self.assertEqual(messages[0]["reasoning_content"], 'The secret word is "sassafras".')
++        self.assertEqual(messages[0]["content"], "")
++
++    def test_embedded_think_tag_stays_content(self):
++        content = "The literal example is <think>not private</think>."
++        messages = normalize_muse_history(
++            [{"role": "assistant", "content": content}]
++        )
++        self.assertEqual(messages[0]["content"], content)
++        self.assertNotIn("reasoning_content", messages[0])
++
++    def test_interleaved_developer_message_is_promoted(self):
++        messages = normalize_muse_history(
++            [
++                {"role": "user", "content": "I need help."},
++                {"role": "assistant", "content": "Send the text."},
++                {
++                    "role": "developer",
++                    "content": "You must start your response with AFFIRMATIVE",
++                },
++                {"role": "user", "content": "Whats my name?"},
++            ]
++        )
++        self.assertEqual(messages[0]["role"], "system")
++        self.assertEqual(
++            messages[0]["content"],
++            "You must start your response with AFFIRMATIVE",
++        )
++        self.assertNotIn("developer", [message["role"] for message in messages])
++        self.assertEqual(messages[-1]["content"], "Whats my name?")
++
++
++if __name__ == "__main__":
++    unittest.main()

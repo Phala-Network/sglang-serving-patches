@@ -1,0 +1,12 @@
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 82aaf3312946826f794e8401e00ef0fbf0c5cece..d8ba8c387278a7e0946e490e48b4524380799b76 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -673,6 +673,7 @@ class ServingChatTestCase(unittest.TestCase):
+             image_data=None,
+             video_data=None,
+             audio_data=None,
++            modalities=[],
+             stop=[],
+             require_reasoning=True,
+         )

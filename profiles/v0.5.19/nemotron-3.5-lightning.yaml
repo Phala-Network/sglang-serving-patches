@@ -1,0 +1,946 @@
+{
+  "schema_version": 1,
+  "model": "nemotron-3.5-lightning",
+  "sglang_version": "v0.5.19",
+  "upstream_commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+  "source_repository": "https://github.com/Phala-Network/sglang",
+  "source_head": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+  "expected_engine_tree": "13b00c9d8ca5916d6506926783fcc743dbf43ee9",
+  "governor": {
+    "enabled": false
+  },
+  "selection_scope": "Historical deployed image source footprint, not a minimal model requirement set. All inherited model patches are explicitly listed. No cross-model or topology qualification is inferred.",
+  "original_deployed_source": "cfe6dbb89416065555d4a2f0d2260704680136ec",
+  "projection": "Full upstream tree plus all changes under python/, test/, sgl-kernel/, 3rdparty/. Historical packaging is preserved separately in Compose, not silently included.",
+  "patches": [
+    {
+      "id": "65a1b3f10fd0",
+      "path": "patches/sglang/v0.5.19/models/nemotron/65a1b3f10fd0.patch",
+      "sha256": "12ce258855b5819b7340a5606c8435a3187e85fed053dbd9f90c7a635c7009ca",
+      "source_commit": "5a50cb42c0c1a167241fea7da8ca9d8209e65cf7",
+      "source_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "source_tree": "955b484232ae89776e3b6e9e0748015179376730",
+      "original_commit": "65a1b3f10fd08d8330384708723d215fbd343b65",
+      "original_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "Fuse Nemotron latent MoE projection and shared add (#30430)",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/layers/quantization/unquant.py",
+        "python/sglang/srt/models/nemotron_h.py",
+        "test/registered/unit/layers/quantization/test_unquant_apply_with_addend.py",
+        "test/registered/unit/models/test_nemotron_h_shared_add.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "0bcd822377da7b5718e674eaf9c870d349424dd1",
+        "5a50cb42c0c1a167241fea7da8ca9d8209e65cf7"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "b07c939d0f55",
+      "path": "patches/sglang/v0.5.19/common/b07c939d0f55.patch",
+      "sha256": "06fcd0782ab3ca9369211c07560d4509678a28bbca370696c29cc1f497577687",
+      "source_commit": "002883d4473bd4e0ffcfa557ac7e6c8723a7daf4",
+      "source_parent": "5a50cb42c0c1a167241fea7da8ca9d8209e65cf7",
+      "source_tree": "bc84322bd8761094cf8b1c650f9f1c1128bef6d5",
+      "original_commit": "b07c939d0f553c410307b5b70f8411a4037431f0",
+      "original_parent": "65a1b3f10fd08d8330384708723d215fbd343b65",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "perf: use Gumbel-max trick in the main sampler to cut decode CPU dispatch (#38117)",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/layers/sampler.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "5a50cb42c0c1a167241fea7da8ca9d8209e65cf7",
+        "002883d4473bd4e0ffcfa557ac7e6c8723a7daf4"
+      ],
+      "depends_on": [
+        "65a1b3f10fd0"
+      ]
+    },
+    {
+      "id": "61ab8c2adb9c",
+      "path": "patches/sglang/v0.5.19/common/61ab8c2adb9c.patch",
+      "sha256": "31b39442b05daff7c0359e374b9ec93a50682a0e15e7f67c64f12b9e5cb5a84c",
+      "source_commit": "b431a69ddfaf3b2f953b75215f0c6d1095fdb733",
+      "source_parent": "002883d4473bd4e0ffcfa557ac7e6c8723a7daf4",
+      "source_tree": "8919574efb25e94019e4e0eb2ef5569b32b4bb51",
+      "original_commit": "61ab8c2adb9c252ac3529b7b4a781db0e7ac79d9",
+      "original_parent": "5a2055cf386e168140ce35fa53a030229659ea72",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(llguidance): pin host vocab masks before async H2D copy",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/constrained/llguidance_backend.py",
+        "test/registered/unit/constrained/test_llguidance_batched_mask.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "002883d4473bd4e0ffcfa557ac7e6c8723a7daf4",
+        "b431a69ddfaf3b2f953b75215f0c6d1095fdb733"
+      ],
+      "depends_on": [
+        "b07c939d0f55"
+      ]
+    },
+    {
+      "id": "405fa1086fdb",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/405fa1086fdb.patch",
+      "sha256": "dd1ab05599c94f7d5b81cb07bfd08ec757cad62915a99b86e4c01015e778ffd2",
+      "source_commit": "287188b4806f33ff7e4702668a6836b5c5b2987d",
+      "source_parent": "b431a69ddfaf3b2f953b75215f0c6d1095fdb733",
+      "source_tree": "8bd2b44aa7fc8ce2a53dbbd85163e9633429b9b3",
+      "original_commit": "405fa1086fdb40d97959ccde22c404e3d3b6748f",
+      "original_parent": "61ab8c2adb9c252ac3529b7b4a781db0e7ac79d9",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse): parse required tool calls natively",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/function_call/muse_glimmer_detector.py",
+        "test/registered/unit/function_call/test_muse_glimmer_detector.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "b431a69ddfaf3b2f953b75215f0c6d1095fdb733",
+        "287188b4806f33ff7e4702668a6836b5c5b2987d"
+      ],
+      "depends_on": [
+        "61ab8c2adb9c"
+      ]
+    },
+    {
+      "id": "c5af5ab92184",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/c5af5ab92184.patch",
+      "sha256": "59700b622a9403ecfff347eebf489bdd85c04120b8e235baed3660996c853513",
+      "source_commit": "f6adaf751a72201a0280ae7ba6446791924e98e6",
+      "source_parent": "287188b4806f33ff7e4702668a6836b5c5b2987d",
+      "source_tree": "f3d29475f88ff1791d7bcc3ac8e16358a9853718",
+      "original_commit": "c5af5ab92184f5d29e4c12ac7d8e8cf81fba46a5",
+      "original_parent": "405fa1086fdb40d97959ccde22c404e3d3b6748f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse-glimmer): backport channel-framed guided decoding boundary",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/environ.py",
+        "python/sglang/srt/parser/reasoning_parser.py",
+        "test/registered/unit/constrained/test_reasoner_grammar_backend.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "287188b4806f33ff7e4702668a6836b5c5b2987d",
+        "f6adaf751a72201a0280ae7ba6446791924e98e6"
+      ],
+      "depends_on": [
+        "405fa1086fdb"
+      ]
+    },
+    {
+      "id": "7984762a1925",
+      "path": "patches/sglang/v0.5.19/common/7984762a1925.patch",
+      "sha256": "fc3e243f721903e26981455ac979aeee947c71a3148ac5698ebed8372a8aeb4b",
+      "source_commit": "353a12fabcd98597a83f81885be52cba8c8e82f2",
+      "source_parent": "f6adaf751a72201a0280ae7ba6446791924e98e6",
+      "source_tree": "94d677a2eff52de40acf234a1fa8296c89859909",
+      "original_commit": "7984762a19255c5d87c3f9c626f90a6d0354a97f",
+      "original_parent": "c5af5ab92184f5d29e4c12ac7d8e8cf81fba46a5",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): expose reasoning usage in standard details",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/usage_processor.py",
+        "test/registered/unit/test_openai_usage_processor.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "f6adaf751a72201a0280ae7ba6446791924e98e6",
+        "353a12fabcd98597a83f81885be52cba8c8e82f2"
+      ],
+      "depends_on": [
+        "c5af5ab92184"
+      ]
+    },
+    {
+      "id": "889dac086485",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/889dac086485.patch",
+      "sha256": "911982216fb8c436830d330545ef5b54aac7715787ea8a24c3b784c5766e00fa",
+      "source_commit": "235ce2bcc40a5b4fc5e5e89758f8d5c0b3280fc7",
+      "source_parent": "353a12fabcd98597a83f81885be52cba8c8e82f2",
+      "source_tree": "867e4290f082343722d52b2e635bcdf9d1e9f791",
+      "original_commit": "889dac086485d3b29d119e8957ce75de718e199f",
+      "original_parent": "7984762a19255c5d87c3f9c626f90a6d0354a97f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse): honor OpenRouter tool and history contracts",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/base_format_detector.py",
+        "python/sglang/srt/function_call/function_call_parser.py",
+        "python/sglang/srt/function_call/muse_glimmer_detector.py",
+        "test/registered/unit/function_call/test_muse_glimmer_detector.py",
+        "test/registered/unit/function_call/test_muse_openrouter_history.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "353a12fabcd98597a83f81885be52cba8c8e82f2",
+        "235ce2bcc40a5b4fc5e5e89758f8d5c0b3280fc7"
+      ],
+      "depends_on": [
+        "7984762a1925"
+      ]
+    },
+    {
+      "id": "7aad27962602",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/7aad27962602.patch",
+      "sha256": "4e5b9f401d4b4c624d340f4bbf62936ce84e8710fef2cb4108aec0d0672c7549",
+      "source_commit": "2ef83173697fb4993f636cffb63439ffef6f99c1",
+      "source_parent": "235ce2bcc40a5b4fc5e5e89758f8d5c0b3280fc7",
+      "source_tree": "eccf65df817049d50cdfe67c37e642cb7a846de1",
+      "original_commit": "7aad27962602cc89876ca2c3b536a95aa15a46cd",
+      "original_parent": "889dac086485d3b29d119e8957ce75de718e199f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse): default structured output to direct final",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/function_call/test_muse_structured_reasoning_defaults.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "235ce2bcc40a5b4fc5e5e89758f8d5c0b3280fc7",
+        "2ef83173697fb4993f636cffb63439ffef6f99c1"
+      ],
+      "depends_on": [
+        "889dac086485"
+      ]
+    },
+    {
+      "id": "c5052c199e05",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/c5052c199e05.patch",
+      "sha256": "36c84333fbb214e14befe5a716f8dffe8308d3e73f131526f4334768d6076cb4",
+      "source_commit": "b22934ade600777fe7b5cdf0f8a54ce6d4096651",
+      "source_parent": "2ef83173697fb4993f636cffb63439ffef6f99c1",
+      "source_tree": "65c541eaaad8903092c554417c45413b60e38ee3",
+      "original_commit": "c5052c199e05166199b3cb01e4e2adc2d4ed3bba",
+      "original_parent": "7aad27962602cc89876ca2c3b536a95aa15a46cd",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse): preserve named choice and v0.5.18 regressions",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/function_call/function_call_parser.py",
+        "python/sglang/srt/function_call/muse_glimmer_detector.py",
+        "test/registered/unit/function_call/test_muse_glimmer_detector.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "2ef83173697fb4993f636cffb63439ffef6f99c1",
+        "b22934ade600777fe7b5cdf0f8a54ce6d4096651"
+      ],
+      "depends_on": [
+        "7aad27962602"
+      ]
+    },
+    {
+      "id": "7070885b6c51",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/7070885b6c51.patch",
+      "sha256": "60871178fc33de185ad184039f6a4cf0ff457c6ec593560c62d877c1216dc931",
+      "source_commit": "6d7a2dc746935afa3ccbcd5f0e9bb727f52bf84d",
+      "source_parent": "b22934ade600777fe7b5cdf0f8a54ce6d4096651",
+      "source_tree": "fcb5d2f96f60a1c11ab4901c2f32fed9ce6a23f6",
+      "original_commit": "7070885b6c511f61d8ae2c4787d7d2dc38fd3e9b",
+      "original_parent": "c5052c199e05166199b3cb01e4e2adc2d4ed3bba",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse): enforce required tool choice",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/function_call/muse_glimmer_detector.py",
+        "test/registered/unit/entrypoints/openai/test_serving_responses.py",
+        "test/registered/unit/function_call/test_muse_glimmer_detector.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "b22934ade600777fe7b5cdf0f8a54ce6d4096651",
+        "6d7a2dc746935afa3ccbcd5f0e9bb727f52bf84d"
+      ],
+      "depends_on": [
+        "c5052c199e05"
+      ]
+    },
+    {
+      "id": "2224d5c89971",
+      "path": "patches/sglang/v0.5.19/models/muse-glimmer/2224d5c89971.patch",
+      "sha256": "efe04a2df5a8d23d5c67df5da9a402fd852bbc675455ed27ab5d65e448cd574c",
+      "source_commit": "c2d241b80ef0e4e0e3aaf517567287368ac56fe3",
+      "source_parent": "6d7a2dc746935afa3ccbcd5f0e9bb727f52bf84d",
+      "source_tree": "49282d7551d46ee7fc29b05176c73db51f69f79e",
+      "original_commit": "2224d5c899711426210957da0f3ba341f6b6c110",
+      "original_parent": "7070885b6c511f61d8ae2c4787d7d2dc38fd3e9b",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix(muse-glimmer): harden tool calls and structured output",
+      "ownership": "models/muse-glimmer",
+      "files": [
+        "python/sglang/srt/constrained/llguidance_backend.py",
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/utils.py",
+        "python/sglang/srt/managers/tp_worker.py",
+        "python/sglang/srt/model_executor/model_runner_components/weight_updater.py",
+        "test/registered/unit/managers/test_malformed_weight_update_payload.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "6d7a2dc746935afa3ccbcd5f0e9bb727f52bf84d",
+        "c2d241b80ef0e4e0e3aaf517567287368ac56fe3"
+      ],
+      "depends_on": [
+        "7070885b6c51"
+      ]
+    },
+    {
+      "id": "752cbf71d2fc",
+      "path": "patches/sglang/v0.5.19/common/752cbf71d2fc.patch",
+      "sha256": "c83ebae38af48e79008d750faeba9b424317a6b9c08e087d445074edf7818556",
+      "source_commit": "b33a5227201dccdfa45a62275661375ba83a7c40",
+      "source_parent": "c2d241b80ef0e4e0e3aaf517567287368ac56fe3",
+      "source_tree": "94dc49414a69510db8adc3dbb8548f9a5d788da2",
+      "original_commit": "752cbf71d2fc874d79f0de511265209e15a2ed0f",
+      "original_parent": "eb7ca28326e67e1e81dfe6187b745a54ba282d78",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "Fix mamba radix cache ssm state indexing (#37836)",
+      "ownership": "common",
+      "files": [
+        "python/sglang/kernels/ops/mamba/triton_ops/ssd_combined.py",
+        "python/sglang/srt/layers/attention/hybrid_linear_attn_backend.py",
+        "python/sglang/srt/layers/attention/mamba/mamba.py",
+        "python/sglang/srt/layers/attention/mamba/mamba2_metadata.py",
+        "test/registered/layers/mamba/test_mamba_ssm_ssd.py",
+        "test/registered/unit/layers/test_mamba2_track_ssm_indices.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "c2d241b80ef0e4e0e3aaf517567287368ac56fe3",
+        "b33a5227201dccdfa45a62275661375ba83a7c40"
+      ],
+      "depends_on": [
+        "2224d5c89971"
+      ]
+    },
+    {
+      "id": "72d09f13ce3e",
+      "path": "patches/sglang/v0.5.19/common/72d09f13ce3e.patch",
+      "sha256": "6b60e10c6b2d062fd9e3e00e3fce62798a567d5cd955d5db31c1fb78c9bd83d5",
+      "source_commit": "3c716ec8e08e86fe6752a10de346172937c54337",
+      "source_parent": "b33a5227201dccdfa45a62275661375ba83a7c40",
+      "source_tree": "6cc3b43f743ad004b43881d54b35c911474426bc",
+      "original_commit": "72d09f13ce3e931800377c191eb1724a30c55e0e",
+      "original_parent": "752cbf71d2fc874d79f0de511265209e15a2ed0f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "[Fix] Vacuous marker writes in the cache tests, and an undebited Mamba admission slot (#36415)",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/schedule_policy.py",
+        "test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "b33a5227201dccdfa45a62275661375ba83a7c40",
+        "3c716ec8e08e86fe6752a10de346172937c54337"
+      ],
+      "depends_on": [
+        "752cbf71d2fc"
+      ]
+    },
+    {
+      "id": "12593d20ead3",
+      "path": "patches/sglang/v0.5.19/common/12593d20ead3.patch",
+      "sha256": "ef255bdccb037b6a7845d0b0f1a88619ee7320dc94b3c4c0dd14bb18682c258d",
+      "source_commit": "0775c972ac7eb227e9fd852e79bfb78049439403",
+      "source_parent": "3c716ec8e08e86fe6752a10de346172937c54337",
+      "source_tree": "ad21ceb2022f35224d874e477aed62b5be7ba58b",
+      "original_commit": "12593d20ead3dbd9f9c790b6a51f1f4b8c584e5b",
+      "original_parent": "72d09f13ce3e931800377c191eb1724a30c55e0e",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "[Bugfix][Mamba] Clear deferred init metadata before speculative decode (#37165)",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/schedule_batch.py",
+        "test/registered/unit/managers/test_schedule_batch_prepare_for_decode.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "3c716ec8e08e86fe6752a10de346172937c54337",
+        "0775c972ac7eb227e9fd852e79bfb78049439403"
+      ],
+      "depends_on": [
+        "72d09f13ce3e"
+      ]
+    },
+    {
+      "id": "66c99cdb3906",
+      "path": "patches/sglang/v0.5.19/common/66c99cdb3906.patch",
+      "sha256": "71f55f56e602f5dab530c67fa337be5188f9aae9becb8d5567319d54ac18b1aa",
+      "source_commit": "4aca87a34545a2aa6b92f1887893feb069c43e4e",
+      "source_parent": "0775c972ac7eb227e9fd852e79bfb78049439403",
+      "source_tree": "e1265b419d9148718a8417d8760c718a7c1982d7",
+      "original_commit": "66c99cdb39069e02a6914a4d67bef8687db757d2",
+      "original_parent": "0bac23f3947c21a9ca238a151f3c686737d6a5b6",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix: add opt-in bounded XGrammar JSON whitespace",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/constrained/base_grammar_backend.py",
+        "python/sglang/srt/constrained/xgrammar_backend.py",
+        "python/sglang/srt/server_args.py",
+        "test/registered/unit/constrained/test_base_grammar_backend.py",
+        "test/registered/unit/constrained/test_xgrammar_bounded_whitespace.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "0775c972ac7eb227e9fd852e79bfb78049439403",
+        "4aca87a34545a2aa6b92f1887893feb069c43e4e"
+      ],
+      "depends_on": [
+        "12593d20ead3"
+      ]
+    },
+    {
+      "id": "87d669f137cb",
+      "path": "patches/sglang/v0.5.19/common/87d669f137cb.patch",
+      "sha256": "97167439a05aaf38d23fb13a9305bef88ff301164eb7308555a2c139d1c3ad1c",
+      "source_commit": "d2334dc9c0ab93c6bc2b629ae12d4e26d4855b3f",
+      "source_parent": "4aca87a34545a2aa6b92f1887893feb069c43e4e",
+      "source_tree": "c337b59905b587011cd094d45761a2e75ae5fdeb",
+      "original_commit": "87d669f137cb4c6bc0273bf175305da335407eca",
+      "original_parent": "66c99cdb39069e02a6914a4d67bef8687db757d2",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix: qualify pinned XGrammar 0.2.6 schema regressions",
+      "ownership": "common",
+      "files": [
+        "3rdparty/amd/wheel/sglang/pyproject.toml",
+        "python/pyproject.toml",
+        "python/pyproject_cpu.toml",
+        "python/pyproject_npu.toml",
+        "python/pyproject_other.toml",
+        "test/registered/unit/constrained/test_xgrammar_bounded_whitespace.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "4aca87a34545a2aa6b92f1887893feb069c43e4e",
+        "d2334dc9c0ab93c6bc2b629ae12d4e26d4855b3f"
+      ],
+      "depends_on": [
+        "66c99cdb3906"
+      ]
+    },
+    {
+      "id": "93a9c811a9af",
+      "path": "patches/sglang/v0.5.19/models/nemotron/93a9c811a9af.patch",
+      "sha256": "a44ffcc6a7f9b67880df8359b9e66d59b0ceb3d0f0785b31b89d0a281d2ea299",
+      "source_commit": "010d115a7fa3bd926b6e693ae347fa8b43f2aa9f",
+      "source_parent": "d2334dc9c0ab93c6bc2b629ae12d4e26d4855b3f",
+      "source_tree": "90f1292b25603ac6cfb13a953268ad65edf120e4",
+      "original_commit": "93a9c811a9af21796878628cae1258348708d3f6",
+      "original_parent": "6ffbe968188a65a364a08f59005aa9b24d9fbf9f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "Fix Nemotron native tool boundaries and exact small-object JSON order",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "python/sglang/srt/parser/reasoning_parser.py",
+        "test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py",
+        "test/registered/unit/parser/test_nemotron_tool_reasoning_boundary.py",
+        "test/registered/unit/parser/test_reasoning_parser.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "d2334dc9c0ab93c6bc2b629ae12d4e26d4855b3f",
+        "010d115a7fa3bd926b6e693ae347fa8b43f2aa9f"
+      ],
+      "depends_on": [
+        "87d669f137cb"
+      ]
+    },
+    {
+      "id": "6928845df367",
+      "path": "patches/sglang/v0.5.19/common/6928845df367.patch",
+      "sha256": "0fcb6288e7665dd8323f13fb637e952416937b730e2f80ca3bf8ee2be7fe7e98",
+      "source_commit": "88c70bc7f39f4037ff22bd4bc3e2918ac3058f04",
+      "source_parent": "010d115a7fa3bd926b6e693ae347fa8b43f2aa9f",
+      "source_tree": "d2daee3e9718e2a27500fd3b90b9ad7d59e6e898",
+      "original_commit": "6928845df367fc5e380cd81dc4b37ba2e73461ef",
+      "original_parent": "93a9c811a9af21796878628cae1258348708d3f6",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "Bound emitted reasoning usage and preserve exact XGrammar patch bytes",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/schedule_batch.py",
+        "test/registered/unit/managers/test_reasoning_emitted_length.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "010d115a7fa3bd926b6e693ae347fa8b43f2aa9f",
+        "88c70bc7f39f4037ff22bd4bc3e2918ac3058f04"
+      ],
+      "depends_on": [
+        "93a9c811a9af"
+      ]
+    },
+    {
+      "id": "ed810727c954",
+      "path": "patches/sglang/v0.5.19/models/nemotron/ed810727c954.patch",
+      "sha256": "bfc90a6fbdb5871d9ffdd34cc3e1d1256c564caac65affa209cb9ba281c7f3a7",
+      "source_commit": "c8c1cfccdb7ee6bd251949b639880cc876fbabd0",
+      "source_parent": "88c70bc7f39f4037ff22bd4bc3e2918ac3058f04",
+      "source_tree": "ef8a37d26c109720de1f3ea1b42f3be98b30b7cd",
+      "original_commit": "ed810727c954b9c1a7bf9f18ea0e858594197c50",
+      "original_parent": "d0ae8e16d13d502d16c83f40602e2ec26e85f317",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix: keep truncated Nemotron thoughts out of tool execution",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "python/sglang/srt/parser/reasoning_parser.py",
+        "test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py",
+        "test/registered/unit/parser/test_nemotron_truncation_boundary.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "88c70bc7f39f4037ff22bd4bc3e2918ac3058f04",
+        "c8c1cfccdb7ee6bd251949b639880cc876fbabd0"
+      ],
+      "depends_on": [
+        "6928845df367"
+      ]
+    },
+    {
+      "id": "01433fd33149",
+      "path": "patches/sglang/v0.5.19/models/nemotron/01433fd33149.patch",
+      "sha256": "321128216a84e15d4a41e3d873f35b9f94a9db262b7e5720c88e85ab6d8dd211",
+      "source_commit": "c977122cefeef784c33f0e11c2b841c8111e76cb",
+      "source_parent": "c8c1cfccdb7ee6bd251949b639880cc876fbabd0",
+      "source_tree": "5ae4d235b16d7be2e7102f0ba302c97078b078ec",
+      "original_commit": "01433fd331495d42bb6dac05b5f77c29e46e941d",
+      "original_parent": "29ffd90227a1ab289ff3c336728c483120885244",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/31",
+      "review_status": "draft-not-approved",
+      "subject": "fix: withhold unfinished Nemotron tool calls at stream boundaries",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/function_call_parser.py",
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_nemotron_complete_calls.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "c8c1cfccdb7ee6bd251949b639880cc876fbabd0",
+        "c977122cefeef784c33f0e11c2b841c8111e76cb"
+      ],
+      "depends_on": [
+        "ed810727c954"
+      ]
+    },
+    {
+      "id": "5f9f960c28a1",
+      "path": "patches/sglang/v0.5.19/models/nemotron/5f9f960c28a1.patch",
+      "sha256": "f7268d2f2a7fde945a055bc007357f371062046abb2b3219f52714bb5012ef59",
+      "source_commit": "3c06073c3d0b3ada4ed413d25d543350386c3f72",
+      "source_parent": "c977122cefeef784c33f0e11c2b841c8111e76cb",
+      "source_tree": "4789a617a85f701643f2b798b3712d1803be4ce7",
+      "original_commit": "5f9f960c28a16bfaef3f20800c30eeee125753aa",
+      "original_parent": "01433fd331495d42bb6dac05b5f77c29e46e941d",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "Fix Nemotron structured output contracts and request lifecycle",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/constrained/grammar_manager.py",
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/constrained/xgrammar_backend.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/parser/reasoning_parser.py",
+        "test/registered/unit/constrained/test_grammar_manager.py",
+        "test/registered/unit/constrained/test_request_reasoning_budget_filter.py",
+        "test/registered/unit/constrained/test_xgrammar_pattern_length_contract.py",
+        "test/registered/unit/entrypoints/openai/test_initial_stream_error_status.py",
+        "test/registered/unit/function_call/test_nemotron_response_format_prompt.py",
+        "test/registered/unit/function_call/test_nemotron_structured_reasoning_default.py",
+        "test/registered/unit/function_call/test_qwen3_coder_literal_types.py",
+        "test/registered/unit/function_call/test_qwen3_coder_local_refs.py",
+        "test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py",
+        "test/registered/unit/parser/test_nemotron_literal_reasoning_markers.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "c977122cefeef784c33f0e11c2b841c8111e76cb",
+        "3c06073c3d0b3ada4ed413d25d543350386c3f72"
+      ],
+      "depends_on": [
+        "01433fd33149"
+      ]
+    },
+    {
+      "id": "4dbfdf98a4d5",
+      "path": "patches/sglang/v0.5.19/models/nemotron/4dbfdf98a4d5.patch",
+      "sha256": "b8d7c26eadaa3d7837d6fe96f844f1766afea58bf830a47663ad64113704e5ec",
+      "source_commit": "09361b0f5e5bc3d274f560f4f830e1205a200241",
+      "source_parent": "3c06073c3d0b3ada4ed413d25d543350386c3f72",
+      "source_tree": "e8925f83379ca9e8f1c66e9fa3e842f4c449a3aa",
+      "original_commit": "4dbfdf98a4d5b1583cdabcf004c158bec3b7ddb7",
+      "original_parent": "5f9f960c28a16bfaef3f20800c30eeee125753aa",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix(nemotron): distinguish literal data from reasoning control tokens",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/nemotron_literal_tokens.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/parser/nemotron_token_boundary.py",
+        "python/sglang/srt/parser/reasoning_parser.py",
+        "test/registered/unit/function_call/test_nemotron_literal_message_tokens.py",
+        "test/registered/unit/parser/test_nemotron_token_reasoning_boundary.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "3c06073c3d0b3ada4ed413d25d543350386c3f72",
+        "09361b0f5e5bc3d274f560f4f830e1205a200241"
+      ],
+      "depends_on": [
+        "5f9f960c28a1"
+      ]
+    },
+    {
+      "id": "ec6f1c44c8a7",
+      "path": "patches/sglang/v0.5.19/common/ec6f1c44c8a7.patch",
+      "sha256": "33ddca787bce4307863f7651e4f4aafb27e2b356168bdcaa6e113ecc14e6189a",
+      "source_commit": "ac0834cff92db9cb4667e3d674bbd26ce28735a5",
+      "source_parent": "09361b0f5e5bc3d274f560f4f830e1205a200241",
+      "source_tree": "b8264e8a2f866868ad5e62e94cf41bb915979ba2",
+      "original_commit": "ec6f1c44c8a7eccd2cd3587919defad01abf5929",
+      "original_parent": "4dbfdf98a4d5b1583cdabcf004c158bec3b7ddb7",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix(serving): abort dispatched requests on streaming cancellation",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_phala_cancellation_lifecycle.py",
+        "test/registered/unit/multimodal/test_gpu_feature_transport.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "09361b0f5e5bc3d274f560f4f830e1205a200241",
+        "ac0834cff92db9cb4667e3d674bbd26ce28735a5"
+      ],
+      "depends_on": [
+        "4dbfdf98a4d5"
+      ]
+    },
+    {
+      "id": "068de9fd66d1",
+      "path": "patches/sglang/v0.5.19/common/068de9fd66d1.patch",
+      "sha256": "f0c2dbd64d0be603fbd40e186163075d89f1675b2ba09f5f586ab9e840e523ab",
+      "source_commit": "c25af5ffb848ac4f4754117c039f9c5b0ea60c0e",
+      "source_parent": "ac0834cff92db9cb4667e3d674bbd26ce28735a5",
+      "source_tree": "22a4cd4cd140664261f46d7a8bcea33790c10bb2",
+      "original_commit": "068de9fd66d1a682e9635c8bbe69d77989eea91e",
+      "original_parent": "ec6f1c44c8a7eccd2cd3587919defad01abf5929",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "test: model dispatch ownership in parallel sampling cleanup fixtures",
+      "ownership": "common",
+      "files": [
+        "test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "ac0834cff92db9cb4667e3d674bbd26ce28735a5",
+        "c25af5ffb848ac4f4754117c039f9c5b0ea60c0e"
+      ],
+      "depends_on": [
+        "ec6f1c44c8a7"
+      ]
+    },
+    {
+      "id": "6d3d45b55d98",
+      "path": "patches/sglang/v0.5.19/common/6d3d45b55d98.patch",
+      "sha256": "59423859606020e03d072ac069fbc52b763cd64c86d4c94d91aa5bc4a85da1d5",
+      "source_commit": "e27330c9722dcc837ea2452b5256d7a63f325b82",
+      "source_parent": "c25af5ffb848ac4f4754117c039f9c5b0ea60c0e",
+      "source_tree": "de4db0e1b2493a93fca6ef8df5d54eb8d914e370",
+      "original_commit": "6d3d45b55d9882e29daa4d2e11b44f5f2ae097ae",
+      "original_parent": "068de9fd66d1a682e9635c8bbe69d77989eea91e",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "Fix stable Marlin routing and honor FP32 NVFP4 reduction",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py",
+        "python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py",
+        "python/sglang/srt/layers/quantization/marlin_utils_fp4.py",
+        "test/registered/kernels/ops/moe/test_moe_align_block_size.py",
+        "test/registered/kernels/ops/moe/test_nvfp4_marlin_repeatability.py",
+        "test/registered/kernels/ops/quantization/test_nvfp4_marlin.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "c25af5ffb848ac4f4754117c039f9c5b0ea60c0e",
+        "e27330c9722dcc837ea2452b5256d7a63f325b82"
+      ],
+      "depends_on": [
+        "068de9fd66d1"
+      ]
+    },
+    {
+      "id": "f97b21d20d93",
+      "path": "patches/sglang/v0.5.19/models/nemotron/f97b21d20d93.patch",
+      "sha256": "ad6a4f74341d7679ca6cb48626fb03663d1278f6bf289b70d666add81ef6684b",
+      "source_commit": "ee2f690dd80ab7deb722d1613b2c5cffbf78fea2",
+      "source_parent": "e27330c9722dcc837ea2452b5256d7a63f325b82",
+      "source_tree": "73d70e773e2f524ff28a63810b377dbc517ab3aa",
+      "original_commit": "f97b21d20d9334484ea7a447876c433e2770ab07",
+      "original_parent": "6d3d45b55d9882e29daa4d2e11b44f5f2ae097ae",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix: bound XGrammar repetition state and compile JSON string FSM blocks",
+      "ownership": "models/nemotron",
+      "files": [
+        "test/registered/unit/constrained/test_xgrammar_string_fsm_blocks.py",
+        "test/registered/unit/constrained/test_xgrammar_unbounded_prefix.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "e27330c9722dcc837ea2452b5256d7a63f325b82",
+        "ee2f690dd80ab7deb722d1613b2c5cffbf78fea2"
+      ],
+      "depends_on": [
+        "6d3d45b55d98"
+      ]
+    },
+    {
+      "id": "f65bb7af2030",
+      "path": "patches/sglang/v0.5.19/models/nemotron/f65bb7af2030.patch",
+      "sha256": "6b23fac6c8487a94c80bcfa75955d58b51c231d8d290267484e87f6424ec390a",
+      "source_commit": "76d1c6ab2ebcb2d87b19e17c14b97dd2e9681a21",
+      "source_parent": "ee2f690dd80ab7deb722d1613b2c5cffbf78fea2",
+      "source_tree": "4e923aa92d1136200f4e43a390cc57caeaa37ee2",
+      "original_commit": "f65bb7af2030df7e64d091e538c92565d57ea29b",
+      "original_parent": "f97b21d20d9334484ea7a447876c433e2770ab07",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix: preserve const-constrained XML tool argument types",
+      "ownership": "models/nemotron",
+      "files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_qwen3_coder_const_precedence.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "ee2f690dd80ab7deb722d1613b2c5cffbf78fea2",
+        "76d1c6ab2ebcb2d87b19e17c14b97dd2e9681a21"
+      ],
+      "depends_on": [
+        "f97b21d20d93"
+      ]
+    },
+    {
+      "id": "1d8e0a494693",
+      "path": "patches/sglang/v0.5.19/common/1d8e0a494693.patch",
+      "sha256": "c0d72fd18872e913a5a77d291d0d0d823d639ace70f13d5d77bea8c0455b9852",
+      "source_commit": "d668757274a2fee4f6e0f464b66066bdd7e28bc7",
+      "source_parent": "76d1c6ab2ebcb2d87b19e17c14b97dd2e9681a21",
+      "source_tree": "87728264121ae020c2f395d876a0fabcceb1e3ce",
+      "original_commit": "1d8e0a49469302f1bf9f80763e7c8d3db99b20c9",
+      "original_parent": "f65bb7af2030df7e64d091e538c92565d57ea29b",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix: align chunk budget to KV pages",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/schedule_policy.py",
+        "python/sglang/srt/managers/scheduler.py",
+        "test/registered/unit/managers/test_prefill_adder.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "76d1c6ab2ebcb2d87b19e17c14b97dd2e9681a21",
+        "d668757274a2fee4f6e0f464b66066bdd7e28bc7"
+      ],
+      "depends_on": [
+        "f65bb7af2030"
+      ]
+    },
+    {
+      "id": "cfe6dbb89416",
+      "path": "patches/sglang/v0.5.19/common/cfe6dbb89416.patch",
+      "sha256": "6bfcc7d75a7e5b694ad52fa7c5afaed4ee125887368dffb6b086cfb03c49e2d7",
+      "source_commit": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+      "source_parent": "d668757274a2fee4f6e0f464b66066bdd7e28bc7",
+      "source_tree": "13b00c9d8ca5916d6506926783fcc743dbf43ee9",
+      "original_commit": "cfe6dbb89416065555d4a2f0d2260704680136ec",
+      "original_parent": "1d8e0a49469302f1bf9f80763e7c8d3db99b20c9",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/33",
+      "review_status": "draft-not-approved",
+      "subject": "fix: enable breakable prefill graphs for hybrid layers",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py",
+        "test/registered/unit/model_executor/model_runner_components/test_cuda_graph_setup.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "d668757274a2fee4f6e0f464b66066bdd7e28bc7",
+        "9cfc79c4b497bc883132f5e2bcd5d012790f3d12"
+      ],
+      "depends_on": [
+        "1d8e0a494693"
+      ]
+    }
+  ]
+}

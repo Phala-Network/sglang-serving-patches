@@ -1,0 +1,109 @@
+diff --git a/python/sglang/srt/constrained/grammar_manager.py b/python/sglang/srt/constrained/grammar_manager.py
+index ab93d0d9c3325260a7e6c312cfbac41e522cbeb4..48ba1ea4bfd31964a629413152dfd72481fb1c58 100644
+--- a/python/sglang/srt/constrained/grammar_manager.py
++++ b/python/sglang/srt/constrained/grammar_manager.py
+@@ -133,6 +133,13 @@ class GrammarManager:
+             if thinking_budget is not None:
+                 req.grammar.max_think_tokens = thinking_budget
+ 
++    def _strict_thinking_grammar_disabled(self, req: Req) -> bool:
++        custom_params = req.sampling_params.custom_params
++        return (
++            isinstance(custom_params, dict)
++            and custom_params.get("disable_strict_thinking_grammar") is True
++        )
++
+     def process_req_with_grammar(self, req: Req) -> bool:
+         # Init grammar cache for this request
+         add_to_grammar_queue = False
+@@ -173,7 +180,10 @@ class GrammarManager:
+                         req.set_finish_with_abort(error_msg)
+                     else:
+                         self._apply_request_reasoning_budget(req)
+-        elif self._enable_strict_thinking:
++        elif (
++            self._enable_strict_thinking
++            and not self._strict_thinking_grammar_disabled(req)
++        ):
+             grammar_obj = self.grammar_backend.init_strict_reasoning_grammar(
+                 req.require_reasoning
+             )
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 61842bc755655e380c3f88677645959637eb7180..a20ddb4ad3ea46443809e349a86095355c445499 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1292,6 +1292,11 @@ class OpenAIServingChat(OpenAIServingBase):
+             if processed_messages.require_reasoning
+             else None
+         )
++        if self._uses_qwen35_chat_template() and request.reasoning_effort is None:
++            sampling_params = dict(sampling_params)
++            custom_params = dict(sampling_params.get("custom_params") or {})
++            custom_params["disable_strict_thinking_grammar"] = True
++            sampling_params["custom_params"] = custom_params
+ 
+         # Handle single vs multiple requests
+         if request.input_ids is not None:
+diff --git a/test/registered/unit/constrained/test_grammar_manager.py b/test/registered/unit/constrained/test_grammar_manager.py
+index f2e1fcd48e75f26b085edea35400769d36350cb1..6c8d625a95c1c3291b73514ea59adb3789a33f60 100644
+--- a/test/registered/unit/constrained/test_grammar_manager.py
++++ b/test/registered/unit/constrained/test_grammar_manager.py
+@@ -320,6 +320,17 @@ class TestProcessReqWithGrammar(unittest.TestCase):
+         self.assertEqual(req.grammar.min_think_tokens, 2)
+         self.assertEqual(req.grammar.max_think_tokens, 3)
+ 
++    def test_strict_reasoning_grammar_can_be_disabled_per_request(self):
++        mgr = self._make_mgr()
++        mgr._enable_strict_thinking = True
++        req = _make_req(custom_params={"disable_strict_thinking_grammar": True})
++        req.require_reasoning = True
++
++        mgr.process_req_with_grammar(req)
++
++        self.assertIsNone(req.grammar)
++        mgr.grammar_backend.init_strict_reasoning_grammar.assert_not_called()
++
+ 
+ class TestAbortRequests(unittest.TestCase):
+     """Test abort_requests handling."""
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index ce56e5ec054ba51e84b6a34b015419a13e032457..61c42a788200660b91735aec548b20778950bf31 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -525,6 +525,36 @@ class ServingChatTestCase(unittest.TestCase):
+ 
+         self.assertEqual(adapted.min_thinking_tokens, 128)
+         self.assertEqual(adapted.max_thinking_tokens, 256)
++        self.assertNotIn(
++            "disable_strict_thinking_grammar",
++            adapted.sampling_params.get("custom_params") or {},
++        )
++
++    def test_qwen35_unbounded_request_skips_strict_thinking_grammar(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = True
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            max_tokens=1024,
++        )
++        processed = MessageProcessingResult(
++            prompt="",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            audio_data=None,
++            video_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=True,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertTrue(
++            adapted.sampling_params["custom_params"]["disable_strict_thinking_grammar"]
++        )
+ 
+     def test_qwen35_nested_reasoning_effort_guidance_reaches_template(self):
+         self.tm.model_config.hf_config.model_type = "qwen3_5"

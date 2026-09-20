@@ -1,0 +1,56 @@
+[
+  {
+    "model": "gemma-4-26b-a4b-uncensored",
+    "patch_count": 9,
+    "full_engine_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+    "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  },
+  {
+    "model": "muse-glimmer-30b",
+    "patch_count": 23,
+    "full_engine_tree": "2e5ff571325982ad59c5840e5d838c442784b0f1",
+    "source_head": "a54a1d5bb9f4ee2034c281f99bab4391eb70c77c",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  },
+  {
+    "model": "nemotron-3.5-lightning",
+    "patch_count": 29,
+    "full_engine_tree": "13b00c9d8ca5916d6506926783fcc743dbf43ee9",
+    "source_head": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  },
+  {
+    "model": "qwen-2.5-7b",
+    "patch_count": 9,
+    "full_engine_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+    "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  },
+  {
+    "model": "qwen3.6-27b",
+    "patch_count": 26,
+    "full_engine_tree": "d209baf0019b73d3126b85401154de8d0fa124fd",
+    "source_head": "711978779936d1918d038de8515e33f968cb5193",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  },
+  {
+    "model": "qwen3.8-27b-uncensored",
+    "patch_count": 9,
+    "full_engine_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+    "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+    "source_export_bytes_equal": true,
+    "ordered_application_verified": true,
+    "governor_enabled": false
+  }
+]

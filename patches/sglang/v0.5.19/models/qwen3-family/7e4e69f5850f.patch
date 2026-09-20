@@ -1,0 +1,580 @@
+diff --git a/python/sglang/srt/constrained/grammar_manager.py b/python/sglang/srt/constrained/grammar_manager.py
+index c218956a4df0e66f88c690eeb2b8730444d8f805..ab93d0d9c3325260a7e6c312cfbac41e522cbeb4 100644
+--- a/python/sglang/srt/constrained/grammar_manager.py
++++ b/python/sglang/srt/constrained/grammar_manager.py
+@@ -114,19 +114,24 @@ class GrammarManager:
+                     req.grammar.cancel()
+                 req.set_finish_with_abort("Aborted by AbortReq.")
+ 
+-    def _get_request_thinking_budget(self, req: Req) -> int | None:
++    def _get_request_thinking_bounds(self, req: Req) -> tuple[int | None, int | None]:
+         custom_params = req.sampling_params.custom_params
+         if not isinstance(custom_params, dict):
+-            return None
++            return None, None
++        min_thinking_budget = custom_params.get("min_thinking_budget")
+         thinking_budget = custom_params.get("thinking_budget")
+-        return thinking_budget if isinstance(thinking_budget, int) else None
++        return (
++            min_thinking_budget if isinstance(min_thinking_budget, int) else None,
++            thinking_budget if isinstance(thinking_budget, int) else None,
++        )
+ 
+     def _apply_request_reasoning_budget(self, req: Req) -> None:
+-        thinking_budget = self._get_request_thinking_budget(req)
+-        if thinking_budget is None:
+-            return
++        min_thinking_budget, thinking_budget = self._get_request_thinking_bounds(req)
+         if isinstance(req.grammar, ReasonerGrammarObject):
+-            req.grammar.max_think_tokens = thinking_budget
++            if min_thinking_budget is not None:
++                req.grammar.min_think_tokens = min_thinking_budget
++            if thinking_budget is not None:
++                req.grammar.max_think_tokens = thinking_budget
+ 
+     def process_req_with_grammar(self, req: Req) -> bool:
+         # Init grammar cache for this request
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index f9b21f56a7a10e63209cf3e4ab278e7ac9445d96..3815357baace647849d7d08f13e0695105a368e9 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -40,6 +40,7 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         grammar: Optional[BaseGrammarObject],
+         think_end_ids: List[int],
+         think_excluded_token_ids: Optional[List[int]] = None,
++        min_think_tokens: int = -1,
+         max_think_tokens: int = -1,
+         enable_token_filter: bool = False,
+         token_filter_fn=None,
+@@ -52,6 +53,7 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         self.think_end_ids = tuple(think_end_ids)
+         self._think_end_matcher = TokenSequenceMatcher(self.think_end_ids)
+         self.think_excluded_token_ids = think_excluded_token_ids
++        self.min_think_tokens = min_think_tokens
+         self.max_think_tokens = max_think_tokens
+         self.enable_token_filter = enable_token_filter
+         self.token_filter_fn = token_filter_fn
+@@ -143,6 +145,13 @@ class ReasonerGrammarObject(BaseGrammarObject):
+             < self.max_think_tokens
+         )
+ 
++    def _must_think_more(self):
++        return (
++            self.min_think_tokens >= 0
++            and self.tokens_in_think + self._matched_think_end_tokens
++            < self.min_think_tokens
++        )
++
+     def _do_token_filter(self, vocab_mask, token_ids, idx, is_allowed=True):
+         if self.token_filter_fn is not None:
+             self.token_filter_fn(vocab_mask, token_ids, idx, is_allowed)
+@@ -151,7 +160,17 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         if self._is_thinking():
+             if not self.enable_token_filter:
+                 return
+-            if self._can_think_more():
++            if self._must_think_more():
++                blocked_token_ids = [self.think_end_ids[self._matched_think_end_tokens]]
++                if self.think_excluded_token_ids is not None:
++                    blocked_token_ids.extend(self.think_excluded_token_ids)
++                self._do_token_filter(
++                    vocab_mask,
++                    blocked_token_ids,
++                    idx,
++                    is_allowed=False,
++                )
++            elif self._can_think_more():
+                 if self.think_excluded_token_ids is not None:
+                     self._do_token_filter(
+                         vocab_mask,
+@@ -195,6 +214,7 @@ class ReasonerGrammarObject(BaseGrammarObject):
+             grammar=self.grammar.copy() if self.grammar is not None else None,
+             think_end_ids=self.think_end_ids,
+             think_excluded_token_ids=self.think_excluded_token_ids,
++            min_think_tokens=self.min_think_tokens,
+             max_think_tokens=self.max_think_tokens,
+             enable_token_filter=self.enable_token_filter,
+             token_filter_fn=self.token_filter_fn,
+@@ -308,6 +328,7 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+             grammar=grammar,
+             think_end_ids=self.think_end_ids,
+             think_excluded_token_ids=self.think_excluded_token_ids,
++            min_think_tokens=-1,
+             max_think_tokens=self.max_think_tokens,
+             enable_token_filter=self.enable_token_filter,
+             token_filter_fn=self._token_filter_fn,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index da554a6bf55e5053d0b500d9b94c54a78014a543..61842bc755655e380c3f88677645959637eb7180 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -125,6 +125,14 @@ _QWEN35_REASONING_EFFORT_GUIDANCE = {
+     ),
+ }
+ 
++_QWEN35_REASONING_EFFORT_TOKEN_RANGES = {
++    "low": (32, 64),
++    "medium": (128, 256),
++    "xhigh": (384, 768),
++}
++_QWEN35_REASONING_EFFORT_FULL_BUDGET = 768
++_QWEN35_REASONING_ANSWER_RESERVE_CAP = 256
++
+ _MEDIA_CONTENT_PART_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+ 
+ 
+@@ -587,6 +595,56 @@ class OpenAIServingChat(OpenAIServingBase):
+             guided_messages.insert(0, {"role": "system", "content": guidance})
+         return guided_messages
+ 
++    def _qwen35_reasoning_effort_token_range(
++        self,
++        reasoning_effort: Optional[str],
++        max_new_tokens: Optional[int],
++    ) -> Optional[tuple[int, int]]:
++        """Return strict, non-overlapping reasoning bounds for Qwen3.5."""
++        if (
++            not self._uses_qwen35_chat_template()
++            or reasoning_effort not in _QWEN35_REASONING_EFFORT_TOKEN_RANGES
++            or getattr(
++                self.tokenizer_manager.server_args,
++                "enable_strict_thinking",
++                False,
++            )
++            is not True
++        ):
++            return None
++
++        if max_new_tokens is None:
++            available_tokens = _QWEN35_REASONING_EFFORT_FULL_BUDGET
++        else:
++            if type(max_new_tokens) is not int or max_new_tokens <= 1:
++                return None
++            answer_reserve = min(
++                max(1, max_new_tokens // 4),
++                _QWEN35_REASONING_ANSWER_RESERVE_CAP,
++            )
++            available_tokens = max_new_tokens - answer_reserve
++
++        # Three disjoint integer intervals require at least three reasoning tokens.
++        if available_tokens < 3:
++            return None
++
++        scale = min(
++            1.0,
++            available_tokens / _QWEN35_REASONING_EFFORT_FULL_BUDGET,
++        )
++        low_min = min(max(1, int(32 * scale)), available_tokens - 2)
++        low_max = min(max(low_min, int(64 * scale)), available_tokens - 2)
++        medium_min = min(max(low_max + 1, int(128 * scale)), available_tokens - 1)
++        medium_max = min(max(medium_min, int(256 * scale)), available_tokens - 1)
++        xhigh_min = min(max(medium_max + 1, int(384 * scale)), available_tokens)
++        xhigh_max = min(max(xhigh_min, int(768 * scale)), available_tokens)
++        ranges = {
++            "low": (low_min, low_max),
++            "medium": (medium_min, medium_max),
++            "xhigh": (xhigh_min, xhigh_max),
++        }
++        return ranges[reasoning_effort]
++
+     def _expose_qwen35_reasoning_tool_history(
+         self, messages: List[Dict[str, Any]]
+     ) -> None:
+@@ -1226,6 +1284,14 @@ class OpenAIServingChat(OpenAIServingBase):
+             tool_call_constraint=processed_messages.tool_call_constraint,
+             renderer_handles_response_format=self.chat_encoding_spec == "kimi_k3",
+         )
++        reasoning_token_range = (
++            self._qwen35_reasoning_effort_token_range(
++                request.reasoning_effort,
++                sampling_params.get("max_new_tokens"),
++            )
++            if processed_messages.require_reasoning
++            else None
++        )
+ 
+         # Handle single vs multiple requests
+         if request.input_ids is not None:
+@@ -1292,6 +1358,12 @@ class OpenAIServingChat(OpenAIServingBase):
+             extra_key=request.extra_key,
+             cache_salt=request.cache_salt,
+             require_reasoning=processed_messages.require_reasoning,
++            min_thinking_tokens=(
++                reasoning_token_range[0] if reasoning_token_range is not None else None
++            ),
++            max_thinking_tokens=(
++                reasoning_token_range[1] if reasoning_token_range is not None else None
++            ),
+             priority=request.priority,
+             routing_key=self.extract_routing_key(raw_request),
+             custom_labels=custom_labels,
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index d29ff305bc7d6d09a35cf621ef41c31d10a53805..df509759f261e2306d54ea5a9214bfab9ca7ba5f 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -303,8 +303,9 @@ class GenerateReqInput:
+     background: bool = False
+     # Require reasoning for the request (hybrid reasoning model only)
+     require_reasoning: bool = False
+-    # Per-request thinking budget. Requires strict thinking so the runtime can
+-    # enforce the limit rather than silently treating it as metadata.
++    # Per-request thinking bounds. Require strict thinking so the runtime can
++    # enforce them rather than silently treating them as metadata.
++    min_thinking_tokens: Optional[int] = None
+     max_thinking_tokens: Optional[int] = None
+ 
+     # Priority for the request
+@@ -948,6 +949,7 @@ class GenerateReqInput:
+             conversation_id=self.conversation_id,
+             http_worker_ipc=self.http_worker_ipc,
+             require_reasoning=self.require_reasoning,
++            min_thinking_tokens=self.min_thinking_tokens,
+             max_thinking_tokens=self.max_thinking_tokens,
+             priority=self.priority,
+             extra_key=self.extra_key[i] if self.extra_key is not None else None,
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 895484239de56424078bef126ef9e7bc7998d88a..ed2848d92237ad9526481fe866ed0cbd5862d51b 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -777,15 +777,27 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         # Normalize the request
+         obj.normalize_batch_and_arguments()
+         self._set_default_priority(obj)
+-        if (
+-            isinstance(obj, GenerateReqInput)
+-            and obj.max_thinking_tokens is not None
+-            and not get_serving().enable_strict_thinking
+-        ):
++        has_thinking_bounds = isinstance(obj, GenerateReqInput) and (
++            obj.min_thinking_tokens is not None or obj.max_thinking_tokens is not None
++        )
++        if has_thinking_bounds and not get_serving().enable_strict_thinking:
+             raise ValueError(
+-                "max_thinking_tokens requires the server to be launched with "
++                "thinking token bounds require the server to be launched with "
+                 "--enable-strict-thinking"
+             )
++        if has_thinking_bounds:
++            if obj.min_thinking_tokens is not None and obj.min_thinking_tokens < 0:
++                raise ValueError("min_thinking_tokens must be non-negative")
++            if obj.max_thinking_tokens is not None and obj.max_thinking_tokens < 0:
++                raise ValueError("max_thinking_tokens must be non-negative")
++            if (
++                obj.min_thinking_tokens is not None
++                and obj.max_thinking_tokens is not None
++                and obj.min_thinking_tokens > obj.max_thinking_tokens
++            ):
++                raise ValueError(
++                    "min_thinking_tokens must not exceed max_thinking_tokens"
++                )
+ 
+         if isinstance(obj, GenerateReqInput) and obj.routed_dp_rank is not None:
+             dp_size = self.elastic_worker_count
+@@ -1353,10 +1365,15 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             sampling_kwargs = {**self.preferred_sampling_params, **obj.sampling_params}
+         else:
+             sampling_kwargs = obj.sampling_params
+-        if isinstance(obj, GenerateReqInput) and obj.max_thinking_tokens is not None:
++        if isinstance(obj, GenerateReqInput) and (
++            obj.min_thinking_tokens is not None or obj.max_thinking_tokens is not None
++        ):
+             sampling_kwargs = dict(sampling_kwargs)
+             custom_params = dict(sampling_kwargs.get("custom_params") or {})
+-            custom_params["thinking_budget"] = obj.max_thinking_tokens
++            if obj.min_thinking_tokens is not None:
++                custom_params["min_thinking_budget"] = obj.min_thinking_tokens
++            if obj.max_thinking_tokens is not None:
++                custom_params["thinking_budget"] = obj.max_thinking_tokens
+             sampling_kwargs["custom_params"] = custom_params
+         sampling_params = self.sampling_params_class(**sampling_kwargs)
+         sampling_params.normalize(self.tokenizer)
+diff --git a/test/registered/unit/constrained/test_grammar_manager.py b/test/registered/unit/constrained/test_grammar_manager.py
+index 95c57c639c14ec4abd6be7191b38614beae999e4..f2e1fcd48e75f26b085edea35400769d36350cb1 100644
+--- a/test/registered/unit/constrained/test_grammar_manager.py
++++ b/test/registered/unit/constrained/test_grammar_manager.py
+@@ -297,10 +297,11 @@ class TestProcessReqWithGrammar(unittest.TestCase):
+ 
+         req = _make_req(
+             json_schema="schema",
+-            custom_params={"thinking_budget": 7},
++            custom_params={"min_thinking_budget": 5, "thinking_budget": 7},
+         )
+         mgr.process_req_with_grammar(req)
+ 
++        self.assertEqual(req.grammar.min_think_tokens, 5)
+         self.assertEqual(req.grammar.max_think_tokens, 7)
+ 
+     def test_strict_reasoning_grammar_applies_request_thinking_budget(self):
+@@ -311,11 +312,12 @@ class TestProcessReqWithGrammar(unittest.TestCase):
+         )
+         mgr.grammar_backend.init_strict_reasoning_grammar.return_value = grammar_obj
+ 
+-        req = _make_req(custom_params={"thinking_budget": 3})
++        req = _make_req(custom_params={"min_thinking_budget": 2, "thinking_budget": 3})
+         req.require_reasoning = True
+         mgr.process_req_with_grammar(req)
+ 
+         self.assertIs(req.grammar, grammar_obj)
++        self.assertEqual(req.grammar.min_think_tokens, 2)
+         self.assertEqual(req.grammar.max_think_tokens, 3)
+ 
+ 
+@@ -565,7 +567,10 @@ class TestGetReadyGrammarRequests(unittest.TestCase):
+         future = Future()
+         future.set_result(grammar_obj)
+ 
+-        req = _make_req(json_schema="schema", custom_params={"thinking_budget": 4})
++        req = _make_req(
++            json_schema="schema",
++            custom_params={"min_thinking_budget": 2, "thinking_budget": 4},
++        )
+         req.grammar = future
+         req.grammar_key = ("json", "schema")
+         mgr.grammar_queue.append(req)
+@@ -573,9 +578,11 @@ class TestGetReadyGrammarRequests(unittest.TestCase):
+         result = mgr.get_ready_grammar_requests()
+ 
+         self.assertEqual(len(result), 1)
++        self.assertEqual(req.grammar.min_think_tokens, 2)
+         self.assertEqual(req.grammar.max_think_tokens, 4)
+         cached_key, cached_value = mgr.grammar_backend.set_cache.call_args[0]
+         self.assertEqual(cached_key, ("json", "schema"))
++        self.assertEqual(cached_value.min_think_tokens, -1)
+         self.assertEqual(cached_value.max_think_tokens, 99)
+ 
+     @patch("sglang.srt.constrained.grammar_manager.torch.distributed.all_gather_object")
+diff --git a/test/registered/unit/constrained/test_reasoner_grammar_backend.py b/test/registered/unit/constrained/test_reasoner_grammar_backend.py
+index da1eaf219e1c6b2bfeb8b880c23a6462fbfe69c5..f4c4e8525b63d1153b51e60ecc52fe7465726989 100644
+--- a/test/registered/unit/constrained/test_reasoner_grammar_backend.py
++++ b/test/registered/unit/constrained/test_reasoner_grammar_backend.py
+@@ -139,6 +139,51 @@ class TestReasonerGrammarObject(unittest.TestCase):
+         obj.fill_vocab_mask(second_mask, 0)
+         self.assertEqual(_allowed_token_ids(second_mask, [7, 8, 10]), [8])
+ 
++    def test_minimum_budget_blocks_think_end_until_reached(self):
++        obj = ReasonerGrammarObject(
++            grammar=None,
++            think_end_ids=[7],
++            think_excluded_token_ids=[3, 5],
++            min_think_tokens=2,
++            max_think_tokens=4,
++            enable_token_filter=True,
++            token_filter_fn=set_token_filter_torch,
++        )
++        obj.maybe_init_reasoning(True)
++
++        before_min = torch.zeros((1, 2), dtype=torch.int32)
++        obj.fill_vocab_mask(before_min, 0)
++        self.assertEqual(
++            _allowed_token_ids(before_min, [3, 5, 7, 10]),
++            [10],
++        )
++
++        obj.accept_token(10)
++        obj.accept_token(11)
++        after_min = torch.zeros((1, 2), dtype=torch.int32)
++        obj.fill_vocab_mask(after_min, 0)
++        self.assertEqual(
++            _allowed_token_ids(after_min, [3, 5, 7, 10]),
++            [7, 10],
++        )
++
++    def test_minimum_budget_tracks_partial_multi_token_end(self):
++        obj = ReasonerGrammarObject(
++            grammar=None,
++            think_end_ids=[7, 8],
++            min_think_tokens=2,
++            max_think_tokens=4,
++            enable_token_filter=True,
++            token_filter_fn=set_token_filter_torch,
++        )
++        obj.maybe_init_reasoning(True)
++        obj.accept_token(7)
++
++        mask = torch.zeros((1, 2), dtype=torch.int32)
++        obj.fill_vocab_mask(mask, 0)
++
++        self.assertEqual(_allowed_token_ids(mask, [7, 8, 10]), [7, 10])
++
+ 
+ class TestReasonerGrammarBackend(unittest.TestCase):
+     def setUp(self):
+@@ -439,6 +484,22 @@ class TestReasonerGrammarObjectRollback(unittest.TestCase):
+         self.assertTrue(obj._is_thinking())
+         self.assertEqual(obj._matched_think_end_tokens, 1)
+ 
++    def test_copy_preserves_reasoning_bounds(self):
++        obj = ReasonerGrammarObject(
++            grammar=None,
++            think_end_ids=[7],
++            min_think_tokens=2,
++            max_think_tokens=4,
++        )
++        obj.maybe_init_reasoning(True)
++        obj.accept_token(10)
++
++        copied = obj.copy()
++
++        self.assertEqual(copied.min_think_tokens, 2)
++        self.assertEqual(copied.max_think_tokens, 4)
++        self.assertEqual(copied.tokens_in_think, 1)
++
+     def test_self_overlapping_marker_is_matched(self):
+         obj = ReasonerGrammarObject(grammar=None, think_end_ids=[2, 2, 3])
+         obj.maybe_init_reasoning(True)
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index c7cc007eb8c56da9391c19de94f8e36b8eff1f3d..ce56e5ec054ba51e84b6a34b015419a13e032457 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -449,6 +449,83 @@ class ServingChatTestCase(unittest.TestCase):
+             messages,
+         )
+ 
++    def test_qwen35_reasoning_effort_token_ranges_are_strict_and_scaled(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = True
++
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 1024),
++            (32, 64),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 1024),
++            (128, 256),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("xhigh", 1024),
++            (384, 768),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 128),
++            (4, 8),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 128),
++            (16, 32),
++        )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("xhigh", 128),
++            (48, 96),
++        )
++        self.assertEqual(
++            [
++                self.chat._qwen35_reasoning_effort_token_range(effort, 4)
++                for effort in ("low", "medium", "xhigh")
++            ],
++            [(1, 1), (2, 2), (3, 3)],
++        )
++
++    def test_qwen35_reasoning_effort_token_ranges_are_narrowly_scoped(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = False
++        self.assertIsNone(self.chat._qwen35_reasoning_effort_token_range("low", 1024))
++
++        self.tm.server_args.enable_strict_thinking = True
++        for effort in (None, "none", "minimal", "high", "max"):
++            with self.subTest(effort=effort):
++                self.assertIsNone(
++                    self.chat._qwen35_reasoning_effort_token_range(effort, 1024)
++                )
++
++        self.tm.model_config.hf_config.model_type = "llama"
++        self.assertIsNone(self.chat._qwen35_reasoning_effort_token_range("low", 1024))
++
++    def test_qwen35_reasoning_effort_bounds_reach_internal_request(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = True
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            reasoning_effort="medium",
++            max_tokens=1024,
++        )
++        processed = MessageProcessingResult(
++            prompt="",
++            prompt_ids=[1, 2, 3],
++            image_data=None,
++            audio_data=None,
++            video_data=None,
++            modalities=[],
++            stop=[],
++            require_reasoning=True,
++        )
++
++        with patch.object(self.chat, "_process_messages", return_value=processed):
++            adapted, _ = self.chat._convert_to_internal_request(request)
++
++        self.assertEqual(adapted.min_thinking_tokens, 128)
++        self.assertEqual(adapted.max_thinking_tokens, 256)
++
+     def test_qwen35_nested_reasoning_effort_guidance_reaches_template(self):
+         self.tm.model_config.hf_config.model_type = "qwen3_5"
+         self.template_manager.chat_template_name = None
+diff --git a/test/registered/unit/managers/test_io_struct.py b/test/registered/unit/managers/test_io_struct.py
+index a44abaa8d456f3b0ca52075dc82b74ffc58121ca..66890420cf04fe77f6bcdf634eb0ed154d5b0550 100644
+--- a/test/registered/unit/managers/test_io_struct.py
++++ b/test/registered/unit/managers/test_io_struct.py
+@@ -684,6 +684,7 @@ class TestGenerateReqInputNormalization(CustomTestCase):
+             rid="single",
+             sampling_params={"n": 3},
+             require_reasoning=True,
++            min_thinking_tokens=64,
+             max_thinking_tokens=128,
+         )
+         single.normalize_batch_and_arguments()
+@@ -694,6 +695,10 @@ class TestGenerateReqInputNormalization(CustomTestCase):
+             ["single_0", "single_1", "single_2"],
+         )
+         self.assertTrue(all(single[i].require_reasoning for i in range(3)))
++        self.assertEqual(
++            [single[i].min_thinking_tokens for i in range(3)],
++            [64] * 3,
++        )
+         self.assertEqual(
+             [single[i].max_thinking_tokens for i in range(3)],
+             [128] * 3,
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index 93a3f8bf23d0885442059faa3d92164cfd4bff8b..b2924baf14ad54423053374737eaa6b09f678404 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -447,6 +447,7 @@ def _make_generate_obj(rid, is_single):
+     obj.received_time = 0.0
+     obj.external_trace_header = None
+     obj.bootstrap_room = None
++    obj.min_thinking_tokens = None
+     obj.max_thinking_tokens = None
+     obj.normalize_batch_and_arguments = Mock()
+     if not is_single:
+@@ -601,6 +602,7 @@ class TestGenerateRequestCleanupOnDispatchFailure(CustomTestCase):
+             text="hello",
+             rid="thinking-budget",
+             sampling_params={},
++            min_thinking_tokens=16,
+             max_thinking_tokens=32,
+         )
+ 
+@@ -612,6 +614,25 @@ class TestGenerateRequestCleanupOnDispatchFailure(CustomTestCase):
+ 
+         self.assertFalse(tm.rid_to_state)
+ 
++    def test_invalid_thinking_bounds_are_rejected_before_dispatch(self):
++        tm = _make_tm_for_generate(self)
++        tm.server_args.enable_strict_thinking = True
++        obj = GenerateReqInput(
++            text="hello",
++            rid="invalid-thinking-bounds",
++            sampling_params={},
++            min_thinking_tokens=33,
++            max_thinking_tokens=32,
++        )
++
++        async def drive():
++            await tm.generate_request(obj).__anext__()
++
++        with self.assertRaisesRegex(ValueError, "must not exceed"):
++            asyncio.run(drive())
++
++        self.assertFalse(tm.rid_to_state)
++
+ 
+ class TestWaitOneResponseAfterStateFreed(CustomTestCase):
+     """A waiter built before its request finishes must still deliver the output.

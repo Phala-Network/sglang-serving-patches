@@ -1,0 +1,27 @@
+{
+  "qwen38-gemma4": {
+    "url": "https://github.com/Phala-Network/sglang/pull/29",
+    "head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+    "base_branch": "codex/five-cvm-v0519-upstream"
+  },
+  "qwen36": {
+    "url": "https://github.com/Phala-Network/sglang/pull/30",
+    "head": "711978779936d1918d038de8515e33f968cb5193",
+    "base_branch": "codex/five-cvm-v0519-upstream"
+  },
+  "muse-nemotron-shared": {
+    "url": "https://github.com/Phala-Network/sglang/pull/31",
+    "head": "c977122cefeef784c33f0e11c2b841c8111e76cb",
+    "base_branch": "codex/five-cvm-v0519-upstream"
+  },
+  "muse": {
+    "url": "https://github.com/Phala-Network/sglang/pull/32",
+    "head": "a54a1d5bb9f4ee2034c281f99bab4391eb70c77c",
+    "base_branch": "codex/five-cvm-v0519-muse-nemotron-shared"
+  },
+  "nemotron": {
+    "url": "https://github.com/Phala-Network/sglang/pull/33",
+    "head": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+    "base_branch": "codex/five-cvm-v0519-muse-nemotron-shared"
+  }
+}

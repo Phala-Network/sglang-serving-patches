@@ -1,0 +1,12 @@
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py b/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py
+index 56d93414210119d789a7dc527c8d9872f0fe7e0e..90ced9593b3a7ab99e83443d13f578b9e76db0a9 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py
+@@ -60,6 +60,7 @@ def _run_tokenize(manager, request):
+     with patch(
+         "sglang.srt.managers.tokenizer_manager.get_disagg",
+         return_value=SimpleNamespace(
++            language_model_only=False,
+             language_only=False,
+             encoder_transfer_backend=None,
+         ),

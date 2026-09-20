@@ -1,0 +1,31 @@
+diff --git a/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py b/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py
+index 9ccd761c19973b23d28578ee02ef95a924f4f03b..e5f10e7b61c2031211714036d51b1fd0072df3d3 100644
+--- a/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py
++++ b/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py
+@@ -24,7 +24,8 @@ def test_parallel_sampling_releases_all_parent_placeholders(
+     request.normalize_batch_and_arguments()
+     manager = TokenizerManager.__new__(TokenizerManager)
+     manager.rid_to_state = {
+-        rid: SimpleNamespace(time_stats=MagicMock()) for rid in request.rid
++        rid: SimpleNamespace(time_stats=MagicMock(), dispatched=False)
++        for rid in request.rid
+     }
+     unrelated = object()
+     manager.rid_to_state["unrelated-inflight"] = unrelated
+@@ -36,10 +37,14 @@ def test_parallel_sampling_releases_all_parent_placeholders(
+             input_ids=[1, 2],
+         )
+     )
+-    manager._send_one_request = MagicMock()
++    manager._send_one_request = MagicMock(
++        side_effect=lambda obj: manager._mark_state_dispatched(obj.rid)
++    )
+ 
+     def init_state(obj):
+-        manager.rid_to_state[obj.rid] = SimpleNamespace(time_stats=MagicMock())
++        manager.rid_to_state[obj.rid] = SimpleNamespace(
++            time_stats=MagicMock(), dispatched=False
++        )
+ 
+     async def wait_response(obj, _request=None):
+         manager.rid_to_state.pop(obj.rid)

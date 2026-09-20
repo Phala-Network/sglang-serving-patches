@@ -1,0 +1,1596 @@
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 58b3f1540d81e16134419366f1b1525be3dd695d..88e7d8c655f68a2c31045e23dc95966c059a9214 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -37,6 +37,9 @@ from sglang.srt.constrained.base_grammar_backend import (
+     InvalidGrammarObject,
+ )
+ from sglang.srt.constrained.utils import is_legacy_structural_tag
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
+ from sglang.srt.utils import is_hip
+ from sglang.srt.utils.common import is_pin_memory_available
+ 
+@@ -340,6 +343,14 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                 # Note: This builtin JSON grammar includes *all* valid JSON (including, for example, arrays at the root)
+                 ctx = self.grammar_compiler.compile_builtin_json_grammar()
+             else:
++                schema = json.loads(key_string)
++                if isinstance(schema, dict) and has_xgrammar_unsupported_json_features(
++                    schema
++                ):
++                    raise RuntimeError(
++                        "JSON schema uses features unsupported by xgrammar; "
++                        "the constraint would otherwise be silently ignored"
++                    )
+                 ctx = self.grammar_compiler.compile_json_schema(
+                     schema=key_string, any_whitespace=self.any_whitespace
+                 )
+diff --git a/python/sglang/srt/constrained/xgrammar_schema.py b/python/sglang/srt/constrained/xgrammar_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd4ca0131b7a0d91e85db89c004d9ae8d1f18743
+--- /dev/null
++++ b/python/sglang/srt/constrained/xgrammar_schema.py
+@@ -0,0 +1,56 @@
++"""Fail-closed checks for JSON Schema features XGrammar cannot enforce."""
++
++
++def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
++    """Return whether XGrammar would silently ignore a schema constraint."""
++
++    schema_array_keywords = ("allOf", "anyOf", "oneOf", "prefixItems")
++    schema_keywords = (
++        "additionalItems",
++        "additionalProperties",
++        "else",
++        "if",
++        "items",
++        "not",
++        "then",
++        "unevaluatedItems",
++        "unevaluatedProperties",
++    )
++    schema_map_keywords = ("$defs", "definitions", "properties")
++    unsupported_keywords = (
++        "contains",
++        "dependentSchemas",
++        "maxContains",
++        "minContains",
++        "multipleOf",
++        "patternProperties",
++        "propertyNames",
++        "uniqueItems",
++    )
++
++    def check_schema(obj) -> bool:
++        if not isinstance(obj, dict):
++            return False
++
++        if any(key in obj for key in unsupported_keywords):
++            return True
++
++        for key in schema_keywords:
++            if check_schema(obj.get(key)):
++                return True
++
++        for key in schema_array_keywords:
++            value = obj.get(key)
++            if isinstance(value, list) and any(check_schema(item) for item in value):
++                return True
++
++        for key in schema_map_keywords:
++            value = obj.get(key)
++            if isinstance(value, dict) and any(
++                check_schema(item) for item in value.values()
++            ):
++                return True
++
++        return False
++
++    return check_schema(schema)
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 109542667f25d5bb6f5b0067e8c923bcc256f748..4f9cfbf8bf7857d3152e30fb6dd1cfa5f9749075 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -788,6 +788,42 @@ class ToolChoice(BaseModel):
+     type: Literal["function"] = Field(default="function", examples=["function"])
+ 
+ 
++class AllowedToolChoiceFunction(BaseModel):
++    """A function reference inside an allowed-tools choice."""
++
++    name: str = Field(min_length=1)
++
++
++class AllowedToolChoiceTool(BaseModel):
++    """A typed tool reference inside an allowed-tools choice."""
++
++    type: Literal["function"] = Field(default="function", examples=["function"])
++    function: AllowedToolChoiceFunction
++
++
++class AllowedToolsConfig(BaseModel):
++    """The mode and subset selected by an allowed-tools choice."""
++
++    mode: Literal["auto", "required"]
++    tools: List[AllowedToolChoiceTool] = Field(min_length=1)
++
++    @model_validator(mode="after")
++    def validate_unique_tool_names(self) -> AllowedToolsConfig:
++        names = [tool.function.name for tool in self.tools]
++        if len(names) != len(set(names)):
++            raise ValueError("allowed_tools contains duplicate function names")
++        return self
++
++
++class AllowedToolsChoice(BaseModel):
++    """Restrict auto or required tool choice to a named subset."""
++
++    type: Literal["allowed_tools"] = Field(
++        default="allowed_tools", examples=["allowed_tools"]
++    )
++    allowed_tools: AllowedToolsConfig
++
++
+ # OpenAI-spec string tiers for reasoning effort (current Responses/Chat API):
+ # none/minimal/low/medium/high/xhigh/max. Used as-is by /v1/responses.
+ ReasoningEffortTier = Literal[
+@@ -853,7 +889,11 @@ class ChatCompletionRequest(BaseModel):
+     top_p: Optional[float] = None
+     user: Optional[str] = None
+     tools: Optional[List[Tool]] = Field(default=None, examples=[None])
+-    tool_choice: Union[ToolChoice, Literal["auto", "required", "none"]] = Field(
++    tool_choice: Union[
++        ToolChoice,
++        AllowedToolsChoice,
++        Literal["auto", "required", "none"],
++    ] = Field(
+         default="auto", examples=["none"]
+     )  # noqa
+     parallel_tool_calls: bool = True
+@@ -973,6 +1013,14 @@ class ChatCompletionRequest(BaseModel):
+                 values["tool_choice"] = "auto"
+         return values
+ 
++    def effective_tool_choice(
++        self,
++    ) -> Union[ToolChoice, Literal["auto", "required", "none"]]:
++        """Reduce allowed-tools to the mode understood by format detectors."""
++        if isinstance(self.tool_choice, AllowedToolsChoice):
++            return self.tool_choice.allowed_tools.mode
++        return self.tool_choice
++
+     @field_validator("reasoning_effort", mode="before")
+     @classmethod
+     def validate_reasoning_effort_type(cls, value):
+@@ -1148,11 +1196,13 @@ class ChatCompletionRequest(BaseModel):
+         )
+ 
+         if tool_call_constraint and has_existing_constraints:
+-            if self.tool_choice == "required" or isinstance(
+-                self.tool_choice, ToolChoice
++            effective_tool_choice = self.effective_tool_choice()
++            if effective_tool_choice == "required" or isinstance(
++                effective_tool_choice, ToolChoice
+             ):
+                 raise ValueError(
+-                    "tool_choice 'required' or a named tool cannot be combined with "
++                    "tool_choice 'required', allowed_tools mode 'required', or a "
++                    "named tool cannot be combined with "
+                     "response_format, regex, or ebnf: the tool-call constraint and the "
+                     "output constraint cannot both be honored."
+                 )
+@@ -1450,9 +1500,13 @@ class TokenizeRequest(BaseModel):
+     prompt: Optional[Union[str, List[str]]] = None
+     messages: Optional[List[ChatCompletionMessageParam]] = None
+     tools: Optional[List[Tool]] = Field(default=None, examples=[None])
+-    tool_choice: Optional[Union[ToolChoice, Literal["auto", "required", "none"]]] = (
+-        Field(default=None, examples=["auto"])
+-    )
++    tool_choice: Optional[
++        Union[
++            ToolChoice,
++            AllowedToolsChoice,
++            Literal["auto", "required", "none"],
++        ]
++    ] = Field(default=None, examples=["auto"])
+     reasoning_effort: ReasoningEffortType = None
+     continue_final_message: bool = False
+     chat_template_kwargs: Optional[Dict] = None
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 17ecfa782d65f161880d9489a6ba955a7a07c8b3..34bf806a2b8636213c5704a8d6ea79ea2333d2cc 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -36,8 +36,12 @@ _CHAT_TEMPLATE_CLIENT_ERRORS: tuple[type[BaseException], ...] = (
+ from fastapi.responses import ORJSONResponse, StreamingResponse
+ from jsonschema import Draft202012Validator, SchemaError
+ 
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
+ from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv32
+ from sglang.srt.entrypoints.openai.protocol import (
++    AllowedToolsChoice,
+     ChatCompletionMessageContentTextPart,
+     ChatCompletionMessageContentVideoPart,
+     ChatCompletionMessageGenericParam,
+@@ -256,6 +260,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         self.template_manager = template_manager
+         self.tool_call_parser = self.tokenizer_manager.config_value("tool_call_parser")
+         self.reasoning_parser = self.tokenizer_manager.config_value("reasoning_parser")
++        self._grammar_backend = self.tokenizer_manager.config_value("grammar_backend")
+         self.default_chat_template_kwargs = (
+             self.tokenizer_manager.server_args.default_chat_template_kwargs or {}
+         )
+@@ -410,8 +415,8 @@ class OpenAIServingChat(OpenAIServingBase):
+     def _request_id_prefix(self) -> str:
+         return "chatcmpl-"
+ 
+-    def _effective_tools(self, request: ChatCompletionRequest) -> List[Tool]:
+-        tools = list(request.tools or [])
++    def _all_tools(self, request: ChatCompletionRequest) -> List[Tool]:
++        tools = list(getattr(request, "tools", None) or [])
+         for message in request.messages:
+             if (
+                 isinstance(message, ChatCompletionMessageGenericParam)
+@@ -421,6 +426,71 @@ class OpenAIServingChat(OpenAIServingBase):
+                 tools.extend(message.tools)
+         return tools
+ 
++    @staticmethod
++    def _allowed_tool_names(request: ChatCompletionRequest) -> Optional[set[str]]:
++        tool_choice = getattr(request, "tool_choice", None)
++        if not isinstance(tool_choice, AllowedToolsChoice):
++            return None
++        return {tool.function.name for tool in tool_choice.allowed_tools.tools}
++
++    @staticmethod
++    def _effective_tool_choice(
++        request: ChatCompletionRequest,
++    ) -> Union[ToolChoice, str, None]:
++        tool_choice = getattr(request, "tool_choice", None)
++        if isinstance(tool_choice, AllowedToolsChoice):
++            return tool_choice.allowed_tools.mode
++        return tool_choice
++
++    def _effective_tools(self, request: ChatCompletionRequest) -> List[Tool]:
++        tools = self._all_tools(request)
++        allowed_names = self._allowed_tool_names(request)
++        if allowed_names is None:
++            return tools
++        return [tool for tool in tools if tool.function.name in allowed_names]
++
++    def _request_tools_for_prompt(
++        self,
++        request: ChatCompletionRequest,
++        *,
++        exclude_unset: bool = False,
++    ) -> List[Dict[str, Any]]:
++        tools = list(request.tools or [])
++        if isinstance(request.tool_choice, ToolChoice):
++            tools = [
++                tool
++                for tool in tools
++                if tool.function.name == request.tool_choice.function.name
++            ]
++        else:
++            allowed_names = self._allowed_tool_names(request)
++            if allowed_names is not None:
++                tools = [tool for tool in tools if tool.function.name in allowed_names]
++        return [
++            tool.model_dump(exclude_unset=exclude_unset, by_alias=True)
++            for tool in tools
++        ]
++
++    def _filter_message_tools_for_prompt(
++        self,
++        messages: List[Dict[str, Any]],
++        request: ChatCompletionRequest,
++    ) -> None:
++        allowed_names = self._allowed_tool_names(request)
++        if allowed_names is None:
++            return
++        for message in messages:
++            message_tools = message.get("tools")
++            if not isinstance(message_tools, list):
++                continue
++            message["tools"] = [
++                tool
++                for tool in message_tools
++                if isinstance(tool, dict)
++                and isinstance(tool.get("function"), dict)
++                and tool["function"].get("name") in allowed_names
++            ]
++
+     def _prepare_kimi_k3_messages(
+         self,
+         messages: List[Dict[str, Any]],
+@@ -481,10 +551,16 @@ class OpenAIServingChat(OpenAIServingBase):
+                 and source.role in ("system", "developer")
+                 and source.tools
+             ):
+-                message["tools"] = [
++                allowed_names = self._allowed_tool_names(request)
++                filtered_source_tools = [
+                     tool.model_dump(exclude_unset=True, by_alias=True)
+                     for tool in source.tools
++                    if allowed_names is None or tool.function.name in allowed_names
+                 ]
++                if filtered_source_tools:
++                    message["tools"] = filtered_source_tools
++                else:
++                    message.pop("tools", None)
+             if message.get("role") == "developer":
+                 message["role"] = "system"
+ 
+@@ -574,12 +650,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                 )
+ 
+             effective_tools = self._effective_tools(request)
++            effective_tool_choice = self._effective_tool_choice(request)
+             if (
+                 effective_tools
+-                and isinstance(request.tool_choice, str)
+-                and request.tool_choice in ("required", "none")
++                and isinstance(effective_tool_choice, str)
++                and effective_tool_choice in ("required", "none")
+             ):
+-                template_kwargs.setdefault("tool_choice", request.tool_choice)
++                template_kwargs.setdefault("tool_choice", effective_tool_choice)
+             if request.response_format is not None:
+                 template_kwargs.setdefault(
+                     "response_format",
+@@ -589,12 +666,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 )
+ 
+             request_tools = (
+-                [
+-                    tool.model_dump(exclude_unset=True, by_alias=True)
+-                    for tool in request.tools
+-                ]
+-                if request.tools
+-                else None
++                self._request_tools_for_prompt(request, exclude_unset=True) or None
+             )
+             prompt_ids = self.tokenizer_manager.tokenizer.apply_chat_template(
+                 messages,
+@@ -857,7 +929,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         keep their framing intact exactly when a tool-call parser consumes it.
+         """
+         return bool(
+-            request.tool_choice != "none"
++            self._effective_tool_choice(request) != "none"
+             and self._effective_tools(request)
+             and self.tool_call_parser
+         )
+@@ -874,21 +946,31 @@ class OpenAIServingChat(OpenAIServingBase):
+         if media_error:
+             return media_error
+ 
++        all_tools = self._all_tools(request)
+         effective_tools = self._effective_tools(request)
++        effective_tool_choice = self._effective_tool_choice(request)
+         has_message_tools = any(
+             isinstance(message, ChatCompletionMessageGenericParam)
+             and message.role in ("system", "developer")
+             and message.tools
+             for message in request.messages
+         )
+-        if (
+-            isinstance(request.tool_choice, str)
+-            and request.tool_choice.lower() == "required"
+-            and not effective_tools
+-        ):
++
++        if isinstance(request.tool_choice, AllowedToolsChoice):
++            available_names = {tool.function.name for tool in all_tools}
++            allowed_names = self._allowed_tool_names(request) or set()
++            missing_names = sorted(allowed_names - available_names)
++            if missing_names:
++                return (
++                    "Allowed tool(s) not found in tools list: "
++                    + ", ".join(missing_names)
++                    + "."
++                )
++
++        if effective_tool_choice == "required" and not effective_tools:
+             return "Tools cannot be empty if tool choice is set to required."
+ 
+-        if request.tool_choice is not None and not isinstance(request.tool_choice, str):
++        if isinstance(request.tool_choice, ToolChoice):
+             if not effective_tools:
+                 return "Tools cannot be empty if tool choice is set to a specific tool."
+             tool_name = request.tool_choice.function.name
+@@ -914,6 +996,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                 # a 400 instead of crashing into a 500.
+                 normalize_json_schema_types(tool.function.parameters)
+                 Draft202012Validator.check_schema(tool.function.parameters)
++                if self._grammar_backend == "xgrammar" and (
++                    has_xgrammar_unsupported_json_features(tool.function.parameters)
++                ):
++                    return (
++                        f"Tool {i} function has a 'parameters' schema containing "
++                        "features unsupported by xgrammar."
++                    )
+             except SchemaError as e:
+                 return f"Tool {i} function has invalid 'parameters' schema: {str(e)}"
+             except RecursionError:
+@@ -938,6 +1027,17 @@ class OpenAIServingChat(OpenAIServingBase):
+             schema = getattr(request.response_format.json_schema, "schema_", None)
+             if schema is None:
+                 return "schema_ is required for json_schema response format request."
++            try:
++                Draft202012Validator.check_schema(schema)
++            except SchemaError as e:
++                return f"Invalid response_format JSON schema: {str(e)}"
++            if self._grammar_backend == "xgrammar" and (
++                has_xgrammar_unsupported_json_features(schema)
++            ):
++                return (
++                    "response_format JSON schema contains features unsupported "
++                    "by xgrammar."
++                )
+ 
+         return None
+ 
+@@ -1128,16 +1228,10 @@ class OpenAIServingChat(OpenAIServingBase):
+         tool_call_stop = None
+         required_parsed_natively = False
+         effective_tools = self._effective_tools(request)
+-        if effective_tools and request.tool_choice != "none":
++        effective_tool_choice = self._effective_tool_choice(request)
++        if effective_tools and effective_tool_choice != "none":
+             request.skip_special_tokens = False
+-            if not isinstance(request.tool_choice, str):
+-                tools = [
+-                    item.model_dump()
+-                    for item in request.tools or []
+-                    if item.function.name == request.tool_choice.function.name
+-                ] or None
+-            elif request.tools:
+-                tools = [item.model_dump() for item in request.tools]
++            tools = self._request_tools_for_prompt(request) or None
+             if self.tool_call_parser:
+                 parser = FunctionCallParser(
+                     effective_tools,
+@@ -1145,7 +1239,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                     tokenizer=self.tokenizer_manager.tokenizer,
+                 )
+                 tool_call_constraint = parser.get_structure_constraint(
+-                    request.tool_choice,
++                    effective_tool_choice,
+                     parallel_tool_calls=request.parallel_tool_calls,
+                     thinking_mode=xgrammar_reasoning,
+                 )
+@@ -1160,13 +1254,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                     and self.tool_call_parser == "kimi_k3"
+                 )
+                 and (
+-                    request.tool_choice == "required"
+-                    or isinstance(request.tool_choice, ToolChoice)
++                    effective_tool_choice == "required"
++                    or isinstance(effective_tool_choice, ToolChoice)
+                 )
+             ):
+                 json_schema = get_json_schema_constraint(
+                     effective_tools,
+-                    request.tool_choice,
++                    effective_tool_choice,
+                     parallel_tool_calls=request.parallel_tool_calls,
+                 )
+                 tool_call_constraint = ("json_schema", json_schema)
+@@ -1228,6 +1322,7 @@ class OpenAIServingChat(OpenAIServingBase):
+             ThinkingMode.THINKING if thinking_requested else ThinkingMode.CHAT
+         )
+         messages = [msg.model_dump() for msg in request.messages]
++        self._filter_message_tools_for_prompt(messages, request)
+         for message in messages:
+             normalize_assistant_tool_call_arguments(
+                 message, strict=self.chat_encoding_spec != "kimi_k3"
+@@ -1288,8 +1383,8 @@ class OpenAIServingChat(OpenAIServingBase):
+             if messages[0]["role"] != "system":
+                 # insert an empty system prompt to help render tool system prompt
+                 messages.insert(0, {"role": "system", "content": ""})
+-            if request.tools:
+-                messages[0]["tools"] = [tool.model_dump() for tool in request.tools]
++            if tools:
++                messages[0]["tools"] = tools
+ 
+             # Default encoding (dsv4/dsv32)
+             if self.chat_encoding_spec == "dsv4":
+@@ -1933,7 +2028,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                     text,
+                     effective_tools,
+                     finish_reason,
+-                    request.tool_choice,
++                    self._effective_tool_choice(request),
+                     history_tool_calls_cnt,
+                 )
+ 
+@@ -2523,8 +2618,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         """
+         effective_tools = self._effective_tools(request)
+         if index not in parser_dict:
+-            is_required = request.tool_choice == "required" or isinstance(
+-                request.tool_choice, ToolChoice
++            effective_tool_choice = self._effective_tool_choice(request)
++            is_required = effective_tool_choice == "required" or isinstance(
++                effective_tool_choice, ToolChoice
+             )
+             # For required/named tool choice: use JsonArrayParser when the
+             # constrained output is plain JSON (detector doesn't support
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 01c52631921bbd276047b4e7d08e53931bf69c5e..50679a88f8d6dfce318ccc0ce348ca5da337dd84 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -1,16 +1,21 @@
+ import json
+ import logging
+ import re
+-from typing import Any, List, Optional
++from typing import Any, List, Literal, Optional, Union
+ 
+-from sglang.srt.entrypoints.openai.protocol import Tool
+-from sglang.srt.function_call.base_format_detector import BaseFormatDetector
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.base_format_detector import (
++    BaseFormatDetector,
++    StructuralTag,
++)
+ from sglang.srt.function_call.core_types import (
+     StreamingParseResult,
+     ToolCallItem,
+     _GetInfoFunc,
+ )
+ from sglang.srt.function_call.utils import (
++    coerce_argument_to_schema,
++    get_argument_schema,
+     get_schema_properties,
+     infer_type_from_json_schema,
+     safe_literal_eval,
+@@ -19,6 +24,38 @@ from sglang.srt.function_call.utils import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _align_required_tool_call_repetition(
++    structural_tag: StructuralTag, parallel_tool_calls: bool
++) -> StructuralTag:
++    """Match Qwen's trained separator and enforce the request's call limit."""
++
++    value = structural_tag.model_dump()
++    repetitions = []
++
++    def visit(node: Any) -> None:
++        if isinstance(node, dict):
++            if node.get("type") == "tags_with_separator":
++                repetitions.append(node)
++            for child in node.values():
++                visit(child)
++        elif isinstance(node, list):
++            for child in node:
++                visit(child)
++
++    visit(value)
++    if len(repetitions) != 1:
++        raise ValueError(
++            "Qwen3 Coder required structural tag must contain one repeated-tag format"
++        )
++
++    # The official Qwen3.8 chat template places one newline between adjacent
++    # </tool_call> and <tool_call> blocks. XGrammar 0.2.1 uses an empty
++    # separator, which forces the model to stop after its first call.
++    repetitions[0]["separator"] = "\n"
++    repetitions[0]["stop_after_first"] = not parallel_tool_calls
++    return StructuralTag.model_validate(value)
++
++
+ class Qwen3CoderDetector(BaseFormatDetector):
+     def __init__(self):
+         super().__init__()
+@@ -99,9 +136,22 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         return str(inferred_type).strip().lower()
+ 
+     def _convert_param_value(
+-        self, param_value: str, param_name: str, param_config: dict, func_name: str
++        self,
++        param_value: str,
++        param_name: str,
++        param_config: dict,
++        func_name: str,
++        tools: Optional[List[Tool]] = None,
+     ) -> Any:
+         """Convert parameter value based on its type in the schema."""
++        argument_schema = get_argument_schema(func_name, param_name, tools or [])
++        if argument_schema is not None:
++            converted, schema_valid = coerce_argument_to_schema(
++                param_value, argument_schema
++            )
++            if schema_valid:
++                return converted
++
+         # Handle null value for any type
+         if param_value.lower() == "null":
+             return None
+@@ -219,7 +269,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                             p_val = p_val[:-1]
+ 
+                         parsed_params[p_name] = self._convert_param_value(
+-                            p_val, p_name, param_config, func_name
++                            p_val, p_name, param_config, func_name, tools
+                         )
+ 
+                     calls.append(
+@@ -359,7 +409,11 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                             self.current_func_name, tools
+                         )
+                         converted_val = self._convert_param_value(
+-                            raw_value, param_name, param_config, self.current_func_name
++                            raw_value,
++                            param_name,
++                            param_config,
++                            self.current_func_name,
++                            tools,
+                         )
+ 
+                         # Construct JSON fragment: "key": value
+@@ -476,6 +530,25 @@ class Qwen3CoderDetector(BaseFormatDetector):
+     def supports_structural_tag(self) -> bool:
+         return True
+ 
++    def get_structural_tag(
++        self,
++        tools: Union[List[Tool], None] = None,
++        tool_choice: Union[ToolChoice, Literal["auto", "required"]] = "auto",
++        thinking_mode: bool = False,
++        parallel_tool_calls: bool = True,
++    ) -> Optional[StructuralTag]:
++        structural_tag = super().get_structural_tag(
++            tools=tools,
++            tool_choice=tool_choice,
++            thinking_mode=thinking_mode,
++            parallel_tool_calls=parallel_tool_calls,
++        )
++        if structural_tag is None or tool_choice != "required":
++            return structural_tag
++        return _align_required_tool_call_repetition(
++            structural_tag, parallel_tool_calls=parallel_tool_calls
++        )
++
+     def structure_info(self) -> _GetInfoFunc:
+         raise NotImplementedError
+ 
+diff --git a/python/sglang/srt/function_call/utils.py b/python/sglang/srt/function_call/utils.py
+index d1a87a90c419a451324ccef3848f6380d5a444fb..c2dd9b425702dc4d8aed41f18a91d883243fbd3a 100644
+--- a/python/sglang/srt/function_call/utils.py
++++ b/python/sglang/srt/function_call/utils.py
+@@ -1,4 +1,8 @@
+ import ast
++import json
++import logging
++import math
++import re
+ import threading
+ import warnings
+ from json import JSONDecodeError, JSONDecoder
+@@ -7,10 +11,13 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+ 
+ import orjson
+ import partial_json_parser
++from jsonschema import Draft202012Validator
+ from partial_json_parser.core.options import Allow
+ 
+ from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
+ 
++logger = logging.getLogger(__name__)
++
+ _STANDARD_JSON_SCHEMA_TYPES = {
+     "null",
+     "boolean",
+@@ -260,6 +267,293 @@ def safe_ast_parse(source: str) -> ast.Module:
+     return _run_ast_quiet(ast.parse, source)
+ 
+ 
++def _find_argument_schema(parameters: Dict[str, Any], arg_key: str) -> Optional[dict]:
++    """Find an argument schema, including top-level schema unions."""
++    properties = parameters.get("properties")
++    if isinstance(properties, dict):
++        arg_schema = properties.get(arg_key)
++        if isinstance(arg_schema, dict):
++            return arg_schema
++
++    for keyword in ("anyOf", "oneOf"):
++        choices = parameters.get(keyword)
++        if not isinstance(choices, list):
++            continue
++        matches = [
++            match
++            for choice in choices
++            if isinstance(choice, dict)
++            for match in [_find_argument_schema(choice, arg_key)]
++            if match is not None
++        ]
++        if len(matches) == 1:
++            return matches[0]
++        if matches:
++            return {"anyOf": matches}
++
++    all_of = parameters.get("allOf")
++    if isinstance(all_of, list):
++        matches = [
++            match
++            for choice in all_of
++            if isinstance(choice, dict)
++            for match in [_find_argument_schema(choice, arg_key)]
++            if match is not None
++        ]
++        if len(matches) == 1:
++            return matches[0]
++        if matches:
++            return {"allOf": matches}
++
++    return None
++
++
++def get_argument_schema(
++    func_name: str, arg_key: str, defined_tools: List[Tool]
++) -> Optional[dict]:
++    """Return a complete argument schema with its local definitions attached."""
++    name2tool = {tool.function.name: tool for tool in defined_tools}
++    tool = name2tool.get(func_name)
++    if tool is None:
++        return None
++
++    parameters = getattr(tool.function, "parameters", None)
++    if not isinstance(parameters, dict):
++        return None
++
++    arg_schema = _find_argument_schema(parameters, arg_key)
++    if arg_schema is None:
++        return None
++
++    schema_with_definitions = dict(arg_schema)
++    for definitions_key in ("$defs", "definitions"):
++        definitions = parameters.get(definitions_key)
++        if definitions_key not in schema_with_definitions and isinstance(
++            definitions, dict
++        ):
++            schema_with_definitions[definitions_key] = definitions
++    return schema_with_definitions
++
++
++def _json_type_name(value: Any) -> Optional[str]:
++    if value is None:
++        return "null"
++    if isinstance(value, bool):
++        return "boolean"
++    if isinstance(value, int):
++        return "integer"
++    if isinstance(value, float):
++        return "number"
++    if isinstance(value, str):
++        return "string"
++    if isinstance(value, list):
++        return "array"
++    if isinstance(value, dict):
++        return "object"
++    return None
++
++
++def _schema_candidate_types(schema: Any) -> List[str]:
++    """Collect candidate types without collapsing heterogeneous schemas."""
++    candidates: List[str] = []
++
++    def add(candidate: Optional[str]) -> None:
++        if candidate is not None and candidate not in candidates:
++            candidates.append(candidate)
++
++    def visit(node: Any) -> None:
++        if not isinstance(node, dict):
++            return
++
++        type_value = node.get("type")
++        if isinstance(type_value, str):
++            add(type_value)
++        elif isinstance(type_value, list):
++            for item in type_value:
++                if isinstance(item, str):
++                    add(item)
++
++        if "const" in node:
++            add(_json_type_name(node["const"]))
++
++        enum_values = node.get("enum")
++        if isinstance(enum_values, list):
++            for item in enum_values:
++                add(_json_type_name(item))
++
++        for keyword in ("anyOf", "oneOf", "allOf"):
++            choices = node.get(keyword)
++            if isinstance(choices, list):
++                for choice in choices:
++                    visit(choice)
++
++        if "properties" in node or "additionalProperties" in node:
++            add("object")
++        if "items" in node or "prefixItems" in node:
++            add("array")
++
++    visit(schema)
++    return candidates
++
++
++def _is_finite_json_value(value: Any) -> bool:
++    if isinstance(value, float):
++        return math.isfinite(value)
++    if isinstance(value, list):
++        return all(_is_finite_json_value(item) for item in value)
++    if isinstance(value, dict):
++        return all(
++            isinstance(key, str) and _is_finite_json_value(item)
++            for key, item in value.items()
++        )
++    return value is None or isinstance(value, (str, bool, int))
++
++
++def _has_external_schema_ref(schema: Any) -> bool:
++    if isinstance(schema, dict):
++        ref = schema.get("$ref")
++        if isinstance(ref, str) and not ref.startswith("#"):
++            return True
++        return any(_has_external_schema_ref(value) for value in schema.values())
++    if isinstance(schema, list):
++        return any(_has_external_schema_ref(value) for value in schema)
++    return False
++
++
++def _schema_value_candidates(raw_value: str, schema: dict) -> List[Any]:
++    """Build conservative JSON-compatible candidates from raw argument text."""
++    stripped = raw_value.strip()
++    candidates: List[Any] = []
++    candidate_keys = set()
++
++    def add(value: Any) -> None:
++        if not _is_finite_json_value(value):
++            return
++        try:
++            serialized = json.dumps(
++                value,
++                ensure_ascii=False,
++                sort_keys=True,
++                allow_nan=False,
++                separators=(",", ":"),
++            )
++        except (TypeError, ValueError):
++            return
++        key = (type(value).__name__, serialized)
++        if key not in candidate_keys:
++            candidate_keys.add(key)
++            candidates.append(value)
++
++    parsed_json: Any = None
++    parsed_json_ok = False
++    try:
++        parsed_json = json.loads(stripped)
++        parsed_json_ok = True
++    except (json.JSONDecodeError, ValueError):
++        pass
++
++    parsed_literal: Any = None
++    parsed_literal_ok = False
++    try:
++        parsed_literal = safe_literal_eval(stripped)
++        parsed_literal_ok = True
++    except (ValueError, SyntaxError):
++        pass
++
++    if parsed_json_ok and isinstance(parsed_json, str):
++        add(parsed_json)
++    elif (
++        parsed_literal_ok
++        and isinstance(parsed_literal, str)
++        and stripped[:1] in {'"', "'"}
++    ):
++        add(parsed_literal)
++    else:
++        add(raw_value)
++
++    if parsed_json_ok:
++        add(parsed_json)
++    if parsed_literal_ok:
++        add(parsed_literal)
++
++    scalar_text = stripped
++    if parsed_json_ok and isinstance(parsed_json, str):
++        scalar_text = parsed_json.strip()
++    elif (
++        parsed_literal_ok
++        and isinstance(parsed_literal, str)
++        and stripped[:1] in {'"', "'"}
++    ):
++        scalar_text = parsed_literal.strip()
++
++    candidate_types = _schema_candidate_types(schema)
++    if "integer" in candidate_types and re.fullmatch(r"[+-]?\d+", scalar_text):
++        try:
++            add(int(scalar_text))
++        except ValueError:
++            pass
++
++    if "number" in candidate_types:
++        try:
++            number = float(scalar_text)
++            if math.isfinite(number):
++                if number.is_integer() and not any(
++                    char in scalar_text for char in ".eE"
++                ):
++                    add(int(number))
++                else:
++                    add(number)
++        except ValueError:
++            pass
++
++    if "boolean" in candidate_types:
++        lowered = scalar_text.lower()
++        if lowered == "true":
++            add(True)
++        elif lowered == "false":
++            add(False)
++
++    if "null" in candidate_types and scalar_text.lower() == "null":
++        add(None)
++
++    if (
++        "array" in candidate_types
++        and parsed_literal_ok
++        and isinstance(parsed_literal, tuple)
++    ):
++        add(list(parsed_literal))
++
++    return candidates
++
++
++def coerce_argument_to_schema(raw_value: str, schema: dict) -> Tuple[Any, bool]:
++    """Return a schema-valid candidate without inventing values from the schema."""
++    if _has_external_schema_ref(schema):
++        return raw_value, False
++
++    try:
++        Draft202012Validator.check_schema(schema)
++        validator = Draft202012Validator(schema)
++        valid_candidates = [
++            candidate
++            for candidate in _schema_value_candidates(raw_value, schema)
++            if validator.is_valid(candidate)
++        ]
++    except Exception:
++        logger.debug("Unable to validate tool argument schema", exc_info=True)
++        return raw_value, False
++
++    if not valid_candidates:
++        return raw_value, False
++    if len(valid_candidates) == 1:
++        return valid_candidates[0], True
++
++    for candidate in valid_candidates:
++        if isinstance(candidate, str):
++            return candidate, True
++    return valid_candidates[0], True
++
++
+ def _get_tool_schema_defs(tools: List[Tool]) -> dict:
+     """
+     Get consolidated $defs from all tools, validating for conflicts.
+diff --git a/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py b/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..25473fc6d891c2b609d4d9514686e806edf0f9de
+--- /dev/null
++++ b/test/registered/unit/constrained/test_xgrammar_unsupported_schema.py
+@@ -0,0 +1,153 @@
++"""Regression tests for fail-closed XGrammar JSON Schema validation."""
++
++import json
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++from sglang.srt.constrained.base_grammar_backend import InvalidGrammarObject
++from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
++from sglang.srt.constrained.xgrammar_schema import (
++    has_xgrammar_unsupported_json_features,
++)
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++
++
++class TestHasXGrammarUnsupportedJsonFeatures(unittest.TestCase):
++    def test_supported_schema(self):
++        schema = {
++            "type": "object",
++            "properties": {
++                "name": {"type": "string"},
++                "age": {"type": "integer", "minimum": 0},
++                "tags": {"type": "array", "items": {"type": "string"}},
++            },
++            "required": ["name"],
++            "additionalProperties": False,
++        }
++        self.assertFalse(has_xgrammar_unsupported_json_features(schema))
++
++    def test_unsupported_keywords(self):
++        cases = [
++            {"multipleOf": 2},
++            {"uniqueItems": True},
++            {"contains": {"type": "integer"}},
++            {"minContains": 1},
++            {"maxContains": 2},
++            {"patternProperties": {"^x": {"type": "string"}}},
++            {"propertyNames": {"pattern": "^x"}},
++            {"dependentSchemas": {"mode": {"required": ["value"]}}},
++        ]
++        for schema in cases:
++            with self.subTest(schema=schema):
++                self.assertTrue(has_xgrammar_unsupported_json_features(schema))
++
++    def test_unsupported_feature_nested_in_schema_positions(self):
++        schema = {
++            "type": "object",
++            "$defs": {
++                "row": {
++                    "type": "object",
++                    "properties": {
++                        "values": {
++                            "type": "array",
++                            "items": {"type": "integer", "multipleOf": 3},
++                        }
++                    },
++                }
++            },
++            "properties": {"row": {"$ref": "#/$defs/row"}},
++        }
++        self.assertTrue(has_xgrammar_unsupported_json_features(schema))
++
++    def test_property_names_that_match_keywords_are_allowed(self):
++        schema = {
++            "type": "object",
++            "properties": {
++                "multipleOf": {"type": "number"},
++                "uniqueItems": {"type": "boolean"},
++                "contains": {"type": "string"},
++                "dependentSchemas": {"type": "object"},
++                "patternProperties": {
++                    "type": "object",
++                    "properties": {"value": {"type": "string"}},
++                },
++            },
++        }
++        self.assertFalse(has_xgrammar_unsupported_json_features(schema))
++
++    def test_dispatch_rejects_before_compile(self):
++        backend = XGrammarGrammarBackend.__new__(XGrammarGrammarBackend)
++        backend.grammar_compiler = MagicMock()
++        backend.any_whitespace = True
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++
++        result = backend.dispatch_json(json.dumps(schema))
++
++        self.assertIsInstance(result, InvalidGrammarObject)
++        self.assertIn("unsupported by xgrammar", result.error_message)
++        backend.grammar_compiler.compile_json_schema.assert_not_called()
++
++
++class TestOpenAIChatFailClosedValidation(unittest.TestCase):
++    @staticmethod
++    def _serving(backend: str):
++        serving = OpenAIServingChat.__new__(OpenAIServingChat)
++        serving._grammar_backend = backend
++        serving.tokenizer_manager = SimpleNamespace(
++            server_args=SimpleNamespace(
++                context_length=262144,
++                allow_auto_truncate=False,
++            )
++        )
++        serving._validate_media_content = lambda request: None
++        serving._effective_tools = lambda request: []
++        return serving
++
++    @staticmethod
++    def _request(schema):
++        return SimpleNamespace(
++            messages=[object()],
++            return_sampling_mask=False,
++            return_meta_info=False,
++            tool_choice=None,
++            max_completion_tokens=None,
++            max_tokens=64,
++            response_format=SimpleNamespace(
++                type="json_schema",
++                json_schema=SimpleNamespace(schema_=schema),
++            ),
++        )
++
++    def test_xgrammar_response_format_rejected_before_generation(self):
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++        error = self._serving("xgrammar")._validate_request(self._request(schema))
++        self.assertIn("unsupported by xgrammar", error)
++
++    def test_supported_response_format_passes(self):
++        schema = {
++            "type": "object",
++            "properties": {"value": {"type": "integer"}},
++            "required": ["value"],
++            "additionalProperties": False,
++        }
++        error = self._serving("xgrammar")._validate_request(self._request(schema))
++        self.assertIsNone(error)
++
++    def test_other_backend_not_rejected_as_xgrammar(self):
++        schema = {
++            "type": "object",
++            "dependentSchemas": {"mode": {"required": ["value"]}},
++        }
++        error = self._serving("llguidance")._validate_request(self._request(schema))
++        self.assertIsNone(error)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/function_call/test_allowed_tools_choice.py b/test/registered/unit/function_call/test_allowed_tools_choice.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..207ba59b43fc0dd01da8bcff9fb25cc5d89eda1c
+--- /dev/null
++++ b/test/registered/unit/function_call/test_allowed_tools_choice.py
+@@ -0,0 +1,145 @@
++import unittest
++from types import SimpleNamespace
++
++from pydantic import ValidationError
++
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++from sglang.srt.entrypoints.openai.protocol import (  # noqa: E402
++    AllowedToolsChoice,
++    ChatCompletionRequest,
++)
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat  # noqa: E402
++from sglang.test.ci.ci_register import register_cpu_ci  # noqa: E402
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++def make_tool(name: str) -> dict:
++    return {
++        "type": "function",
++        "function": {
++            "name": name,
++            "description": f"Call {name}",
++            "parameters": {
++                "type": "object",
++                "properties": {"value": {"type": "string"}},
++                "required": ["value"],
++                "additionalProperties": False,
++            },
++        },
++    }
++
++
++def make_allowed_choice(mode: str, *names: str) -> dict:
++    return {
++        "type": "allowed_tools",
++        "allowed_tools": {
++            "mode": mode,
++            "tools": [
++                {"type": "function", "function": {"name": name}} for name in names
++            ],
++        },
++    }
++
++
++def make_request(
++    tool_choice: object, response_format: dict | None = None
++) -> ChatCompletionRequest:
++    return ChatCompletionRequest(
++        model="test",
++        messages=[{"role": "user", "content": "Use one tool."}],
++        tools=[make_tool("get_weather"), make_tool("delete_file")],
++        tool_choice=tool_choice,
++        response_format=response_format,
++    )
++
++
++class AllowedToolsProtocolTest(unittest.TestCase):
++    def test_accepts_and_normalizes_official_nested_shape(self):
++        for mode in ("auto", "required"):
++            with self.subTest(mode=mode):
++                request = make_request(make_allowed_choice(mode, "get_weather"))
++                self.assertIsInstance(request.tool_choice, AllowedToolsChoice)
++                self.assertEqual(request.effective_tool_choice(), mode)
++                self.assertEqual(
++                    request.tool_choice.allowed_tools.tools[0].function.name,
++                    "get_weather",
++                )
++
++    def test_rejects_invalid_empty_and_duplicate_subsets(self):
++        invalid_choices = [
++            make_allowed_choice("sometimes", "get_weather"),
++            make_allowed_choice("required"),
++            make_allowed_choice("auto", "get_weather", "get_weather"),
++        ]
++        for choice in invalid_choices:
++            with self.subTest(choice=choice), self.assertRaises(ValidationError):
++                make_request(choice)
++
++    def test_required_subset_conflicts_with_response_format(self):
++        request = make_request(
++            make_allowed_choice("required", "get_weather"),
++            response_format={"type": "json_object"},
++        )
++        with self.assertRaisesRegex(ValueError, "allowed_tools mode 'required'"):
++            request.to_sampling_params(
++                stop=[],
++                model_generation_config={},
++                tool_call_constraint=("structural_tag", object()),
++            )
++
++
++class AllowedToolsServingTest(unittest.TestCase):
++    def setUp(self):
++        self.chat = object.__new__(OpenAIServingChat)
++        self.chat._grammar_backend = "xgrammar"
++        self.chat.tokenizer_manager = SimpleNamespace(
++            model_config=SimpleNamespace(is_multimodal=True),
++            server_args=SimpleNamespace(
++                context_length=262144,
++                allow_auto_truncate=False,
++            ),
++        )
++
++    def test_filters_parser_and_prompt_tools_to_allowed_subset(self):
++        request = make_request(make_allowed_choice("required", "get_weather"))
++        self.assertEqual(
++            [tool.function.name for tool in self.chat._effective_tools(request)],
++            ["get_weather"],
++        )
++        self.assertEqual(
++            [
++                tool["function"]["name"]
++                for tool in self.chat._request_tools_for_prompt(request)
++            ],
++            ["get_weather"],
++        )
++
++    def test_filters_message_level_tools_before_template_render(self):
++        request = make_request(make_allowed_choice("auto", "get_weather"))
++        messages = [
++            {
++                "role": "system",
++                "content": "Tools",
++                "tools": [make_tool("get_weather"), make_tool("delete_file")],
++            }
++        ]
++        self.chat._filter_message_tools_for_prompt(messages, request)
++        self.assertEqual(
++            [tool["function"]["name"] for tool in messages[0]["tools"]],
++            ["get_weather"],
++        )
++
++    def test_unknown_allowed_tool_fails_closed(self):
++        request = make_request(make_allowed_choice("required", "missing_tool"))
++        self.assertEqual(
++            self.chat._validate_request(request),
++            "Allowed tool(s) not found in tools list: missing_tool.",
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..02021c75b9e1d7ccb572c0d5703c28c1f857b2de
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+@@ -0,0 +1,84 @@
++import xgrammar as xgr
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool():
++    return Tool(
++        type="function",
++        function=Function(
++            name="search_catalog",
++            description="Search the product catalog",
++            strict=True,
++            parameters={
++                "type": "object",
++                "properties": {
++                    "query": {"type": "string"},
++                    "max_results": {"type": "integer"},
++                },
++                "required": ["query", "max_results"],
++                "additionalProperties": False,
++            },
++        ),
++    )
++
++
++def _repetition(structural_tag):
++    matches = []
++
++    def visit(value):
++        if isinstance(value, dict):
++            if value.get("type") == "tags_with_separator":
++                matches.append(value)
++            for child in value.values():
++                visit(child)
++        elif isinstance(value, list):
++            for child in value:
++                visit(child)
++
++    visit(structural_tag.model_dump())
++    assert len(matches) == 1
++    return matches[0]
++
++
++def test_required_parallel_uses_official_template_separator():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=True,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is False
++
++
++def test_required_serial_stops_after_first_call():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=False,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is True
++
++
++def test_required_reasoning_prefix_is_preserved():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=True,
++        parallel_tool_calls=True,
++    )
++    serialized = tag.model_dump_json()
++
++    assert "</think>" in serialized
++    assert "\\n\\n" in serialized
++    assert _repetition(tag)["separator"] == "\n"
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f890dc0c766de5e0e9c5b402f88e4291888bfac
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+@@ -0,0 +1,207 @@
++import json
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool(name, properties, **parameter_overrides):
++    parameters = {"type": "object", "properties": properties}
++    parameters.update(parameter_overrides)
++    return Tool(
++        type="function",
++        function=Function(name=name, description="test", parameters=parameters),
++    )
++
++
++def _call(name, *parameters):
++    body = "".join(
++        f"<parameter={key}>\n{value}\n</parameter>\n" for key, value in parameters
++    )
++    return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
++
++
++def _stream(detector, text, tools, chunk_size):
++    calls = []
++    for start in range(0, len(text), chunk_size):
++        calls.extend(
++            detector.parse_streaming_increment(
++                text[start : start + chunk_size], tools
++            ).calls
++        )
++    grouped = {}
++    for call in calls:
++        item = grouped.setdefault(call.tool_index, {"name": "", "parameters": ""})
++        if call.name:
++            item["name"] = call.name
++        if call.parameters:
++            item["parameters"] += call.parameters
++    return [grouped[index] for index in sorted(grouped)]
++
++
++def test_named_defs_ref_nested_object_non_streaming():
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                    "required": ["lat", "lon"],
++                }
++            }
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++@pytest.mark.parametrize("chunk_size", [1, 7, 64])
++def test_named_defs_ref_nested_object_streaming(chunk_size):
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                }
++            }
++        },
++    )
++    calls = _stream(
++        Qwen3CoderDetector(),
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++        chunk_size,
++    )
++
++    assert len(calls) == 1
++    assert json.loads(calls[0]["parameters"]) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++def test_mixed_union_enum_const_uses_schema_valid_scalar_types():
++    tool = _tool(
++        "record_union_values",
++        {
++            "retry": {"type": ["integer", "null"]},
++            "payload": {"oneOf": [{"type": "string"}, {"type": "integer"}], "const": 7},
++            "state": {"enum": ["ready", "queued"]},
++            "selector": {"enum": ["alpha", 2, False], "const": False},
++            "mode": {"type": "string", "const": "safe"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "record_union_values",
++            ("retry", "null"),
++            ("payload", "7"),
++            ("state", "ready"),
++            ("selector", "false"),
++            ("mode", "safe"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "retry": None,
++        "payload": 7,
++        "state": "ready",
++        "selector": False,
++        "mode": "safe",
++    }
++
++
++def test_ambiguous_union_preserves_genuine_numeric_string():
++    tool = _tool(
++        "lookup",
++        {
++            "union_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "enum_id": {"enum": ["7", 7]},
++            "quoted_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "quoted_const": {
++                "oneOf": [{"type": "string"}, {"type": "integer"}],
++                "const": 7,
++            },
++            "integer_id": {"type": "integer"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "lookup",
++            ("union_id", "7"),
++            ("enum_id", "7"),
++            ("quoted_id", '"7"'),
++            ("quoted_const", '"7"'),
++            ("integer_id", "7"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "union_id": "7",
++        "enum_id": "7",
++        "quoted_id": "7",
++        "quoted_const": 7,
++        "integer_id": 7,
++    }
++
++
++def test_invalid_value_is_not_replaced_with_schema_const():
++    tool = _tool("record_const", {"payload": {"type": "integer", "const": 7}})
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("record_const", ("payload", "8")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 8}
++
++
++def test_top_level_oneof_parameter_lookup_preserves_local_defs():
++    tool = Tool(
++        type="function",
++        function=Function(
++            name="resolve_branch",
++            description="test",
++            parameters={
++                "$defs": {"seven": {"type": "integer", "const": 7}},
++                "oneOf": [
++                    {
++                        "type": "object",
++                        "properties": {"payload": {"$ref": "#/$defs/seven"}},
++                    },
++                    {
++                        "type": "object",
++                        "properties": {"message": {"type": "string"}},
++                    },
++                ],
++            },
++        ),
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("resolve_branch", ("payload", "7")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 7}

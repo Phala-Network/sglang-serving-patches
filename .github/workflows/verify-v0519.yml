@@ -1,0 +1,36 @@
+name: Verify v0.5.19 source exports
+on:
+  pull_request:
+    paths: ['patches/sglang/v0.5.19/**', 'profiles/v0.5.19/**', 'tools/verify_v0519_profiles.py', 'tests/test_profile_verifier.py', '.github/workflows/verify-v0519.yml']
+  push:
+    branches: ['codex/five-cvm-v0519-20260920']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exercise negative verification cases
+        run: python tests/test_profile_verifier.py
+      - name: Fetch explicit source heads
+        env:
+          SOURCE_REPO: ${{ runner.temp }}/sglang-source
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          repo = os.environ['SOURCE_REPO']
+          subprocess.run(['git', 'init', repo], check=True)
+          heads = {json.loads(p.read_text())['source_head'] for p in pathlib.Path('profiles/v0.5.19').glob('*.yaml')}
+          for head in sorted(heads):
+              subprocess.run(['git', '-C', repo, 'fetch', '--depth=128', '--filter=blob:none', 'https://github.com/Phala-Network/sglang.git', head], check=True)
+          PY
+      - name: Re-export every patch and apply every complete profile
+        run: python tools/verify_v0519_profiles.py --source-repo '${{ runner.temp }}/sglang-source' --out profile-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profile-verification
+          path: profile-verification.json

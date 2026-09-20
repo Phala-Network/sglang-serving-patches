@@ -1,0 +1,262 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index eb70554364f171d2ad05f5941d5472bf206482e2..5a1adcb06c3b6a04a613104272f2dd18e2fbe6c4 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -1005,6 +1005,12 @@ class ChatCompletionRequest(BaseModel):
+         r = values.get("reasoning")
+         thinking = None
+ 
++        # Compatibility aliases used by OpenAI-compatible providers. Keep them
++        # below the standard reasoning fields in the precedence order, but
++        # consume them before pydantic discards unknown top-level keys.
++        top_level_enable_thinking = values.pop("enable_thinking", None)
++        thinking_config = values.pop("thinking", None)
++
+         if r is not None and isinstance(r, dict):
+             effort = r.get("effort")
+             if effort is None:
+@@ -1045,6 +1051,46 @@ class ChatCompletionRequest(BaseModel):
+         if effort is not None:
+             thinking = effort != "none"
+ 
++        if thinking is None and isinstance(thinking_config, dict):
++            thinking_type = thinking_config.get("type")
++            if isinstance(thinking_type, str):
++                normalized_type = thinking_type.strip().lower()
++                if normalized_type == "disabled":
++                    thinking = False
++                elif normalized_type in {"enabled", "adaptive"}:
++                    thinking = True
++
++        if thinking is None and top_level_enable_thinking is not None:
++            if isinstance(top_level_enable_thinking, str):
++                thinking = top_level_enable_thinking.strip().lower() in {
++                    "1",
++                    "true",
++                    "yes",
++                    "y",
++                    "on",
++                }
++            else:
++                thinking = bool(top_level_enable_thinking)
++
++        if thinking is None:
++            ctk = values.get("chat_template_kwargs")
++            if isinstance(ctk, dict):
++                for alias in ("enable_thinking", "thinking"):
++                    if alias not in ctk:
++                        continue
++                    alias_value = ctk[alias]
++                    if isinstance(alias_value, str):
++                        thinking = alias_value.strip().lower() in {
++                            "1",
++                            "true",
++                            "yes",
++                            "y",
++                            "on",
++                        }
++                    else:
++                        thinking = bool(alias_value)
++                    break
++
+         if thinking is not None:
+             ctk = values.get("chat_template_kwargs")
+             if not isinstance(ctk, dict):
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index b749525a4a48c355e882d25d45d888252cad6ffb..3331198218765a012c40e137631bf242f4ac1de4 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -295,6 +295,39 @@ def _build_video_config(request: ChatCompletionRequest) -> Optional[Dict[str, An
+     return config or None
+ 
+ 
++def apply_muse_structured_output_reasoning_default(
++    request: ChatCompletionRequest, reasoning_parser: Optional[str]
++) -> None:
++    """Reserve the completion budget for Muse structured output by default.
++
++    Muse-Glimmer's reasoning and final answer share ``max_tokens``. Small
++    OpenRouter JSON requests can otherwise spend the entire budget in the
++    analysis channel and return an empty final body. This is deliberately a
++    Muse-only request default: explicit reasoning controls always win, normal
++    chat keeps checkpoint-default reasoning, and other model families are not
++    changed.
++    """
++
++    if reasoning_parser != "muse" or request.response_format is None:
++        return
++    if request.response_format.type not in {"json_object", "json_schema"}:
++        return
++    if request.reasoning_effort is not None:
++        return
++    if request.include_reasoning is True:
++        return
++
++    chat_template_kwargs = dict(request.chat_template_kwargs or {})
++    if any(
++        key in chat_template_kwargs
++        for key in ("reasoning_strength", "enable_thinking", "thinking")
++    ):
++        return
++
++    chat_template_kwargs["reasoning_strength"] = "none"
++    request.chat_template_kwargs = chat_template_kwargs
++
++
+ class OpenAIServingChat(OpenAIServingBase):
+     """Handler for /v1/chat/completions requests"""
+ 
+@@ -1022,6 +1055,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         request: ChatCompletionRequest,
+         raw_request: Request = None,
+     ) -> tuple[GenerateReqInput, ChatCompletionRequest]:
++        apply_muse_structured_output_reasoning_default(
++            request, reasoning_parser=self.reasoning_parser
++        )
+         reasoning_effort = (
+             request.chat_template_kwargs.pop("reasoning_effort", None)
+             if request.chat_template_kwargs
+diff --git a/test/registered/unit/function_call/test_muse_structured_reasoning_defaults.py b/test/registered/unit/function_call/test_muse_structured_reasoning_defaults.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9962cebe962175605204778b40a02de1e8e29884
+--- /dev/null
++++ b/test/registered/unit/function_call/test_muse_structured_reasoning_defaults.py
+@@ -0,0 +1,138 @@
++import unittest
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.entrypoints.openai.serving_chat import (
++    apply_muse_structured_output_reasoning_default,
++)
++
++
++def make_request(**overrides):
++    body = {
++        "model": "meta/muse-glimmer-30b",
++        "messages": [{"role": "user", "content": "Return JSON."}],
++    }
++    body.update(overrides)
++    return ChatCompletionRequest.model_validate(body)
++
++
++class TestMuseReasoningAliases(unittest.TestCase):
++    def assert_reasoning_disabled(self, **overrides):
++        request = make_request(**overrides)
++        self.assertEqual(
++            request.chat_template_kwargs.get("reasoning_strength"), "none"
++        )
++
++    def test_top_level_enable_thinking_false(self):
++        self.assert_reasoning_disabled(enable_thinking=False)
++
++    def test_thinking_type_disabled(self):
++        self.assert_reasoning_disabled(thinking={"type": "disabled"})
++
++    def test_chat_template_enable_thinking_false(self):
++        self.assert_reasoning_disabled(
++            chat_template_kwargs={"enable_thinking": False}
++        )
++
++    def test_chat_template_thinking_false(self):
++        self.assert_reasoning_disabled(chat_template_kwargs={"thinking": False})
++
++    def test_standard_reasoning_enabled_wins_over_alias(self):
++        request = make_request(
++            reasoning={"enabled": True}, thinking={"type": "disabled"}
++        )
++        self.assertNotEqual(
++            request.chat_template_kwargs.get("reasoning_strength"), "none"
++        )
++        self.assertIs(request.chat_template_kwargs.get("thinking"), True)
++
++    def test_reasoning_effort_wins_over_disabled_alias(self):
++        request = make_request(reasoning_effort="high", enable_thinking=False)
++        self.assertEqual(request.reasoning_effort, "high")
++        self.assertEqual(
++            request.chat_template_kwargs.get("reasoning_strength"), "high"
++        )
++
++    def test_explicit_reasoning_strength_is_preserved(self):
++        request = make_request(
++            enable_thinking=False,
++            chat_template_kwargs={"reasoning_strength": "max"},
++        )
++        self.assertEqual(
++            request.chat_template_kwargs.get("reasoning_strength"), "max"
++        )
++
++
++class TestMuseStructuredOutputReasoningDefault(unittest.TestCase):
++    def test_json_object_defaults_to_direct_final(self):
++        request = make_request(response_format={"type": "json_object"})
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertEqual(request.chat_template_kwargs, {"reasoning_strength": "none"})
++
++    def test_json_schema_defaults_to_direct_final(self):
++        request = make_request(
++            response_format={
++                "type": "json_schema",
++                "json_schema": {
++                    "name": "result",
++                    "strict": True,
++                    "schema": {
++                        "type": "object",
++                        "properties": {"ok": {"type": "boolean"}},
++                        "required": ["ok"],
++                        "additionalProperties": False,
++                    },
++                },
++            }
++        )
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertEqual(request.chat_template_kwargs, {"reasoning_strength": "none"})
++
++    def test_plain_chat_keeps_checkpoint_default(self):
++        request = make_request()
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertIsNone(request.chat_template_kwargs)
++
++    def test_other_reasoning_parser_is_unchanged(self):
++        request = make_request(response_format={"type": "json_object"})
++        apply_muse_structured_output_reasoning_default(request, "qwen3")
++        self.assertIsNone(request.chat_template_kwargs)
++
++    def test_explicit_effort_is_preserved(self):
++        request = make_request(
++            response_format={"type": "json_object"}, reasoning_effort="low"
++        )
++        before = dict(request.chat_template_kwargs)
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertEqual(request.reasoning_effort, "low")
++        self.assertEqual(request.chat_template_kwargs, before)
++
++    def test_explicit_reasoning_enabled_is_preserved(self):
++        request = make_request(
++            response_format={"type": "json_object"},
++            reasoning={"enabled": True},
++        )
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertIs(request.chat_template_kwargs.get("thinking"), True)
++        self.assertNotEqual(
++            request.chat_template_kwargs.get("reasoning_strength"), "none"
++        )
++
++    def test_include_reasoning_true_keeps_checkpoint_default(self):
++        request = make_request(
++            response_format={"type": "json_schema", "json_schema": None},
++            include_reasoning=True,
++        )
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertIsNone(request.chat_template_kwargs)
++
++    def test_include_reasoning_false_still_defaults_to_direct_final(self):
++        request = make_request(
++            response_format={"type": "json_object"},
++            include_reasoning=False,
++        )
++        apply_muse_structured_output_reasoning_default(request, "muse")
++        self.assertEqual(request.chat_template_kwargs, {"reasoning_strength": "none"})
++
++
++if __name__ == "__main__":
++    unittest.main()

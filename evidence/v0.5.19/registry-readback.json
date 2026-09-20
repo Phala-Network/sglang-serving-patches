@@ -1,0 +1,68 @@
+[
+  {
+    "image": "ghcr.io/phala-network/sglang:v0.5.19-qwen38-gemma4-r10@sha256:52f44fbf198f1748db7e559a180ff5c84ef63b29a3c62c1964fecc08bfe1de45",
+    "index_digest": "sha256:52f44fbf198f1748db7e559a180ff5c84ef63b29a3c62c1964fecc08bfe1de45",
+    "platform_digest": "sha256:07435d0b9a1b1f21b9a5708082fd752cd0f037f5949e76b67b7bfc4feda94e03",
+    "config_digest": "sha256:bd3ad158d2fd31e5bcd878600f742de516e915a126687e8e81d6f323d1d64993",
+    "anonymous_readback": true,
+    "annotations": {
+      "org.opencontainers.image.documentation": "oci://ghcr.io/phala-network/sglang@sha256:3dfc232b11ee0a4beeee238a2e51e3b3b4e2ea4412e4e0306347d0c8bd13125a",
+      "org.opencontainers.image.revision": "82da9278e229402abcb50b46ee5a57e801bb651c",
+      "org.opencontainers.image.source": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.commit": "82da9278e229402abcb50b46ee5a57e801bb651c",
+      "org.phala.source.date.epoch": "1789541312",
+      "org.phala.source.repository": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.tree.digest": "git-sha1:b5c7cee638c0993fbca386d01d5cd86a023022d6"
+    }
+  },
+  {
+    "image": "ghcr.io/phala-network/sglang:v0.5.19-nemotron-3-5-lightning-single-r10@sha256:96de4cab4379a65bf107e216ae7ac6e6617376a20f7a808ef6d31253809a179f",
+    "index_digest": "sha256:96de4cab4379a65bf107e216ae7ac6e6617376a20f7a808ef6d31253809a179f",
+    "platform_digest": "sha256:c2df5e8929a8df664208204b8d500f792a9b4d63098032d1e7688148f62a419d",
+    "config_digest": "sha256:355c372ca368ae244721445e70c412ecdb051220e5028882462ba66f4c313745",
+    "anonymous_readback": true,
+    "annotations": {
+      "org.opencontainers.image.source": "https://github.com/Phala-Network/sglang",
+      "org.opencontainers.image.revision": "cfe6dbb89416065555d4a2f0d2260704680136ec",
+      "org.opencontainers.image.documentation": "oci://ghcr.io/phala-network/sglang@sha256:9d0adcd13e3c6200c916c32286546d082246da4ed8754c379bb3ba68400bcad0",
+      "org.phala.source.repository": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.commit": "cfe6dbb89416065555d4a2f0d2260704680136ec",
+      "org.phala.source.tree.digest": "git-sha1:3ddcf3ea8e77184006e8a21ac77122fc2ad4e321",
+      "org.phala.source.date.epoch": "1789686873"
+    }
+  },
+  {
+    "image": "ghcr.io/phala-network/sglang:qwen38-27b-sglang-v0.5.19-phala-r5-1a56fbb0dc-20260914@sha256:aafe6c8dd56ea9469d15423c5742655112099d54a01e0a5b7398e2ed2575b559",
+    "index_digest": "sha256:aafe6c8dd56ea9469d15423c5742655112099d54a01e0a5b7398e2ed2575b559",
+    "platform_digest": "sha256:2e7ac1e5ba58933138ddd5cc1822a65ea8ddd7923024b554b3dd14d3c015d2f0",
+    "config_digest": "sha256:c4fe40487178fd7738600562c114e2198d281d5ca6c0f5a265019369f6af76c4",
+    "anonymous_readback": true,
+    "annotations": {
+      "org.opencontainers.image.documentation": "https://github.com/Phala-Network/sglang/tree/1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a/release/phala/qwen38-flat",
+      "org.opencontainers.image.revision": "1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a",
+      "org.opencontainers.image.source": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.commit": "1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a",
+      "org.phala.source.context.digest": "sha256:56dafca8737961ceda9091540e0c5ed05b62bc9506795b58ab9126664f0da195",
+      "org.phala.source.date.epoch": "1789363568",
+      "org.phala.source.repository": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.tree.digest": "gitsha1:20e296059df02e8adc12af5eef4a01eeebe85964",
+      "org.phala.xgrammar.source.commit": "5b4e9ce9e72524037ae24ecd831b9b6604d2eb48"
+    }
+  },
+  {
+    "image": "ghcr.io/phala-network/sglang:v0.5.19-muse-glimmer-single-r4@sha256:937718734b1c434c16acb4bae72cccc30cdfc169ddb514ccc603913b2e5e7698",
+    "index_digest": "sha256:937718734b1c434c16acb4bae72cccc30cdfc169ddb514ccc603913b2e5e7698",
+    "platform_digest": "sha256:0bb981e57ce4d722f280af30236e24a8b5fe0af5d48f039a360f7c3ae8f1328a",
+    "config_digest": "sha256:1ef6018eae3f9d1bd23ff31b4c44f74876fde82825d5dc4b545b44cb711ca245",
+    "anonymous_readback": true,
+    "annotations": {
+      "org.opencontainers.image.documentation": "oci://ghcr.io/phala-network/sglang@sha256:4d70707e2a4cd37a3b3e67cc2cc02e1d75e127fe788998c25c869ab0253ca7f2",
+      "org.opencontainers.image.revision": "eec6b2e25ee098d04475e4784caad7b18021393b",
+      "org.opencontainers.image.source": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.commit": "eec6b2e25ee098d04475e4784caad7b18021393b",
+      "org.phala.source.date.epoch": "1789577326",
+      "org.phala.source.repository": "https://github.com/Phala-Network/sglang",
+      "org.phala.source.tree.digest": "git-sha1:3729fc6e726504c70416d63041afedcda3774df5"
+    }
+  }
+]

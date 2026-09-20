@@ -1,0 +1,58 @@
+diff --git a/python/sglang/srt/function_call/utils.py b/python/sglang/srt/function_call/utils.py
+index d1a87a90c419a451324ccef3848f6380d5a444fb..4865d48f2893d044b7c73c4de3c6f71902b7e58e 100644
+--- a/python/sglang/srt/function_call/utils.py
++++ b/python/sglang/srt/function_call/utils.py
+@@ -446,7 +446,7 @@ def get_json_schema_constraint(
+     """
+ 
+     if isinstance(tool_choice, ToolChoice):
+-        # For specific function choice, return the user's parameters schema directly
++        # Keep the selected schema's local reference roots on the new wrapper.
+         fn_name = tool_choice.function.name
+         for tool in tools:
+             if tool.function.name == fn_name:
+@@ -455,6 +455,10 @@ def get_json_schema_constraint(
+                     "minItems": 1,
+                     "items": _get_tool_schema(tool),
+                 }
++                for key in ("$defs", "definitions"):
++                    definitions = (tool.function.parameters or {}).get(key)
++                    if definitions is not None:
++                        schema[key] = definitions
+                 if not parallel_tool_calls:
+                     schema["maxItems"] = 1
+                 return schema
+diff --git a/test/registered/unit/test_named_tool_reference_scope.py b/test/registered/unit/test_named_tool_reference_scope.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8158ca005aed191d504c2a63ba536809a79140bd
+--- /dev/null
++++ b/test/registered/unit/test_named_tool_reference_scope.py
+@@ -0,0 +1,28 @@
++import copy
++import unittest
++
++from jsonschema import Draft202012Validator, ValidationError
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.utils import get_json_schema_constraint
++
++
++class NamedToolReferenceScope(unittest.TestCase):
++    def test_named_tool_refs_validate_under_the_array_wrapper(self):
++        for definition_key in ("$defs", "definitions"):
++            schema = {"type": "object", "properties": {"location": {"$ref": f"#/{definition_key}/Location"}}, "required": ["location"], "additionalProperties": False, definition_key: {"Location": {"type": "object", "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}}, "required": ["lat", "lon"], "additionalProperties": False}}}
++            original = copy.deepcopy(schema)
++            selected = Tool.model_validate({"type": "function", "function": {"name": "lookup", "parameters": schema}})
++            unselected = Tool.model_validate({"type": "function", "function": {"name": "unused", "parameters": {"$defs": {"Location": {"type": "string"}}}}})
++            choice = ToolChoice.model_validate({"type": "function", "function": {"name": "lookup"}})
++            wrapped = get_json_schema_constraint([selected, unselected], choice, parallel_tool_calls=False)
++            validator = Draft202012Validator(wrapped)
++            validator.validate([{"name": "lookup", "parameters": {"location": {"lat": 48.8566, "lon": 2.3522}}}])
++            with self.assertRaises(ValidationError):
++                validator.validate([{"name": "lookup", "parameters": {"location": "wrong-type"}}])
++            with self.assertRaises(ValidationError):
++                validator.validate([{"name": "lookup", "parameters": {"location": {"lat": 1, "lon": 2}}}] * 2)
++            self.assertEqual(selected.function.parameters, original)
++
++
++if __name__ == "__main__":
++    unittest.main()

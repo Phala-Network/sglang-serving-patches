@@ -1,0 +1,15 @@
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index c0903d718888e0021f216d854d22f36790d3e3d0..12dc594b55251fd0d0d6077cce7a5b46d6630786 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -685,7 +685,9 @@ class TestGenerateRequestCleanupOnDispatchFailure(CustomTestCase):
+ 
+     def test_invalid_thinking_bounds_are_rejected_before_dispatch(self):
+         tm = _make_tm_for_generate(self)
+-        tm.server_args.enable_strict_thinking = True
++        override = get_context().override_server_args(enable_strict_thinking=True)
++        override.install()
++        self.addCleanup(override.restore)
+         obj = GenerateReqInput(
+             text="hello",
+             rid="invalid-thinking-bounds",

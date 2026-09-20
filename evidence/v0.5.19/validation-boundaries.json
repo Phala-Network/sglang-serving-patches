@@ -1,0 +1,17 @@
+{
+  "source_diff_projection": "Full upstream tree plus all changes under python/, test/, sgl-kernel/, 3rdparty/. Historical packaging is preserved separately in Compose, not silently included.",
+  "historical_to_extracted_commit_diffs": 67,
+  "profile_application_checks": 6,
+  "verifier_regressions": {
+    "passed": 7,
+    "failed": 0
+  },
+  "wheel_packaging_regressions": {
+    "passed": 12,
+    "failed": 0
+  },
+  "gpu_benchmark_rerun": false,
+  "governor_installed_or_used": false,
+  "new_source_review": "draft; no approval inferred",
+  "runtime_tests": "Historical exact-image evidence only; no new runtime/gpu inference performed by this migration. Source files and retained tests match historical Git blobs. External dependency packaging is separate."
+}

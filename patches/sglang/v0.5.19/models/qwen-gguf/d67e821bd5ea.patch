@@ -1,0 +1,68 @@
+diff --git a/python/sglang/srt/model_loader/gguf_name_maps.py b/python/sglang/srt/model_loader/gguf_name_maps.py
+index d39b7441d954a9965d29687e0055d0c5254bd5aa..ec4525daa0ee37133482d0ec0c5ae8719408396f 100644
+--- a/python/sglang/srt/model_loader/gguf_name_maps.py
++++ b/python/sglang/srt/model_loader/gguf_name_maps.py
+@@ -397,6 +397,16 @@ def get_gguf_weight_transform(config: PretrainedConfig):
+     return None if builder is None else builder(config)
+ 
+ 
++def get_missing_gguf_parameters(model, loaded_names):
++    """Audit unique parameters, including weights shared by GDN modules."""
++    by_name = dict(model.named_parameters(remove_duplicate=False))
++    loaded_ids = {id(by_name[name]) for name in loaded_names if name in by_name}
++    return sorted(
++        name for name, parameter in model.named_parameters()
++        if id(parameter) not in loaded_ids
++    )
++
++
+ def apply_gguf_weight_transform(weights_iterator, transform):
+     """Run ``transform`` over a GGUF weight iterator.
+ 
+diff --git a/python/sglang/srt/model_loader/loader.py b/python/sglang/srt/model_loader/loader.py
+index a759b8cc5cef267bb3570d1e599fd675a16cf36c..db382d100d831b42617ca8d8c7f22b55ce1a47fc 100644
+--- a/python/sglang/srt/model_loader/loader.py
++++ b/python/sglang/srt/model_loader/loader.py
+@@ -3253,8 +3253,10 @@ class GGUFModelLoader(BaseModelLoader):
+             )
+ 
+             if model_config.hf_config.model_type == "qwen3_5_text":
+-                all_params = set(dict(model.named_parameters(remove_duplicate=False)))
+-                missing = sorted(all_params - set(loaded_params or ()))
++                from sglang.srt.model_loader.gguf_name_maps import get_missing_gguf_parameters
++
++                all_params = dict(model.named_parameters())
++                missing = get_missing_gguf_parameters(model, loaded_params or ())
+                 logger.info(
+                     "Qwen3.5 GGUF load audit: loaded=%d total=%d missing=%s",
+                     len(loaded_params or ()), len(all_params), missing,
+diff --git a/test/registered/unit/test_qwen35_gguf_weight_transform.py b/test/registered/unit/test_qwen35_gguf_weight_transform.py
+index da90ed9efc49b10c8908f57a2d6ad17a299199e1..45f28d3f3979c623d25df4952ce9b72dc975e3fc 100644
+--- a/test/registered/unit/test_qwen35_gguf_weight_transform.py
++++ b/test/registered/unit/test_qwen35_gguf_weight_transform.py
+@@ -10,6 +10,7 @@ from sglang.srt.model_loader.gguf_name_maps import (
+     Qwen3_5GGUFWeightTransform,
+     apply_gguf_weight_transform,
+     get_gguf_weight_transform,
++    get_missing_gguf_parameters,
+ )
+ 
+ 
+@@ -77,6 +78,17 @@ class TestQwen35GGUFTransform(unittest.TestCase):
+         self.assertIsNone(get_gguf_weight_transform(SimpleNamespace(model_type="gemma4")))
+         self.assertIsNone(get_gguf_weight_transform(SimpleNamespace(model_type="qwen3_next")))
+ 
++    def test_loaded_aliases_do_not_hide_real_missing_parameters(self):
++        model = torch.nn.Module()
++        model.A_log = torch.nn.Parameter(torch.ones(6))
++        model.other = torch.nn.Parameter(torch.ones(6))
++        model.attn = torch.nn.Module()
++        model.attn.A_log = model.A_log
++        self.assertEqual(get_missing_gguf_parameters(model, {"A_log"}), ["other"])
++        self.assertEqual(get_missing_gguf_parameters(model, {"attn.A_log"}), ["other"])
++        self.assertEqual(get_missing_gguf_parameters(model, {"A_log", "other"}), [])
++        self.assertEqual(get_missing_gguf_parameters(model, set()), ["A_log", "other"])
++
+     def test_snapshot_requires_a_single_gguf(self):
+         from sglang.srt.model_loader.loader import GGUFModelLoader
+ 

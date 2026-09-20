@@ -1,0 +1,265 @@
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index 04b04eb9c060f9c9044cbb22a41b0cc58dc1f7e6..a5a411ef307278e68e7c420d8757480989644988 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -1871,7 +1871,9 @@ def _load_image(
+                 )
+     try:
+         image = Image.open(BytesIO(image_bytes))
+-    except OSError as e:
++    except (OSError, SyntaxError) as e:
++        if isinstance(e, OSError) and e.errno is not None:
++            raise
+         raise ValueError(f"Could not decode image: {e}") from e
+     return _fully_load_pil_image(image)
+ 
+@@ -1880,7 +1882,11 @@ def _fully_load_pil_image(image: Image.Image) -> Image.Image:
+     """Force PIL's lazy decode while malformed input is still request-local."""
+     try:
+         image.load()
+-    except OSError as e:
++    except (OSError, SyntaxError) as e:
++        # PIL uses broad built-in exceptions for malformed in-memory payloads.
++        # Preserve real OS errors (for example EMFILE) as server faults.
++        if isinstance(e, OSError) and e.errno is not None:
++            raise
+         raise ValueError(f"Could not decode image: {e}") from e
+     return image
+ 
+diff --git a/python/sglang/srt/utils/watchdog.py b/python/sglang/srt/utils/watchdog.py
+index 7c774e758bb5466f15ff5d82fce4673b8ea647ea..6c39d22e87ed6ddbd6f5ad3bed47674831c312ad 100644
+--- a/python/sglang/srt/utils/watchdog.py
++++ b/python/sglang/srt/utils/watchdog.py
+@@ -146,10 +146,29 @@ class WatchdogRaw:
+                     watchdog_last_time = current
+             time.sleep(self.watchdog_timeout / 2)
+ 
+-        if self.dump_info is not None and (info_msg := self.dump_info()):
+-            logger.error(f"{self.debug_name} debug info:\n{info_msg}")
++        # Timeout diagnostics must be best-effort. In particular, a broken CUDA
++        # context can make an invariant-check dump raise AcceleratorError. Do not
++        # let a diagnostic failure kill this thread before a hard watchdog sends
++        # SIGQUIT to the parent process.
++        if self.dump_info is not None:
++            try:
++                info_msg = self.dump_info()
++            except Exception as e:
++                logger.error(
++                    f"{self.debug_name} failed to dump watchdog debug info: {e}",
++                    exc_info=True,
++                )
++            else:
++                if info_msg:
++                    logger.error(f"{self.debug_name} debug info:\n{info_msg}")
+ 
+-        pyspy_dump_schedulers()
++        try:
++            pyspy_dump_schedulers()
++        except Exception as e:
++            logger.error(
++                f"{self.debug_name} failed to dump scheduler stacks: {e}",
++                exc_info=True,
++            )
+         logger.error(
+             f"{self.debug_name} watchdog timeout "
+             f"({self.watchdog_timeout=}, {self.soft=})"
+diff --git a/test/registered/unit/multimodal/test_base_processor_bad_input.py b/test/registered/unit/multimodal/test_base_processor_bad_input.py
+index 0de449b3b227b7679af0744220b6060bba4e005b..d403ecae7fa382c8e658e4f00fae1f7523d2090e 100644
+--- a/test/registered/unit/multimodal/test_base_processor_bad_input.py
++++ b/test/registered/unit/multimodal/test_base_processor_bad_input.py
+@@ -10,7 +10,10 @@ register_cpu_ci(est_time=10, suite="base-a-test-cpu")
+ 
+ import base64
+ import binascii
++import errno
+ import io
++import os
++import struct
+ import unittest
+ from unittest.mock import MagicMock, patch
+ 
+@@ -91,7 +94,7 @@ class TestBadInputIsClientError(CustomTestCase):
+ 
+ 
+ class TestServerFaultStaysServerError(CustomTestCase):
+-    """``load_video`` catches the decoder broadly; these are the exclusions."""
++    """Non-payload failures must stay server errors."""
+ 
+     def _assert_server_error(self, side_effect):
+         with patch(
+@@ -106,13 +109,81 @@ class TestServerFaultStaysServerError(CustomTestCase):
+     def test_decoder_oom(self):
+         self._assert_server_error(MemoryError("out of memory"))
+ 
+-    def test_image_source_os_error(self):
++    def test_non_pil_oserror(self):
+         with patch(
+-            "sglang.srt.utils.common.get_image_bytes",
++            "sglang.srt.multimodal.processors.base_processor.load_audio",
+             side_effect=OSError("too many open files"),
+         ):
+             with self.assertRaisesRegex(RuntimeError, "too many open files"):
+-                _StubProcessor._load_single_item("file:///image.png", Modality.IMAGE)
++                _StubProcessor._load_single_item(b"payload", Modality.AUDIO)
++
++    def test_pil_system_oserror(self):
++        image = MagicMock(mode="RGB")
++        image.load.side_effect = OSError(errno.EMFILE, "too many open files")
++        with patch(
++            "sglang.srt.multimodal.processors.base_processor.load_image",
++            return_value=(image, None),
++        ):
++            with self.assertRaisesRegex(RuntimeError, "too many open files"):
++                _StubProcessor._load_single_item(b"payload", Modality.IMAGE)
++
++
++class TestDecodeTimeCorruptionIsClientError(CustomTestCase):
++    """Corruption past the sniffed header must still classify as client error."""
++
++    @staticmethod
++    def _multi_idat_png() -> bytes:
++        # Incompressible noise makes Pillow emit multiple 64 KiB IDAT chunks.
++        noise = Image.frombytes("RGB", (512, 512), os.urandom(512 * 512 * 3))
++        buf = io.BytesIO()
++        noise.save(buf, format="PNG")
++        return buf.getvalue()
++
++    @staticmethod
++    def _jpeg() -> bytes:
++        # Deterministic non-uniform pixels avoid an unusually tiny JPEG fixture.
++        pixels = bytes((index * 37) % 256 for index in range(128 * 128 * 3))
++        image = Image.frombytes("RGB", (128, 128), pixels)
++        buf = io.BytesIO()
++        image.save(buf, format="JPEG", quality=90)
++        return buf.getvalue()
++
++    def test_corrupt_png_chunk(self):
++        png = bytearray(self._multi_idat_png())
++        offset, idat_offsets = 8, []
++        while offset < len(png):
++            (length,) = struct.unpack(">I", png[offset : offset + 4])
++            if bytes(png[offset + 4 : offset + 8]) == b"IDAT":
++                idat_offsets.append(offset)
++            offset += 12 + length
++        self.assertGreater(len(idat_offsets), 1, "test needs a multi-IDAT PNG")
++        png[idat_offsets[1] : idat_offsets[1] + 8] = b"\x00" * 8
++
++        with self.assertRaisesRegex(ValueError, "broken PNG file"):
++            _StubProcessor._load_single_item(bytes(png), Modality.IMAGE)
++
++    def test_truncated_png(self):
++        png = self._multi_idat_png()
++        with self.assertRaisesRegex(ValueError, "truncated"):
++            _StubProcessor._load_single_item(png[: len(png) // 2], Modality.IMAGE)
++
++    def test_missing_jpeg_eoi(self):
++        jpeg = self._jpeg()
++        self.assertEqual(jpeg[-2:], b"\xff\xd9")
++        with self.assertRaisesRegex(ValueError, "truncated"):
++            _StubProcessor._load_single_item(jpeg[:-2], Modality.IMAGE)
++
++    def test_half_truncated_jpeg(self):
++        jpeg = self._jpeg()
++        with self.assertRaisesRegex(ValueError, "truncated"):
++            _StubProcessor._load_single_item(jpeg[: len(jpeg) // 2], Modality.IMAGE)
++
++    def test_open_time_truncated_jpeg(self):
++        buf = io.BytesIO()
++        Image.new("RGB", (64, 64), color=(230, 20, 20)).save(buf, format="JPEG")
++        jpeg = buf.getvalue()
++        with self.assertRaisesRegex(ValueError, "Truncated File Read"):
++            _StubProcessor._load_single_item(jpeg[: len(jpeg) // 2], Modality.IMAGE)
+ 
+ 
+ class TestClientMediaExceptions(CustomTestCase):
+@@ -126,6 +197,11 @@ class TestClientMediaExceptions(CustomTestCase):
+             with self.subTest(exc_type=exc_type.__name__):
+                 self.assertTrue(issubclass(exc_type, CLIENT_MEDIA_EXCEPTIONS))
+ 
++        # PIL's broad built-in failures are translated at the image decode site;
++        # globally classifying them would hide unrelated loader/system faults.
++        self.assertNotIn(OSError, CLIENT_MEDIA_EXCEPTIONS)
++        self.assertNotIn(SyntaxError, CLIENT_MEDIA_EXCEPTIONS)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/test/registered/unit/test_watchdog_fail_hard.py b/test/registered/unit/test_watchdog_fail_hard.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bba3fc49473510a5bb97e7998820ba882cd9b14c
+--- /dev/null
++++ b/test/registered/unit/test_watchdog_fail_hard.py
+@@ -0,0 +1,73 @@
++"""Deterministic tests for watchdog fail-hard behavior after diagnostic faults."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import signal
++from unittest.mock import MagicMock, patch
++
++from sglang.srt.utils import watchdog as watchdog_module
++from sglang.srt.utils.watchdog import WatchdogRaw
++from sglang.test.test_utils import CustomTestCase
++
++
++class FakeAcceleratorError(RuntimeError):
++    """CUDA-like diagnostic failure without requiring an accelerator in CI."""
++
++
++class TestWatchdogFailHard(CustomTestCase):
++    @staticmethod
++    def _raw(*, soft=False, dump_info=None):
++        # Bypass __init__: production __init__ starts the daemon thread before a
++        # deterministic test can install its clock and process mocks.
++        raw = WatchdogRaw.__new__(WatchdogRaw)
++        raw.debug_name = "Scheduler"
++        raw.get_counter = MagicMock(return_value=0)
++        raw.is_active = MagicMock(return_value=True)
++        raw.watchdog_timeout = 1.0
++        raw.soft = soft
++        raw.dump_info = dump_info
++        raw.parent_process = MagicMock()
++        return raw
++
++    @staticmethod
++    def _run_once(raw, *, pyspy_side_effect=None):
++        # First timestamp seeds watchdog_last_time; the second crosses timeout.
++        with patch.object(
++            watchdog_module.time, "perf_counter", side_effect=[0.0, 2.0]
++        ), patch.object(watchdog_module.time, "sleep"), patch.object(
++            watchdog_module,
++            "pyspy_dump_schedulers",
++            side_effect=pyspy_side_effect,
++        ):
++            raw._watchdog_once()
++
++    def test_normal_diagnostics_still_fail_hard_once(self):
++        raw = self._raw(dump_info=MagicMock(return_value="state"))
++        self._run_once(raw)
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++
++    def test_cuda_diagnostic_failure_still_fail_hard_once(self):
++        raw = self._raw(
++            dump_info=MagicMock(
++                side_effect=FakeAcceleratorError(
++                    "CUDA error: unspecified launch failure"
++                )
++            )
++        )
++        self._run_once(raw)
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++
++    def test_pyspy_failure_still_fail_hard_once(self):
++        raw = self._raw(dump_info=MagicMock(return_value="state"))
++        self._run_once(raw, pyspy_side_effect=RuntimeError("pyspy failed"))
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++
++    def test_soft_watchdog_never_signals_on_diagnostic_failure(self):
++        raw = self._raw(
++            soft=True,
++            dump_info=MagicMock(side_effect=RuntimeError("diagnostic failed")),
++        )
++        self._run_once(raw)
++        raw.parent_process.send_signal.assert_not_called()

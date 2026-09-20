@@ -1,0 +1,292 @@
+diff --git a/python/sglang/srt/model_loader/gguf_vision.py b/python/sglang/srt/model_loader/gguf_vision.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1bbac80b217b3d5a6a11736cf0d27cb4f302aea4
+--- /dev/null
++++ b/python/sglang/srt/model_loader/gguf_vision.py
+@@ -0,0 +1,107 @@
++"""Load the separate, unquantized Qwen3.5 GGUF vision projector.
++
++The Qwen3-VL converter in llama.cpp splits Conv3d along temporal axis 2:
++conversion/qwen3vl.py at fa88ae9368f7d2ce6669be3a7e6e25f9c426e6a6.
++Keep the encoder unquantized, as in Qwen3VLForConditionalGeneration, and fail
++closed on unsupported geometry or incomplete tensor coverage.
++"""
++
++import logging
++
++logger = logging.getLogger(__name__)
++
++
++def qwen35_vision_tensor_map(config):
++    vision = config.vision_config
++    if vision.temporal_patch_size != 2 or vision.deepstack_visual_indexes:
++        raise ValueError("GGUF vision currently requires temporal_patch_size=2 and no deepstack")
++    hidden = vision.hidden_size
++    intermediate = vision.intermediate_size
++    merged = hidden * vision.spatial_merge_size**2
++    patch_shape = (hidden, vision.in_channels, vision.patch_size, vision.patch_size)
++    mapping = {
++        "v.patch_embd.weight": ("visual.patch_embed.proj.weight", patch_shape),
++        "v.patch_embd.weight.1": ("visual.patch_embed.proj.weight", patch_shape),
++        "v.patch_embd.bias": ("visual.patch_embed.proj.bias", (hidden,)),
++        "v.position_embd.weight": ("visual.pos_embed.weight", (vision.num_position_embeddings, hidden)),
++        "v.post_ln.weight": ("visual.merger.norm.weight", (hidden,)),
++        "v.post_ln.bias": ("visual.merger.norm.bias", (hidden,)),
++        "mm.0.weight": ("visual.merger.linear_fc1.weight", (merged, merged)),
++        "mm.0.bias": ("visual.merger.linear_fc1.bias", (merged,)),
++        "mm.2.weight": ("visual.merger.linear_fc2.weight", (vision.out_hidden_size, merged)),
++        "mm.2.bias": ("visual.merger.linear_fc2.bias", (vision.out_hidden_size,)),
++    }
++    layers = {
++        "attn_qkv": ("attn.qkv_proj", (3 * hidden, hidden)),
++        "attn_out": ("attn.proj", (hidden, hidden)),
++        "ffn_up": ("mlp.linear_fc1", (intermediate, hidden)),
++        "ffn_down": ("mlp.linear_fc2", (hidden, intermediate)),
++        "ln1": ("norm1", (hidden,)),
++        "ln2": ("norm2", (hidden,)),
++    }
++    for layer in range(vision.depth):
++        for gguf_name, (hf_name, shape) in layers.items():
++            for suffix, tensor_shape in (("weight", shape), ("bias", (shape[0],))):
++                mapping[f"v.blk.{layer}.{gguf_name}.{suffix}"] = (
++                    f"visual.blocks.{layer}.{hf_name}.{suffix}", tensor_shape
++                )
++    return mapping
++
++
++def _read_unquantized_tensor(tensor, expected_shape):
++    import gguf
++    import torch
++
++    if tuple(reversed(tuple(map(int, tensor.shape)))) != expected_shape:
++        raise ValueError(f"{tensor.name}: GGUF shape does not match {expected_shape}")
++    value = torch.from_numpy(tensor.data.copy())
++    if tensor.tensor_type == gguf.GGMLQuantizationType.BF16:
++        if value.dtype != torch.uint8 or value.shape[-1] % 2:
++            raise ValueError(f"{tensor.name}: invalid BF16 byte payload")
++        value = value.view(torch.bfloat16)
++    elif tensor.tensor_type not in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
++        raise ValueError(f"{tensor.name}: only F32/F16/BF16 vision tensors are supported")
++    if tuple(value.shape) != expected_shape:
++        raise ValueError(f"{tensor.name}: decoded payload shape {tuple(value.shape)} != {expected_shape}")
++    return value
++
++
++def qwen35_vision_weights_iterator(path, config):
++    import gguf
++    import torch
++
++    reader = gguf.GGUFReader(path)
++    vision = config.vision_config
++    expected_metadata = {
++        "general.architecture": "clip",
++        "clip.projector_type": "qwen3vl_merger",
++        "clip.vision.block_count": vision.depth,
++        "clip.vision.embedding_length": vision.hidden_size,
++        "clip.vision.attention.head_count": vision.num_heads,
++        "clip.vision.feed_forward_length": vision.intermediate_size,
++        "clip.vision.patch_size": vision.patch_size,
++        "clip.vision.spatial_merge_size": vision.spatial_merge_size,
++        "clip.vision.projection_dim": vision.out_hidden_size,
++    }
++    for key, expected in expected_metadata.items():
++        field = reader.get_field(key)
++        if field is None or field.contents() != expected:
++            raise ValueError(f"Qwen GGUF vision metadata mismatch: {key}, expected {expected}")
++    mapping = qwen35_vision_tensor_map(config)
++    tensors = {tensor.name: tensor for tensor in reader.tensors}
++    missing = sorted(mapping.keys() - tensors.keys())
++    extra = sorted(tensors.keys() - mapping.keys())
++    if missing or extra or len(tensors) != len(reader.tensors):
++        raise ValueError(f"Incomplete or unexpected Qwen GGUF vision tensors: missing={missing}, extra={extra}")
++
++    # Validate every source shape before yielding any weight.
++    for name, (_, shape) in mapping.items():
++        if tuple(reversed(tuple(map(int, tensors[name].shape)))) != shape:
++            raise ValueError(f"{name}: GGUF shape does not match {shape}")
++    patch_names = ("v.patch_embd.weight", "v.patch_embd.weight.1")
++    patches = [_read_unquantized_tensor(tensors[name], mapping[name][1]) for name in patch_names]
++    yield "visual.patch_embed.proj.weight", torch.stack(patches, dim=2)
++    for name, (target, shape) in mapping.items():
++        if name not in patch_names:
++            yield target, _read_unquantized_tensor(tensors[name], shape)
++    logger.info("Qwen GGUF vision audit: source_tensors=%d loaded_parameters=%d missing=[]", len(tensors), len(mapping) - 1)
+diff --git a/python/sglang/srt/model_loader/loader.py b/python/sglang/srt/model_loader/loader.py
+index db382d100d831b42617ca8d8c7f22b55ce1a47fc..cdede36cb526dfb199c2b97b0fc460d0b8b0d99d 100644
+--- a/python/sglang/srt/model_loader/loader.py
++++ b/python/sglang/srt/model_loader/loader.py
+@@ -3132,11 +3132,13 @@ class GGUFModelLoader(BaseModelLoader):
+                 f"load format {load_config.load_format}"
+             )
+ 
+-    def _prepare_weights(self, model_name_or_path: str):
++    def _prepare_weights(self, model_name_or_path: str, allow_mmproj: bool = False):
+         if os.path.isfile(model_name_or_path):
+             return model_name_or_path
+         elif os.path.isdir(model_name_or_path):
+             gguf_files = glob.glob(os.path.join(model_name_or_path, "*.gguf"))
++            if allow_mmproj:
++                gguf_files = [path for path in gguf_files if not os.path.basename(path).startswith("mmproj-")]
+             if len(gguf_files) == 1:
+                 return gguf_files[0]
+             raise ValueError(
+@@ -3224,7 +3226,7 @@ class GGUFModelLoader(BaseModelLoader):
+         return apply_gguf_weight_transform(weights, transform)
+ 
+     def download_model(self, model_config: ModelConfig) -> None:
+-        self._prepare_weights(model_config.model_path)
++        self._prepare_weights(model_config.model_path, model_config.hf_config.model_type == "qwen3_5")
+ 
+     def load_model(
+         self,
+@@ -3233,7 +3235,16 @@ class GGUFModelLoader(BaseModelLoader):
+         device_config: DeviceConfig,
+     ) -> nn.Module:
+ 
+-        local_model_path = self._prepare_weights(model_config.model_path)
++        has_vision = model_config.hf_config.model_type == "qwen3_5" and not getattr(
++            model_config.hf_config, "language_model_only", False
++        )
++        local_model_path = self._prepare_weights(model_config.model_path, has_vision)
++        mmproj_path = None
++        if has_vision:
++            candidates = glob.glob(os.path.join(os.path.dirname(local_model_path), "mmproj-*.gguf"))
++            if len(candidates) != 1:
++                raise ValueError(f"Qwen multimodal GGUF requires exactly one mmproj file, found {len(candidates)}")
++            mmproj_path = candidates[0]
+         gguf_weights_map = self._get_gguf_weights_map(model_config)
+         # we can only know if tie word embeddings after mapping weights
+         if "lm_head.weight" in get_gguf_extra_tensor_names(
+@@ -3246,13 +3257,17 @@ class GGUFModelLoader(BaseModelLoader):
+         with set_default_torch_dtype(model_config.dtype):
+             with target_device:
+                 model = _initialize_model(model_config, self.load_config, quant_config)
+-            loaded_params = model.load_weights(
+-                self._get_weights_iterator(
+-                    local_model_path, gguf_weights_map, model_config
+-                )
++            weights = self._get_weights_iterator(
++                local_model_path, gguf_weights_map, model_config
+             )
++            if mmproj_path is not None:
++                from itertools import chain
++                from sglang.srt.model_loader.gguf_vision import qwen35_vision_weights_iterator
++
++                weights = chain(weights, qwen35_vision_weights_iterator(mmproj_path, model_config.hf_config))
++            loaded_params = model.load_weights(weights)
+ 
+-            if model_config.hf_config.model_type == "qwen3_5_text":
++            if model_config.hf_config.model_type in ("qwen3_5", "qwen3_5_text"):
+                 from sglang.srt.model_loader.gguf_name_maps import get_missing_gguf_parameters
+ 
+                 all_params = dict(model.named_parameters())
+diff --git a/test/registered/unit/test_qwen35_gguf_vision.py b/test/registered/unit/test_qwen35_gguf_vision.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f5d31b2c717d9455305d4f85b1a3c0e8b848408
+--- /dev/null
++++ b/test/registered/unit/test_qwen35_gguf_vision.py
+@@ -0,0 +1,104 @@
++"""Verify exact BF16 bytes, temporal convolution parity and fail-closed loading."""
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import gguf
++import numpy as np
++import torch
++import torch.nn.functional as F
++
++from sglang.srt.model_loader.gguf_vision import (
++    _read_unquantized_tensor,
++    qwen35_vision_tensor_map,
++    qwen35_vision_weights_iterator,
++)
++
++
++class TestQwen35Vision(unittest.TestCase):
++    def setUp(self):
++        self.vision = SimpleNamespace(
++            temporal_patch_size=2, deepstack_visual_indexes=[], hidden_size=4,
++            intermediate_size=8, spatial_merge_size=2, in_channels=3, patch_size=2,
++            num_position_embeddings=16, out_hidden_size=12, depth=1, num_heads=2,
++        )
++        self.config = SimpleNamespace(vision_config=self.vision)
++        self.mapping = qwen35_vision_tensor_map(self.config)
++        metadata = {
++            "general.architecture": "clip", "clip.projector_type": "qwen3vl_merger",
++            "clip.vision.block_count": 1, "clip.vision.embedding_length": 4,
++            "clip.vision.attention.head_count": 2, "clip.vision.feed_forward_length": 8,
++            "clip.vision.patch_size": 2, "clip.vision.spatial_merge_size": 2,
++            "clip.vision.projection_dim": 12,
++        }
++        self.metadata = metadata
++        self.tensors = [self.tensor(name, torch.arange(int(np.prod(shape)), dtype=torch.float32).reshape(shape) / 64)
++                        for name, (_, shape) in self.mapping.items()]
++        self.reader = SimpleNamespace(tensors=self.tensors, get_field=lambda key:
++                                      SimpleNamespace(contents=lambda: metadata[key]) if key in metadata else None)
++
++    @staticmethod
++    def tensor(name, value):
++        bf16 = value.dtype == torch.bfloat16
++        return SimpleNamespace(name=name, shape=tuple(reversed(value.shape)),
++                               tensor_type=gguf.GGMLQuantizationType.BF16 if bf16 else gguf.GGMLQuantizationType.F32,
++                               data=value.view(torch.uint8).numpy() if bf16 else value.numpy())
++
++    def load(self):
++        with patch.object(gguf, "GGUFReader", return_value=self.reader):
++            return dict(qwen35_vision_weights_iterator("test-mmproj.gguf", self.config))
++
++    def test_temporal_patch_convolution_matches_converter_slices(self):
++        torch.manual_seed(63)
++        weight = torch.randn(4, 3, 2, 2, 2)
++        self.tensors[0] = self.tensor("v.patch_embd.weight", weight[:, :, 0].contiguous())
++        self.tensors[1] = self.tensor("v.patch_embd.weight.1", weight[:, :, 1].contiguous())
++        loaded = self.load()
++        self.assertEqual(len(loaded), 21)
++        actual_weight = loaded["visual.patch_embed.proj.weight"]
++        torch.testing.assert_close(actual_weight, weight, rtol=0, atol=0)
++        inputs = torch.randn(2, 3, 2, 4, 4)
++        expected = F.conv2d(inputs[:, :, 0], weight[:, :, 0], stride=2) + F.conv2d(inputs[:, :, 1], weight[:, :, 1], stride=2)
++        actual = F.conv3d(inputs, actual_weight, stride=(2, 2, 2)).squeeze(2)
++        torch.testing.assert_close(actual, expected)
++
++    def test_bf16_values_preserved(self):
++        original = torch.tensor([[1.5, -2, 0.03125], [3.5, -0.5, 64]], dtype=torch.bfloat16)
++        actual = _read_unquantized_tensor(self.tensor("bf16", original), (2, 3))
++        torch.testing.assert_close(actual, original, rtol=0, atol=0)
++
++    def test_missing_and_extra_tensors_fail(self):
++        missing = self.tensors.pop()
++        with self.assertRaisesRegex(ValueError, "missing="):
++            self.load()
++        self.tensors.append(missing)
++        self.tensors.append(self.tensor("unexpected", torch.ones(2)))
++        with self.assertRaisesRegex(ValueError, "extra="):
++            self.load()
++
++    def test_duplicate_and_bad_shape_fail(self):
++        self.tensors.append(self.tensors[-1])
++        with self.assertRaisesRegex(ValueError, "Incomplete"):
++            self.load()
++        self.tensors.pop()
++        self.tensors[-1].shape = (123,)
++        with self.assertRaisesRegex(ValueError, "shape"):
++            self.load()
++
++    def test_incompatible_metadata_and_geometry_fail(self):
++        self.metadata["clip.projector_type"] = "qwen2vl_merger"
++        with self.assertRaisesRegex(ValueError, "metadata mismatch"):
++            self.load()
++        self.vision.deepstack_visual_indexes = [0]
++        with self.assertRaisesRegex(ValueError, "no deepstack"):
++            qwen35_vision_tensor_map(self.config)
++
++    def test_quantized_vision_is_explicitly_rejected(self):
++        tensor = self.tensor("quantized", torch.ones(2, 32))
++        tensor.tensor_type = gguf.GGMLQuantizationType.Q8_0
++        with self.assertRaisesRegex(ValueError, "only F32/F16/BF16"):
++            _read_unquantized_tensor(tensor, (2, 32))
++
++
++if __name__ == "__main__":
++    unittest.main()

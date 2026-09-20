@@ -1,0 +1,77 @@
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index f3cda5005b3c310c342ffc570ca93cd62f107be9..4688439e6204caa8ce274245bfbe1c1bd1344f24 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -1717,6 +1717,19 @@ class Req(ReqDllmMixin):
+         if self.finished_len is not None and self.finished_len > max_new_tokens:
+             self.finished_reason = FINISH_LENGTH(length=max_new_tokens)
+             self.finished_len = max_new_tokens
++        self._cap_reasoning_tokens_at_finished_len()
++
++    def _cap_reasoning_tokens_at_finished_len(self) -> None:
++        """Bound ``reasoning_tokens`` by the tokens actually emitted.
++
++        ``update_reasoning_tokens`` advances over the whole accepted run, and it
++        runs before the finish state truncates the output at ``finished_len``.
++        A speculative run that crosses the budget therefore leaves the counter
++        above the emitted length. Reasoning tokens are a prefix of the output,
++        so ``finished_len`` is a hard upper bound.
++        """
++        if self.finished_len is not None and self.reasoning_tokens > self.finished_len:
++            self.reasoning_tokens = self.finished_len
+ 
+     def update_finish_state(self, new_accepted_len: int = 1):
+         if self.finished():
+@@ -1754,6 +1767,7 @@ class Req(ReqDllmMixin):
+                 length=self.sampling_params.max_new_tokens
+             )
+             self.finished_len = self.sampling_params.max_new_tokens
++            self._cap_reasoning_tokens_at_finished_len()
+             return
+ 
+         if self.grammar is not None and self.grammar.is_terminated():
+diff --git a/test/registered/unit/managers/test_reasoning_emitted_length.py b/test/registered/unit/managers/test_reasoning_emitted_length.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7113ea8ce28067386c9e474288f56db4b91e378
+--- /dev/null
++++ b/test/registered/unit/managers/test_reasoning_emitted_length.py
+@@ -0,0 +1,39 @@
++"""Regression for upstream #37450 and neighbouring stop/think boundaries."""
++import pytest
++
++from sglang.srt.managers.schedule_batch import Req
++from sglang.srt.sampling.sampling_params import SamplingParams
++
++
++@pytest.mark.parametrize("budget,run,expected_output,expected_reasoning", [
++    (4, [10, 11, 12, 13, 14, 15], 4, 4),
++    (16, [10, 11, 12, 13, 14, 15], 6, 6),
++    (4, [10, 7, 8, 13, 14, 15], 4, 3),
++    (4, [10, 11, 12, 13, 7, 8], 4, 4),
++    (4, [10, 99, 12, 13, 14, 15], 2, 2),
++    (4, [10, 11, 12, 13, 99, 15], 4, 4),
++])
++def test_reasoning_follows_emitted_prefix(budget, run, expected_output, expected_reasoning):
++    sampling = SamplingParams(max_new_tokens=budget, temperature=0)
++    sampling.normalize(None)
++    req = Req(rid="usage", origin_input_text="", origin_input_ids=[1, 2, 3], sampling_params=sampling)
++    req.eos_token_ids = {99}
++    req.output_ids.extend(run)
++    req.update_reasoning_tokens(run, [7, 8])
++    req.update_finish_state(len(run))
++    assert len(req.output_ids_through_stop) == expected_output
++    assert req.reasoning_tokens == expected_reasoning
++    assert req.reasoning_tokens <= len(req.output_ids_through_stop)
++
++
++def test_reasoning_prefix_from_earlier_step_is_preserved():
++    sampling = SamplingParams(max_new_tokens=6, temperature=0)
++    sampling.normalize(None)
++    req = Req(rid="usage-multistep", origin_input_text="", origin_input_ids=[1], sampling_params=sampling)
++    req.eos_token_ids = {99}
++    for run in [[10, 11, 7], [8, 12, 13, 14, 15]]:
++        req.output_ids.extend(run)
++        req.update_reasoning_tokens(run, [7, 8])
++        req.update_finish_state(len(run))
++    assert len(req.output_ids_through_stop) == 6
++    assert req.reasoning_tokens == 4

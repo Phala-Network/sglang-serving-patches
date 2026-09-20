@@ -1,0 +1,827 @@
+{
+  "schema_version": 1,
+  "model": "qwen3.6-27b",
+  "sglang_version": "v0.5.19",
+  "upstream_commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+  "source_repository": "https://github.com/Phala-Network/sglang",
+  "source_head": "711978779936d1918d038de8515e33f968cb5193",
+  "expected_engine_tree": "d209baf0019b73d3126b85401154de8d0fa124fd",
+  "governor": {
+    "enabled": false
+  },
+  "selection_scope": "Historical deployed image source footprint, not a minimal model requirement set. All inherited model patches are explicitly listed. No cross-model or topology qualification is inferred.",
+  "original_deployed_source": "1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a",
+  "projection": "Full upstream tree plus all changes under python/, test/, sgl-kernel/, 3rdparty/. Historical packaging is preserved separately in Compose, not silently included.",
+  "patches": [
+    {
+      "id": "cc713697cb1b",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/cc713697cb1b.patch",
+      "sha256": "750cbb816316c7fdb46dbd61a6663398b50eecf24f6ceb86636c766c01c9d8fb",
+      "source_commit": "28238ec4007a4aab04e61295031fdc4f00d3f47a",
+      "source_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "source_tree": "c5679065dc8ef0f80036bd82605a6aeb28cb6d01",
+      "original_commit": "cc713697cb1b4bc38bca7d820facc48483d6f2e0",
+      "original_parent": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): harden Qwen3 tool calls and structured output",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/constrained/xgrammar_backend.py",
+        "python/sglang/srt/constrained/xgrammar_schema.py",
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/constrained/test_xgrammar_unsupported_schema.py",
+        "test/registered/unit/function_call/test_allowed_tools_choice.py",
+        "test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py",
+        "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "0bcd822377da7b5718e674eaf9c870d349424dd1",
+        "28238ec4007a4aab04e61295031fdc4f00d3f47a"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "ac6e301b2c45",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/ac6e301b2c45.patch",
+      "sha256": "4403e4fc45b62919bcd1d0561d8feecb5e432f021b770d988d68cc5cbbb1e861",
+      "source_commit": "354b7c6c3f0acb2d2b0d54fdb09c4f908a7f4325",
+      "source_parent": "28238ec4007a4aab04e61295031fdc4f00d3f47a",
+      "source_tree": "4cbb0b33db843c10da587bbfd3c28d1c3e1075ab",
+      "original_commit": "ac6e301b2c453425578fd4f7af5c8a84aba19709",
+      "original_parent": "cc713697cb1b4bc38bca7d820facc48483d6f2e0",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): normalize Qwen3.5 system messages",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "28238ec4007a4aab04e61295031fdc4f00d3f47a",
+        "354b7c6c3f0acb2d2b0d54fdb09c4f908a7f4325"
+      ],
+      "depends_on": [
+        "cc713697cb1b"
+      ]
+    },
+    {
+      "id": "da8da902526c",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/da8da902526c.patch",
+      "sha256": "5e6201b920ae3d976f6cf2063baa8953051e06a648f7d5099c6341566658ab13",
+      "source_commit": "c30384652e5478f49c2a542af10c46989275fb8b",
+      "source_parent": "354b7c6c3f0acb2d2b0d54fdb09c4f908a7f4325",
+      "source_tree": "ef0c44e4f4be36ef955e429b1931346a9a4d1cbe",
+      "original_commit": "da8da902526cee378ed317384247e349c1d2c7f0",
+      "original_parent": "ac6e301b2c453425578fd4f7af5c8a84aba19709",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): preserve Qwen3.5 reasoning tool history",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "354b7c6c3f0acb2d2b0d54fdb09c4f908a7f4325",
+        "c30384652e5478f49c2a542af10c46989275fb8b"
+      ],
+      "depends_on": [
+        "ac6e301b2c45"
+      ]
+    },
+    {
+      "id": "7dd1e4933610",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/7dd1e4933610.patch",
+      "sha256": "5744146b2b61843cfc2bbfcde168d05df503f223137625a4b8462554a6f6d325",
+      "source_commit": "ea92ab4c5f7be0b8771b14bce9648951ec3a9832",
+      "source_parent": "c30384652e5478f49c2a542af10c46989275fb8b",
+      "source_tree": "bec22c2f2fa49e2611185895e825f66726397f83",
+      "original_commit": "7dd1e4933610164e580140caa9dd1f8b7c556c6b",
+      "original_parent": "da8da902526cee378ed317384247e349c1d2c7f0",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): differentiate Qwen3.5 reasoning effort tiers",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "c30384652e5478f49c2a542af10c46989275fb8b",
+        "ea92ab4c5f7be0b8771b14bce9648951ec3a9832"
+      ],
+      "depends_on": [
+        "da8da902526c"
+      ]
+    },
+    {
+      "id": "7e4e69f5850f",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/7e4e69f5850f.patch",
+      "sha256": "4b82e3461ca8a9bf0cb6b80b273e4fde09b79901da907827ae9a66ad5b55fe4e",
+      "source_commit": "538e30d61375ddeacbf6f6eeefe4606bc14e3e02",
+      "source_parent": "ea92ab4c5f7be0b8771b14bce9648951ec3a9832",
+      "source_tree": "85dba1f9fca6f848a55efae87ef4523a028c6f9f",
+      "original_commit": "7e4e69f5850f829dc9bd65feebaddd0796056987",
+      "original_parent": "7dd1e4933610164e580140caa9dd1f8b7c556c6b",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): enforce Qwen reasoning effort ranges",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/constrained/grammar_manager.py",
+        "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "python/sglang/srt/managers/io_struct.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/constrained/test_grammar_manager.py",
+        "test/registered/unit/constrained/test_reasoner_grammar_backend.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py",
+        "test/registered/unit/managers/test_io_struct.py",
+        "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "ea92ab4c5f7be0b8771b14bce9648951ec3a9832",
+        "538e30d61375ddeacbf6f6eeefe4606bc14e3e02"
+      ],
+      "depends_on": [
+        "7dd1e4933610"
+      ]
+    },
+    {
+      "id": "6d6103699ea4",
+      "path": "patches/sglang/v0.5.19/common/6d6103699ea4.patch",
+      "sha256": "4892c7069a5345adcf264667da15c3bd010a94d43065205e463759cf06b37c92",
+      "source_commit": "cd31831d54f55659b2c241d72ff098197f93d1a4",
+      "source_parent": "538e30d61375ddeacbf6f6eeefe4606bc14e3e02",
+      "source_tree": "9a9c3f7391c8f29f1e39fc3566bc6545201674cf",
+      "original_commit": "6d6103699ea407e062adecf6021eebd1c88c66dd",
+      "original_parent": "7e4e69f5850f829dc9bd65feebaddd0796056987",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): honor disabled nested reasoning",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "test/registered/unit/entrypoints/openai/test_protocol.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "538e30d61375ddeacbf6f6eeefe4606bc14e3e02",
+        "cd31831d54f55659b2c241d72ff098197f93d1a4"
+      ],
+      "depends_on": [
+        "7e4e69f5850f"
+      ]
+    },
+    {
+      "id": "96cd94344d57",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/96cd94344d57.patch",
+      "sha256": "bad5c1f6a905ad7444f85b79c756bb10d08b08e027f3fdbf5458b5f719934138",
+      "source_commit": "b85619fd04c3948469edb47aed99f400f49eae2b",
+      "source_parent": "cd31831d54f55659b2c241d72ff098197f93d1a4",
+      "source_tree": "eb0ed6502a1c6ee0b2e10cb22051c5c58f03e9b0",
+      "original_commit": "96cd94344d57257cb4c0d4eea9a3a4b5f1716bf5",
+      "original_parent": "6d6103699ea407e062adecf6021eebd1c88c66dd",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "perf(openai): skip unbounded Qwen strict grammar",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/constrained/grammar_manager.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/constrained/test_grammar_manager.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "cd31831d54f55659b2c241d72ff098197f93d1a4",
+        "b85619fd04c3948469edb47aed99f400f49eae2b"
+      ],
+      "depends_on": [
+        "6d6103699ea4"
+      ]
+    },
+    {
+      "id": "d61efbc4c4f5",
+      "path": "patches/sglang/v0.5.19/common/d61efbc4c4f5.patch",
+      "sha256": "44c361aeb51a2d6ebf814479cdfcb6bb9f1593e170f78ed7af4ff7af57967361",
+      "source_commit": "9b1b0671abe6d94ca05c2fdd341846f91fee23a0",
+      "source_parent": "b85619fd04c3948469edb47aed99f400f49eae2b",
+      "source_tree": "6c540cb7f04cbd305271ec14642a685338dc16e6",
+      "original_commit": "d61efbc4c4f5a647dc3026efd28bc1a658226a7b",
+      "original_parent": "96cd94344d57257cb4c0d4eea9a3a4b5f1716bf5",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): drop orphan streaming tool deltas",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "b85619fd04c3948469edb47aed99f400f49eae2b",
+        "9b1b0671abe6d94ca05c2fdd341846f91fee23a0"
+      ],
+      "depends_on": [
+        "96cd94344d57"
+      ]
+    },
+    {
+      "id": "47d684c188fd",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/47d684c188fd.patch",
+      "sha256": "dc2cd7ea7d0ded3fb31291d15a388999afdfba13e6f1401bc1834e3d59fae34b",
+      "source_commit": "b2d182e4d645bd1103f0734eeee3be5e39862bef",
+      "source_parent": "9b1b0671abe6d94ca05c2fdd341846f91fee23a0",
+      "source_tree": "5d8f5dc6f2216f4cce8c6eddf9a71f0ed305cb28",
+      "original_commit": "47d684c188fdbbb37423250e6ae2f466511da3cf",
+      "original_parent": "d61efbc4c4f5a647dc3026efd28bc1a658226a7b",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): finalize Qwen tool result turns",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "9b1b0671abe6d94ca05c2fdd341846f91fee23a0",
+        "b2d182e4d645bd1103f0734eeee3be5e39862bef"
+      ],
+      "depends_on": [
+        "d61efbc4c4f5"
+      ]
+    },
+    {
+      "id": "27487759d660",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/27487759d660.patch",
+      "sha256": "9b179de177192b509281cd85f210a636db526bff3b3f7f3fd54fb8c4ef57234f",
+      "source_commit": "7a6812c460d5941e3af0f2db3fd8771edf7ed438",
+      "source_parent": "b2d182e4d645bd1103f0734eeee3be5e39862bef",
+      "source_tree": "ed78ba364801b0630d4c881de4a8eef755a5ce8e",
+      "original_commit": "27487759d6602164066d44534d86cd29de7d74ea",
+      "original_parent": "47d684c188fdbbb37423250e6ae2f466511da3cf",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): bound default Qwen reasoning",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_protocol.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "b2d182e4d645bd1103f0734eeee3be5e39862bef",
+        "7a6812c460d5941e3af0f2db3fd8771edf7ed438"
+      ],
+      "depends_on": [
+        "47d684c188fd"
+      ]
+    },
+    {
+      "id": "c0b47b4d9a80",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/c0b47b4d9a80.patch",
+      "sha256": "2bb0d893db2e5169c879b93763808accdaffc3e67bc5e6a71ad71b2c75c81e3d",
+      "source_commit": "7846a276b049d34a96a51d4497d168a036ea1f40",
+      "source_parent": "7a6812c460d5941e3af0f2db3fd8771edf7ed438",
+      "source_tree": "2021b0a55870bd4e0ec2235be262acaf067c9d36",
+      "original_commit": "c0b47b4d9a80fca2a89a36c2ca9e9d914e1d61e1",
+      "original_parent": "27487759d6602164066d44534d86cd29de7d74ea",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): restore Qwen reasoning quality budget",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "7a6812c460d5941e3af0f2db3fd8771edf7ed438",
+        "7846a276b049d34a96a51d4497d168a036ea1f40"
+      ],
+      "depends_on": [
+        "27487759d660"
+      ]
+    },
+    {
+      "id": "b69731aa5a70",
+      "path": "patches/sglang/v0.5.19/common/b69731aa5a70.patch",
+      "sha256": "84fef5f39e36ee33c78ee2955768b034889e357c49e980af11687bbafa5cff48",
+      "source_commit": "5e3f909d22f2e79ba7c7b85fa747f762109aab99",
+      "source_parent": "7846a276b049d34a96a51d4497d168a036ea1f40",
+      "source_tree": "dfd30554cd9b1b91c2b31023ff6949460aa1b2d6",
+      "original_commit": "b69731aa5a706b4a23414fbf24db26bae4c6c228",
+      "original_parent": "c0b47b4d9a80fca2a89a36c2ca9e9d914e1d61e1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): preserve reasoning visibility contract",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/protocol.py",
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_protocol.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "7846a276b049d34a96a51d4497d168a036ea1f40",
+        "5e3f909d22f2e79ba7c7b85fa747f762109aab99"
+      ],
+      "depends_on": [
+        "c0b47b4d9a80"
+      ]
+    },
+    {
+      "id": "a17450df7fe0",
+      "path": "patches/sglang/v0.5.19/common/a17450df7fe0.patch",
+      "sha256": "07fa2ddbf39f4b0479ffc67ab88189f05c5fbe4cda5fdfd14bda053de4a1bfdd",
+      "source_commit": "96e883d1e796b0ad0e86af386eb113708760806a",
+      "source_parent": "5e3f909d22f2e79ba7c7b85fa747f762109aab99",
+      "source_tree": "0b044a1ace2d037570f666f18f7f432f1a8f1528",
+      "original_commit": "a17450df7fe0c2a160517205101a02effe946c85",
+      "original_parent": "b69731aa5a706b4a23414fbf24db26bae4c6c228",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "Fix: abort handling for dispatched requests after client disconnect (#35255)",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/scheduler.py",
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "test/registered/unit/managers/test_scheduler_chunked_abort_race.py",
+        "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py",
+        "test/registered/unit/multimodal/test_gpu_feature_transport.py",
+        "test/registered/unit/test_chain_read_ratchet.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "5e3f909d22f2e79ba7c7b85fa747f762109aab99",
+        "96e883d1e796b0ad0e86af386eb113708760806a"
+      ],
+      "depends_on": [
+        "b69731aa5a70"
+      ]
+    },
+    {
+      "id": "0b21f9af0f2f",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/0b21f9af0f2f.patch",
+      "sha256": "59c0816a9e2bc6f479ae112d6475d8d2b0210fe1a992117c3da3d2ca4ae99241",
+      "source_commit": "ae13fff53317c8db42f2bda64b20a2fe280591e2",
+      "source_parent": "96e883d1e796b0ad0e86af386eb113708760806a",
+      "source_tree": "bb1e551427a9705f87887d134b0bc5ca2ff6914b",
+      "original_commit": "0b21f9af0f2ffdd2fd7175c0ecae1e86e39e793f",
+      "original_parent": "a17450df7fe0c2a160517205101a02effe946c85",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "[Performance] Optimize Qwen3.5 GDN prefill projection layouts (#36267)",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/kernels/ops/attention/fla/l2norm.py",
+        "python/sglang/kernels/ops/attention/fla/layernorm_gated.py",
+        "python/sglang/kernels/ops/attention/triton_gdn_fused_proj.py",
+        "python/sglang/srt/layers/attention/linear/kernels/gdn_flashinfer.py",
+        "python/sglang/srt/models/qwen3_5.py",
+        "test/registered/attention/test_gdn_prefill_layout.py",
+        "test/registered/unit/layers/attention/test_gdn_flashinfer_alignment.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "96e883d1e796b0ad0e86af386eb113708760806a",
+        "ae13fff53317c8db42f2bda64b20a2fe280591e2"
+      ],
+      "depends_on": [
+        "a17450df7fe0"
+      ]
+    },
+    {
+      "id": "223e067187a6",
+      "path": "patches/sglang/v0.5.19/common/223e067187a6.patch",
+      "sha256": "5cc01d25ba9d201a6b5965b85e1e7e9064af9c142d2b1fa4b78633459967f81d",
+      "source_commit": "4c25322c802951ad5fb6dc85906998f1a01efac2",
+      "source_parent": "ae13fff53317c8db42f2bda64b20a2fe280591e2",
+      "source_tree": "e3f6eccaff12409d7c810350686fb0521a471d6e",
+      "original_commit": "223e067187a63e72fd8fa854da8bd858eca95dea",
+      "original_parent": "0b21f9af0f2ffdd2fd7175c0ecae1e86e39e793f",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "test(qwen38): adapt Phala fixtures to runtime config bags",
+      "ownership": "common",
+      "files": [
+        "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "ae13fff53317c8db42f2bda64b20a2fe280591e2",
+        "4c25322c802951ad5fb6dc85906998f1a01efac2"
+      ],
+      "depends_on": [
+        "0b21f9af0f2f"
+      ]
+    },
+    {
+      "id": "29f0b04675b4",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/29f0b04675b4.patch",
+      "sha256": "b5ef3bc79b9edcf54b67cfcd13dc40c648c88732e45bcef1354493c3b43eaed5",
+      "source_commit": "82c5597d4182d86cac839c7869d52e8c8a381c9b",
+      "source_parent": "4c25322c802951ad5fb6dc85906998f1a01efac2",
+      "source_tree": "847124a2f762d4fac1a72b3e4af0754f49d1e5cc",
+      "original_commit": "29f0b04675b4dd1fececfc25acb134a14b0bc94a",
+      "original_parent": "223e067187a63e72fd8fa854da8bd858eca95dea",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "test(openai): complete Qwen reasoning fixture",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "4c25322c802951ad5fb6dc85906998f1a01efac2",
+        "82c5597d4182d86cac839c7869d52e8c8a381c9b"
+      ],
+      "depends_on": [
+        "223e067187a6"
+      ]
+    },
+    {
+      "id": "4dcc87bb9a11",
+      "path": "patches/sglang/v0.5.19/common/4dcc87bb9a11.patch",
+      "sha256": "ac72e0e15b19004db4caf79ca15f8288c347367b3a9e51e7b642557a27f688fb",
+      "source_commit": "42cac46e56d82d587d9170614cae4c22a4cef164",
+      "source_parent": "82c5597d4182d86cac839c7869d52e8c8a381c9b",
+      "source_tree": "b76051ebf26580227a7905ac4939d6df1c165dce",
+      "original_commit": "4dcc87bb9a11abd98d73f7ee6e2d1199863529e1",
+      "original_parent": "29f0b04675b4dd1fececfc25acb134a14b0bc94a",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(runtime): harden media watchdog and disconnect abort",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/utils/common.py",
+        "python/sglang/srt/utils/watchdog.py",
+        "test/registered/unit/multimodal/test_base_processor_bad_input.py",
+        "test/registered/unit/test_watchdog_fail_hard.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "82c5597d4182d86cac839c7869d52e8c8a381c9b",
+        "42cac46e56d82d587d9170614cae4c22a4cef164"
+      ],
+      "depends_on": [
+        "29f0b04675b4"
+      ]
+    },
+    {
+      "id": "119767a19ad0",
+      "path": "patches/sglang/v0.5.19/common/119767a19ad0.patch",
+      "sha256": "68aae02f98d2195c5c5cdfe2d0435b86b5c15d6c8e135cc74d080059449f51fc",
+      "source_commit": "6c6cdbc75c7de2704141e6f2ab02cc9417fb02f0",
+      "source_parent": "42cac46e56d82d587d9170614cae4c22a4cef164",
+      "source_tree": "6e0af4d5e3a08d4f863fbde73acdd2870368785f",
+      "original_commit": "119767a19ad028c45b83b504a3ab20f4acf6d265",
+      "original_parent": "4dcc87bb9a11abd98d73f7ee6e2d1199863529e1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(runtime): reject oversized media requests before decode",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/managers/tokenizer_manager.py",
+        "python/sglang/srt/utils/cudacore_pyspy_dump_utils.py",
+        "python/sglang/srt/utils/watchdog.py",
+        "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py",
+        "test/registered/unit/test_watchdog_fail_hard.py",
+        "test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "42cac46e56d82d587d9170614cae4c22a4cef164",
+        "6c6cdbc75c7de2704141e6f2ab02cc9417fb02f0"
+      ],
+      "depends_on": [
+        "4dcc87bb9a11"
+      ]
+    },
+    {
+      "id": "58c4ebfd0be5",
+      "path": "patches/sglang/v0.5.19/common/58c4ebfd0be5.patch",
+      "sha256": "8c856678428ea70a1c697ca37e6b57535a9bada5c3fe7ebe822afa0b66801e68",
+      "source_commit": "a1c281180bbcfee4e90081bc23aeb05c88e00314",
+      "source_parent": "6c6cdbc75c7de2704141e6f2ab02cc9417fb02f0",
+      "source_tree": "592bd7ab4206be4350617f1d11706ef28bd64ea1",
+      "original_commit": "58c4ebfd0be56e8f78f5815c8f20baab32f9c47c",
+      "original_parent": "119767a19ad028c45b83b504a3ab20f4acf6d265",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "test(multimodal): exercise eager PIL system-error path",
+      "ownership": "common",
+      "files": [
+        "test/registered/unit/multimodal/test_base_processor_bad_input.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "6c6cdbc75c7de2704141e6f2ab02cc9417fb02f0",
+        "a1c281180bbcfee4e90081bc23aeb05c88e00314"
+      ],
+      "depends_on": [
+        "119767a19ad0"
+      ]
+    },
+    {
+      "id": "66599f0839c0",
+      "path": "patches/sglang/v0.5.19/common/66599f0839c0.patch",
+      "sha256": "c5ca7db687729957e0e68b05208ab949f0e195729c769c3af7d31c7f42ff002c",
+      "source_commit": "cdea3b3c96d410e1e21e1013eed39a6388fc4f2e",
+      "source_parent": "a1c281180bbcfee4e90081bc23aeb05c88e00314",
+      "source_tree": "dc7390fb29d9c55dcd556b4de29a134306e3076e",
+      "original_commit": "66599f0839c028081f85a3f0bb0ced8bed869918",
+      "original_parent": "58c4ebfd0be56e8f78f5815c8f20baab32f9c47c",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "test(qwen38): adapt pre-MM fixture to v0.5.19 config bag",
+      "ownership": "common",
+      "files": [
+        "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "a1c281180bbcfee4e90081bc23aeb05c88e00314",
+        "cdea3b3c96d410e1e21e1013eed39a6388fc4f2e"
+      ],
+      "depends_on": [
+        "58c4ebfd0be5"
+      ]
+    },
+    {
+      "id": "3852646c7dfd",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/3852646c7dfd.patch",
+      "sha256": "04c69cdf687d223eaa6b5b925ccb60442489b47d15424602d59f32cd67d5238f",
+      "source_commit": "cd196db84369a0de957bde93c31a44ee67adbc55",
+      "source_parent": "cdea3b3c96d410e1e21e1013eed39a6388fc4f2e",
+      "source_tree": "5fa7953a30181a35f5f4331839a8b916dfa6ebdb",
+      "original_commit": "3852646c7dfddcfc875bd4aabb8b5495f85352f6",
+      "original_parent": "19621c3ecd2263dfb16380716925715d882ef016",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(qwen3.5): map extended reasoning effort aliases",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "cdea3b3c96d410e1e21e1013eed39a6388fc4f2e",
+        "cd196db84369a0de957bde93c31a44ee67adbc55"
+      ],
+      "depends_on": [
+        "66599f0839c0"
+      ]
+    },
+    {
+      "id": "70bcd26c4621",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/70bcd26c4621.patch",
+      "sha256": "f98c3a4a188d2880d64cab9229274096e0b1180f63a838cf558dc1a702ce6405",
+      "source_commit": "d70dbf79e7fee22a1db15dbc5df25a1d7398a5d7",
+      "source_parent": "cd196db84369a0de957bde93c31a44ee67adbc55",
+      "source_tree": "f6e75eaa2810cf1a550369620076c561776883a2",
+      "original_commit": "70bcd26c46213cf19dea4ae54e853a78d4240fc8",
+      "original_parent": "3852646c7dfddcfc875bd4aabb8b5495f85352f6",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(qwen3.5): give explicit medium effort a bounded 4096-token budget",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "cd196db84369a0de957bde93c31a44ee67adbc55",
+        "d70dbf79e7fee22a1db15dbc5df25a1d7398a5d7"
+      ],
+      "depends_on": [
+        "3852646c7dfd"
+      ]
+    },
+    {
+      "id": "17cb69777837",
+      "path": "patches/sglang/v0.5.19/common/17cb69777837.patch",
+      "sha256": "63f29c94dd1fe9e4e318ad608cc5d039de3cc60a8d565e4e98b48dcb7136fa17",
+      "source_commit": "bdec50dcf6f5aaf802f9962ecd0092fdd7eebdc6",
+      "source_parent": "d70dbf79e7fee22a1db15dbc5df25a1d7398a5d7",
+      "source_tree": "f06e8b0fac07d2a5eb98483f05946e6c11a55f90",
+      "original_commit": "17cb69777837cf082db07730da765f617f56b4f1",
+      "original_parent": "70bcd26c46213cf19dea4ae54e853a78d4240fc8",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(openai): normalize null tool schema fields",
+      "ownership": "common",
+      "files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/function_call/test_normalize_json_schema_types.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "d70dbf79e7fee22a1db15dbc5df25a1d7398a5d7",
+        "bdec50dcf6f5aaf802f9962ecd0092fdd7eebdc6"
+      ],
+      "depends_on": [
+        "70bcd26c4621"
+      ]
+    },
+    {
+      "id": "2a6898f3c996",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/2a6898f3c996.patch",
+      "sha256": "ba947146b4aa188a0da73a4d0fd2f7d878cebc3feca3fd2634dd39415ef2921f",
+      "source_commit": "774c19539bd532090df7b12994b0c01a9b4fbf7a",
+      "source_parent": "bdec50dcf6f5aaf802f9962ecd0092fdd7eebdc6",
+      "source_tree": "2fb1c346ffbc0b83eea742a35b22195e1a0ffd9f",
+      "original_commit": "2a6898f3c9964f6e4aa13bce24ad35bfdb412369",
+      "original_parent": "17cb69777837cf082db07730da765f617f56b4f1",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "fix(qwen): close empty XML calls and preserve required schema semantics",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "bdec50dcf6f5aaf802f9962ecd0092fdd7eebdc6",
+        "774c19539bd532090df7b12994b0c01a9b4fbf7a"
+      ],
+      "depends_on": [
+        "17cb69777837"
+      ]
+    },
+    {
+      "id": "fdcb90492c7c",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/fdcb90492c7c.patch",
+      "sha256": "ebe2cb013ba75283985c7b75e3c8878d5117809e63fe3ac95e5ed0e1d3519624",
+      "source_commit": "772a63931ff9719eb5e9fd123f95984ab3c20de0",
+      "source_parent": "774c19539bd532090df7b12994b0c01a9b4fbf7a",
+      "source_tree": "f83f76f58ab173989366e3b3261faee877378053",
+      "original_commit": "fdcb90492c7c85336bd7d879f623dabc8416e208",
+      "original_parent": "2a6898f3c9964f6e4aa13bce24ad35bfdb412369",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "build: add CPU-only native wheel qualification target",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "774c19539bd532090df7b12994b0c01a9b4fbf7a",
+        "772a63931ff9719eb5e9fd123f95984ab3c20de0"
+      ],
+      "depends_on": [
+        "2a6898f3c996"
+      ]
+    },
+    {
+      "id": "15966fe477b8",
+      "path": "patches/sglang/v0.5.19/models/qwen3-family/15966fe477b8.patch",
+      "sha256": "d66566b88804b5fe0ee62bd5e3a35878d7e59c96a4a10aa80b08e22402499fa8",
+      "source_commit": "711978779936d1918d038de8515e33f968cb5193",
+      "source_parent": "772a63931ff9719eb5e9fd123f95984ab3c20de0",
+      "source_tree": "d209baf0019b73d3126b85401154de8d0fa124fd",
+      "original_commit": "15966fe477b897ebba322c29d7d9698b31112b67",
+      "original_parent": "fdcb90492c7c85336bd7d879f623dabc8416e208",
+      "review_pr": "https://github.com/Phala-Network/sglang/pull/30",
+      "review_status": "draft-not-approved",
+      "subject": "test(qwen): exercise normalized request schemas and typed map controls",
+      "ownership": "models/qwen3-family",
+      "files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+      ],
+      "export_argv": [
+        "git",
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "772a63931ff9719eb5e9fd123f95984ab3c20de0",
+        "711978779936d1918d038de8515e33f968cb5193"
+      ],
+      "depends_on": [
+        "fdcb90492c7c"
+      ]
+    }
+  ]
+}

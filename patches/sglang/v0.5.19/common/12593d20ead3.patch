@@ -1,0 +1,54 @@
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 37e482b720eb238c504225d05093b10e1628d501..f3cda5005b3c310c342ffc570ca93cd62f107be9 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -3289,6 +3289,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         # prefill-time tensor so it doesn't leak into ForwardBatch.
+         self.input_embeds = None
+ 
++        self.mamba_cow_src_indices = None
++        self.mamba_cow_dst_indices = None
++        self.mamba_clear_indices = None
++
+         # Clear context parallel metadata - CP is only for prefill, not decode
+         if hasattr(self, "attn_cp_metadata") and self.attn_cp_metadata is not None:
+             self.attn_cp_metadata = None
+diff --git a/test/registered/unit/managers/test_schedule_batch_prepare_for_decode.py b/test/registered/unit/managers/test_schedule_batch_prepare_for_decode.py
+index 79d5e75d7db48fc9fdb0f3a59f1ef81cac833e90..b5fcefeb02d89f41efb26a63c0cf4dda9476dc1a 100644
+--- a/test/registered/unit/managers/test_schedule_batch_prepare_for_decode.py
++++ b/test/registered/unit/managers/test_schedule_batch_prepare_for_decode.py
+@@ -6,7 +6,7 @@ import torch
+ 
+ from sglang.srt.runtime_context import get_context
+ from sglang.test.ci.ci_register import register_cpu_ci
+-from sglang.test.test_utils import maybe_stub_sgl_kernel
++from sglang.test.test_utils import CustomTestCase, maybe_stub_sgl_kernel
+ 
+ maybe_stub_sgl_kernel()
+ 
+@@ -39,6 +39,25 @@ def _make_decode_batch():
+     return batch
+ 
+ 
++class TestPrepareForDecodeMambaInit(CustomTestCase):
++    def test_spec_decode_drops_extend_mamba_init_metadata(self):
++        batch = ScheduleBatch(reqs=[])
++        batch.spec_algorithm = types.SimpleNamespace(is_none=lambda: False)
++        batch.mamba_cow_src_indices = torch.tensor([1])
++        batch.mamba_cow_dst_indices = torch.tensor([2])
++        batch.mamba_clear_indices = torch.tensor([3])
++
++        with patch(
++            "sglang.srt.speculative.spec_utils.spec_prepare_for_decode"
++        ) as prepare:
++            batch.prepare_for_decode()
++
++        prepare.assert_called_once_with(batch)
++        self.assertIsNone(batch.mamba_cow_src_indices)
++        self.assertIsNone(batch.mamba_cow_dst_indices)
++        self.assertIsNone(batch.mamba_clear_indices)
++
++
+ class TestPrepareForDecodeSeqLensOwnership(unittest.TestCase):
+     def test_decode_seq_lens_bump_is_out_of_place(self):
+         """Each prepare_for_decode call rebinds seq-lens tensors to new +1 objects without mutating the old ones."""

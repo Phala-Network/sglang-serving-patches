@@ -1,0 +1,531 @@
+diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/srt/layers/quantization/unquant.py
+index 2dbd790415d57627a76d54af80860c749b48272a..4ae712c2158a443f9b4500825d1facc384d1d071 100644
+--- a/python/sglang/srt/layers/quantization/unquant.py
++++ b/python/sglang/srt/layers/quantization/unquant.py
+@@ -11,6 +11,7 @@ import torch.nn.functional as F
+ from torch.nn.parameter import Parameter
+ 
+ from sglang.kernels.fused_op import BaseFusedOp
++from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
+ from sglang.srt.environ import envs
+ from sglang.srt.layers.amx_utils import (
+     CPUQuantMethod,
+@@ -256,28 +257,41 @@ def _flashinfer_pr4266_bf16_gemm(
+ 
+ 
+ def _bf16_gemm_dispatch_impl(
+-    x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor]
++    x: torch.Tensor,
++    weight: torch.Tensor,
++    bias: Optional[torch.Tensor],
++    addend: Optional[torch.Tensor] = None,
+ ) -> torch.Tensor:
+     m = x.numel() // x.shape[-1]
+     if _enable_bf16_splitk_gemm and use_flashinfer_pr4266_bf16_gemm(
+         m, weight.shape[0], weight.shape[1]
+     ):
+-        return _flashinfer_pr4266_bf16_gemm(x, weight, bias)
+-    if (
++        output = _flashinfer_pr4266_bf16_gemm(x, weight, bias)
++    elif (
+         _use_hopper_bf16_gemv is not None
+         and bias is None
+         and _use_hopper_bf16_gemv(m, weight.shape[0], weight.shape[1])
+     ):
+-        return _hopper_bf16_gemv(x.view(-1, x.shape[-1]), weight).view(
++        output = _hopper_bf16_gemv(x.view(-1, x.shape[-1]), weight).view(
+             *x.shape[:-1], -1
+         )
+-    if _use_cutedsl_bf16_gemm is not None and _use_cutedsl_bf16_gemm(
++    elif _use_cutedsl_bf16_gemm is not None and _use_cutedsl_bf16_gemm(
+         m, weight.shape[0], weight.shape[1]
+     ):
+-        return _cutedsl_bf16_gemm(x.view(-1, x.shape[-1]), weight, bias).view(
++        output = _cutedsl_bf16_gemm(x.view(-1, x.shape[-1]), weight, bias).view(
+             *x.shape[:-1], -1
+         )
+-    return F.linear(x, weight, bias)
++    elif addend is not None:
++        # cuBLAS folds the addend in through the GEMM beta input;
++        # a bias would need a third operand, so callers must exclude it.
++        assert bias is None
++        return torch.addmm(addend, x, weight.t(), out=addend)
++    else:
++        return F.linear(x, weight, bias)
++
++    if addend is not None:
++        output.add_(addend)
++    return output
+ 
+ 
+ @register_custom_op(fake_impl=_bf16_gemm_dispatch_fake)
+@@ -287,6 +301,32 @@ def bf16_gemm_dispatch(
+     return _bf16_gemm_dispatch_impl(x, weight, bias)
+ 
+ 
++def _can_accumulate_into_addend(
++    *,
++    weight: torch.Tensor,
++    x: torch.Tensor,
++    addend: torch.Tensor,
++    bias: Optional[torch.Tensor],
++) -> bool:
++    if not _is_cuda or torch.compiler.is_compiling():
++        return False
++    # Batch-invariant mode overrides aten::mm and aten::addmm,
++    # but not aten::addmm.out, so deterministic inference keeps a separate add.
++    if is_batch_invariant_mode_enabled():
++        return False
++    # x.is_cuda also keeps the CPU AMX route in apply().
++    if bias is not None or x.ndim != 2 or not x.is_cuda:
++        return False
++    if x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16:
++        return False
++    return (
++        addend.dtype == torch.bfloat16
++        and addend.is_contiguous()
++        and addend.shape == (x.shape[0], weight.shape[0])
++        and not (x.requires_grad or addend.requires_grad or weight.requires_grad)
++    )
++
++
+ def get_bf16_gemm_backend() -> Bf16GemmBackend:
+     global _BF16_GEMM_BACKEND
+     if _BF16_GEMM_BACKEND is None:
+@@ -403,6 +443,25 @@ class UnquantizedLinearMethod(LinearMethodBase):
+ 
+         return F.linear(x, layer.weight, bias)
+ 
++    def apply_with_addend(
++        self,
++        layer: torch.nn.Module,
++        x: torch.Tensor,
++        addend: torch.Tensor,
++        bias: Optional[torch.Tensor] = None,
++    ) -> torch.Tensor:
++        """Run an inference-only BF16 linear and add ``addend`` to the result.
++
++        Only the cuBLAS route accumulates through the GEMM beta input,
++        returning ``addend`` itself; the other routes add separately,
++        leaving it untouched. Callers must treat it as consumed either way.
++        """
++        if _can_accumulate_into_addend(
++            weight=layer.weight, x=x, addend=addend, bias=bias
++        ):
++            return _bf16_gemm_dispatch_impl(x, layer.weight, bias, addend=addend)
++        return self.apply(layer, x, bias).add_(addend)
++
+     def apply_into(
+         self,
+         layer: torch.nn.Module,
+diff --git a/python/sglang/srt/models/nemotron_h.py b/python/sglang/srt/models/nemotron_h.py
+index 803589f33635c03b26dc99037c5f815feca32b50..8621c7d4a1d2d85f0bf015e5fff5db896affb856 100644
+--- a/python/sglang/srt/models/nemotron_h.py
++++ b/python/sglang/srt/models/nemotron_h.py
+@@ -57,6 +57,7 @@ from sglang.srt.layers.moe.utils import (
+     should_skip_post_experts_all_reduce,
+ )
+ from sglang.srt.layers.quantization import QuantizationConfig
++from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
+ from sglang.srt.layers.radix_attention import RadixAttention
+ from sglang.srt.layers.utils import PPMissingLayer, get_layer_id
+ from sglang.srt.layers.vocab_parallel_embedding import (
+@@ -163,6 +164,17 @@ def _get_or_create_alt_stream(device_module):
+     return _alt_stream
+ 
+ 
++def _latent_proj_fuses_shared_add(projection: nn.Module) -> bool:
++    return (
++        # LoRA swaps a wrapper module over this attribute after init,
++        # and a subclass may override forward; exact type excludes both.
++        type(projection) is ReplicatedLinear
++        # Without a bias, ReplicatedLinear.forward is a bare quant_method.apply.
++        and projection.bias is None
++        and isinstance(projection.quant_method, UnquantizedLinearMethod)
++    )
++
++
+ class NemotronHMoE(nn.Module):
+     def __init__(
+         self,
+@@ -331,6 +343,22 @@ class NemotronHMoE(nn.Module):
+ 
+         return final_hidden_states, shared_output
+ 
++    def _apply_latent_projection(
++        self,
++        final_hidden_states: torch.Tensor,
++        shared_output: torch.Tensor | None,
++    ) -> torch.Tensor:
++        projection = self.fc2_latent_proj
++        if shared_output is not None and _latent_proj_fuses_shared_add(projection):
++            return projection.quant_method.apply_with_addend(
++                projection, final_hidden_states, addend=shared_output
++            )
++
++        final_hidden_states, _ = projection(final_hidden_states)
++        if shared_output is not None:
++            final_hidden_states += shared_output
++        return final_hidden_states
++
+     def forward(
+         self,
+         hidden_states: torch.Tensor,
+@@ -341,9 +369,10 @@ class NemotronHMoE(nn.Module):
+         final_hidden_states, shared_output = self._forward_core(hidden_states)
+ 
+         if self.use_latent_moe:
+-            final_hidden_states, _ = self.fc2_latent_proj(final_hidden_states)
+-
+-        if shared_output is not None:
++            final_hidden_states = self._apply_latent_projection(
++                final_hidden_states, shared_output
++            )
++        elif shared_output is not None:
+             final_hidden_states += shared_output
+ 
+         if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
+diff --git a/test/registered/unit/layers/quantization/test_unquant_apply_with_addend.py b/test/registered/unit/layers/quantization/test_unquant_apply_with_addend.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..85741b4a57054357a1eabad073df0d735a270119
+--- /dev/null
++++ b/test/registered/unit/layers/quantization/test_unquant_apply_with_addend.py
+@@ -0,0 +1,205 @@
++"""
++Unit tests for UnquantizedLinearMethod.apply_with_addend.
++
++The cuBLAS route folds the addend into the GEMM beta input,
++writing back into that buffer; every other route must add separately
++and leave the caller's buffer intact.
++"""
++
++from sglang.test.ci.ci_register import register_cuda_ci
++
++register_cuda_ci(est_time=25, stage="base-b", runner_config="1-gpu-small")
++
++import unittest
++from contextlib import ExitStack
++from unittest.mock import patch
++
++import torch
++import torch.nn.functional as F
++
++import sglang.srt.layers.quantization.unquant as unquant
++from sglang.srt.layers.linear import ReplicatedLinear
++from sglang.test.test_utils import CustomTestCase
++
++# addmm rounds once in the accumulator where the separate add rounds twice;
++# with 8 BF16 mantissa bits the paths agree only to this precision.
++_BF16_RTOL = 1e-2
++_BF16_ATOL = 3.125e-2
++
++
++def _cublas_only_backend():
++    # The TORCH backend leaves every custom-kernel global unpopulated.
++    return patch.object(unquant, "_BF16_GEMM_BACKEND", unquant.Bf16GemmBackend.TORCH)
++
++
++def _fake_kernel(calls, name):
++    def kernel(x, weight, bias=None, *args):
++        calls.append(name)
++        return F.linear(x, weight, bias)
++
++    return kernel
++
++
++@unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
++class TestApplyWithAddend(CustomTestCase):
++    def setUp(self):
++        torch.manual_seed(0)
++        self.projection = ReplicatedLinear(
++            64, 128, bias=False, params_dtype=torch.bfloat16
++        ).cuda()
++        self.projection.weight.copy_(
++            torch.randn_like(self.projection.weight) / 8.0  # 1 / sqrt(64)
++        )
++        self.method = self.projection.quant_method
++
++    def _reference(self, x, addend, bias=None):
++        return F.linear(x, self.projection.weight, bias) + addend
++
++    @torch.inference_mode()
++    def test_cublas_route_accumulates_into_addend(self):
++        with _cublas_only_backend():
++            x = torch.randn(16, 64, device="cuda", dtype=torch.bfloat16)
++            addend = torch.randn(16, 128, device="cuda", dtype=torch.bfloat16)
++            reference = self._reference(x, addend)
++
++            output = self.method.apply_with_addend(self.projection, x, addend)
++
++            self.assertEqual(output.data_ptr(), addend.data_ptr())
++            torch.testing.assert_close(
++                output, reference, rtol=_BF16_RTOL, atol=_BF16_ATOL
++            )
++
++    @torch.inference_mode()
++    def test_cuda_graph_replay_reads_the_replayed_addend(self):
++        """A graph replay must consume the addend written on that replay;
++        addmm(out=addend) reads and writes the one buffer."""
++        with _cublas_only_backend():
++            x = torch.randn(16, 64, device="cuda", dtype=torch.bfloat16)
++            produced = torch.randn(16, 128, device="cuda", dtype=torch.bfloat16)
++
++            # Initialize the cuBLAS workspace before capture.
++            self.method.apply_with_addend(self.projection, x, produced.clone())
++            torch.cuda.synchronize()
++
++            graph = torch.cuda.CUDAGraph()
++            with torch.cuda.graph(graph):
++                # clone() stands in for the shared expert,
++                # which rewrites its output buffer on every replay.
++                captured = self.method.apply_with_addend(
++                    self.projection, x, produced.clone()
++                )
++
++            x.copy_(torch.randn_like(x))
++            produced.copy_(torch.randn_like(produced))
++            reference = self._reference(x, produced)
++            graph.replay()
++            torch.cuda.synchronize()
++
++            torch.testing.assert_close(
++                captured, reference, rtol=_BF16_RTOL, atol=_BF16_ATOL
++            )
++
++    @torch.inference_mode()
++    def test_batch_invariant_mode_keeps_separate_add(self):
++        """Deterministic inference must not reach the fused route;
++        batch-invariant mode does not override aten::addmm.out."""
++        with (
++            _cublas_only_backend(),
++            patch.object(unquant, "is_batch_invariant_mode_enabled", return_value=True),
++        ):
++            x = torch.randn(4, 64, device="cuda", dtype=torch.bfloat16)
++            addend = torch.randn(4, 128, device="cuda", dtype=torch.bfloat16)
++            before = addend.clone()
++
++            output = self.method.apply_with_addend(self.projection, x, addend)
++
++            self.assertNotEqual(output.data_ptr(), addend.data_ptr())
++            torch.testing.assert_close(addend, before, rtol=0, atol=0)
++            torch.testing.assert_close(
++                output, self._reference(x, before), rtol=_BF16_RTOL, atol=_BF16_ATOL
++            )
++
++    @torch.inference_mode()
++    def test_unfused_routes_leave_the_addend_intact(self):
++        """Every route that cannot use the GEMM beta input adds separately;
++        consuming the addend there corrupts the caller's buffer."""
++        for route in (
++            "non_nvidia",
++            "compiling",
++            "cutedsl",
++            "splitk",
++            "hopper_gemv",
++            "noncontiguous_addend",
++            "bias",
++        ):
++            with self.subTest(route=route):
++                self._assert_route_is_unfused(route)
++
++    def _assert_route_is_unfused(self, route: str):
++        x = torch.randn(4, 64, device="cuda", dtype=torch.bfloat16)
++        addend = (
++            torch.randn(128, 4, device="cuda", dtype=torch.bfloat16).t()
++            if route == "noncontiguous_addend"
++            else torch.randn(4, 128, device="cuda", dtype=torch.bfloat16)
++        )
++        bias = (
++            torch.randn(128, device="cuda", dtype=torch.bfloat16)
++            if route == "bias"
++            else None
++        )
++        before = addend.clone()
++        kernel_calls = []
++
++        with ExitStack() as stack:
++            enter = stack.enter_context
++            enter(_cublas_only_backend())
++            if route == "non_nvidia":
++                enter(patch.object(unquant, "_is_cuda", False))
++            elif route == "compiling":
++                enter(patch.object(torch.compiler, "is_compiling", return_value=True))
++            elif route == "cutedsl":
++                enter(patch.object(unquant, "_use_cutedsl_bf16_gemm", lambda *a: True))
++                enter(
++                    patch.object(
++                        unquant,
++                        "_cutedsl_bf16_gemm",
++                        _fake_kernel(kernel_calls, route),
++                    )
++                )
++            elif route == "splitk":
++                enter(patch.object(unquant, "_enable_bf16_splitk_gemm", True))
++                enter(
++                    patch.object(
++                        unquant, "use_flashinfer_pr4266_bf16_gemm", lambda *a: True
++                    )
++                )
++                enter(
++                    patch.object(
++                        unquant,
++                        "_flashinfer_pr4266_bf16_gemm",
++                        _fake_kernel(kernel_calls, route),
++                    )
++                )
++            elif route == "hopper_gemv":
++                enter(patch.object(unquant, "_use_hopper_bf16_gemv", lambda *a: True))
++                enter(
++                    patch.object(
++                        unquant,
++                        "_hopper_bf16_gemv",
++                        _fake_kernel(kernel_calls, route),
++                    )
++                )
++
++            output = self.method.apply_with_addend(self.projection, x, addend, bias)
++
++        self.assertNotEqual(output.data_ptr(), addend.data_ptr())
++        torch.testing.assert_close(addend, before, rtol=0, atol=0)
++        torch.testing.assert_close(
++            output, self._reference(x, before, bias), rtol=_BF16_RTOL, atol=_BF16_ATOL
++        )
++        if route in ("cutedsl", "splitk", "hopper_gemv"):
++            self.assertEqual(kernel_calls, [route])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/models/test_nemotron_h_shared_add.py b/test/registered/unit/models/test_nemotron_h_shared_add.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..08d747bf4542284cb61fa62349b596517d30296a
+--- /dev/null
++++ b/test/registered/unit/models/test_nemotron_h_shared_add.py
+@@ -0,0 +1,127 @@
++"""
++Unit tests for the NemotronHMoE latent-projection shared-expert add.
++
++The fused path calls the projection's quant method directly,
++not ``ReplicatedLinear.forward``.
++These cases pin the gate that decides when the substitution is safe.
++"""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=20, suite="base-a-test-cpu")
++
++import unittest
++from types import SimpleNamespace
++
++import torch
++import torch.nn.functional as F
++
++from sglang.srt.layers.linear import ReplicatedLinear
++from sglang.srt.lora.layers import ReplicatedLinearWithLoRA
++from sglang.srt.models.nemotron_h import (
++    NemotronHMoE,
++    _latent_proj_fuses_shared_add,
++)
++from sglang.test.test_utils import CustomTestCase
++
++
++# Stands in for a quantized linear method, which has no addend entry point.
++class _DoubleMethod:
++    def apply(self, layer, x, bias):
++        return 2 * x
++
++
++class _FakeLoRABackend:
++    batch_info = object()
++    skip_inactive_lora_batches = False
++
++    def run_lora_a_sgemm(self, x, weights):
++        return 2 * x
++
++    def run_lora_b_sgemm(self, *, x, weights, output_offset, base_output):
++        return base_output + x
++
++
++def _apply(projection, routed, shared):
++    moe = SimpleNamespace(fc2_latent_proj=projection)
++    return NemotronHMoE._apply_latent_projection(moe, routed, shared)
++
++
++class TestNemotronHSharedAdd(CustomTestCase):
++    def setUp(self):
++        torch.manual_seed(0)
++        self.routed = torch.randn(4, 8)
++        self.shared = torch.randn(4, 8)
++
++    def test_gate_accepts_plain_bias_free_projection(self):
++        """A bias-free unquantized ReplicatedLinear must stay eligible;
++        a gate that degrades to always-false silently drops the fusion."""
++        projection = ReplicatedLinear(8, 8, bias=False)
++
++        self.assertTrue(_latent_proj_fuses_shared_add(projection))
++
++    def test_gate_rejects_lora_wrapper(self):
++        """LoRA swaps a wrapper module over fc2_latent_proj after model init.
++        Calling the base quant method there would drop the adapter update."""
++        projection = ReplicatedLinear(8, 8, bias=False)
++        with torch.no_grad():
++            projection.weight.zero_()
++        wrapped = ReplicatedLinearWithLoRA(projection, _FakeLoRABackend())
++        wrapped.set_lora_info(torch.empty(1, 8), torch.empty(8, 1))
++
++        self.assertFalse(_latent_proj_fuses_shared_add(wrapped))
++        torch.testing.assert_close(
++            _apply(wrapped, self.routed, self.shared),
++            2 * self.routed + self.shared,
++            rtol=0,
++            atol=0,
++        )
++
++    def test_gate_rejects_quantized_projection(self):
++        """Only UnquantizedLinearMethod implements apply_with_addend."""
++        projection = ReplicatedLinear(8, 8, bias=False)
++        projection.quant_method = _DoubleMethod()
++
++        self.assertFalse(_latent_proj_fuses_shared_add(projection))
++        torch.testing.assert_close(
++            _apply(projection, self.routed, self.shared),
++            2 * self.routed + self.shared,
++            rtol=0,
++            atol=0,
++        )
++
++    def test_gate_rejects_projection_with_bias(self):
++        """forward defers the bias under skip_bias_add and runs module hooks;
++        both are lost if a bias-bearing projection takes the fused call."""
++        projection = ReplicatedLinear(8, 8, bias=True, skip_bias_add=True)
++        with torch.no_grad():
++            projection.weight.copy_(torch.randn_like(projection.weight))
++            projection.bias.copy_(torch.randn_like(projection.bias))
++        hook_calls = []
++        projection.register_forward_hook(lambda *args: hook_calls.append(True))
++
++        self.assertFalse(_latent_proj_fuses_shared_add(projection))
++        torch.testing.assert_close(
++            _apply(projection, self.routed, self.shared),
++            F.linear(self.routed, projection.weight) + self.shared,
++            rtol=0,
++            atol=0,
++        )
++        self.assertEqual(hook_calls, [True])
++
++    def test_no_shared_output_keeps_plain_projection(self):
++        """Layers without shared experts pass shared_output=None."""
++        projection = ReplicatedLinear(8, 8, bias=False)
++        with torch.no_grad():
++            projection.weight.copy_(torch.randn_like(projection.weight))
++
++        torch.testing.assert_close(
++            _apply(projection, self.routed, None),
++            F.linear(self.routed, projection.weight),
++            rtol=0,
++            atol=0,
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

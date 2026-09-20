@@ -1,0 +1,249 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 2497ab1f42618a4d34130aad7101507b822ec131..f9957d4d9b1aa43c4d42efb4ed2db2c3952a38cf 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -2007,7 +2007,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                         tokenizer=self.tokenizer_manager.tokenizer,
+                         tool_call_parser_active=self._tool_call_parsing_active(request),
+                     )
+-                    reasoning_text, text = parser.parse_non_stream(text)
++                    reasoning_text, text = parser.parse_non_stream(
++                        text, finish_reason_type=finish_reason.get("type")
++                    )
+                 except Exception as e:
+                     logger.error(f"Reasoning parsing error: {e}")
+                     return self.create_error_response(
+@@ -2358,7 +2360,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         reasoning_parser = reasoning_parser_dict[index]
+         reasoning_text, normal_text = reasoning_parser.parse_stream_chunk(delta)
+         if finish_reason_type is not None and finish_reason_type != "abort":
+-            end_reasoning_text, end_normal_text = reasoning_parser.parse_stream_end()
++            end_reasoning_text, end_normal_text = reasoning_parser.parse_stream_end(
++                finish_reason_type=finish_reason_type
++            )
+             if end_reasoning_text:
+                 reasoning_text = (reasoning_text or "") + end_reasoning_text
+             if end_normal_text:
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 4a5756ca10f23e30f55e8ae9a2b24758b17121ad..86df5e0f85ffee8863bb916fe7ccc4a08f08a83d 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -541,6 +541,26 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                         "stop_after_first": not parallel_tool_calls,
+                     }
+                 )
++                if parallel_tool_calls:
++                    # Auto may answer in prose or introduce the calls in prose.
++                    # Once it starts a call, keep one final tool-call phase:
++                    # unconstrained prose between/after calls can send a model
++                    # into repeated format explanations. Do not infer call
++                    # counts or deduplicate legitimate repeated invocations.
++                    whitespace = RegexFormat(pattern=r"[\x20\x09\x0A\x0D]{0,64}")
++                    suffix = SequenceFormat(
++                        elements=[
++                            suffix.model_copy(update={"stop_after_first": True}),
++                            RepeatFormat(
++                                min=0,
++                                max=-1,
++                                content=SequenceFormat(
++                                    elements=[whitespace, OrFormat(elements=suffix.tags)]
++                                ),
++                            ),
++                            whitespace,
++                        ]
++                    )
+         elif tool_choice == "required" or isinstance(tool_choice, ToolChoice):
+             alternatives = suffix.tags if suffix.type == "triggered_tags" else [suffix]
+             call = OrFormat(elements=alternatives)
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index f84e41079ab7aa1961acb7e517eb6c8aa684c4d5..c66e4ba13fec64ea758cfea7cf8bfa5fb2a5762c 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -88,6 +88,7 @@ class BaseReasoningFormatDetector:
+         self.think_excluded_tokens = think_excluded_tokens
+         self.tool_start_token = tool_start_token
+         self.defer_tool_start_until_end = defer_tool_start_until_end
++        self.allow_tool_start_fallback = True
+         self.force_reasoning = force_reasoning
+         self._in_reasoning = force_reasoning
+         self.stream_reasoning = stream_reasoning
+@@ -117,7 +118,11 @@ class BaseReasoningFormatDetector:
+     def _maybe_apply_force_nonempty_content(
+         self, ret: StreamingParseResult
+     ) -> StreamingParseResult:
+-        if self._force_nonempty_content and not ret.normal_text:
++        if (
++            self._force_nonempty_content
++            and not ret.normal_text
++            and self.allow_tool_start_fallback
++        ):
+             ret.normal_text, ret.reasoning_text = ret.reasoning_text, ret.normal_text
+         return ret
+ 
+@@ -149,6 +154,7 @@ class BaseReasoningFormatDetector:
+             # Check for tool_start_token interruption
+             if (
+                 in_reasoning
++                and self.allow_tool_start_fallback
+                 and self.tool_start_token is not None
+                 and self.tool_start_token in processed_text
+             ):
+@@ -317,6 +323,7 @@ class BaseReasoningFormatDetector:
+ 
+         if (
+             self.defer_tool_start_until_end
++            and self.allow_tool_start_fallback
+             and self.tool_start_token
+             and self.tool_start_token in buffer
+         ):
+@@ -329,7 +336,7 @@ class BaseReasoningFormatDetector:
+                 reasoning_text=buffer[:tool_idx], normal_text=buffer[tool_idx:]
+             )
+ 
+-        if self._force_nonempty_content:
++        if self._force_nonempty_content and self.allow_tool_start_fallback:
+             normal_text = self._accumulated_reasoning + buffer
+             self._accumulated_reasoning = ""
+             if normal_text:
+@@ -2055,8 +2062,22 @@ class ReasoningParser:
+ 
+         self.detector = detector_class(**kwargs)
+ 
+-    def parse_non_stream(self, full_text: str) -> Tuple[Optional[str], Optional[str]]:
++    def _set_finish_reason(self, finish_reason_type: Optional[str]) -> None:
++        # Nemotron's missing-closer compatibility fallback is ambiguous until
++        # normal EOF. A budget cut is not evidence that examples inside an
++        # unfinished reasoning block were intended as executable tool calls.
++        # Other detector formats retain their existing completion behavior.
++        if getattr(self.detector, "defer_tool_start_until_end", False):
++            self.detector.allow_tool_start_fallback = finish_reason_type not in {
++                "length",
++                "abort",
++            }
++
++    def parse_non_stream(
++        self, full_text: str, finish_reason_type: Optional[str] = None
++    ) -> Tuple[Optional[str], Optional[str]]:
+         """Non-streaming call: one-time parsing"""
++        self._set_finish_reason(finish_reason_type)
+         ret = self.detector.detect_and_parse(full_text)
+         return ret.reasoning_text, ret.normal_text
+ 
+@@ -2080,8 +2101,11 @@ class ReasoningParser:
+         ret = self.detector.parse_streaming_increment(chunk_text)
+         return ret.reasoning_text, ret.normal_text
+ 
+-    def parse_stream_end(self) -> Tuple[Optional[str], Optional[str]]:
++    def parse_stream_end(
++        self, finish_reason_type: Optional[str] = None
++    ) -> Tuple[Optional[str], Optional[str]]:
+         """Streaming call: flush any detector-specific buffered state once
+         the stream ends."""
++        self._set_finish_reason(finish_reason_type)
+         ret = self.detector.finish()
+         return ret.reasoning_text, ret.normal_text
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py b/test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py
+index fc5f6c9e0e80c66e8db47261c8d5531645621555..d3d81e0253c4991f68cf4a5941ce8928c8f2c0a9 100644
+--- a/test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py
++++ b/test/registered/unit/function_call/test_qwen3_coder_native_cardinality.py
+@@ -77,12 +77,26 @@ def test_auto_false_still_allows_text_but_only_one_call(strict):
+     assert not _is_grammar_accept_string(g, call() + "\n" + call("second"))
+ 
+ 
+-def test_auto_true_can_interleave_text_and_multiple_calls():
++def test_auto_true_can_introduce_multiple_calls_with_text():
+     g = grammar("auto", True)
+     assert _is_grammar_accept_string(g, "No lookup is needed.")
+     assert _is_grammar_accept_string(g, "Looking up.\n" + call() + "\n" + call("second"))
+ 
+ 
++@pytest.mark.parametrize("strict", [False, True])
++def test_auto_enters_one_final_call_phase(strict):
++    g = grammar("auto", True, strict=strict)
++    assert _is_grammar_accept_string(g, "No lookup is needed.")
++    assert _is_grammar_accept_string(g, "Looking up.\n" + call() + "\n" + call("second"))
++    # Identical calls can be legitimate; cardinality remains the model's choice.
++    assert _is_grammar_accept_string(g, call() + "\n" + call())
++    assert not _is_grammar_accept_string(g, call() + "\nBut need to check the format.")
++    assert not _is_grammar_accept_string(g, call() + "\nNow another call\n" + call())
++    assert not _is_grammar_accept_string(g, call() + "\n" * 65)
++    bare = call().removeprefix("<tool_call>\n").removesuffix("\n</tool_call>")
++    assert _is_grammar_accept_string(g, bare + "\n" + call("second"))
++
++
+ @pytest.mark.parametrize("closing_wrapper", [False, True])
+ @pytest.mark.parametrize("strict", [False, True])
+ def test_bare_function_is_constrained_and_parses_like_streaming(closing_wrapper, strict):
+diff --git a/test/registered/unit/parser/test_nemotron_truncation_boundary.py b/test/registered/unit/parser/test_nemotron_truncation_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..52a0de6bf1cbdfa41f4885c1e106a34bb8e0f344
+--- /dev/null
++++ b/test/registered/unit/parser/test_nemotron_truncation_boundary.py
+@@ -0,0 +1,67 @@
++"""Budget-cut reasoning examples must not become executable tool calls."""
++from types import SimpleNamespace
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++from sglang.srt.parser.reasoning_parser import ReasoningParser
++
++CALL = '<tool_call>\n<function=get_weather>\n<parameter=city>Paris</parameter>\n</function>\n</tool_call>'
++
++
++def parse_stream(text, width, stream_reasoning, finish_type):
++    service = SimpleNamespace(
++        template_manager=SimpleNamespace(force_reasoning=True),
++        reasoning_parser='nemotron_3',
++        tokenizer_manager=SimpleNamespace(tokenizer=None),
++        _get_reasoning_from_request=lambda request: True,
++        _tool_call_parsing_active=lambda request: True,
++    )
++    request = ChatCompletionRequest(model='test', messages=[{'role': 'user', 'content': 'test'}],
++                                    stream=True, stream_reasoning=stream_reasoning)
++    state = {}
++    reasoning, content = [], []
++    for start in range(0, len(text), width):
++        delta = text[start:start + width]
++        last = finish_type if start + width >= len(text) else None
++        r, c = OpenAIServingChat._process_reasoning_stream(service, 0, delta, state, {}, request, last)
++        reasoning.append(r or '')
++        content.append(c or '')
++    return ''.join(reasoning), ''.join(content)
++
++
++@pytest.mark.parametrize('width', [1, 7, 10000])
++@pytest.mark.parametrize('stream_reasoning', [False, True])
++def test_length_does_not_execute_unclosed_reasoning(width, stream_reasoning):
++    thought = 'Need weather. Here is an example: ' + CALL + '. Still thinking.'
++    assert parse_stream(thought, width, stream_reasoning, 'length') == (thought, '')
++
++
++@pytest.mark.parametrize('width', [1, 7, 10000])
++@pytest.mark.parametrize('stream_reasoning', [False, True])
++def test_normal_stop_preserves_missing_closer_fallback(width, stream_reasoning):
++    assert parse_stream('Need weather.' + CALL, width, stream_reasoning, 'stop') == ('Need weather.', CALL)
++
++
++@pytest.mark.parametrize('width', [1, 7, 10000])
++@pytest.mark.parametrize('stream_reasoning', [False, True])
++def test_length_after_closed_reasoning_preserves_actual_calls(width, stream_reasoning):
++    thought = 'Example: ' + CALL + '. Now call.'
++    assert parse_stream(thought + '</think>' + CALL, width, stream_reasoning, 'length') == (thought, CALL)
++
++
++@pytest.mark.parametrize('finish_type', ['length', 'abort'])
++@pytest.mark.parametrize('force_content', [False, True])
++def test_nonstream_budget_cut_is_reasoning_even_with_force_content(finish_type, force_content):
++    request = ChatCompletionRequest(model='test', messages=[{'role': 'user', 'content': 'test'}],
++        chat_template_kwargs={'force_nonempty_content': force_content})
++    parser = ReasoningParser('nemotron_3', force_reasoning=True, request=request)
++    thought = 'Example: ' + CALL + '. Not finished.'
++    assert parser.parse_non_stream(thought, finish_type) == (thought, '')
++
++
++@pytest.mark.parametrize('finish_type', [None, 'stop'])
++def test_nonstream_normal_completion_keeps_fallback(finish_type):
++    parser = ReasoningParser('nemotron_3', force_reasoning=True)
++    assert parser.parse_non_stream('Need weather.' + CALL, finish_type) == ('Need weather.', CALL)

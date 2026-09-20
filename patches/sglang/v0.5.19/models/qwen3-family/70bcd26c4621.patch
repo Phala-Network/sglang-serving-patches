@@ -1,0 +1,147 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 5dad376c6e1de3fd64778724473065dad76bed20..392bee6ccd71c26cd511a9a4a36ed1662cc47761 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -144,7 +144,7 @@ _QWEN35_REASONING_EFFORT_ALIASES = {
+ }
+ _QWEN35_REASONING_EFFORT_TOKEN_RANGES = {
+     "low": (32, 64),
+-    "medium": (128, 256),
++    "medium": (128, 4096),
+     "xhigh": (384, 8192),
+ }
+ _QWEN35_REASONING_EFFORT_FULL_BUDGET = 8192
+@@ -629,7 +629,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         max_new_tokens: Optional[int],
+         reasoning_max_tokens: Optional[int] = None,
+     ) -> Optional[tuple[int, int]]:
+-        """Return strict, non-overlapping reasoning bounds for Qwen3.5."""
++        """Return bounded reasoning effort tiers for the Qwen3.5 template."""
+         if (
+             not self._uses_qwen35_chat_template()
+             or getattr(
+@@ -667,7 +667,8 @@ class OpenAIServingChat(OpenAIServingBase):
+         if reasoning_max_tokens is not None:
+             available_tokens = min(available_tokens, reasoning_max_tokens)
+ 
+-        # Three disjoint integer intervals require at least three reasoning tokens.
++        # Preserve the legacy behavior when fewer than three reasoning tokens
++        # are available for the tier minimums.
+         if available_tokens < 3:
+             if reasoning_max_tokens is not None:
+                 return (available_tokens, available_tokens)
+@@ -680,8 +681,11 @@ class OpenAIServingChat(OpenAIServingBase):
+         low_min = min(max(1, int(32 * scale)), available_tokens - 2)
+         low_max = min(max(low_min, int(64 * scale)), available_tokens - 2)
+         medium_min = min(max(low_max + 1, int(128 * scale)), available_tokens - 1)
+-        medium_max = min(max(medium_min, int(256 * scale)), available_tokens - 1)
+-        xhigh_min = min(max(medium_max + 1, int(384 * scale)), available_tokens)
++        # Keep the existing xhigh/default lower bound independent of the
++        # medium ceiling. Raising medium's ceiling must not force every high
++        # or default request to spend thousands of extra reasoning tokens.
++        legacy_medium_max = min(max(medium_min, int(256 * scale)), available_tokens - 1)
++        xhigh_min = min(max(legacy_medium_max + 1, int(384 * scale)), available_tokens)
+         xhigh_max = (
+             available_tokens
+             if reasoning_max_tokens is not None
+@@ -698,7 +702,19 @@ class OpenAIServingChat(OpenAIServingBase):
+         )
+         ranges = {
+             "low": (low_min, low_max),
+-            "medium": (medium_min, medium_max),
++            "medium": (
++                medium_min,
++                min(
++                    available_tokens,
++                    max(
++                        medium_min,
++                        int(
++                            _QWEN35_REASONING_EFFORT_TOKEN_RANGES["medium"][1]
++                            * scale
++                        ),
++                    ),
++                ),
++            ),
+             "xhigh": (xhigh_min, xhigh_max),
+         }
+         return ranges[reasoning_effort]
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 571ea0d4d1f1b1783d9d9bcd4407649beca435d6..33f5794ea7a50012ef6010d2f2d8b94f551fa227 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -507,7 +507,7 @@ class ServingChatTestCase(unittest.TestCase):
+         )
+         self.assertEqual(
+             self.chat._qwen35_reasoning_effort_token_range("medium", 16384),
+-            (128, 256),
++            (128, 4096),
+         )
+         for effort in ("high", "xhigh", "max"):
+             with self.subTest(effort=effort):
+@@ -549,7 +549,7 @@ class ServingChatTestCase(unittest.TestCase):
+         )
+         self.assertEqual(
+             self.chat._qwen35_reasoning_effort_token_range("medium", 128),
+-            (2, 3),
++            (2, 48),
+         )
+         self.assertEqual(
+             self.chat._qwen35_reasoning_effort_token_range("xhigh", 128),
+@@ -563,6 +563,48 @@ class ServingChatTestCase(unittest.TestCase):
+             [(1, 1), (2, 2), (3, 3)],
+         )
+ 
++    def test_qwen35_medium_budget_does_not_raise_other_tier_minimums(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = True
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 16384),
++            (128, 4096),
++        )
++        for effort in (None, "high", "xhigh", "max"):
++            with self.subTest(effort=effort):
++                self.assertEqual(
++                    self.chat._qwen35_reasoning_effort_token_range(effort, 16384),
++                    (384, 8192),
++                )
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("low", 16384),
++            (32, 64),
++        )
++
++    def test_qwen35_medium_budget_respects_request_limits(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        self.tm.server_args.enable_strict_thinking = True
++        for output_limit in (2, 3, 4, 16, 128, 512, 16384):
++            for reasoning_limit in (None, 1, 2, 64, 256, 4096, 8192):
++                with self.subTest(output=output_limit, reasoning=reasoning_limit):
++                    bounds = self.chat._qwen35_reasoning_effort_token_range(
++                        "medium", output_limit, reasoning_limit
++                    )
++                    available = output_limit - min(max(1, output_limit // 4), 256)
++                    if reasoning_limit is not None:
++                        available = min(available, reasoning_limit)
++                    elif available < 3:
++                        self.assertIsNone(bounds)
++                        continue
++                    lower, upper = bounds
++                    self.assertLessEqual(1, lower)
++                    self.assertLessEqual(lower, upper)
++                    self.assertLessEqual(upper, available)
++        self.assertEqual(
++            self.chat._qwen35_reasoning_effort_token_range("medium", 16384, 256),
++            (4, 128),
++        )
++
+     def test_qwen35_reasoning_effort_token_ranges_are_narrowly_scoped(self):
+         self.tm.model_config.hf_config.model_type = "qwen3_5"
+         self.tm.server_args.enable_strict_thinking = False
+@@ -604,7 +646,7 @@ class ServingChatTestCase(unittest.TestCase):
+             adapted, _ = self.chat._convert_to_internal_request(request)
+ 
+         self.assertEqual(adapted.min_thinking_tokens, 128)
+-        self.assertEqual(adapted.max_thinking_tokens, 256)
++        self.assertEqual(adapted.max_thinking_tokens, 4096)
+         self.assertNotIn(
+             "disable_strict_thinking_grammar",
+             adapted.sampling_params.get("custom_params") or {},

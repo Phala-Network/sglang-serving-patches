@@ -1,0 +1,331 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 7497e1719abefca5590e8e2f45fb267cd46a5353..f1790bf2b4aea9cb3f18ef69c54a36a4583bb65f 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -919,6 +919,16 @@ class ChatCompletionRequest(BaseModel):
+         "models that expose a maximum-effort tier above 'high'; models that don't "
+         "support it treat it the same as 'high'.",
+     )
++    include_reasoning: Optional[StrictBool] = Field(
++        default=None,
++        description="Legacy OpenRouter-compatible control for returning reasoning. "
++        "False is equivalent to reasoning.exclude=true. True preserves reasoning "
++        "visibility and, when no explicit reasoning control is present, enables "
++        "the model's default reasoning mode for backward compatibility.",
++    )
++    # Response-only policy. Excluding it from model dumps prevents this normalized
++    # control from becoming an accidental wire-level SGLang extension.
++    reasoning_exclude: bool = Field(default=False, exclude=True, repr=False)
+     reasoning_max_tokens: Optional[int] = Field(
+         default=None,
+         ge=1,
+@@ -1040,6 +1050,22 @@ class ChatCompletionRequest(BaseModel):
+         r = values.get("reasoning")
+         thinking = None
+ 
++        include_reasoning = values.get("include_reasoning")
++        if include_reasoning is not None and not isinstance(include_reasoning, bool):
++            raise ValueError("include_reasoning must be a boolean")
++
++        # Nested reasoning.exclude is authoritative. The legacy spelling is
++        # consulted only when nested exclude is absent.
++        reasoning_exclude = False
++        if isinstance(r, dict) and "exclude" in r:
++            exclude = r["exclude"]
++            if not isinstance(exclude, bool):
++                raise ValueError("reasoning.exclude must be a boolean")
++            reasoning_exclude = exclude
++        elif include_reasoning is not None:
++            reasoning_exclude = not include_reasoning
++        values["reasoning_exclude"] = reasoning_exclude
++
+         if r is not None and isinstance(r, dict):
+             if "max_tokens" in r:
+                 max_tokens = r["max_tokens"]
+@@ -1086,6 +1112,13 @@ class ChatCompletionRequest(BaseModel):
+                     }
+                 thinking = bool(enabled)
+ 
++        # include_reasoning=true is the legacy visible-reasoning request. It
++        # enables the template default only when no explicit nested control or
++        # effort has already selected a mode. Excluding output alone must not
++        # disable internal reasoning.
++        if thinking is None and include_reasoning is True:
++            thinking = True
++
+         effort = values.get("reasoning_effort")
+         if effort is not None:
+             thinking = effort != "none"
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 553f3e3859dede7e3961209b27c01d96f4db4a04..ec8077f42eeec4d5f4b2e98b7edaf3129467d49c 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1047,25 +1047,32 @@ class OpenAIServingChat(OpenAIServingBase):
+                 finish_reason_type,
+             )
+             if reasoning_text:
+-                usage = None
+-                if continuous_usage_stats:
+-                    usage = UsageProcessor.calculate_token_usage(
+-                        prompt_tokens=prompt_tokens.get(index, 0),
+-                        reasoning_tokens=reasoning_tokens.get(index, 0),
+-                        completion_tokens=completion_tokens.get(index, 0),
+-                        cached_tokens=self._continuous_usage_cached_details(content),
+-                    ).model_dump()
++                if request.reasoning_exclude:
++                    # Consume hidden reasoning so parsing and usage stay correct,
++                    # but never attach its logprobs to later visible content.
++                    remaining_logprobs = None
++                else:
++                    usage = None
++                    if continuous_usage_stats:
++                        usage = UsageProcessor.calculate_token_usage(
++                            prompt_tokens=prompt_tokens.get(index, 0),
++                            reasoning_tokens=reasoning_tokens.get(index, 0),
++                            completion_tokens=completion_tokens.get(index, 0),
++                            cached_tokens=self._continuous_usage_cached_details(
++                                content
++                            ),
++                        ).model_dump()
+ 
+-                yield build_sse_content(
+-                    chunk_id=content["meta_info"]["id"],
+-                    created=int(time.time()),
+-                    model=request.model,
+-                    index=index,
+-                    reasoning_content=reasoning_text,
+-                    logprobs=remaining_logprobs,
+-                    usage=usage,
+-                )
+-                remaining_logprobs = None
++                    yield build_sse_content(
++                        chunk_id=content["meta_info"]["id"],
++                        created=int(time.time()),
++                        model=request.model,
++                        index=index,
++                        reasoning_content=reasoning_text,
++                        logprobs=remaining_logprobs,
++                        usage=usage,
++                    )
++                    remaining_logprobs = None
+ 
+         # Handle tool calls
+         if self._tool_call_parsing_active(request):
+@@ -2293,7 +2300,11 @@ class OpenAIServingChat(OpenAIServingBase):
+                     role="assistant",
+                     content=text if text else "",
+                     tool_calls=tool_calls,
+-                    reasoning_content=reasoning_text if reasoning_text else None,
++                    reasoning_content=(
++                        reasoning_text
++                        if reasoning_text and not request.reasoning_exclude
++                        else None
++                    ),
+                 ),
+                 logprobs=choice_logprobs,
+                 finish_reason=finish_reason["type"] if finish_reason else None,
+diff --git a/test/registered/unit/entrypoints/openai/test_protocol.py b/test/registered/unit/entrypoints/openai/test_protocol.py
+index 121823b7a5fbb770b481a8c21af1bf8d32c1748a..3ccbe6dc53b4d1108af68351f8eb5b4045b6b2d1 100644
+--- a/test/registered/unit/entrypoints/openai/test_protocol.py
++++ b/test/registered/unit/entrypoints/openai/test_protocol.py
+@@ -71,6 +71,69 @@ class TestModelList(unittest.TestCase):
+         self.assertEqual(model_list.data[1].id, "model-2")
+ 
+ 
++class TestReasoningVisibility(unittest.TestCase):
++    def request(self, **kwargs):
++        return ChatCompletionRequest(
++            model="test-model",
++            messages=[{"role": "user", "content": "Think."}],
++            **kwargs,
++        )
++
++    def assert_toggle(self, request, enabled: bool):
++        self.assertEqual(request.chat_template_kwargs["thinking"], enabled)
++        self.assertEqual(request.chat_template_kwargs["enable_thinking"], enabled)
++
++    def test_include_reasoning_legacy_visibility_and_default_enable(self):
++        included = self.request(include_reasoning=True)
++        self.assertTrue(included.include_reasoning)
++        self.assertFalse(included.reasoning_exclude)
++        self.assert_toggle(included, True)
++
++        excluded = self.request(include_reasoning=False)
++        self.assertFalse(excluded.include_reasoning)
++        self.assertTrue(excluded.reasoning_exclude)
++        self.assertIsNone(excluded.chat_template_kwargs)
++
++    def test_nested_reasoning_exclude_wins_legacy_visibility(self):
++        request = self.request(
++            include_reasoning=True,
++            reasoning={"enabled": True, "exclude": True},
++        )
++        self.assertTrue(request.reasoning_exclude)
++        self.assert_toggle(request, True)
++
++        request = self.request(
++            include_reasoning=False,
++            reasoning={"effort": "high", "exclude": False},
++        )
++        self.assertFalse(request.reasoning_exclude)
++        self.assertEqual(request.reasoning_effort, "high")
++        self.assert_toggle(request, True)
++
++    def test_explicit_reasoning_disable_wins_include_reasoning(self):
++        request = self.request(
++            include_reasoning=True,
++            reasoning={"enabled": False},
++        )
++        self.assertFalse(request.reasoning_exclude)
++        self.assert_toggle(request, False)
++
++    def test_reasoning_visibility_controls_require_booleans(self):
++        for value in (1, 0, "true", "false", {}, []):
++            with self.subTest(include_reasoning=value):
++                with self.assertRaisesRegex(
++                    ValidationError, "include_reasoning must be a boolean"
++                ):
++                    self.request(include_reasoning=value)
++
++        for value in (1, 0, "true", "false", {}, []):
++            with self.subTest(reasoning_exclude=value):
++                with self.assertRaisesRegex(
++                    ValidationError, "reasoning.exclude must be a boolean"
++                ):
++                    self.request(reasoning={"exclude": value})
++
++
+ class TestCompletionRequest(unittest.TestCase):
+     """Test CompletionRequest protocol model"""
+ 
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index ab97cafae0929a8aac5b533e5810a16c8867f21a..82aaf3312946826f794e8401e00ef0fbf0c5cece 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -2876,7 +2876,15 @@ class ServingChatTestCase(unittest.TestCase):
+                 parsed.append(json.loads(c[len("data: ") :]))
+         return parsed
+ 
+-    async def _collect_stream_content(self, content, choice_logprobs, req):
++    async def _collect_stream_content(
++        self,
++        content,
++        choice_logprobs,
++        req,
++        *,
++        continuous_usage_stats=False,
++        reasoning_tokens=0,
++    ):
+         chunks = []
+         async for chunk in self.chat._generate_stream_content(
+             content=content,
+@@ -2888,9 +2896,9 @@ class ServingChatTestCase(unittest.TestCase):
+             has_tool_calls={},
+             choice_logprobs=choice_logprobs,
+             finish_reason_type="stop",
+-            continuous_usage_stats=False,
++            continuous_usage_stats=continuous_usage_stats,
+             prompt_tokens={0: 5},
+-            reasoning_tokens={0: 0},
++            reasoning_tokens={0: reasoning_tokens},
+             completion_tokens={0: 1},
+         ):
+             chunks.append(chunk)
+@@ -2949,6 +2957,60 @@ class ServingChatTestCase(unittest.TestCase):
+             "logprobs dropped: no chunk carried logprobs with reasoning_parser active",
+         )
+ 
++    def test_streaming_reasoning_exclusion_preserves_content_and_usage(self):
++        self.chat.reasoning_parser = "qwen3"
++        content = {
++            "text": "thinking then answer",
++            "meta_info": {
++                "id": "chatcmpl-hidden-reasoning",
++                "prompt_tokens": 5,
++                "completion_tokens": 4,
++                "cached_tokens": 0,
++                "finish_reason": {"type": "stop", "matched": None},
++                "output_token_logprobs": [(0.1, 1, "hidden")],
++                "output_top_logprobs": [],
++                "output_token_logprobs_length": 1,
++            },
++            "index": 0,
++        }
++        choice_logprobs = self.chat._process_streaming_logprobs(
++            content, 0, 1
++        ).model_dump()
++        req = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "Hi?"}],
++            stream=True,
++            logprobs=True,
++            separate_reasoning=True,
++            reasoning={"effort": "high", "exclude": True},
++        )
++        with patch.object(self.chat, "_process_reasoning_stream") as proc_mock:
++            proc_mock.return_value = ("private thought", "Visible answer")
++            chunks = get_or_create_event_loop().run_until_complete(
++                self._collect_stream_content(
++                    content,
++                    choice_logprobs,
++                    req,
++                    continuous_usage_stats=True,
++                    reasoning_tokens=1,
++                )
++            )
++        parsed = self._parse_chunks(chunks)
++        self.assertFalse(
++            any(
++                chunk["choices"][0]["delta"].get("reasoning_content")
++                for chunk in parsed
++            )
++        )
++        content_chunks = [
++            chunk
++            for chunk in parsed
++            if chunk["choices"][0]["delta"].get("content") == "Visible answer"
++        ]
++        self.assertEqual(len(content_chunks), 1)
++        self.assertEqual(content_chunks[0]["usage"]["reasoning_tokens"], 1)
++        self.assertIsNone(content_chunks[0]["choices"][0].get("logprobs"))
++
+     def test_streaming_logprobs_flushed_when_tool_parser_buffers_delta(self):
+         """Logprobs must be flushed on a standalone chunk when the tool parser emits no content delta."""
+         self.chat.tool_call_parser = "hermes"
+@@ -3651,6 +3713,36 @@ class ServingChatTestCase(unittest.TestCase):
+         self.assertEqual(message.reasoning_content, "\nLet me think\n")
+         self.assertEqual(message.content, "\n\nThe answer is 42.\n")
+ 
++    def test_non_stream_reasoning_exclusion_preserves_usage(self):
++        self.chat.reasoning_parser = "qwen3"
++        self.template_manager.force_reasoning = False
++        req = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "Hi?"}],
++            stream=False,
++            separate_reasoning=True,
++            reasoning={"enabled": True, "exclude": True},
++        )
++        ret = [
++            {
++                "text": "<think>private thought</think>Visible answer",
++                "meta_info": {
++                    "id": "chatcmpl-hidden-reasoning",
++                    "prompt_tokens": 5,
++                    "completion_tokens": 6,
++                    "reasoning_tokens": 3,
++                    "cached_tokens": 0,
++                    "finish_reason": {"type": "stop", "matched": None},
++                    "weight_version": "test",
++                },
++                "index": 0,
++            }
++        ]
++        response = self.chat._build_chat_response(req, ret, created=123)
++        self.assertIsNone(response.choices[0].message.reasoning_content)
++        self.assertEqual(response.choices[0].message.content, "Visible answer")
++        self.assertEqual(response.usage.reasoning_tokens, 3)
++
+     # ------------- reasoning config tests -------------
+     def test_get_reasoning_from_request_default_true_toggle(self):
+         self.tm.server_args.reasoning_parser = "qwen3"

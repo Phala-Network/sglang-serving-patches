@@ -1,0 +1,90 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 2f95cdf5385c3bcfb10addb5e1f38a62be806069..6256c238c71541d12f4f331b6e586b533b2b53b3 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -125,6 +125,15 @@ _QWEN35_REASONING_EFFORT_GUIDANCE = {
+     ),
+ }
+ 
++_QWEN35_COMPLETED_TOOL_RESULT_GUIDANCE = (
++    "A completed tool result is already available. Use that result as the "
++    "authoritative source and produce the requested final answer. Do not "
++    "repeat the completed tool call merely to satisfy the verification "
++    "instruction; verify the existing result by checking its internal "
++    "consistency. Call another tool only if the user requested information "
++    "that the available result does not contain."
++)
++
+ _QWEN35_REASONING_EFFORT_TOKEN_RANGES = {
+     "low": (32, 64),
+     "medium": (128, 256),
+@@ -583,6 +592,13 @@ class OpenAIServingChat(OpenAIServingBase):
+         if guidance is None:
+             return messages
+ 
++        if (
++            reasoning_effort in ("medium", "xhigh")
++            and messages
++            and messages[-1].get("role") == "tool"
++        ):
++            guidance = f"{guidance}\n\n{_QWEN35_COMPLETED_TOOL_RESULT_GUIDANCE}"
++
+         guided_messages = copy.deepcopy(messages)
+         if guided_messages and guided_messages[0].get("role") == "system":
+             content = guided_messages[0].get("content")
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 12a9efdb8e5239cd1e63955d07b6381941651325..ca53a450e650b5fc40c18346438574f818878d17 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -434,6 +434,51 @@ class ServingChatTestCase(unittest.TestCase):
+         self.assertTrue(guided[0]["content"].endswith("Always answer in JSON."))
+         self.assertEqual(messages[0]["content"], "Always answer in JSON.")
+ 
++    def test_qwen35_reasoning_effort_guidance_uses_completed_tool_result(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [
++            {"role": "system", "content": "Answer in one sentence."},
++            {"role": "user", "content": "What is the weather in Boston?"},
++            {
++                "role": "assistant",
++                "content": None,
++                "tool_calls": [
++                    {
++                        "id": "call_weather",
++                        "type": "function",
++                        "function": {
++                            "name": "get_current_weather",
++                            "arguments": '{"location":"Boston, MA"}',
++                        },
++                    }
++                ],
++            },
++            {
++                "role": "tool",
++                "tool_call_id": "call_weather",
++                "content": '{"temperature":72,"condition":"sunny"}',
++            },
++        ]
++
++        guided = self.chat._apply_qwen35_reasoning_effort_guidance(messages, "xhigh")
++
++        self.assertIn(
++            "Do not repeat the completed tool call",
++            guided[0]["content"],
++        )
++        self.assertTrue(guided[0]["content"].endswith("Answer in one sentence."))
++        self.assertEqual(guided[1:], messages[1:])
++        self.assertNotIn("Do not repeat", messages[0]["content"])
++
++    def test_qwen35_reasoning_effort_guidance_does_not_change_initial_tool_turn(self):
++        self.tm.model_config.hf_config.model_type = "qwen3_5"
++        messages = [{"role": "user", "content": "What is the weather in Boston?"}]
++
++        guided = self.chat._apply_qwen35_reasoning_effort_guidance(messages, "xhigh")
++
++        self.assertNotIn("completed tool result", guided[0]["content"])
++        self.assertEqual(guided[1], messages[0])
++
+     def test_qwen35_reasoning_effort_guidance_fails_closed_for_parts_system(self):
+         self.tm.model_config.hf_config.model_type = "qwen3_5"
+         messages = [

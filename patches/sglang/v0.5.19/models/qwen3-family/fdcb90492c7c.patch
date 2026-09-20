@@ -1,0 +1,9 @@
+diff --git a/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+index 93c62e6fe0491f36b1fc659098756cdda65c78fc..a774babd489b64b31dbd827233223bc64fa9c527 100644
+--- a/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
++++ b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+@@ -146,4 +146,3 @@ def test_open_object_not_collapsed_to_no_arguments():
+     compiled = grammar({"type": "object", "additionalProperties": True})
+     assert _is_grammar_accept_string(compiled, call())
+     assert _is_grammar_accept_string(compiled, call(parameter()))
+-

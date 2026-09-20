@@ -1,0 +1,72 @@
+diff --git a/python/sglang/srt/function_call/utils.py b/python/sglang/srt/function_call/utils.py
+index c2dd9b425702dc4d8aed41f18a91d883243fbd3a..c28cfb3b85e9249e5f6f3297e548306afbe8244e 100644
+--- a/python/sglang/srt/function_call/utils.py
++++ b/python/sglang/srt/function_call/utils.py
+@@ -140,6 +140,14 @@ def normalize_json_schema_types(schema: Any) -> None:
+     if not isinstance(schema, dict):
+         return
+ 
++    # Some SDKs serialize optional JSON-Schema keywords as null.  ``required``
++    # must be an array and ``properties`` must be an object; null is equivalent
++    # to omitting either keyword, but Draft 2020-12 validation rejects it. Drop
++    # only null values so valid arrays/objects remain unchanged.
++    for key in ("required", "properties"):
++        if key in schema and schema[key] is None:
++            del schema[key]
++
+     if "type" in schema:
+         t = schema["type"]
+         if isinstance(t, str):
+diff --git a/test/registered/unit/function_call/test_normalize_json_schema_types.py b/test/registered/unit/function_call/test_normalize_json_schema_types.py
+index bbf64d69a8cae4f631357156b9d008ae3ea3b09d..1ce9e37c88fc21eab32a4853c96444cece34b6ea 100644
+--- a/test/registered/unit/function_call/test_normalize_json_schema_types.py
++++ b/test/registered/unit/function_call/test_normalize_json_schema_types.py
+@@ -345,6 +345,48 @@ class TestNormalizeJsonSchemaTypes(CustomTestCase):
+         normalize_json_schema_types(schema)
+         self.assertEqual(schema, once)
+ 
++    def test_null_required_dropped(self):
++        schema = {
++            "type": "object",
++            "properties": {"city": {"type": "string"}},
++            "required": None,
++        }
++        normalize_json_schema_types(schema)
++        self.assertNotIn("required", schema)
++        self._assert_accepts(schema)
++
++    def test_null_properties_dropped(self):
++        schema = {"type": "object", "properties": None}
++        normalize_json_schema_types(schema)
++        self.assertNotIn("properties", schema)
++        self._assert_accepts(schema)
++
++    def test_null_required_dropped_in_nested_defs(self):
++        schema = {
++            "type": "object",
++            "$defs": {
++                "Row": {
++                    "type": "object",
++                    "properties": {"id": {"type": "int"}},
++                    "required": None,
++                }
++            },
++        }
++        normalize_json_schema_types(schema)
++        self.assertNotIn("required", schema["$defs"]["Row"])
++        self.assertEqual(schema["$defs"]["Row"]["properties"]["id"]["type"], "integer")
++        self._assert_accepts(schema)
++
++    def test_valid_required_list_preserved(self):
++        schema = {
++            "type": "object",
++            "properties": {"a": {"type": "string"}},
++            "required": ["a"],
++        }
++        normalize_json_schema_types(schema)
++        self.assertEqual(schema["required"], ["a"])
++        self._assert_accepts(schema)
++
+     def test_non_string_type_values_pass_through(self):
+         """``type`` that isn't str/list is left for the real validator to reject."""
+         for bad in (None, 42, {"$ref": "#/$defs/Foo"}, ["string", 1, None]):
