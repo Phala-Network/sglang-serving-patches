@@ -636,5 +636,12 @@
         "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6"
       }
     }
-  ]
+  ],
+  "selector_manifest": {
+    "path": "selectors.json",
+    "documentation": "SELECTOR_MANIFEST.md",
+    "verification": "selector-verification.json",
+    "model_selection_is_optional": true,
+    "complete_engine_remains": "Phala-Network/sglang"
+  }
 }
