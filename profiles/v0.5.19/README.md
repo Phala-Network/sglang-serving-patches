@@ -18,3 +18,5 @@ Shared implementations are stored once and selected by path/hash. Sequential par
 Run `python tools/verify_v0519_profiles.py --source-repo /path/to/sglang`. It checks source parent, re-exported bytes, hash, ordered dependency selection, actual application and complete tree at **every step**. `tests/test_profile_verifier.py` exercises corruption, rehashed tampering, wrong parent, missing dependencies, duplicate patches and wrong final tree. CI performs the same source/application verification. This is separate from historical GPU/protocol evidence and approval.
 
 No Governor is installed or selected. PIG v0.12.29 and TAIL remain independently owned components. No new image, tag, main rewrite, deployment, route mutation or benchmark is part of this migration.
+
+Issue-by-issue source reviews are indexed in `SOURCE_REVIEWS.md`. The five full-lineage PRs are generated comparison views only; changes are maintained in individual issue PRs. Original historical source parents are fetched and checked by CI, not accepted from metadata alone.

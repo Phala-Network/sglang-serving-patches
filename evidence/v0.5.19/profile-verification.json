@@ -6,6 +6,7 @@
     "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   },
   {
@@ -15,6 +16,7 @@
     "source_head": "a54a1d5bb9f4ee2034c281f99bab4391eb70c77c",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   },
   {
@@ -24,6 +26,7 @@
     "source_head": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   },
   {
@@ -33,6 +36,7 @@
     "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   },
   {
@@ -42,6 +46,7 @@
     "source_head": "711978779936d1918d038de8515e33f968cb5193",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   },
   {
@@ -51,6 +56,7 @@
     "source_head": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
     "source_export_bytes_equal": true,
     "ordered_application_verified": true,
+    "historical_source_projection_verified": true,
     "governor_enabled": false
   }
 ]

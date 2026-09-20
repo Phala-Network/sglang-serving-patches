@@ -24,7 +24,8 @@ jobs:
           import json, os, pathlib, subprocess
           repo = os.environ['SOURCE_REPO']
           subprocess.run(['git', 'init', repo], check=True)
-          heads = {json.loads(p.read_text())['source_head'] for p in pathlib.Path('profiles/v0.5.19').glob('*.yaml')}
+          profiles = [json.loads(p.read_text()) for p in pathlib.Path('profiles/v0.5.19').glob('*.yaml')]
+          heads = {p[key] for p in profiles for key in ('source_head', 'original_deployed_source')}
           for head in sorted(heads):
               subprocess.run(['git', '-C', repo, 'fetch', '--depth=128', '--filter=blob:none', 'https://github.com/Phala-Network/sglang.git', head], check=True)
           PY

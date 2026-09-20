@@ -46,6 +46,17 @@ def verify(profile_path, source_repo):
             actual_parent = git("rev-parse", patch["source_commit"] + "^").decode().strip()
             if actual_parent != patch["source_parent"] or actual_parent != previous:
                 raise ValueError("Source parent/selection mismatch: " + patch["id"])
+            historical_parent = git("rev-parse", patch["original_commit"] + "^").decode().strip()
+            if historical_parent != patch["original_parent"]:
+                raise ValueError("Historical parent mismatch: " + patch["id"])
+            original_files = git("diff", "--name-only", historical_parent, patch["original_commit"],
+                                 "--", "python", "test", "sgl-kernel", "3rdparty").decode().splitlines()
+            if set(original_files) != set(patch["files"]):
+                raise ValueError("Historical source path projection mismatch: " + patch["id"])
+            historical_export = git("diff", "--binary", "--full-index", "--no-ext-diff",
+                                    historical_parent, patch["original_commit"], "--", *original_files)
+            if historical_export != data:
+                raise ValueError("Historical source export mismatch: " + patch["id"])
             exported = git("diff", "--binary", "--full-index", "--no-ext-diff", actual_parent, patch["source_commit"])
             if exported != data:
                 raise ValueError("Source export mismatch: " + patch["id"])
@@ -59,11 +70,18 @@ def verify(profile_path, source_repo):
         final_tree = git("write-tree").decode().strip()
         if final_tree != profile["expected_engine_tree"] or previous != profile["source_head"]:
             raise ValueError("Final tree/head mismatch")
+        git("read-tree", profile["upstream_commit"])
+        historical_delta = git("diff", "--binary", "--full-index", "--no-ext-diff",
+                               profile["upstream_commit"], profile["original_deployed_source"],
+                               "--", "python", "test", "sgl-kernel", "3rdparty")
+        git("apply", "--cached", "--whitespace=nowarn", "-", data=historical_delta)
+        if git("write-tree").decode().strip() != final_tree:
+            raise ValueError("Historical complete projected tree mismatch")
         if profile["governor"]["enabled"]:
             raise ValueError("These historical profiles do not include Governor")
         return {"model": profile["model"], "patch_count": len(seen), "full_engine_tree": final_tree,
                 "source_head": previous, "source_export_bytes_equal": True,
-                "ordered_application_verified": True, "governor_enabled": False}
+                "ordered_application_verified": True, "historical_source_projection_verified": True, "governor_enabled": False}
 
 
 def main():
