@@ -1,0 +1,349 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index ca9d61ad272091bf36eb43e9e7289271c8540e54..7b04d066ba4d2da774020457e5997868c6a5e9aa 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -168,6 +168,13 @@ _MEDIA_CONTENT_PART_TYPES = frozenset({"image_url", "video_url", "audio_url"})
+ _CHAT_TEMPLATE_CACHE_MAX_SIZE = 128
+ 
+ 
++class _AllowedToolsOutputError(ValueError):
++    """Model/parser output violated an explicit allowed-tools request."""
++
++
++_ALLOWED_TOOLS_OUTPUT_ERROR = "Model generated a tool call outside allowed_tools."
++
++
+ def normalize_tool_content(role: str, content):
+     """Normalize tool message content from OpenAI array format to plain string.
+ 
+@@ -2431,6 +2438,11 @@ class OpenAIServingChat(OpenAIServingBase):
+                 )
+                 yield f"data: {usage_chunk.model_dump_json()}\n\n"
+ 
++        except _AllowedToolsOutputError as e:
++            error = self.create_streaming_error_response(
++                str(e), err_type="InternalServerError", status_code=500
++            )
++            yield f"data: {error}\n\n"
+         except ValueError as e:
+             if not stream_started:
+                 raise
+@@ -2583,6 +2595,15 @@ class OpenAIServingChat(OpenAIServingBase):
+                     self._effective_tool_choice(request),
+                     history_tool_calls_cnt,
+                 )
++                allowed_names = self._allowed_tool_names(request)
++                if allowed_names is not None and any(
++                    call.function.name not in allowed_names for call in tool_calls or []
++                ):
++                    return self.create_error_response(
++                        _ALLOWED_TOOLS_OUTPUT_ERROR,
++                        err_type="InternalServerError",
++                        status_code=500,
++                    )
+ 
+             # Extract prompt_token_ids if requested
+             choice_prompt_token_ids = (
+@@ -3226,6 +3247,17 @@ class OpenAIServingChat(OpenAIServingBase):
+                 normal_text = (normal_text or "") + end_text
+                 calls = list(calls) + end_calls
+ 
++        allowed_names = self._allowed_tool_names(request)
++        output_names = None
++        if allowed_names is not None:
++            # Parser instances already belong to one response choice. Keep the
++            # admission record with that parser, including its terminal flush.
++            output_names = getattr(parser, "_allowed_tool_output_names", None)
++            if output_names is None:
++                output_names = parser._allowed_tool_output_names = {}
++            if any(call.name and call.name not in allowed_names for call in calls):
++                raise _AllowedToolsOutputError(_ALLOWED_TOOLS_OUTPUT_ERROR)
++
+         # Yield normal text
+         if normal_text:
+             choice_data = ChatCompletionResponseStreamChoice(
+@@ -3257,6 +3289,18 @@ class OpenAIServingChat(OpenAIServingBase):
+         # Yield tool calls
+         history_tool_calls_cnt = self._get_history_tool_calls_cnt(request)
+         for call_item in calls:
++            if output_names is not None:
++                if call_item.name:
++                    previous_name = output_names.get(call_item.tool_index)
++                    if previous_name is not None and previous_name != call_item.name:
++                        raise _AllowedToolsOutputError(
++                            "Model changed a tool call name within allowed_tools output."
++                        )
++                    output_names[call_item.tool_index] = call_item.name
++                elif call_item.tool_index not in output_names:
++                    # Another call in this choice does not authorize this
++                    # index's arguments before its own valid named first chunk.
++                    continue
+             # Tool call ID should be generated only once per tool call
+             if call_item.name:
+                 # Mark only a valid named first chunk as a tool call.
+@@ -3347,6 +3391,19 @@ class OpenAIServingChat(OpenAIServingBase):
+         if tool_index < 0 or tool_index >= len(detector.streamed_args_for_tool):
+             return None
+ 
++        allowed_names = self._allowed_tool_names(request)
++        if allowed_names is not None:
++            name = detector.prev_tool_call_arr[tool_index].get("name")
++            if name and name not in allowed_names:
++                raise _AllowedToolsOutputError(_ALLOWED_TOOLS_OUTPUT_ERROR)
++            output_names = getattr(parser, "_allowed_tool_output_names", {})
++            if tool_index not in output_names:
++                return None
++            if name and name != output_names[tool_index]:
++                raise _AllowedToolsOutputError(
++                    "Model changed a tool call name within allowed_tools output."
++                )
++
+         # Get expected vs actual arguments
+         expected_args = detector.prev_tool_call_arr[tool_index].get("arguments", {})
+         if isinstance(expected_args, str):
+diff --git a/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aea97a7e79b2fd4a5012da6325f72bb7cb208a5c
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+@@ -0,0 +1,240 @@
++"""Exercise allowed-tools output policy using real serving and Qwen parsing."""
++
++import json
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++from sglang.srt.function_call.core_types import ToolCallItem
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=3, suite="base-a-test-cpu")
++
++
++def call(name, value="ok"):
++    return (
++        f"<tool_call>\n<function={name}>\n"
++        f"<parameter=value>{value}</parameter>\n"
++        "</function>\n</tool_call>"
++    )
++
++
++def request(*, allowed=True, stream=False, mode="auto"):
++    names = ("get_weather", "get_time", "old_tool")
++    return ChatCompletionRequest(
++        model="test",
++        messages=[
++            {"role": "user", "content": "Check the weather."},
++            {
++                "role": "assistant",
++                "tool_calls": [{"id": "old", "type": "function", "function": {
++                    "name": "old_tool", "arguments": "{}",
++                }}],
++            },
++            {"role": "tool", "tool_call_id": "old", "content": "Historical result"},
++            {"role": "user", "content": "Use only the currently allowed tools."},
++        ],
++        tools=[{"type": "function", "function": {
++            "name": name,
++            "parameters": {"type": "object", "properties": {
++                "value": {"type": "string"},
++            }},
++        }} for name in names],
++        tool_choice={
++            "type": "allowed_tools",
++            "allowed_tools": {
++                "mode": mode,
++                "tools": [{"type": "function", "function": {"name": name}}
++                          for name in names[:2]],
++            },
++        } if allowed else mode,
++        stream=stream,
++        stream_options={"include_usage": True} if stream else None,
++    )
++
++
++def result(text, *, finished=True, tokens=12, index=0):
++    return {
++        "text": text,
++        "index": index,
++        "meta_info": {
++            "id": "chatcmpl-test", "prompt_tokens": 5,
++            "completion_tokens": tokens, "cached_tokens": 0,
++            "weight_version": "fixture-version",
++            "finish_reason": {"type": "stop", "matched": None} if finished else None,
++        },
++    }
++
++
++class AllowedToolsOutputTest(unittest.IsolatedAsyncioTestCase):
++    def setUp(self):
++        self.chat = object.__new__(OpenAIServingChat)
++        self.chat.tool_call_parser = "qwen3_coder"
++        self.chat.reasoning_parser = None
++        self.chat.chat_encoding_spec = None
++        self.chat.tokenizer_manager = SimpleNamespace(tokenizer=None)
++        serving = SimpleNamespace(
++            return_input_ids=False, return_output_ids=False,
++            enable_cache_report=False, incremental_streaming_output=False,
++            stream_response_default_include_usage=False,
++        )
++        self.context = patch(
++            "sglang.srt.entrypoints.openai.serving_chat.get_serving",
++            return_value=serving,
++        )
++        self.context.start()
++        self.addCleanup(self.context.stop)
++
++    def test_nonstream_historical_tool_outside_subset_is_error(self):
++        for mode in ("auto", "required"):
++            with self.subTest(mode=mode):
++                response = self.chat._build_chat_response(
++                    request(mode=mode),
++                    [result(call("get_weather") + call("old_tool", "private"))], 0,
++                )
++                self.assertEqual(getattr(response, "status_code", None), 500)
++                body = json.loads(response.body)
++                self.assertEqual(body["type"], "InternalServerError")
++                self.assertIn("allowed_tools", body["message"])
++                self.assertNotIn("choices", body)
++                self.assertNotIn("private", response.body.decode())
++
++    def test_nonstream_allowed_parallel_tools_keep_finish_and_usage(self):
++        response = self.chat._build_chat_response(
++            request(), [result(call("get_weather") + call("get_time"))], 0,
++        )
++        self.assertEqual([c.function.name for c in response.choices[0].message.tool_calls],
++                         ["get_weather", "get_time"])
++        self.assertEqual(response.choices[0].finish_reason, "tool_calls")
++        self.assertEqual(response.usage.completion_tokens, 12)
++
++    def test_nonstream_without_subset_keeps_existing_tool_behavior(self):
++        response = self.chat._build_chat_response(
++            request(allowed=False), [result(call("old_tool"))], 0,
++        )
++        self.assertEqual(response.choices[0].message.tool_calls[0].function.name, "old_tool")
++        self.assertEqual(response.choices[0].finish_reason, "tool_calls")
++
++    async def stream(self, req, outputs):
++        closed = []
++
++        async def backend(*_args):
++            try:
++                for output in outputs:
++                    yield output
++            finally:
++                closed.append(True)
++
++        self.chat.tokenizer_manager.generate_request = backend
++        chunks = [item async for item in self.chat._generate_chat_stream(None, req, None)]
++        self.assertEqual(closed, [True])
++        self.assertEqual(chunks.count("data: [DONE]\n\n"), 1)
++        return [json.loads(item[6:]) for item in chunks if item != "data: [DONE]\n\n"]
++
++    async def test_stream_rejects_disallowed_name_before_name_or_arguments_emit(self):
++        for prefix in ("", call("get_weather")):
++            with self.subTest(prior_legal_call=bool(prefix)):
++                outputs = [result(prefix, finished=False)] if prefix else []
++                outputs += [result(prefix + call("old_tool", "private"))]
++                chunks = await self.stream(request(stream=True), outputs)
++                errors = [chunk["error"] for chunk in chunks if "error" in chunk]
++                self.assertEqual(len(errors), 1)
++                self.assertEqual(errors[0]["code"], 500)
++                self.assertEqual(errors[0]["type"], "InternalServerError")
++                self.assertIn("allowed_tools", errors[0]["message"])
++                serialized = json.dumps(chunks)
++                self.assertNotIn("old_tool", serialized)
++                self.assertNotIn("private", serialized)
++                choices = [choice for chunk in chunks for choice in chunk.get("choices", [])]
++                self.assertFalse(any(choice.get("finish_reason") for choice in choices))
++                self.assertFalse(any(chunk.get("usage") for chunk in chunks))
++                if prefix:
++                    self.assertIn("get_weather", serialized)
++
++    async def test_stream_allowed_parallel_tools_finish_and_usage_unchanged(self):
++        text = call("get_weather") + call("get_time")
++        chunks = await self.stream(request(stream=True), [
++            result(text[:36], finished=False, tokens=3), result(text),
++        ])
++        choices = [choice for chunk in chunks for choice in chunk.get("choices", [])]
++        calls = [call for choice in choices for call in choice.get("delta", {}).get("tool_calls", [])]
++        self.assertEqual([call["function"]["name"] for call in calls if call["function"].get("name")],
++                         ["get_weather", "get_time"])
++        self.assertEqual([choice["finish_reason"] for choice in choices if choice.get("finish_reason")],
++                         ["tool_calls"])
++        self.assertEqual([chunk["usage"]["completion_tokens"] for chunk in chunks if chunk.get("usage")], [12])
++        self.assertFalse(any("error" in chunk for chunk in chunks))
++
++    async def test_stream_without_subset_keeps_existing_tool_behavior(self):
++        chunks = await self.stream(request(allowed=False, stream=True), [result(call("old_tool"))])
++        self.assertIn("old_tool", json.dumps(chunks))
++        self.assertFalse(any("error" in chunk for chunk in chunks))
++
++    async def test_stream_orphan_other_index_does_not_borrow_valid_name(self):
++        parser = SimpleNamespace(parse_stream_chunk=lambda _: ("", [
++            ToolCallItem(tool_index=0, name="get_weather", parameters="{}"),
++            ToolCallItem(tool_index=1, parameters="private"),
++        ]))
++        chunks = [item async for item in self.chat._process_tool_call_stream(
++            0, "", {0: parser}, result(""), request(stream=True), {},
++        )]
++        self.assertEqual(len(chunks), 1)
++        self.assertNotIn("private", "".join(chunks))
++
++    def test_terminal_argument_flush_cannot_bypass_subset(self):
++        parser = SimpleNamespace(
++            prev_tool_call_arr=[{"name": "old_tool", "arguments": {"value": "private"}}],
++            streamed_args_for_tool=[""],
++        )
++        with self.assertRaisesRegex(ValueError, "allowed_tools"):
++            self.chat._check_for_unstreamed_tool_args(parser, result(""), request(stream=True), 0)
++
++    async def test_allowed_terminal_flush_preserves_admitted_arguments(self):
++        parser = SimpleNamespace(
++            parse_stream_chunk=lambda _: ("", [ToolCallItem(
++                tool_index=0, name="get_weather", parameters='{"value":',
++            )]),
++            prev_tool_call_arr=[{"name": "get_weather", "arguments": {"value": "ok"}}],
++            streamed_args_for_tool=['{"value":'],
++        )
++        req = request(stream=True)
++        chunks = [item async for item in self.chat._process_tool_call_stream(
++            0, "", {0: parser}, result(""), req, {},
++        )]
++        trailing = self.chat._check_for_unstreamed_tool_args(parser, result(""), req, 0)
++        self.assertIsNotNone(trailing)
++        chunks.append(trailing)
++        arguments = "".join(
++            json.loads(item[6:])["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
++            for item in chunks
++        )
++        self.assertEqual(json.loads(arguments), {"value": "ok"})
++
++    async def test_stream_choice_does_not_borrow_another_choices_admitted_index(self):
++        parsers = {
++            0: SimpleNamespace(parse_stream_chunk=lambda _: ("", [
++                ToolCallItem(tool_index=0, name="get_weather", parameters="{}"),
++            ])),
++            1: SimpleNamespace(parse_stream_chunk=lambda _: ("", [
++                ToolCallItem(tool_index=0, parameters="private"),
++            ])),
++        }
++        has_calls = {}
++        emitted = []
++        for index in (0, 1):
++            emitted.extend([item async for item in self.chat._process_tool_call_stream(
++                index, "", parsers, result("", index=index), request(stream=True), has_calls,
++            )])
++        self.assertEqual(len(emitted), 1)
++        self.assertEqual(has_calls, {0: True})
++        self.assertNotIn("private", "".join(emitted))
++
++
++if __name__ == "__main__":
++    unittest.main()

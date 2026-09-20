@@ -1,0 +1,94 @@
+name: Verify source-backed patch export
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verify-source-export.yml"
+      - "scripts/verify_source_export.py"
+      - "tests/**"
+      - "patches/sglang/v0.5.20/**"
+      - "profiles/v0.5.20/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/verify-source-export.yml"
+      - "scripts/verify_source_export.py"
+      - "tests/**"
+      - "patches/sglang/v0.5.20/**"
+      - "profiles/v0.5.20/**"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch metadata only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Git-only verifier unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_verify_source_export.py
+
+      - name: Hydrate the selected immutable source objects
+        shell: bash
+        env:
+          SOURCE_REPOSITORY: https://github.com/Phala-Network/sglang
+        run: |
+          set -euo pipefail
+          SOURCE_DIR="$(mktemp -d)"
+          echo "SOURCE_DIR=${SOURCE_DIR}" >> "$GITHUB_ENV"
+          git init --quiet "$SOURCE_DIR"
+
+          python3 - "$SOURCE_DIR" "$SOURCE_REPOSITORY" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          source_dir = Path(sys.argv[1])
+          expected_repository = sys.argv[2]
+          manifest = json.loads(Path("patches/sglang/v0.5.20/manifest.json").read_text())
+          profile = json.loads(Path("profiles/v0.5.20/qwen3.8-27b.yaml").read_text())
+          entries = {entry["id"]: entry for entry in manifest["common"]}
+          for model_entries in manifest["models"].values():
+              entries.update({entry["id"]: entry for entry in model_entries})
+
+          selected = [entries[item["id"]] for item in profile["patches"]]
+          repositories = {entry["source"]["repository"] for entry in selected}
+          if repositories != {expected_repository}:
+              raise SystemExit(f"unexpected source repository in selected manifest entries: {sorted(repositories)}")
+
+          object_id = re.compile(r"[0-9a-f]{40,64}\Z")
+          commits = [manifest["upstream"]["commit"]]
+          for entry in selected:
+              commits.extend((entry["source"]["commit"], entry["source"]["parent"]))
+          ordered = []
+          for commit in commits:
+              if not isinstance(commit, str) or not object_id.fullmatch(commit):
+                  raise SystemExit("manifest contains an invalid immutable Git object ID")
+              if commit not in ordered:
+                  ordered.append(commit)
+          (source_dir / "required-commits.txt").write_text("\n".join(ordered) + "\n")
+          PY
+
+          while IFS= read -r commit; do
+            git -C "$SOURCE_DIR" fetch --no-tags --depth=1 \
+              "$SOURCE_REPOSITORY" "$commit:refs/verify/$commit"
+          done < "$SOURCE_DIR/required-commits.txt"
+
+      - name: Verify canonical exports and profile tree offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_source_export.py \
+            --source-repo "$SOURCE_DIR" \
+            --manifest patches/sglang/v0.5.20/manifest.json \
+            --profile profiles/v0.5.20/qwen3.8-27b.yaml

@@ -338,6 +338,47 @@
       },
       "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
       "id": "0016-watchdog-recovery"
+    },
+    {
+      "id": "0019-schema-reference-isolation",
+      "path": "common/0019-schema-reference-isolation.patch",
+      "sha256": "a1a53212c7cda28f764fb1a235c8011e7a297689baa726e9f3d8e2a377ec4798",
+      "changed_files": [
+        "python/sglang/srt/function_call/utils.py",
+        "test/registered/unit/function_call/test_schema_reference_isolation.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+        "parent": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+        "tree": "c8b0d4c5022d3a6bbfb9efc8fabe1148414db83b",
+        "dependencies": [
+          "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920"
+        ],
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/41",
+        "review_status": "draft_pending_review"
+      }
+    },
+    {
+      "id": "0020-allowed-tools-output",
+      "path": "common/0020-allowed-tools-output.patch",
+      "sha256": "4848970e341c403b2577861c1a893c2073ddc16972d5d50a13e2bdbf6352d043",
+      "changed_files": [
+        "python/sglang/srt/entrypoints/openai/serving_chat.py",
+        "test/registered/unit/entrypoints/openai/test_allowed_tools_output.py"
+      ],
+      "source": {
+        "repository": "https://github.com/Phala-Network/sglang",
+        "commit": "3c76218a6f3c9621f0cc08af1bf325c7633429ce",
+        "parent": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+        "tree": "56f78eb969e50a2eccd8e295d1c6535c7001c00b",
+        "dependencies": [
+          "abdd4d766e024903cb4666fe2c919baaed1f4670",
+          "f3418d51a0cd129a44bb8841f9623a6b3647d293"
+        ],
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/42",
+        "review_status": "draft_pending_review"
+      }
     }
   ],
   "models": {
