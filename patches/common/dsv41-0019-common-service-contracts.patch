@@ -1,0 +1,709 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 46a5d256b4197a9baf65a820581d6b7605c2420d..c40a8cbcca67f00ade188cb97c30ad466c9a3f1f 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -89,9 +89,10 @@ class OpenAIServingBase(ABC):
+                 request_logger.log_openai_received_request(request, request=raw_request)
+ 
+             # Convert to internal format
+-            adapted_request, processed_request = self._convert_to_internal_request(
+-                request, raw_request
+-            )
++            (
++                adapted_request,
++                processed_request,
++            ) = await self._convert_to_internal_request_async(request, raw_request)
+ 
+             if isinstance(adapted_request, (GenerateReqInput, EmbeddingReqInput)):
+                 # Only set timing fields if adapted_request supports them
+@@ -147,6 +148,14 @@ class OpenAIServingBase(ABC):
+ 
+         return f"{self._request_id_prefix()}{uuid.uuid4().hex}"
+ 
++    async def _convert_to_internal_request_async(
++        self,
++        request: OpenAIServingRequest,
++        raw_request: Request = None,
++    ) -> tuple[GenerateReqInput, OpenAIServingRequest]:
++        """Preserve synchronous conversion unless an endpoint opts into a worker."""
++        return self._convert_to_internal_request(request, raw_request)
++
+     @abstractmethod
+     def _convert_to_internal_request(
+         self,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index a6777d6ad4a3bde0b2a5eef24e01f66636d9f03a..5d35610e60dc700cdb8161429d2fa7cf5aa8e249 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -3093,3 +3093,16 @@ class OpenAIServingChat(OpenAIServingBase):
+             return f"data: {chunk.model_dump_json()}\n\n"
+ 
+         return None
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++
++from sglang.srt.phala_compat import dsv41_tool_choice_none as _phala_compat_0
++
++_phala_compat_0.apply(_phala_sys.modules[__name__])
++del _phala_compat_0
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_1
++
++_phala_compat_1._patch_serving_chat(_phala_sys.modules[__name__])
++del _phala_compat_1
++del _phala_sys
+diff --git a/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py b/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
+index 2a115c0e11ad955e9c458bbc2996801d882c5f30..05e791a83e44eb331d8855312eacfd23cf8120c4 100644
+--- a/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
++++ b/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
+@@ -6,10 +6,11 @@ to reduce tokenization overhead when multiple requests arrive concurrently.
+ """
+ 
+ import asyncio
++import contextvars
+ import logging
+ from concurrent.futures import ThreadPoolExecutor
+ from functools import partial
+-from typing import Any, Dict, List, Optional
++from typing import Any, Callable, Dict, List, Optional
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -62,6 +63,14 @@ class AsyncDynamicbatchTokenizer:
+         await self._queue.put((prompt, kwargs, result_future))
+         return await result_future
+ 
++    async def run_sync(self, function: Callable[..., Any], *args, **kwargs) -> Any:
++        """Serialize blocking conversion with tokenization and retain ContextVars."""
++        context = contextvars.copy_context()
++        operation = partial(function, *args, **kwargs)
++        return await asyncio.get_running_loop().run_in_executor(
++            self._executor, context.run, operation
++        )
++
+     async def _dynamic_batch_loop(self):
+         """Dynamically batch incoming encode requests for efficiency."""
+         while True:
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 08cab6c62cb710b8ef1b94a08bead1973df51086..af563f99252482cc45d1ab18ab1333c6e2e3af12 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -1839,6 +1839,12 @@ class Req(ReqDllmMixin):
+         if self.finished_len is not None and self.finished_len > max_new_tokens:
+             self.finished_reason = FINISH_LENGTH(length=max_new_tokens)
+             self.finished_len = max_new_tokens
++        self._cap_reasoning_tokens_at_finished_len()
++
++    def _cap_reasoning_tokens_at_finished_len(self) -> None:
++        """Preserve Phala's emitted-prefix usage cap (upstream PR #37450)."""
++        if self.finished_len is not None and self.reasoning_tokens > self.finished_len:
++            self.reasoning_tokens = self.finished_len
+ 
+     def update_finish_state(self, new_accepted_len: int = 1):
+         if self.finished():
+@@ -1876,6 +1882,7 @@ class Req(ReqDllmMixin):
+                 length=self.sampling_params.max_new_tokens
+             )
+             self.finished_len = self.sampling_params.max_new_tokens
++            self._cap_reasoning_tokens_at_finished_len()
+             return
+ 
+         if self.grammar is not None and self.grammar.is_terminated():
+diff --git a/python/sglang/srt/multimodal/processors/base_processor.py b/python/sglang/srt/multimodal/processors/base_processor.py
+index eadbc77fa3cbf7072371bccadd65dd07e528140b..ec56df632be8b12db8450a196ffa804ea0b6fc3d 100644
+--- a/python/sglang/srt/multimodal/processors/base_processor.py
++++ b/python/sglang/srt/multimodal/processors/base_processor.py
+@@ -2031,3 +2031,10 @@ class BaseMultimodalProcessor(ABC):
+             mm_tokens,
+             **kwargs,
+         )
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/python/sglang/srt/phala_compat/__init__.py b/python/sglang/srt/phala_compat/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5fb7d130cc3901db5ae7ee6294b551972c7d3a64
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/__init__.py
+@@ -0,0 +1 @@
++"""Explicit source-integrated DeepSeek V4.1 compatibility helpers."""
+diff --git a/python/sglang/srt/phala_compat/dsv41_media_hardening.py b/python/sglang/srt/phala_compat/dsv41_media_hardening.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9ef851fc43d1156ac53966f5f1729a01d51878b
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_media_hardening.py
+@@ -0,0 +1,180 @@
++"""Source-integrated adapter, converted from dsv41_media_hardening.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import sys
++
++
++import traceback
++
++
++_COMMON = "sglang.srt.utils.common"
++
++
++_UTILS_PACKAGE = "sglang.srt.utils"
++
++
++_BASE_PROCESSOR = "sglang.srt.multimodal.processors.base_processor"
++
++
++_SERVING_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
++
++
++_MARK = "_dsv41_media_hardening"
++
++
++_warned = False
++
++
++_ALLOWED_URL_SCHEMES = ("data:", "http://", "https://")
++
++
++_MEDIA_PART_MODALITY = {
++    "image_url": "image",
++    "video_url": "video",
++    "audio_url": "audio",
++    "input_audio": "audio",
++}
++
++
++def _widen_client_media_exceptions(module) -> None:
++    from PIL import Image  # already imported by the time either target loads
++
++    current = tuple(getattr(module, "CLIENT_MEDIA_EXCEPTIONS", ()))
++    if not current:
++        raise AttributeError(f"{module.__name__}.CLIENT_MEDIA_EXCEPTIONS is missing")
++    extra = tuple(
++        exc for exc in (OSError, Image.DecompressionBombError) if exc not in current
++    )
++    module.CLIENT_MEDIA_EXCEPTIONS = current + extra
++
++
++def _part_type(part):
++    if isinstance(part, dict):
++        return part.get("type")
++    return getattr(part, "type", None)
++
++
++def _part_url(part, part_type):
++    holder = (
++        part.get(part_type) if isinstance(part, dict) else getattr(part, part_type, None)
++    )
++    if isinstance(holder, str):
++        return holder
++    if isinstance(holder, dict):
++        return holder.get("url")
++    return getattr(holder, "url", None)
++
++
++def _iter_media_parts(request):
++    for message in getattr(request, "messages", None) or []:
++        content = (
++            message.get("content")
++            if isinstance(message, dict)
++            else getattr(message, "content", None)
++        )
++        if not isinstance(content, list):
++            continue
++        for part in content:
++            part_type = _part_type(part)
++            modality = _MEDIA_PART_MODALITY.get(part_type)
++            if modality is not None:
++                yield part, part_type, modality
++
++
++def _data_uri_size(url):
++    """Decoded payload size of a ``data:`` URI, without decoding it."""
++    head, separator, payload = url.partition(",")
++    if not separator:
++        return None  # malformed data URI; the loader reports it as a 400 now
++    if ";base64" not in head.lower():
++        return len(payload)
++    return (len(payload) * 3) // 4 - payload[-2:].count("=")
++
++
++def _supported_modalities(serving):
++    tokenizer_manager = getattr(serving, "tokenizer_manager", None)
++    model_config = getattr(tokenizer_manager, "model_config", None)
++    mm_tokens = getattr(
++        getattr(tokenizer_manager, "mm_processor", None), "mm_tokens", None
++    )
++    video = True
++    if mm_tokens is not None:
++        video = bool(
++            getattr(mm_tokens, "video_token", None)
++            or getattr(mm_tokens, "video_token_id", None)
++        )
++    return {
++        "image": bool(getattr(model_config, "is_image_understandable_model", True)),
++        "audio": bool(getattr(model_config, "is_audio_understandable_model", True)),
++        "video": video,
++    }
++
++
++def _validate_media_parts(serving, request):
++    supported = None
++    max_bytes = 0
++    for part, part_type, modality in _iter_media_parts(request):
++        if supported is None:  # resolved once, and only for requests with media
++            supported = _supported_modalities(serving)
++            server_args = getattr(
++                getattr(serving, "tokenizer_manager", None), "server_args", None
++            )
++            limit_mb = getattr(server_args, "media_url_max_file_size_mb", 0) or 0
++            max_bytes = int(limit_mb) * 1024 * 1024
++
++        if not supported.get(modality, True):
++            return f"{modality} input is not supported by this model."
++
++        url = _part_url(part, part_type)
++        if not isinstance(url, str):
++            continue
++        if not url.startswith(_ALLOWED_URL_SCHEMES):
++            return (
++                f"Invalid {part_type}.url: expected a data: URI or an "
++                "http(s):// URL. Bare base64 payloads and local paths are not "
++                "accepted."
++            )
++        if max_bytes and url.startswith("data:"):
++            size = _data_uri_size(url)
++            if size is not None and size > max_bytes:
++                return (
++                    f"{part_type} data URI decodes to {size} bytes, over the "
++                    f"{max_bytes} byte media size limit "
++                    "(--media-url-max-file-size-mb)."
++                )
++    return None
++
++
++def _patch_serving_chat(module) -> None:
++    serving_class = module.OpenAIServingChat
++    original = serving_class._validate_media_content
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def _validate_media_content(self, request):
++        error = original(self, request)
++        if error:
++            return error
++        # Fail open on the request path too: a bug in the added checks must not
++        # turn every media request into the 500 this module exists to remove.
++        try:
++            return _validate_media_parts(self, request)
++        except Exception:  # noqa: BLE001
++            global _warned
++            if not _warned:
++                _warned = True
++                print(
++                    "[dsv41-patches] media validation raised; skipping the added "
++                    "checks for this and later requests' extra validation",
++                    file=sys.stderr,
++                )
++                traceback.print_exc()
++            return None
++
++    setattr(_validate_media_content, _MARK, True)
++    serving_class._validate_media_content = _validate_media_content
+diff --git a/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py b/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f2fc3653bb7f63ad8d7d7f7241c321f1eb31ba8
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py
+@@ -0,0 +1,52 @@
++"""Source-integrated adapter, converted from dsv41_tool_choice_none.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import importlib.abc
++
++
++import importlib.machinery
++
++
++import sys
++
++
++_TARGET = "sglang.srt.entrypoints.openai.serving_chat"
++
++
++_MARK = "_dsv41_tool_choice_none"
++
++
++def drop_tool_definitions(request) -> bool:
++    """Remove tool *definitions* from ``request`` when tool_choice is "none".
++
++    Covers both carriers SGLang's encoder reads: the top-level ``tools`` array
++    and the per-message ``tools`` field of a system/developer message.
++    """
++    if getattr(request, "tool_choice", None) != "none":
++        return False
++    dropped = bool(getattr(request, "tools", None))
++    request.tools = None
++    for message in getattr(request, "messages", None) or []:
++        if getattr(message, "tools", None):
++            message.tools = None
++            dropped = True
++    return dropped
++
++
++def apply(module) -> None:
++    cls = module.OpenAIServingChat
++    original = cls._process_messages
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def _process_messages(self, request, *args, **kwargs):
++        drop_tool_definitions(request)
++        return original(self, request, *args, **kwargs)
++
++    setattr(_process_messages, _MARK, True)
++    cls._process_messages = _process_messages
+diff --git a/python/sglang/srt/utils/__init__.py b/python/sglang/srt/utils/__init__.py
+index 38e2c43fe32c2f0ef6c052a69f093f87725068c4..8e30ab8d6963ff91047ad66a0650811190443ef2 100644
+--- a/python/sglang/srt/utils/__init__.py
++++ b/python/sglang/srt/utils/__init__.py
+@@ -1,3 +1,10 @@
+ # Temporarily do this to avoid changing all imports in the repo
+ from sglang.srt.utils.common import *
+ from sglang.srt.utils.network import is_port_available  # noqa: F401
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index 62ad5159f6aba876e52c97f0e97b8dc01777d448..bf439732134cd4153be2fcebca97fef0f6ee4a8e 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -4839,3 +4839,10 @@ def init_cublas():
+     b = torch.ones((16, 16), dtype=dtype, device=device)
+     c = a @ b
+     return c
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/test/phala_deepseek_v41/selftest.py b/test/phala_deepseek_v41/selftest.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d4db31de5b383ea3d39bb3a9626ee3917c43694
+--- /dev/null
++++ b/test/phala_deepseek_v41/selftest.py
+@@ -0,0 +1,170 @@
++"""Tests against installed source-integrated adapters; no runtime package mounts."""
++
++import sys
++from types import SimpleNamespace
++
++_failures = []
++_checks = 0
++
++
++def check(label, got, want):
++    global _checks
++    _checks += 1
++    ok = got == want
++    print(f"{'ok  ' if ok else 'FAIL'}  {label}\n        got {got!r}" + ("" if ok else f"\n        want {want!r}"))
++    if not ok:
++        _failures.append(label)
++
++
++def check_true(label, got):
++    check(label, bool(got), True)
++
++
++def section(name):
++    print(f"\n--- {name} " + "-" * max(0, 60 - len(name)))
++
++
++# ==========================================================================
++section("1: common tool and media adapters composed")
++# ==========================================================================
++from sglang.srt.entrypoints.openai import protocol as P  # noqa: E402
++from sglang.srt.entrypoints.openai import serving_chat as SC  # noqa: E402
++from sglang.srt.multimodal.processors import base_processor as BP  # noqa: E402
++from sglang.srt.managers.schedule_batch import Modality  # noqa: E402
++
++
++check_true("tool_choice-none wrapper survived (dsv41_tool_choice_none)",
++           getattr(SC.OpenAIServingChat._process_messages, "_dsv41_tool_choice_none", False))
++check_true("media-hardening wrapper installed on the same class",
++           getattr(SC.OpenAIServingChat._validate_media_content, "_dsv41_media_hardening", False))
++
++# ==========================================================================
++section("A/B: client media failures classify as 400, not 500")
++# ==========================================================================
++import base64  # noqa: E402
++import struct  # noqa: E402
++import zlib  # noqa: E402
++from PIL import Image  # noqa: E402
++
++
++def png(width, height):
++    """1-bit grayscale PNG of the given size; a few KB whatever the pixel count."""
++    def chunk(tag, data):
++        return (struct.pack(">I", len(data)) + tag + data
++                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
++
++    compressor = zlib.compressobj(9)
++    row = b"\x00" + b"\x00" * ((width + 7) // 8)
++    body = [compressor.compress(row) for _ in range(height)]
++    body.append(compressor.flush())
++    return (b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
++            + chunk(b"IDAT", b"".join(body)) + chunk(b"IEND", b""))
++
++
++def data_uri(raw, mime="image/png"):
++    return f"data:{mime};base64," + base64.b64encode(raw).decode()
++
++
++check_true("base_processor.CLIENT_MEDIA_EXCEPTIONS covers OSError",
++           OSError in BP.CLIENT_MEDIA_EXCEPTIONS)
++check_true("base_processor.CLIENT_MEDIA_EXCEPTIONS covers DecompressionBombError",
++           Image.DecompressionBombError in BP.CLIENT_MEDIA_EXCEPTIONS)
++
++# PIL raises above 2x MAX_IMAGE_PIXELS; >89.5 MP only warns and still decodes.
++bomb = png(14000, 13000)
++check_true("bomb fixture is over PIL's hard limit",
++           14000 * 13000 > 2 * Image.MAX_IMAGE_PIXELS)
++
++
++def classify(data):
++    try:
++        BP.BaseMultimodalProcessor._load_single_item(data, Modality.IMAGE)
++        return "loaded"
++    except Exception as exc:  # noqa: BLE001
++        return type(exc).__name__
++
++
++# ValueError is what fast_load_mm_data re-raises as a 400; RuntimeError is the 500.
++check("bare base64 JPEG -> 400 class",
++      classify("/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUg=="), "ValueError")
++check("decompression bomb data URI -> 400 class", classify(data_uri(bomb)), "ValueError")
++check("truncated data URI -> 400 class",
++      classify(data_uri(b"\x89PNG\r\n\x1a\nbroken")), "ValueError")
++check("unreachable http URL -> 400 class",
++      classify("https://127.0.0.1:9/nope.png"), "ValueError")
++check("valid tiny PNG data URI still loads", classify(data_uri(png(8, 8))), "loaded")
++
++# ==========================================================================
++section("A/C: request validation rejects unreadable and unsupported media")
++# ==========================================================================
++# Stand-in for the serving object, carrying the same capability flags the live
++# replica reports at /get_model_info (image yes, audio no, no video token) and
++# the same --media-url-max-file-size-mb as compose.yaml.
++FAKE_CHAT = SimpleNamespace(
++    tokenizer_manager=SimpleNamespace(
++        model_config=SimpleNamespace(
++            is_multimodal=True,
++            is_image_understandable_model=True,
++            is_audio_understandable_model=False,
++        ),
++        mm_processor=SimpleNamespace(
++            mm_tokens=SimpleNamespace(video_token=None, video_token_id=None)
++        ),
++        server_args=SimpleNamespace(media_url_max_file_size_mb=32),
++    )
++)
++validate = SC.OpenAIServingChat._validate_media_content
++
++
++def request(content, **extra):
++    return P.ChatCompletionRequest(
++        model="m", messages=[{"role": "user", "content": content}], **extra
++    )
++
++
++def media_error(content):
++    return validate(FAKE_CHAT, request(content))
++
++
++text_part = {"type": "text", "text": "what is this"}
++good_png = data_uri(png(8, 8))
++
++check("text only -> no error", media_error([text_part]), None)
++check("data: URI image -> no error",
++      media_error([text_part, {"type": "image_url", "image_url": {"url": good_png}}]), None)
++check("https image -> no error",
++      media_error([{"type": "image_url", "image_url": {"url": "https://example.com/a.jpg"}}]), None)
++check("bare base64 image -> 400",
++      media_error([{"type": "image_url", "image_url": {"url": "/9j/4AAQSkZJRg=="}}]),
++      "Invalid image_url.url: expected a data: URI or an http(s):// URL. "
++      "Bare base64 payloads and local paths are not accepted.")
++check("file:// image -> 400",
++      media_error([{"type": "image_url", "image_url": {"url": "file:///etc/passwd"}}]),
++      "Invalid image_url.url: expected a data: URI or an http(s):// URL. "
++      "Bare base64 payloads and local paths are not accepted.")
++check("video_url -> 400",
++      media_error([{"type": "video_url", "video_url": {"url": "https://example.com/nope.mp4"}}]),
++      "video input is not supported by this model.")
++check("audio_url -> 400",
++      media_error([{"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}}]),
++      "audio input is not supported by this model.")
++check("input_audio -> 400",
++      media_error([{"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}]),
++      "audio input is not supported by this model.")
++
++oversized = "data:image/png;base64," + "A" * (45 * 1024 * 1024)
++check_true("data URI over --media-url-max-file-size-mb -> 400",
++           str(media_error([{"type": "image_url", "image_url": {"url": oversized}}])
++               ).endswith("byte media size limit (--media-url-max-file-size-mb)."))
++under = "data:image/png;base64," + "A" * (30 * 1024 * 1024)  # ~22.5 MB decoded
++check("30 MB base64 data URI still allowed (under the 32 MB limit)",
++      media_error([{"type": "image_url", "image_url": {"url": under}}]), None)
++
++# ==========================================================================
++print(f"\n{_checks} checks, {len(_failures)} failed")
++if _failures:
++    for label in _failures:
++        print(f"  FAILED: {label}")
++    sys.exit(1)
++print("all patches verified")
+diff --git a/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py b/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd10644207cd2e61ed012cbc96199fa72a054568
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py
+@@ -0,0 +1,120 @@
++"""CPU-only routing, cancellation and serialization checks for async V4.1 chat."""
++
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++import asyncio
++import contextvars
++import threading
++import time
++import unittest
++from contextlib import suppress
++from types import SimpleNamespace
++
++from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
++from sglang.srt.managers.async_dynamic_batch_tokenizer import AsyncDynamicbatchTokenizer
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=4, suite="base-a-test-cpu")
++
++
++class FakeTokenizer:
++    def __init__(self):
++        self.lock = threading.Lock()
++        self.active = 0
++        self.peak = 0
++        self.thread_ids = set()
++
++    def __call__(self, prompts, **kwargs):
++        with self.lock:
++            self.active += 1
++            self.peak = max(self.peak, self.active)
++            self.thread_ids.add(threading.get_ident())
++        try:
++            time.sleep(0.015)
++            encode = lambda text: [ord(char) for char in text]
++            return {
++                "input_ids": [encode(text) for text in prompts]
++                if isinstance(prompts, list)
++                else encode(prompts)
++            }
++        finally:
++            with self.lock:
++                self.active -= 1
++
++
++class AsyncConversionTests(unittest.IsolatedAsyncioTestCase):
++    async def asyncSetUp(self):
++        self.tokenizer = FakeTokenizer()
++        self.batcher = AsyncDynamicbatchTokenizer(self.tokenizer)
++
++    async def asyncTearDown(self):
++        task = self.batcher._batcher_task
++        if task is not None:
++            task.cancel()
++            with suppress(asyncio.CancelledError):
++                await task
++        self.batcher._executor.shutdown(wait=True, cancel_futures=True)
++
++    async def test_encode_and_conversion_share_one_serialized_worker(self):
++        results = await asyncio.gather(
++            self.batcher.encode("alpha"),
++            self.batcher.run_sync(self.tokenizer, "beta"),
++            self.batcher.encode("gamma"),
++            self.batcher.run_sync(self.tokenizer, "delta"),
++        )
++        self.assertEqual(
++            [result["input_ids"] for result in results],
++            [
++                [ord(char) for char in text]
++                for text in ["alpha", "beta", "gamma", "delta"]
++            ],
++        )
++        self.assertEqual(self.tokenizer.peak, 1)
++        self.assertEqual(len(self.tokenizer.thread_ids), 1)
++
++
++    async def test_queued_cancellation_does_not_execute_conversion(self):
++        started, release = threading.Event(), threading.Event()
++        calls = []
++
++        def blocking():
++            started.set()
++            release.wait(2)
++
++        first = asyncio.create_task(self.batcher.run_sync(blocking))
++        try:
++            for _ in range(100):
++                if started.is_set():
++                    break
++                await asyncio.sleep(0.005)
++            self.assertTrue(started.is_set())
++            second = asyncio.create_task(
++                self.batcher.run_sync(calls.append, "must-not-run")
++            )
++            await asyncio.sleep(0.01)
++            second.cancel()
++            with self.assertRaises(asyncio.CancelledError):
++                await second
++        finally:
++            release.set()
++            await first
++        await self.batcher.run_sync(lambda: None)
++        self.assertEqual(calls, [])
++
++
++    async def test_base_default_keeps_synchronous_conversion(self):
++        main_thread = threading.get_ident()
++        target = SimpleNamespace(
++            _convert_to_internal_request=lambda req, raw: (threading.get_ident(), req)
++        )
++        request = object()
++        result = await OpenAIServingBase._convert_to_internal_request_async(
++            target, request, None
++        )
++        self.assertEqual(result, (main_thread, request))
++
++
++if __name__ == "__main__":
++    unittest.main()

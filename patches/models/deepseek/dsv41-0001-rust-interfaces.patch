@@ -1,0 +1,305 @@
+diff --git a/rust/sglang-mm/src/dsv41/mod.rs b/rust/sglang-mm/src/dsv41/mod.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..86d5d29bc5fe9e32aeaf5e55133fcf4d9077a6ee
+--- /dev/null
++++ b/rust/sglang-mm/src/dsv41/mod.rs
+@@ -0,0 +1,139 @@
++//! V4.1 PIL bicubic resize, centered padding and CHW patch packing.
++use crate::common::{par, resize};
++use half::bf16;
++
++pub struct ImagePlan {
++    pub out_h: usize,
++    pub out_w: usize,
++    pub resize_h: usize,
++    pub resize_w: usize,
++    pub top: usize,
++    pub left: usize,
++    pub patch_size: usize,
++}
++
++pub fn resize_patchify(
++    rgb: &[u8],
++    h: usize,
++    w: usize,
++    plan: ImagePlan,
++) -> Result<Vec<u16>, String> {
++    let ImagePlan {
++        out_h,
++        out_w,
++        resize_h,
++        resize_w,
++        top,
++        left,
++        patch_size: ps,
++    } = plan;
++    if ps == 0
++        || h == 0
++        || w == 0
++        || resize_h == 0
++        || resize_w == 0
++        || out_h == 0
++        || out_w == 0
++        || !out_h.is_multiple_of(ps)
++        || !out_w.is_multiple_of(ps)
++        || resize_h > out_h
++        || resize_w > out_w
++        || top > out_h - resize_h
++        || left > out_w - resize_w
++        || h.checked_mul(w).and_then(|n| n.checked_mul(3)) != Some(rgb.len())
++    {
++        return Err("invalid V4.1 image geometry".into());
++    }
++    let len = out_h
++        .checked_mul(out_w)
++        .and_then(|n| n.checked_mul(3))
++        .ok_or("V4.1 output size overflow")?;
++    let resized = resize::resize_rgb(
++        rgb,
++        h,
++        w,
++        resize_h,
++        resize_w,
++        resize::Resample::Pil(resize::Filter::Bicubic),
++    );
++    let lut: [u16; 256] =
++        core::array::from_fn(|i| bf16::from_f32(((i as f32 / 255.0) - 0.5) / 0.5).to_bits());
++    let mut out = vec![0u16; len];
++    let patch_len = 3 * ps * ps;
++    let grid_w = out_w / ps;
++    par::for_chunks_mut(&mut out, patch_len, |index, patch| {
++        let py = index / grid_w * ps;
++        let px = index % grid_w * ps;
++        for c in 0..3 {
++            for y in 0..ps {
++                for x in 0..ps {
++                    let iy = py + y;
++                    let ix = px + x;
++                    let value =
++                        if iy >= top && iy < top + resize_h && ix >= left && ix < left + resize_w {
++                            resized[((iy - top) * resize_w + ix - left) * 3 + c]
++                        } else {
++                            127
++                        };
++                    patch[(c * ps + y) * ps + x] = lut[value as usize];
++                }
++            }
++        }
++    });
++    Ok(out)
++}
++
++#[cfg(feature = "python")]
++mod python {
++    use numpy::{IntoPyArray, PyArray1, PyReadonlyArray3, PyUntypedArrayMethods};
++    use pyo3::{exceptions::PyValueError, prelude::*};
++
++    #[pyfunction]
++    fn resize_patchify<'py>(
++        py: Python<'py>,
++        arr: PyReadonlyArray3<'py, u8>,
++        output_size: (usize, usize),
++        resize_size: (usize, usize),
++        padding_start: (usize, usize),
++        patch_size: usize,
++    ) -> PyResult<Bound<'py, PyArray1<u16>>> {
++        let (out_h, out_w) = output_size;
++        let (resize_h, resize_w) = resize_size;
++        let (top, left) = padding_start;
++        let shape = arr.shape();
++        let (h, w) = (shape[0], shape[1]);
++        if shape[2] != 3 {
++            return Err(PyValueError::new_err("expected HWC RGB"));
++        }
++        let data = arr
++            .as_slice()
++            .map_err(|_| PyValueError::new_err("expected contiguous RGB"))?
++            .to_vec();
++        let bits = py
++            .detach(move || {
++                super::resize_patchify(
++                    &data,
++                    h,
++                    w,
++                    super::ImagePlan {
++                        out_h,
++                        out_w,
++                        resize_h,
++                        resize_w,
++                        top,
++                        left,
++                        patch_size,
++                    },
++                )
++            })
++            .map_err(PyValueError::new_err)?;
++        Ok(bits.into_pyarray(py))
++    }
++    pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
++        let m = PyModule::new(parent.py(), "dsv41")?;
++        m.add_function(wrap_pyfunction!(resize_patchify, &m)?)?;
++        parent.add_submodule(&m)
++    }
++}
++#[cfg(feature = "python")]
++pub use python::register;
+diff --git a/rust/sglang-mm/src/lib.rs b/rust/sglang-mm/src/lib.rs
+index de6eb2eccffaa94ad527c60d3fcdc4fb7f5efc55..1c2ecc56b2a8ae920ca4827f29a8de9d89adf700 100644
+--- a/rust/sglang-mm/src/lib.rs
++++ b/rust/sglang-mm/src/lib.rs
+@@ -8,6 +8,7 @@
+ 
+ pub mod common;
+ pub mod driver;
++pub mod dsv41;
+ pub mod inkling;
+ pub mod pipeline;
+ pub mod qwen_vl;
+@@ -21,6 +22,7 @@ use pyo3::prelude::*;
+ fn _multimodal(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     common::register(m)?;
+     inkling::register(m)?;
++    dsv41::register(m)?;
+     qwen_vl::register(m)?;
+     Ok(())
+ }
+diff --git a/rust/sglang-radix-tree/src/python_bindings.rs b/rust/sglang-radix-tree/src/python_bindings.rs
+index a4e4e8524b537c8d33c05352789532f129d85627..666538fa6209013d6edaf158f9c0baeb45f0c457 100644
+--- a/rust/sglang-radix-tree/src/python_bindings.rs
++++ b/rust/sglang-radix-tree/src/python_bindings.rs
+@@ -241,6 +241,12 @@ fn pool_name_str(name: PoolName) -> &'static str {
+         PoolName::DeepseekV4C4Indexer => "deepseek_v4_c4_indexer",
+         PoolName::DeepseekV4C4IndexerScale => "deepseek_v4_c4_indexer_scale",
+         PoolName::DeepseekV4C128 => "deepseek_v4_c128",
++        PoolName::DeepseekV4C1 => "deepseek_v4_c1",
++        PoolName::DeepseekV4C1Indexer => "deepseek_v4_c1_indexer",
++        PoolName::DeepseekV4C1IndexerScale => "deepseek_v4_c1_indexer_scale",
++        PoolName::DeepseekV4C2 => "deepseek_v4_c2",
++        PoolName::DeepseekV4C2Indexer => "deepseek_v4_c2_indexer",
++        PoolName::DeepseekV4C2IndexerScale => "deepseek_v4_c2_indexer_scale",
+         PoolName::DeepseekV4C4State => "deepseek_v4_c4_state",
+         PoolName::DeepseekV4C4IndexerState => "deepseek_v4_c4_indexer_state",
+         PoolName::DeepseekV4C128State => "deepseek_v4_c128_state",
+@@ -261,6 +267,12 @@ fn parse_pool_name(name: &str) -> PyResult<PoolName> {
+         "deepseek_v4_c4_indexer" => Ok(PoolName::DeepseekV4C4Indexer),
+         "deepseek_v4_c4_indexer_scale" => Ok(PoolName::DeepseekV4C4IndexerScale),
+         "deepseek_v4_c128" => Ok(PoolName::DeepseekV4C128),
++        "deepseek_v4_c1" => Ok(PoolName::DeepseekV4C1),
++        "deepseek_v4_c1_indexer" => Ok(PoolName::DeepseekV4C1Indexer),
++        "deepseek_v4_c1_indexer_scale" => Ok(PoolName::DeepseekV4C1IndexerScale),
++        "deepseek_v4_c2" => Ok(PoolName::DeepseekV4C2),
++        "deepseek_v4_c2_indexer" => Ok(PoolName::DeepseekV4C2Indexer),
++        "deepseek_v4_c2_indexer_scale" => Ok(PoolName::DeepseekV4C2IndexerScale),
+         "deepseek_v4_c4_state" => Ok(PoolName::DeepseekV4C4State),
+         "deepseek_v4_c4_indexer_state" => Ok(PoolName::DeepseekV4C4IndexerState),
+         "deepseek_v4_c128_state" => Ok(PoolName::DeepseekV4C128State),
+diff --git a/rust/sglang-radix-tree/src/unified_tree_core.rs b/rust/sglang-radix-tree/src/unified_tree_core.rs
+index ca42e67613bf0591716496e186a35d6b3f56d37c..02f7db8dd2bbffac673ee4f94b9123da01cc27b2 100644
+--- a/rust/sglang-radix-tree/src/unified_tree_core.rs
++++ b/rust/sglang-radix-tree/src/unified_tree_core.rs
+@@ -342,6 +342,12 @@ pub enum PoolName {
+     DeepseekV4C4Indexer,
+     DeepseekV4C4IndexerScale,
+     DeepseekV4C128,
++    DeepseekV4C1,
++    DeepseekV4C1Indexer,
++    DeepseekV4C1IndexerScale,
++    DeepseekV4C2,
++    DeepseekV4C2Indexer,
++    DeepseekV4C2IndexerScale,
+     DeepseekV4C4State,
+     DeepseekV4C4IndexerState,
+     DeepseekV4C128State,
+diff --git a/rust/sglang-server/src/api_server/disaggregation/bootstrap.rs b/rust/sglang-server/src/api_server/disaggregation/bootstrap.rs
+index 093cb0e430e3da7784da20ed9992f858e6ffd796..c21009f715452a0c18abb6dd075de29fc2a7a64c 100644
+--- a/rust/sglang-server/src/api_server/disaggregation/bootstrap.rs
++++ b/rust/sglang-server/src/api_server/disaggregation/bootstrap.rs
+@@ -40,6 +40,8 @@ struct PrefillServerInfo {
+     pp_size: i64,
+     page_size: Option<i64>,
+     kv_cache_dtype: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    dsv41_spec_layout: Option<serde_json::Value>,
+     follow_bootstrap_room: bool,
+     enable_dsa_cache_layer_split: bool,
+     prefill_http_port: Option<i64>,
+@@ -106,6 +108,7 @@ struct Topology {
+     pp_size: Option<i64>,
+     page_size: Option<i64>,
+     kv_cache_dtype: Option<String>,
++    dsv41_spec_layout: Option<serde_json::Value>,
+     follow_bootstrap_room: Option<bool>,
+     enable_dsa_cache_layer_split: Option<bool>,
+     prefill_http_port: Option<i64>,
+@@ -153,6 +156,8 @@ struct Route {
+     page_size: i64,
+     #[serde(default)]
+     kv_cache_dtype: Option<String>,
++    #[serde(default)]
++    dsv41_spec_layout: Option<serde_json::Value>,
+     #[serde(default, deserialize_with = "parse_int_opt")]
+     prefill_http_port: Option<i64>,
+     #[serde(default)]
+@@ -176,8 +181,15 @@ async fn route_put(State(state): State<Arc<Registry>>, Json(body): Json<Route>)
+ 
+     // Copy-on-write update. `rcu` may re-run the closure under write
+     // contention, so it only reads `body` and clones what it stores.
++    let mut layout_mismatch = false;
+     state.topology.rcu(|current| {
+         let mut topo = (**current).clone();
++        layout_mismatch =
++            topo.registered_count > 0 && topo.dsv41_spec_layout != body.dsv41_spec_layout;
++        if layout_mismatch {
++            return topo;
++        }
++        topo.dsv41_spec_layout = body.dsv41_spec_layout.clone();
+         topo.attn_tp_size.get_or_insert(body.attn_tp_size);
+         topo.attn_cp_size.get_or_insert(body.attn_cp_size);
+         topo.dp_size.get_or_insert(dp_size);
+@@ -208,6 +220,13 @@ async fn route_put(State(state): State<Arc<Registry>>, Json(body): Json<Route>)
+         topo
+     });
+ 
++    if layout_mismatch {
++        return json_error(
++            StatusCode::BAD_REQUEST,
++            "DeepSeek-V4.1 DSpark PD layout differs across prefill ranks",
++        );
++    }
++
+     let topo = state.topology.load();
+     tracing::debug!(
+         dp_group,
+@@ -262,6 +281,7 @@ async fn route_get(
+             pp_size: topo.pp_size.unwrap(),
+             page_size: topo.page_size,
+             kv_cache_dtype: topo.kv_cache_dtype.clone(),
++            dsv41_spec_layout: topo.dsv41_spec_layout.clone(),
+             follow_bootstrap_room: topo.follow_bootstrap_room.unwrap_or(true),
+             enable_dsa_cache_layer_split: topo.enable_dsa_cache_layer_split.unwrap_or(false),
+             prefill_http_port: topo.prefill_http_port,
+@@ -526,6 +546,24 @@ mod tests {
+         assert_eq!(status, 404);
+     }
+ 
++    #[test]
++    fn dspark_layout_round_trip_and_rank_mismatch() {
++        let (_rt, addr) = start_on_free_port();
++        let layout = serde_json::json!({"num_draft_tokens": 6, "state_item_lens": [[4096]]});
++        let body = put_route(serde_json::json!({"dsv41_spec_layout": layout}));
++        assert_eq!(request(addr, "PUT", "/route", Some(&body)).0, 200);
++        let (status, body) = request(addr, "GET", SENTINEL, None);
++        assert_eq!(status, 200);
++        let info: serde_json::Value = serde_json::from_str(&body).unwrap();
++        assert_eq!(info["dsv41_spec_layout"], layout);
++
++        let incompatible = put_route(serde_json::json!({"dsv41_spec_layout": null}));
++        assert_eq!(request(addr, "PUT", "/route", Some(&incompatible)).0, 400);
++        let (_, body) = request(addr, "GET", SENTINEL, None);
++        let info: serde_json::Value = serde_json::from_str(&body).unwrap();
++        assert_eq!(info["dsv41_spec_layout"], layout);
++    }
++
+     /// System-dp topology derivation: with `system_dp_size > 1` the dp axis
+     /// (readiness expectation AND rank keying) comes from `system_dp_*`, not
+     /// `attn_dp_*` — a "looks equivalent" simplification to always using

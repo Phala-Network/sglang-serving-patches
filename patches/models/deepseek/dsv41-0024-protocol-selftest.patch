@@ -1,0 +1,109 @@
+diff --git a/test/phala_deepseek_v41/selftest.py b/test/phala_deepseek_v41/selftest.py
+index 11714263ba0ee1f1d4e69cb4ff863a9c847dea15..e143625a1070d80b2331982757086d1fcd2b5ad4 100644
+--- a/test/phala_deepseek_v41/selftest.py
++++ b/test/phala_deepseek_v41/selftest.py
+@@ -225,7 +225,21 @@ check("explicit chat_template_kwargs wins over a routed budget",
+ # The encoder must accept what we route to it.
+ from sglang.srt.entrypoints.openai import chat_encoding  # noqa: E402
+ 
+-check("encoder accepts the routed budget", chat_encoding.resolve_dsv41_reasoning_effort(50), 50)
++check("encoder accepts the routed budget", chat_encoding.parse_dsv41_reasoning_effort(50), 50)
++check("encoder preserves both integer budget boundaries",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (1, 100)], [1, 100])
++check("encoder preserves legal OpenAI fractional efforts",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (0.0, 0.5, 0.99)],
++      [1, 50, 99])
++check("invalid budget values do not become an accepted effort",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (True, 0, 101, -0.1, 1.0)],
++      [None, None, None, None, None])
++check("serving resolver uses the parsed integer instead of the deployment default",
++      SC.OpenAIServingChat._resolve_dsv41_reasoning_effort(
++          SimpleNamespace(_dsv41_default_reasoning_effort="high"), 50), 50)
++check("serving resolver retains the deployment default when effort is absent",
++      SC.OpenAIServingChat._resolve_dsv41_reasoning_effort(
++          SimpleNamespace(_dsv41_default_reasoning_effort="high"), None), "high")
+ 
+ # ==========================================================================
+ section("D3: reasoning.exclude withholds reasoning_content")
+diff --git a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+index cd15c410da17c7be9f461f816aa22bffda53e382..54c948b7f44281ce35adeaaae3a01a897cf5f369 100644
+--- a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++++ b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+@@ -5,6 +5,7 @@ import importlib.util
+ import os
+ from pathlib import Path
+ from types import SimpleNamespace
++from typing import Union
+ import unittest
+ from unittest.mock import patch
+ 
+@@ -25,6 +26,69 @@ tools = load("dsv41_tool_choice_none")
+ 
+ 
+ class ProtocolContracts(unittest.TestCase):
++    def test_current_parser_and_serving_resolver_keep_budget_semantics(self):
++        chat_path = ROOT / "python/sglang/srt/entrypoints/openai/chat_encoding.py"
++        parsed = ast.parse(chat_path.read_text(encoding="utf-8"))
++        parser = next(
++            node
++            for node in parsed.body
++            if isinstance(node, ast.FunctionDef)
++            and node.name == "parse_dsv41_reasoning_effort"
++        )
++        encoding = load("dsv41_reasoning_effort")
++        namespace = {"Any": object, "Union": Union, "encoding_dsv41": encoding}
++        exec(
++            compile(
++                ast.fix_missing_locations(ast.Module(body=[parser], type_ignores=[])),
++                str(chat_path),
++                "exec",
++            ),
++            namespace,
++        )
++        parse = namespace[parser.name]
++        for value, expected in (
++            (1, 1),
++            (50, 50),
++            (100, 100),
++            (0.0, 1),
++            (0.5, 50),
++            (0.99, 99),
++            ("high", "high"),
++            (True, None),
++            (0, None),
++            (101, None),
++            (-0.1, None),
++            (1.0, None),
++            (None, None),
++        ):
++            with self.subTest(value=value):
++                self.assertEqual(parse(value), expected)
++
++        serving_path = ROOT / "python/sglang/srt/entrypoints/openai/serving_chat.py"
++        cls = next(
++            node
++            for node in ast.parse(serving_path.read_text(encoding="utf-8")).body
++            if isinstance(node, ast.ClassDef) and node.name == "OpenAIServingChat"
++        )
++        resolver = next(
++            node
++            for node in cls.body
++            if isinstance(node, ast.FunctionDef)
++            and node.name == "_resolve_dsv41_reasoning_effort"
++        )
++        namespace["chat_encoding"] = SimpleNamespace(parse_dsv41_reasoning_effort=parse)
++        exec(
++            compile(
++                ast.fix_missing_locations(ast.Module(body=[resolver], type_ignores=[])),
++                str(serving_path),
++                "exec",
++            ),
++            namespace,
++        )
++        owner = SimpleNamespace(_dsv41_default_reasoning_effort="high")
++        self.assertEqual(namespace[resolver.name](owner, 50), 50)
++        self.assertEqual(namespace[resolver.name](owner, None), "high")
++
+     def test_developer_preserves_caller_and_standalone_generation_role(self):
+         solo = [{"role": "developer", "content": "one"}]
+         self.assertIs(roles._prepare_messages(solo), solo)

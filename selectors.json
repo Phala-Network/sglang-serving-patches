@@ -1,0 +1,81 @@
+{
+  "schema": "phala.sglang.patch-selector.v1",
+  "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "complete_engine_reference": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "commit": "4281309187007db579a2195f40adfd4baa538528",
+    "tree": "83dcb00885129cc2afefdce2e169ebba697a9a67"
+  },
+  "selectors": {
+    "kimi-k3-v0520-candidate": {
+      "model_family": "kimi-k3",
+      "version": "v0.5.20",
+      "topology": ["TP8", "DCP1", "DCP8"],
+      "patches": [
+        {"id":"be54243a76","path":"patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch","sha256":"3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"},
+        {"id":"bc60e5ce93","path":"patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch","sha256":"2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"},
+        {"id":"76c354ee11","path":"patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch","sha256":"b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"},
+        {"id":"bb1d6282a9","path":"patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch","sha256":"23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"},
+        {"id":"634e484d7e","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
+        {"id":"c621dc4550","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"}
+      ],
+      "excluded_common_overlap": ["chat-close", "completed-chunk-core"],
+      "status": "pending_linux_cpu_and_model_topology_validation",
+      "validation_boundary": "Local source-method DCP red/green and backup guards pass; Linux imports, Kimi runtime and Governor combination not accepted"
+    },
+    "muse-glimmer-v0520-candidate": {
+      "model_family": "muse-glimmer",
+      "version": "v0.5.20",
+      "topology": ["model-guarded"],
+      "patches": [{"id":"d486b6fe7a","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"}],
+      "pending_historical_patch_directory": "patches/models/muse",
+      "status": "pending_linux_cpu_validation",
+      "validation_boundary": "Native detector regression prepared; no Linux import or model acceptance"
+    },
+    "deepseek-v4.1-v0520": {
+      "model_family": "deepseek-v4.1",
+      "version": "v0.5.20",
+      "patches": [
+        {"id":"dsv41-0001","path":"patches/models/deepseek/dsv41-0001-rust-interfaces.patch","sha256":"261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"},
+        {"id":"dsv41-0002","path":"patches/models/deepseek/dsv41-0002-standalone-kernels.patch","sha256":"6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"},
+        {"id":"dsv41-0003","path":"patches/models/deepseek/dsv41-0003-topk-candidates.patch","sha256":"4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"},
+        {"id":"dsv41-0004","path":"patches/models/deepseek/dsv41-0004-communication-kernels.patch","sha256":"58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"},
+        {"id":"dsv41-0005","path":"patches/models/deepseek/dsv41-0005-compression-kv-io.patch","sha256":"72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"},
+        {"id":"dsv41-0006","path":"patches/models/deepseek/dsv41-0006-candidate-indexer.patch","sha256":"ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"},
+        {"id":"dsv41-0007","path":"patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch","sha256":"7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"},
+        {"id":"dsv41-0008","path":"patches/models/deepseek/dsv41-0008-hopper-fp8.patch","sha256":"85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"},
+        {"id":"dsv41-0009","path":"patches/models/deepseek/dsv41-0009-mhc-projections.patch","sha256":"b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"},
+        {"id":"dsv41-0010","path":"patches/models/deepseek/dsv41-0010-vision-preprocessing.patch","sha256":"bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"},
+        {"id":"dsv41-0011","path":"patches/models/deepseek/dsv41-0011-chat-encoding.patch","sha256":"947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85"},
+        {"id":"dsv41-0012","path":"patches/models/deepseek/dsv41-0012-engram-history.patch","sha256":"49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c"},
+        {"id":"dsv41-0013","path":"patches/models/deepseek/dsv41-0013-compress-ratios.patch","sha256":"239280e1d901df1345245ce3b87bdc0881d467985f678ae969e86763653542a"},
+        {"id":"dsv41-0015","path":"patches/models/deepseek/dsv41-0015-native-integration.patch","sha256":"a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb"},
+        {"id":"dsv41-0016","path":"patches/models/deepseek/dsv41-0016-dense-prefill.patch","sha256":"162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"},
+        {"id":"dsv41-0017","path":"patches/models/deepseek/dsv41-0017-dense-prefill-tests.patch","sha256":"c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"},
+        {"id":"dsv41-0020","path":"patches/models/deepseek/dsv41-0020-model-protocol-contracts.patch","sha256":"36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4"},
+        {"id":"dsv41-0021","path":"patches/models/deepseek/dsv41-0021-medium-finalize.patch","sha256":"273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02"},
+        {"id":"dsv41-0022","path":"patches/models/deepseek/dsv41-0022-transplant-closure.patch","sha256":"3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0"},
+        {"id":"dsv41-0023","path":"patches/models/deepseek/dsv41-0023-mxfp4-padding.patch","sha256":"2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26"},
+        {"id":"dsv41-0024","path":"patches/models/deepseek/dsv41-0024-protocol-selftest.patch","sha256":"7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56"},
+        {"id":"dsv41-0026","path":"patches/models/deepseek/dsv41-0026-candidate-bitmap.patch","sha256":"cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"}
+      ],
+      "status": "blocked_native_closure_recipe_and_abi_validation",
+      "required_closure": "sglang-mm, radix-tree C1/C2, candidate/indexer kernels, compression pools, routed-weight ABI and model/runtime integration"
+    },
+    "nemotron-v0519-historical": {
+      "model_family": "nemotron",
+      "version": "v0.5.19",
+      "patches": [],
+      "pending_historical_patch_directory": "patches/models/nemotron",
+      "status": "pending_v0520_semantic_migration",
+      "validation_boundary": "Historical files are not selected against v0.5.20"
+    },
+    "gemma-v0519-historical": {
+      "model_family": "gemma-4",
+      "version": "v0.5.19",
+      "patches": [],
+      "status": "no_replayable_gemma_only_patch",
+      "validation_boundary": "Historical profile retained; no model-specific v0.5.20 patch bytes"
+    }
+  }
+}

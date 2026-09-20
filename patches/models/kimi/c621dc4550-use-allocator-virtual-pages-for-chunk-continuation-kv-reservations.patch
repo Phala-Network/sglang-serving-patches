@@ -1,0 +1,97 @@
+diff --git a/python/sglang/srt/managers/schedule_policy.py b/python/sglang/srt/managers/schedule_policy.py
+index c8b22912c130d961b3488f9b1be8840188dd55b7..fcebc90e5a4f69f86326b493033fd6d8957ecb67 100644
+--- a/python/sglang/srt/managers/schedule_policy.py
++++ b/python/sglang/srt/managers/schedule_policy.py
+@@ -962,6 +962,7 @@ class PrefillAdder:
+         mamba_gap_reserve: int = 0,
+         is_chunked_continuation: bool = False,
+         compute_charge: Optional[int] = None,
++        allocation_page_size: Optional[int] = None,
+     ):
+         """Charge one admitted request against the prefill budgets.
+ 
+@@ -979,9 +980,13 @@ class PrefillAdder:
+         extend_input_len = self.ceil_paged_tokens(extend_input_len)
+         if compute_charge is None:
+             compute_charge = extend_input_len
++        if allocation_page_size is not None:
++            extend_input_len = (
++                -(-raw_extend_input_len // allocation_page_size) * allocation_page_size
++            )
+ 
+         # alloc_extend reserves an extra page_size per request to make sure the budget doesn't over-commit
+-        page_overhead = self.page_size
++        page_overhead = allocation_page_size or self.page_size
+         # `mamba_gap_reserve` (shared Mamba pool only; 0 otherwise) charges the new
+         # mamba state's shared-gap cost to BOTH full budgets: the slot is allocated
+         # immediately (counts against `cur_rem`) and held for the request lifetime
+@@ -1133,6 +1138,13 @@ class PrefillAdder:
+         )
+ 
+     def add_chunked_req(self, req: Req):
++        # DCP allocators expose virtual pages (e.g. 512), while the scheduling
++        # configuration can retain physical rows (64). Capacity and reservations
++        # must use allocator units; compute chunk accounting stays unchanged.
++        allocation_page_size = max(
++            self.page_size,
++            getattr(self.token_to_kv_pool_allocator, "page_size", self.page_size),
++        )
+         if self.dllm_config is not None:
+             _rem_tokens = self._get_dllm_remain_tokens()
+         else:
+@@ -1157,9 +1169,9 @@ class PrefillAdder:
+             # admitted extension cannot consume that slack. In particular, never
+             # turn an exhausted decode estimate into an unchecked full chunk.
+             physical_cap = (
+-                (int(self.cur_rem_tokens) - self.page_size)
+-                // self.page_size
+-                * self.page_size
++                (int(self.cur_rem_tokens) - allocation_page_size)
++                // allocation_page_size
++                * allocation_page_size
+             )
+             _rem_tokens = min(_rem_tokens, physical_cap)
+             if _rem_tokens <= 0:
+@@ -1197,6 +1209,7 @@ class PrefillAdder:
+             mamba_gap_reserve=self._mamba_gap_budget_for_req(req),
+             is_chunked_continuation=True,
+             compute_charge=req.extend_range.length if self.exact_chunk_fill else None,
++            allocation_page_size=allocation_page_size,
+         )
+ 
+         # Return if chunked prefill not finished
+diff --git a/test/manual/test_chunked_prefill_physical_budget.py b/test/manual/test_chunked_prefill_physical_budget.py
+index 03d0a18dcb30c3f26ba443b1e0b49f4a9c18a650..c0651e83098282375b38faabfca3ec61ec72d068 100644
+--- a/test/manual/test_chunked_prefill_physical_budget.py
++++ b/test/manual/test_chunked_prefill_physical_budget.py
+@@ -162,6 +162,30 @@ class ContinuationRegression(unittest.TestCase):
+         a.add_chunked_req(r)
+         self.assert_capacity(a, r, 11200)
+ 
++    def test_hybrid_ssm_dcp8_uses_virtual_allocator_pages(self):
++        # Scheduler page64 versus allocator virtual512/physical64. Allocation
++        # oracle counts actual new virtual pages, independently of admission.
++        for free in (512, 1024, 1536, 4096):
++            for mixed in (0, 1, 65, 511):
++                for prefix in (0, 64, 448, 512, 576):
++                    with self.subTest(free=free, mixed=mixed, prefix=prefix):
++                        a, r = make_case(free=free, mixed=mixed, prefix=prefix)
++                        a.is_hybrid_ssm_cache = True
++                        a.token_to_kv_pool_allocator.page_size = 512
++                        a.add_chunked_req(r)
++                        if a.can_run_list:
++                            pages = (r.extend_range.end + 511) // 512 - (prefix + 511) // 512
++                            self.assertLessEqual(pages * 512, free - mixed)
++                            self.assertGreaterEqual(a.cur_rem_tokens, 0)
++
++    def test_dcp8_final_tail_reserves_allocator_page_not_compute_page(self):
++        a, r = make_case(free=1536, reservation=0, remaining=65, prefix=512)
++        a.is_hybrid_ssm_cache = True
++        a.token_to_kv_pool_allocator.page_size = 512
++        self.assertIsNone(a.add_chunked_req(r))
++        self.assertEqual(r.extend_range.length, 65)
++        self.assertEqual(a.cur_rem_token_offset, 1024)
++
+     def test_no_space_or_less_than_two_pages_parks(self):
+         for free in (0, 1, 63, 64, 65, 127):
+             with self.subTest(free=free):

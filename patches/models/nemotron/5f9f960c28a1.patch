@@ -1,0 +1,1294 @@
+diff --git a/python/sglang/srt/constrained/grammar_manager.py b/python/sglang/srt/constrained/grammar_manager.py
+index c218956a4df0e66f88c690eeb2b8730444d8f805..a8489d807ced8534ab17119e5ff0e867e7a13f6b 100644
+--- a/python/sglang/srt/constrained/grammar_manager.py
++++ b/python/sglang/srt/constrained/grammar_manager.py
+@@ -127,6 +127,14 @@ class GrammarManager:
+             return
+         if isinstance(req.grammar, ReasonerGrammarObject):
+             req.grammar.max_think_tokens = thinking_budget
++            if thinking_budget >= 0:
++                if req.grammar.token_filter_fn is None:
++                    req.set_finish_with_abort(
++                        "Per-request thinking_budget requires a grammar backend "
++                        "with token-filter support"
++                    )
++                    return
++                req.grammar.enable_token_filter = True
+ 
+     def process_req_with_grammar(self, req: Req) -> bool:
+         # Init grammar cache for this request
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index 0eeb2419be4add141e263d77f9fa947078e4ea87..59275db6a33abb07407375137746a6ccccda6805 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -404,7 +404,9 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+                 "filtering (e.g., xgrammar) or disable strict reasoning mode."
+             )
+         self._token_filter_fn = (
+-            self.grammar_backend.set_token_filter if self.enable_token_filter else None
++            self.grammar_backend.set_token_filter
++            if self.grammar_backend.is_support_token_filter
++            else None
+         )
+ 
+     @staticmethod
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index f7ce150fdf9af439ae46ab7fae7162a650bce4fb..e9166ff42b86edac588c264e9e7a8dacf3f4a93e 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -58,6 +58,64 @@ logger = logging.getLogger(__name__)
+ MAX_ROLLBACK_TOKENS = 200
+ 
+ 
++def has_xgrammar_unsupported_pattern_length_combination(schema: dict) -> bool:
++    """Reject the length bounds XGrammar drops when ``pattern`` is present.
++
++    Adapted from upstream SGLang PR #37726. Only schema positions are walked;
++    strings/property names and data in enum/const/examples are not keywords.
++    """
++    schema_array_keywords = ("allOf", "anyOf", "oneOf", "prefixItems")
++    schema_keywords = (
++        "additionalItems",
++        "additionalProperties",
++        "contains",
++        "else",
++        "if",
++        "items",
++        "not",
++        "propertyNames",
++        "then",
++        "unevaluatedItems",
++        "unevaluatedProperties",
++    )
++    schema_map_keywords = (
++        "$defs",
++        "dependentSchemas",
++        "definitions",
++        "patternProperties",
++        "properties",
++    )
++
++    def check_schema(obj):
++        if not isinstance(obj, dict):
++            return False
++        if "pattern" in obj and ("minLength" in obj or "maxLength" in obj):
++            return True
++        for key in schema_keywords + schema_array_keywords:
++            value = obj.get(key)
++            if isinstance(value, dict) and check_schema(value):
++                return True
++            if isinstance(value, list) and any(check_schema(item) for item in value):
++                return True
++        for key in schema_map_keywords:
++            value = obj.get(key)
++            if isinstance(value, dict) and any(
++                check_schema(item) for item in value.values()
++            ):
++                return True
++        return False
++
++    return check_schema(schema)
++
++
++def _validate_xgrammar_json_schema(schema):
++    if has_xgrammar_unsupported_pattern_length_combination(schema):
++        raise RuntimeError(
++            "JSON schema combines pattern with minLength or maxLength, "
++            "which xgrammar cannot enforce together"
++        )
++
++
+ def _allocate_token_bitmask(vocab_size: int, batch_size: int) -> torch.Tensor:
+     # Pin where pinning exists, so the later H2D can be a genuine non_blocking
+     # copy (a pageable source silently downgrades it).  MPS torch has no
+@@ -306,6 +364,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         if fmt_type in {"json_schema", "qwen_xml_parameter"}:
+             if structural_format.get("json_schema") is None:
+                 structural_format["json_schema"] = {}
++            _validate_xgrammar_json_schema(structural_format["json_schema"])
+ 
+         if fmt_type == "tag":
+             XGrammarGrammarBackend._sanitize_structural_format(
+@@ -323,6 +382,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         for structure in structural_tag.get("structures", []):
+             if structure.get("schema") is None:
+                 structure["schema"] = {}
++            _validate_xgrammar_json_schema(structure["schema"])
+ 
+     def _from_context(
+         self, ctx: CompiledGrammar, key_string: str, grammar_stats: GrammarStats
+@@ -347,8 +407,10 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                 # Note: This builtin JSON grammar includes *all* valid JSON (including, for example, arrays at the root)
+                 ctx = self.grammar_compiler.compile_builtin_json_grammar()
+             else:
++                schema_text = "{}" if key_string == "$$ANY$$" else key_string
++                _validate_xgrammar_json_schema(json.loads(schema_text))
+                 ctx = self.grammar_compiler.compile_json_schema(
+-                    schema="{}" if key_string == "$$ANY$$" else key_string,
++                    schema=schema_text,
+                     any_whitespace=self.any_whitespace,
+                     max_whitespace_cnt=self.max_whitespace_cnt,
+                 )
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 7e4132542de9c0e4dab8f605f58a85257b1938a4..2217cfdd8d568f90f6608570f474aa0c04394d2f 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -328,6 +328,75 @@ def apply_muse_structured_output_reasoning_default(
+     request.chat_template_kwargs = chat_template_kwargs
+ 
+ 
++def apply_nemotron_structured_output_reasoning_budget(
++    request: ChatCompletionRequest, reasoning_parser: Optional[str]
++) -> None:
++    """Reserve final-answer space for budgeted Nemotron structured requests.
++
++    Keep implicit reasoning enabled, but stop it before it consumes the entire
++    client-supplied completion budget. Reasoning enablement/effort stays intact;
++    an explicit thinking_budget, ordinary chat, preencoded prompts and assistant
++    continuations keep their current behavior.
++    This is a reservation, not a promise that an arbitrarily large JSON value
++    fits: max_tokens and genuine length finishes remain unchanged.
++    """
++    if reasoning_parser != "nemotron_3":
++        return
++    structured_format = (
++        request.response_format is not None
++        and request.response_format.type in {"json_object", "json_schema"}
++    )
++    structured_tools = bool(request.tools) and request.tool_choice != "none"
++    if not (structured_format or structured_tools):
++        return
++    if request.input_ids is not None or request.continue_final_message:
++        return
++    chat_template_kwargs = dict(request.chat_template_kwargs or {})
++    if request.reasoning_effort == "none" or any(
++        chat_template_kwargs.get(key) is False
++        for key in ("enable_thinking", "thinking")
++    ):
++        return
++    if (request.custom_params or {}).get("thinking_budget") is not None:
++        return
++    total_budget = (
++        request.max_completion_tokens
++        if request.max_completion_tokens is not None
++        else request.max_tokens
++    )
++    if total_budget is None or total_budget <= 0:
++        return
++    final_reserve = max(128, min(4096, total_budget // 2))
++    request.custom_params = dict(
++        request.custom_params or {},
++        thinking_budget=max(0, total_budget - final_reserve),
++    )
++
++
++def nemotron_response_format_template_kwargs(
++    request: ChatCompletionRequest, reasoning_parser: Optional[str]
++) -> dict:
++    """Expose the actual JSON contract to the Nemotron template as well as grammar.
++
++    Grammar-only schemas can leave the model reasoning about a different
++    answer shape and stalling in allowed whitespace when forced into it.
++    This does not replace grammar enforcement or alter the caller's messages.
++    """
++    if (
++        reasoning_parser != "nemotron_3"
++        or request.response_format is None
++        or request.response_format.type not in {"json_object", "json_schema"}
++        or request.input_ids is not None
++        or request.continue_final_message
++    ):
++        return {}
++    return {
++        "response_format": request.response_format.model_dump(
++            exclude_unset=True, by_alias=True
++        )
++    }
++
++
+ class OpenAIServingChat(OpenAIServingBase):
+     """Handler for /v1/chat/completions requests"""
+ 
+@@ -1058,6 +1127,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         apply_muse_structured_output_reasoning_default(
+             request, reasoning_parser=self.reasoning_parser
+         )
++        apply_nemotron_structured_output_reasoning_budget(
++            request, reasoning_parser=self.reasoning_parser
++        )
+         reasoning_effort = (
+             request.chat_template_kwargs.pop("reasoning_effort", None)
+             if request.chat_template_kwargs
+@@ -1451,6 +1523,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                 extra_template_kwargs["reasoning_effort"] = request.reasoning_effort
+             if request.chat_template_kwargs:
+                 extra_template_kwargs.update(request.chat_template_kwargs)
++            extra_template_kwargs.update(
++                nemotron_response_format_template_kwargs(request, self.reasoning_parser)
++            )
+ 
+             rc = self.template_manager.reasoning_config
+             if rc is not None and rc.effort_kwarg is not None:
+@@ -1621,6 +1696,29 @@ class OpenAIServingChat(OpenAIServingBase):
+         except ValueError as e:
+             return self.create_error_response(str(e))
+ 
++        # Grammar compilation can finish asynchronously. Its error is already
++        # encoded by _generate_chat_stream, so no ValueError reaches this frame.
++        # Before committing HTTP 200, promote an initial SSE error to its real
++        # HTTP status. Errors after output begins must remain in the stream.
++        if first_chunk.startswith("data:"):
++            try:
++                first_event = json.loads(first_chunk[5:].strip())
++            except (TypeError, ValueError):
++                first_event = None
++            if isinstance(first_event, dict) and isinstance(
++                first_event.get("error"), dict
++            ):
++                error = first_event["error"]
++                status = error.get("code", 400)
++                if isinstance(status, int) and 400 <= status <= 599:
++                    await generator.aclose()
++                    return self.create_error_response(
++                        message=error.get("message", "Request failed before output"),
++                        err_type=error.get("type", "BadRequestError"),
++                        status_code=status,
++                        param=error.get("param"),
++                    )
++
+         async def prepend_first_chunk():
+             yield first_chunk
+             async for chunk in generator:
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 0550ff4a3a694a41b2922f3fbeef92e103ba62fb..e767a34f7e1cafcdd8d23f354de12c6136185543 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -2,6 +2,7 @@ import json
+ import logging
+ import re
+ from typing import Any, List, Optional
++from urllib.parse import unquote
+ 
+ from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
+ from sglang.srt.function_call.base_format_detector import BaseFormatDetector
+@@ -19,6 +20,80 @@ from sglang.srt.function_call.utils import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _resolve_local_schema_for_type(schema, root, seen=frozenset()):
++    """Resolve local type declarations without fetching or mutating schemas.
++
++    The XML parser needs a parameter's type, while its $ref is relative to the
++    complete tool schema. Resolving only after discarding that root turns
++    referenced objects/arrays/scalars into strings. Do not walk instance data
++    (const/enum/examples) or recursively expand object properties here.
++    """
++    if not isinstance(schema, dict) or len(seen) >= 64:
++        return schema
++    result = dict(schema)
++    reference = schema.get("$ref")
++    if (
++        isinstance(reference, str)
++        and reference.startswith("#/")
++        and reference not in seen
++    ):
++        target = root
++        for part in unquote(reference[2:]).split("/"):
++            key = part.replace("~1", "/").replace("~0", "~")
++            if not isinstance(target, dict) or key not in target:
++                target = None
++                break
++            target = target[key]
++        if isinstance(target, dict):
++            resolved = _resolve_local_schema_for_type(target, root, seen | {reference})
++            result = {
++                **resolved,
++                **{key: value for key, value in schema.items() if key != "$ref"},
++            }
++    for keyword in ("allOf", "anyOf", "oneOf"):
++        if isinstance(result.get(keyword), list):
++            result[keyword] = [
++                _resolve_local_schema_for_type(
++                    part,
++                    root,
++                    seen | ({reference} if isinstance(reference, str) else set()),
++                )
++                for part in result[keyword]
++            ]
++    # The shared inference helper understands enum values, but not const.
++    # This is a private type-lookup copy, never the generation constraint.
++    if "const" in result and "enum" not in result:
++        result["enum"] = [result["const"]]
++    return result
++
++
++def _schema_excludes_null(schema):
++    """Prove common non-null declarations; unknown constraints stay conservative."""
++    if schema is False:
++        return True
++    if not isinstance(schema, dict):
++        return False
++    declared = schema.get("type")
++    if isinstance(declared, str) and declared != "null":
++        return True
++    if isinstance(declared, list) and "null" not in declared:
++        return True
++    if "const" in schema and schema["const"] is not None:
++        return True
++    if isinstance(schema.get("enum"), list) and None not in schema["enum"]:
++        return True
++    if isinstance(schema.get("allOf"), list) and any(
++        _schema_excludes_null(part) for part in schema["allOf"]
++    ):
++        return True
++    return any(
++        isinstance(schema.get(key), list)
++        and bool(schema[key])
++        and all(_schema_excludes_null(part) for part in schema[key])
++        for key in ("anyOf", "oneOf")
++    )
++
++
+ class Qwen3CoderDetector(BaseFormatDetector):
+     def __init__(self, require_complete_calls: bool = False):
+         super().__init__()
+@@ -88,9 +163,14 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     return {}
+ 
+                 if isinstance(params, dict):
+-                    properties = get_schema_properties(params)
++                    properties = get_schema_properties(
++                        _resolve_local_schema_for_type(params, params)
++                    )
+                     if properties or "properties" in params:
+-                        return properties
++                        return {
++                            name: _resolve_local_schema_for_type(schema, params)
++                            for name, schema in properties.items()
++                        }
+                     return params
+                 else:
+                     return {}
+@@ -108,8 +188,19 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         self, param_value: str, param_name: str, param_config: dict, func_name: str
+     ) -> Any:
+         """Convert parameter value based on its type in the schema."""
+-        # Handle null value for any type
++        # XML uses bare null for nullable parameters, but it is also a valid
++        # literal string. Never turn a declared non-null string into JSON null.
+         if param_value.lower() == "null":
++            schema = param_config.get(param_name)
++            if self._get_param_type(schema) in (
++                "string",
++                "str",
++                "text",
++                "varchar",
++                "char",
++                "enum",
++            ) and _schema_excludes_null(schema):
++                return param_value
+             return None
+ 
+         if param_name not in param_config:
+@@ -584,7 +675,10 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                                 min=0,
+                                 max=-1,
+                                 content=SequenceFormat(
+-                                    elements=[whitespace, OrFormat(elements=suffix.tags)]
++                                    elements=[
++                                        whitespace,
++                                        OrFormat(elements=suffix.tags),
++                                    ]
+                                 ),
+                             ),
+                             whitespace,
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 895484239de56424078bef126ef9e7bc7998d88a..c1a9ea8695fee4aa1b83893a767cb0ad1b13bd50 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1908,6 +1908,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 self.rid_to_state[objs[i].rid].time_stats.set_finished_time()
+                 del self.rid_to_state[objs[i].rid]
+ 
++            # Normalization reserves batch_size * n parent IDs, but only the
++            # first batch_size entries are tokenized. Every actual sample is
++            # dispatched with a fresh ID. The remaining parent placeholders
++            # have no scheduler completion and otherwise survive streamed n>1
++            # requests forever, keeping graceful shutdown artificially busy.
++            self._discard_pending_req_states(obj)
++
+         # Wait for all requests
+         is_stream = hasattr(obj, "stream") and obj.stream
+         if not is_stream:
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index c66e4ba13fec64ea758cfea7cf8bfa5fb2a5762c..421196f23630c45c8bf396f1d8b15bc007a861a9 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -67,6 +67,9 @@ class BaseReasoningFormatDetector:
+     # decoding waits for the model-written answer-channel header to finish.
+     grammar_channel_header_end: Optional[str] = None
+     grammar_channel_reasoning_header: Optional[str] = None
++    # Some formats have exactly one optional reasoning prefix. Once answer
++    # content starts, marker-looking strings are literal answer data.
++    reasoning_start_at_prefix_only: bool = False
+ 
+     def __init__(
+         self,
+@@ -136,7 +139,12 @@ class BaseReasoningFormatDetector:
+         )
+ 
+     def _detect_and_parse_impl(self, text: str) -> StreamingParseResult:
+-        in_reasoning = self._in_reasoning or self.think_start_token in text
++        has_think_start = self.think_start_token in text
++        if self.reasoning_start_at_prefix_only:
++            has_think_start = not self.previous_content and text.startswith(
++                self.think_start_token + self.think_start_self_label
++            )
++        in_reasoning = self._in_reasoning or has_think_start
+ 
+         if not in_reasoning:
+             return StreamingParseResult(normal_text=text)
+@@ -206,6 +214,17 @@ class BaseReasoningFormatDetector:
+ 
+         think_start_text = self.think_start_token + self.think_start_self_label
+ 
++        if self.reasoning_start_at_prefix_only and not self.stripped_think_start:
++            if (self.previous_content and not self._in_reasoning) or (
++                current_text
++                and not think_start_text.startswith(current_text)
++                and not current_text.startswith(think_start_text)
++            ):
++                # The template may already have supplied the opening marker.
++                # Close the opening-marker decision when any body text arrives,
++                # rather than searching later JSON strings for a new <think>.
++                self.stripped_think_start = True
++
+         # If the current text is a prefix of the think token, keep buffering
+         tokens_to_check = [think_start_text, self.think_end_token]
+         if self.tool_start_token:
+@@ -893,6 +912,8 @@ class Nemotron3Detector(BaseReasoningFormatDetector):
+ 
+     """
+ 
++    reasoning_start_at_prefix_only = True
++
+     def __init__(
+         self,
+         stream_reasoning: bool = True,
+diff --git a/test/registered/unit/constrained/test_grammar_manager.py b/test/registered/unit/constrained/test_grammar_manager.py
+index 95c57c639c14ec4abd6be7191b38614beae999e4..7ea3ac6b734cc0b7244bcaa37d227c4a59850184 100644
+--- a/test/registered/unit/constrained/test_grammar_manager.py
++++ b/test/registered/unit/constrained/test_grammar_manager.py
+@@ -288,7 +288,10 @@ class TestProcessReqWithGrammar(unittest.TestCase):
+     def test_cache_hit_applies_request_thinking_budget(self):
+         mgr = self._make_mgr()
+         grammar_obj = ReasonerGrammarObject(
+-            grammar=None, think_end_ids=[0], max_think_tokens=99
++            grammar=None,
++            think_end_ids=[0],
++            max_think_tokens=99,
++            token_filter_fn=MagicMock(),
+         )
+         mgr.grammar_backend.get_cached_or_future_value.return_value = (
+             grammar_obj,
+@@ -307,7 +310,10 @@ class TestProcessReqWithGrammar(unittest.TestCase):
+         mgr = self._make_mgr()
+         mgr._enable_strict_thinking = True
+         grammar_obj = ReasonerGrammarObject(
+-            grammar=None, think_end_ids=[0], max_think_tokens=99
++            grammar=None,
++            think_end_ids=[0],
++            max_think_tokens=99,
++            token_filter_fn=MagicMock(),
+         )
+         mgr.grammar_backend.init_strict_reasoning_grammar.return_value = grammar_obj
+ 
+@@ -560,7 +566,10 @@ class TestGetReadyGrammarRequests(unittest.TestCase):
+         mgr = self._make_mgr()
+ 
+         grammar_obj = ReasonerGrammarObject(
+-            grammar=None, think_end_ids=[0], max_think_tokens=99
++            grammar=None,
++            think_end_ids=[0],
++            max_think_tokens=99,
++            token_filter_fn=MagicMock(),
+         )
+         future = Future()
+         future.set_result(grammar_obj)
+diff --git a/test/registered/unit/constrained/test_request_reasoning_budget_filter.py b/test/registered/unit/constrained/test_request_reasoning_budget_filter.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..892b6cf60a0589224936b4e2ccc02700bab6d2c2
+--- /dev/null
++++ b/test/registered/unit/constrained/test_request_reasoning_budget_filter.py
+@@ -0,0 +1,92 @@
++"""Request-scoped budgets must activate filtering without global strict mode."""
++
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++import pytest
++import torch
++
++from sglang.srt.constrained.base_grammar_backend import BaseGrammarBackend
++from sglang.srt.constrained.grammar_manager import GrammarManager
++from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarBackend
++from sglang.srt.constrained.torch_ops.token_filter_torch_ops import (
++    set_token_filter_torch,
++)
++
++
++def make_wrapper(support=True):
++    backend = MagicMock(spec=BaseGrammarBackend)
++    backend.is_support_token_filter = support
++    backend.set_token_filter = set_token_filter_torch
++    backend.allocate_vocab_mask = MagicMock()
++    backend.move_vocab_mask = MagicMock()
++    backend.apply_vocab_mask = MagicMock()
++    parser = SimpleNamespace(
++        detector=SimpleNamespace(think_end_token="</think>", think_excluded_tokens=[])
++    )
++    tokenizer = SimpleNamespace(encode=lambda *_args, **_kwargs: [7, 8])
++    reasoner = ReasonerGrammarBackend(
++        backend, parser, tokenizer, enable_strict_thinking=False
++    )
++    return reasoner._make_grammar_object(MagicMock(), True)
++
++
++def apply_budget(wrapper, params):
++    request = SimpleNamespace(
++        grammar=wrapper,
++        sampling_params=SimpleNamespace(custom_params=params),
++        set_finish_with_abort=MagicMock(),
++    )
++    manager = GrammarManager.__new__(GrammarManager)
++    manager._apply_request_reasoning_budget(request)
++    return request
++
++
++def allowed(mask):
++    return [i for i in range(32) if int(mask[0, 0]) & (1 << i)]
++
++
++def test_request_budget_forces_complete_end_sequence_and_returns_to_grammar():
++    wrapper = make_wrapper()
++    cached = wrapper.copy()
++    request = apply_budget(wrapper, {"thinking_budget": 1})
++    request.set_finish_with_abort.assert_not_called()
++    assert wrapper.enable_token_filter
++    assert not cached.enable_token_filter
++    wrapper.accept_token(10)
++    mask = torch.full((1, 2), -1, dtype=torch.int32)
++    wrapper.fill_vocab_mask(mask, 0)
++    assert allowed(mask) == [7]
++    wrapper.accept_token(7)
++    wrapper.fill_vocab_mask(mask, 0)
++    assert allowed(mask) == [8]
++    wrapper.accept_token(8)
++    wrapper.fill_vocab_mask(mask, 0)
++    wrapper.grammar.fill_vocab_mask.assert_called_once_with(mask, 0)
++    wrapper.rollback(2)
++    wrapper.fill_vocab_mask(mask, 0)
++    assert allowed(mask) == [7]
++
++
++@pytest.mark.parametrize("params", [None, {}, {"thinking_budget": -1}])
++def test_unbudgeted_non_strict_requests_are_unchanged(params):
++    wrapper = make_wrapper()
++    apply_budget(wrapper, params)
++    assert not wrapper.enable_token_filter
++    mask = torch.full((1, 2), -1, dtype=torch.int32)
++    wrapper.fill_vocab_mask(mask, 0)
++    assert allowed(mask) == list(range(32))
++
++
++def test_unsupported_filter_is_explicitly_rejected():
++    wrapper = make_wrapper(support=False)
++    request = apply_budget(wrapper, {"thinking_budget": 8})
++    request.set_finish_with_abort.assert_called_once()
++
++
++def test_zero_budget_still_emits_end_marker_and_does_not_change_context():
++    wrapper = make_wrapper()
++    apply_budget(wrapper, {"thinking_budget": 0})
++    mask = torch.full((1, 2), -1, dtype=torch.int32)
++    wrapper.fill_vocab_mask(mask, 0)
++    assert allowed(mask) == [7]
+diff --git a/test/registered/unit/constrained/test_xgrammar_pattern_length_contract.py b/test/registered/unit/constrained/test_xgrammar_pattern_length_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..48ff80c99161c6852202d383cae6367e33ac9d9a
+--- /dev/null
++++ b/test/registered/unit/constrained/test_xgrammar_pattern_length_contract.py
+@@ -0,0 +1,93 @@
++"""Reject unsupported combined constraints; preserve valid independent uses."""
++
++import json
++from unittest.mock import MagicMock
++
++import pytest
++
++from sglang.srt.constrained.base_grammar_backend import InvalidGrammarObject
++from sglang.srt.constrained.xgrammar_backend import (
++    XGrammarGrammarBackend,
++    has_xgrammar_unsupported_pattern_length_combination,
++)
++
++BAD = {"type": "string", "pattern": "^[a-z]+$", "minLength": 5}
++
++
++@pytest.mark.parametrize(
++    "schema",
++    [
++        BAD,
++        {**BAD, "maxLength": 8},
++        {"type": "object", "properties": {"value": BAD}},
++        {"anyOf": [{"type": "null"}, BAD]},
++        {"$defs": {"Value": BAD}},
++        {"items": BAD},
++        {"prefixItems": [BAD]},
++        {"additionalProperties": BAD},
++        {"patternProperties": {".*": BAD}},
++        {"dependentSchemas": {"x": BAD}},
++    ],
++)
++def test_unsupported_nested_schema_is_detected(schema):
++    assert has_xgrammar_unsupported_pattern_length_combination(schema)
++    backend = object.__new__(XGrammarGrammarBackend)
++    backend.grammar_compiler = MagicMock()
++    backend.max_whitespace_cnt = 64
++    backend.any_whitespace = True
++    result = backend.dispatch_json(json.dumps(schema))
++    assert isinstance(result, InvalidGrammarObject)
++    backend.grammar_compiler.compile_json_schema.assert_not_called()
++
++
++@pytest.mark.parametrize(
++    "schema",
++    [
++        {"type": "string", "pattern": "^[a-z]+$"},
++        {"type": "string", "minLength": 5, "maxLength": 8},
++        {"const": BAD},
++        {"enum": [BAD]},
++        {"examples": [BAD]},
++        {"properties": {"pattern": {"type": "string", "minLength": 5}}},
++        {},
++        True,
++        False,
++    ],
++)
++def test_keyword_like_values_are_not_schemas(schema):
++    assert not has_xgrammar_unsupported_pattern_length_combination(schema)
++
++
++@pytest.mark.parametrize("limit", [None, 64])
++def test_builtin_json_sentinel_still_compiles(limit):
++    backend = object.__new__(XGrammarGrammarBackend)
++    backend.grammar_compiler = MagicMock()
++    backend.max_whitespace_cnt = limit
++    backend.any_whitespace = True
++    backend._from_context = MagicMock(return_value="compiled")
++    assert backend.dispatch_json("$$ANY$$") == "compiled"
++
++
++@pytest.mark.parametrize("legacy", [False, True])
++def test_structural_tags_do_not_bypass_schema_guard(legacy):
++    backend = object.__new__(XGrammarGrammarBackend)
++    backend.grammar_compiler = MagicMock()
++    if legacy:
++        tag = {
++            "structures": [{"begin": "<tool>", "schema": BAD, "end": "</tool>"}],
++            "triggers": ["<tool>"],
++        }
++    else:
++        tag = {
++            "type": "structural_tag",
++            "format": {
++                "type": "tag",
++                "begin": "<tool>",
++                "content": {"type": "json_schema", "json_schema": BAD},
++                "end": "</tool>",
++            },
++        }
++    assert isinstance(
++        backend.dispatch_structural_tag(json.dumps(tag)), InvalidGrammarObject
++    )
++    backend.grammar_compiler.compile_structural_tag.assert_not_called()
+diff --git a/test/registered/unit/entrypoints/openai/test_initial_stream_error_status.py b/test/registered/unit/entrypoints/openai/test_initial_stream_error_status.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d78368457e5e890fcff76cac0fa7f73e1716524f
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_initial_stream_error_status.py
+@@ -0,0 +1,58 @@
++"""An initial error is an HTTP error; mid-stream errors remain SSE events."""
++
++import asyncio
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++import pytest
++from fastapi.responses import ORJSONResponse, StreamingResponse
++
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++
++
++@pytest.mark.parametrize("status", [400, 422, 429, 500, 503])
++def test_initial_stream_error_uses_real_http_status_and_closes_generator(status):
++    serving = OpenAIServingChat.__new__(OpenAIServingChat)
++    serving.tokenizer_manager = SimpleNamespace(create_abort_task=MagicMock())
++    closed = []
++
++    async def generate(*_args):
++        try:
++            yield serving.create_streaming_error_response(
++                "Invalid schema", status_code=status
++            ).join(["data: ", "\n\n"])
++            raise AssertionError("Must not consume a fake usage event after the error")
++        finally:
++            closed.append(True)
++
++    serving._generate_chat_stream = generate
++    response = asyncio.run(serving._handle_streaming_request(None, None, None))
++    assert isinstance(response, ORJSONResponse)
++    assert response.status_code == status
++    assert json.loads(response.body)["message"] == "Invalid schema"
++    assert closed == [True]
++    serving.tokenizer_manager.create_abort_task.assert_not_called()
++
++
++def test_successful_first_event_is_preserved_and_later_error_stays_streamed():
++    serving = OpenAIServingChat.__new__(OpenAIServingChat)
++    serving.tokenizer_manager = SimpleNamespace(
++        create_abort_task=MagicMock(return_value=None)
++    )
++    role = 'data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'
++    error = 'data: {"error":{"message":"later failure","code":500}}\n\n'
++
++    async def generate(*_args):
++        yield role
++        yield error
++
++    serving._generate_chat_stream = generate
++
++    async def run():
++        response = await serving._handle_streaming_request(None, None, None)
++        assert isinstance(response, StreamingResponse)
++        assert response.status_code == 200
++        return [chunk async for chunk in response.body_iterator]
++
++    assert asyncio.run(run()) == [role, error]
+diff --git a/test/registered/unit/function_call/test_nemotron_response_format_prompt.py b/test/registered/unit/function_call/test_nemotron_response_format_prompt.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c4638f1ae719d6073e562e075b1ed7629f0671b
+--- /dev/null
++++ b/test/registered/unit/function_call/test_nemotron_response_format_prompt.py
+@@ -0,0 +1,82 @@
++"""The Nemotron model must see the same JSON contract as constrained decoding."""
++
++import copy
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.entrypoints.openai.serving_chat import (
++    nemotron_response_format_template_kwargs,
++)
++
++
++def request(**overrides):
++    body = {
++        "model": "nvidia/nemotron-3.5-lightning",
++        "messages": [
++            {"role": "system", "content": "Preserve this instruction."},
++            {"role": "user", "content": "Extract the record."},
++        ],
++        "response_format": {
++            "type": "json_schema",
++            "json_schema": {
++                "name": "record",
++                "strict": True,
++                "schema": {
++                    "type": "object",
++                    "properties": {"value": {"const": "<think>literal</think>"}},
++                    "required": ["value"],
++                    "additionalProperties": False,
++                },
++            },
++        },
++    }
++    body.update(overrides)
++    return ChatCompletionRequest.model_validate(body)
++
++
++def test_actual_schema_uses_json_alias_and_does_not_mutate_request():
++    value = request(
++        chat_template_kwargs={
++            "response_format": {"type": "text"},
++            "enable_thinking": False,
++        }
++    )
++    before = copy.deepcopy(value.model_dump())
++    kwargs = dict(value.chat_template_kwargs)
++    kwargs.update(nemotron_response_format_template_kwargs(value, "nemotron_3"))
++    assert kwargs["response_format"] == value.response_format.model_dump(
++        by_alias=True, exclude_unset=True
++    )
++    assert "schema" in kwargs["response_format"]["json_schema"]
++    assert "schema_" not in kwargs["response_format"]["json_schema"]
++    assert kwargs["enable_thinking"] is False
++    assert value.model_dump() == before
++
++
++def test_json_object_is_visible_without_inventing_a_schema():
++    value = request(response_format={"type": "json_object"})
++    assert nemotron_response_format_template_kwargs(value, "nemotron_3") == {
++        "response_format": {"type": "json_object"}
++    }
++
++
++@pytest.mark.parametrize("parser", [None, "muse", "qwen3", "deepseek-r1"])
++def test_other_models_are_unchanged(parser):
++    assert nemotron_response_format_template_kwargs(request(), parser) == {}
++
++
++@pytest.mark.parametrize(
++    "overrides",
++    [
++        {"response_format": None},
++        {"response_format": {"type": "text"}},
++        {"input_ids": [1, 2, 3]},
++        {"continue_final_message": True},
++    ],
++)
++def test_non_json_and_preencoded_or_continued_requests_are_unchanged(overrides):
++    assert (
++        nemotron_response_format_template_kwargs(request(**overrides), "nemotron_3")
++        == {}
++    )
+diff --git a/test/registered/unit/function_call/test_nemotron_structured_reasoning_default.py b/test/registered/unit/function_call/test_nemotron_structured_reasoning_default.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a25e7513a44dc0b6e758feddfdb6eba14d79f41a
+--- /dev/null
++++ b/test/registered/unit/function_call/test_nemotron_structured_reasoning_default.py
+@@ -0,0 +1,145 @@
++"""Nemotron JSON defaults must not consume the final-answer budget implicitly."""
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.entrypoints.openai.serving_chat import (
++    apply_nemotron_structured_output_reasoning_budget,
++)
++
++
++def request(**overrides):
++    body = {
++        "model": "nvidia/nemotron-3.5-lightning",
++        "messages": [{"role": "user", "content": "Return JSON."}],
++        "response_format": {"type": "json_object"},
++        "max_tokens": 128,
++    }
++    body.update(overrides)
++    return ChatCompletionRequest.model_validate(body)
++
++
++@pytest.mark.parametrize(
++    "response_format",
++    [
++        {"type": "json_object"},
++        {
++            "type": "json_schema",
++            "json_schema": {
++                "name": "answer",
++                "strict": True,
++                "schema": {"type": "object"},
++            },
++        },
++    ],
++)
++def test_default_json_reserves_final_budget_without_disabling_thinking(response_format):
++    value = request(response_format=response_format)
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.chat_template_kwargs is None
++    assert value.custom_params == {"thinking_budget": 0}
++    assert value.max_tokens == 128
++    assert value.to_sampling_params([], {})["max_new_tokens"] == 128
++
++
++@pytest.mark.parametrize(
++    "controls",
++    [
++        {"reasoning": {"enabled": False}},
++        {"reasoning_effort": "none"},
++        {"chat_template_kwargs": {"enable_thinking": False}},
++        {"chat_template_kwargs": {"thinking": False}},
++        {"custom_params": {"thinking_budget": 256}},
++        {"input_ids": [1, 2, 3]},
++        {"continue_final_message": True},
++    ],
++)
++def test_off_explicit_budget_and_continuation_are_preserved(controls):
++    value = request(**controls)
++    before = value.model_dump()
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.model_dump() == before
++
++
++@pytest.mark.parametrize(
++    "controls",
++    [
++        {"reasoning": {"enabled": True}},
++        {"reasoning": {"effort": "high"}},
++        {"reasoning_effort": "low"},
++        {"include_reasoning": True},
++        {"chat_template_kwargs": {"enable_thinking": True}},
++        {"chat_template_kwargs": {"thinking": True}},
++        {"chat_template_kwargs": {"reasoning_effort": "high"}},
++    ],
++)
++def test_enabled_reasoning_keeps_its_controls_and_reserves_final_space(controls):
++    value = request(max_tokens=8192, **controls)
++    before = value.model_dump()
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.custom_params == {"thinking_budget": 4096}
++    after = value.model_dump()
++    after["custom_params"] = before["custom_params"]
++    assert after == before
++
++
++@pytest.mark.parametrize(
++    "choice", ["auto", "required", {"type": "function", "function": {"name": "record"}}]
++)
++def test_tools_also_reserve_final_space_without_changing_choice(choice):
++    value = request(
++        response_format=None,
++        max_tokens=4096,
++        reasoning={"enabled": True},
++        tools=[
++            {
++                "type": "function",
++                "function": {"name": "record", "parameters": {"type": "object"}},
++            }
++        ],
++        tool_choice=choice,
++    )
++    before = value.model_dump()
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.custom_params == {"thinking_budget": 2048}
++    after = value.model_dump()
++    after["custom_params"] = before["custom_params"]
++    assert after == before
++
++
++@pytest.mark.parametrize("parser", [None, "muse", "qwen3", "deepseek-r1"])
++def test_other_models_are_unchanged(parser):
++    value = request()
++    before = value.model_dump()
++    apply_nemotron_structured_output_reasoning_budget(value, parser)
++    assert value.model_dump() == before
++
++
++@pytest.mark.parametrize("format", [None, {"type": "text"}])
++def test_ordinary_chat_is_unchanged(format):
++    value = request(response_format=format)
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.chat_template_kwargs is None
++    assert value.custom_params is None
++
++
++@pytest.mark.parametrize(
++    "total,expected",
++    [(64, 0), (128, 0), (512, 256), (2048, 1024), (8192, 4096), (16384, 12288)],
++)
++def test_budget_scales_without_changing_total(total, expected):
++    value = request(max_tokens=total, custom_params={"other": "retained"})
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.custom_params == {"other": "retained", "thinking_budget": expected}
++    assert value.max_tokens == total
++    assert value.chat_template_kwargs is None
++
++
++def test_max_completion_tokens_takes_precedence_and_unspecified_is_unchanged():
++    value = request(max_tokens=8192, max_completion_tokens=512)
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.custom_params == {"thinking_budget": 256}
++    value = request(max_tokens=None)
++    before = value.model_dump()
++    apply_nemotron_structured_output_reasoning_budget(value, "nemotron_3")
++    assert value.model_dump() == before
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_literal_types.py b/test/registered/unit/function_call/test_qwen3_coder_literal_types.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fca446d106f187acadeff8dbf41bd3c1f2979bb0
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_literal_types.py
+@@ -0,0 +1,63 @@
++"""Native XML conversion must not change schema-declared literal types."""
++
++import json
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize(
++    "schema,raw,expected",
++    [
++        ({"type": "string"}, "null", "null"),
++        ({"type": "string"}, "NULL", "NULL"),
++        ({"type": "string"}, "None", "None"),
++        ({"enum": ["null", "other"]}, "null", "null"),
++        ({"const": "null"}, "null", "null"),
++        ({"const": 7}, "7", 7),
++        ({"const": True}, "true", True),
++        ({"const": False}, "false", False),
++        ({"const": {"ok": True}}, '{"ok":true}', {"ok": True}),
++        ({"const": [2, 4]}, "[2,4]", [2, 4]),
++        ({"const": None}, "null", None),
++        ({"type": "null"}, "null", None),
++        ({"type": ["string", "null"]}, "null", None),
++        ({"anyOf": [{"type": "string"}, {"type": "null"}]}, "null", None),
++        ({"type": ["object", "null"]}, "null", None),
++        ({"type": "object"}, '{"nested":null}', {"nested": None}),
++        ({"type": "string"}, "10220_3939392", "10220_3939392"),
++        ({"anyOf": [{"const": 7}, {"type": "null"}]}, "7", 7),
++        ({"anyOf": [{"const": 7}, {"type": "null"}]}, "null", None),
++        ({"allOf": [{"type": "string"}, {"const": "null"}]}, "null", "null"),
++        ({"anyOf": [{"const": "null"}, {"const": "other"}]}, "null", "null"),
++    ],
++)
++def test_literal_parameter_type(stream, schema, raw, expected):
++    tools = [
++        Tool.model_validate(
++            {
++                "type": "function",
++                "function": {
++                    "name": "record",
++                    "parameters": {"type": "object", "properties": {"value": schema}},
++                },
++            }
++        )
++    ]
++    detector = Qwen3CoderDetector(require_complete_calls=True)
++    text = f"<tool_call><function=record><parameter=value>{raw}</parameter></function></tool_call>"
++    if stream:
++        parts = []
++        for char in text:
++            parts.extend(detector.parse_streaming_increment(char, tools).calls)
++        arguments = "".join(part.parameters or "" for part in parts)
++    else:
++        result = detector.detect_and_parse(text, tools)
++        assert len(result.calls) == 1
++        arguments = result.calls[0].parameters
++    value = json.loads(arguments)["value"]
++    assert value == expected
++    assert type(value) is type(expected)
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_local_refs.py b/test/registered/unit/function_call/test_qwen3_coder_local_refs.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2e61f1369d0f1babd94d8986dc0c0870c491747a
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_local_refs.py
+@@ -0,0 +1,71 @@
++"""JSON Schema references must retain parameter types in native XML tools."""
++
++import copy
++import json
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize(
++    "definition,value",
++    [
++        ({"type": "object", "properties": {"lat": {"type": "number"}}}, {"lat": 48.85}),
++        ({"type": "array", "items": {"type": "integer"}}, [2, 4, 6]),
++        ({"type": "integer"}, 7),
++        ({"type": "boolean"}, True),
++        ({"anyOf": [{"type": "null"}, {"type": "object"}]}, {"ok": True}),
++        ({"type": "string"}, "10220_3939392"),
++    ],
++)
++def test_local_reference_parameter_conversion(stream, definition, value):
++    parameters = {
++        "type": "object",
++        "properties": {"value": {"$ref": "#/$defs/Alias"}},
++        "$defs": {"Alias": {"$ref": "#/$defs/A~1B~0C"}, "A/B~C": definition},
++    }
++    tools = [
++        Tool.model_validate(
++            {
++                "type": "function",
++                "function": {"name": "record", "parameters": parameters},
++            }
++        )
++    ]
++    before = copy.deepcopy(tools[0].function.parameters)
++    detector = Qwen3CoderDetector(require_complete_calls=True)
++    encoded = value if isinstance(value, str) else json.dumps(value)
++    text = f"<tool_call><function=record><parameter=value>{encoded}</parameter></function></tool_call>"
++    if stream:
++        items = []
++        for char in text:
++            items.extend(detector.parse_streaming_increment(char, tools).calls)
++        arguments = "".join(item.parameters or "" for item in items)
++    else:
++        result = detector.detect_and_parse(text, tools)
++        assert len(result.calls) == 1
++        arguments = result.calls[0].parameters
++    assert json.loads(arguments) == {"value": value}
++    assert tools[0].function.parameters == before
++
++
++def test_cyclic_and_remote_references_do_not_recurse_or_fetch():
++    for reference in ["#/$defs/Loop", "https://example.invalid/schema.json"]:
++        parameters = {
++            "type": "object",
++            "properties": {"value": {"$ref": reference}},
++            "$defs": {"Loop": {"$ref": "#/$defs/Loop"}},
++        }
++        tools = [
++            Tool.model_validate(
++                {
++                    "type": "function",
++                    "function": {"name": "record", "parameters": parameters},
++                }
++            )
++        ]
++        config = Qwen3CoderDetector()._get_arguments_config("record", tools)
++        assert "value" in config
+diff --git a/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py b/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ccd761c19973b23d28578ee02ef95a924f4f03b
+--- /dev/null
++++ b/test/registered/unit/managers/test_parallel_sampling_parent_cleanup.py
+@@ -0,0 +1,58 @@
++"""Expanded parallel-sample parent placeholders must not outlive a request."""
++
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock
++
++import pytest
++
++from sglang.srt.managers.io_struct import GenerateReqInput
++from sglang.srt.managers.tokenizer_manager import TokenizerManager
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize("samples", [2, 3])
++@pytest.mark.parametrize("batch_size", [1, 2])
++def test_parallel_sampling_releases_all_parent_placeholders(
++    stream, samples, batch_size
++):
++    request = GenerateReqInput(
++        text=["first", "second"][:batch_size],
++        sampling_params={"n": samples, "max_new_tokens": 16},
++        stream=stream,
++    )
++    request.normalize_batch_and_arguments()
++    manager = TokenizerManager.__new__(TokenizerManager)
++    manager.rid_to_state = {
++        rid: SimpleNamespace(time_stats=MagicMock()) for rid in request.rid
++    }
++    unrelated = object()
++    manager.rid_to_state["unrelated-inflight"] = unrelated
++    manager._tokenize_one_request = AsyncMock(
++        side_effect=lambda obj: SimpleNamespace(
++            rid=obj.rid,
++            sampling_params=SimpleNamespace(max_new_tokens=16),
++            mm_inputs=None,
++            input_ids=[1, 2],
++        )
++    )
++    manager._send_one_request = MagicMock()
++
++    def init_state(obj):
++        manager.rid_to_state[obj.rid] = SimpleNamespace(time_stats=MagicMock())
++
++    async def wait_response(obj, _request=None):
++        manager.rid_to_state.pop(obj.rid)
++        yield {"meta_info": {"id": obj.rid}, "text": "ok"}
++
++    manager._init_req_state = init_state
++    manager._wait_one_response = wait_response
++
++    async def run():
++        return [response async for response in manager._handle_batch_request(request)]
++
++    outputs = asyncio.run(run())
++    assert len(outputs) == (samples * batch_size if stream else 1)
++    if not stream:
++        assert len(outputs[0]) == samples * batch_size
++    assert manager.rid_to_state == {"unrelated-inflight": unrelated}
+diff --git a/test/registered/unit/parser/test_nemotron_literal_reasoning_markers.py b/test/registered/unit/parser/test_nemotron_literal_reasoning_markers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..100a57faf4e00ac84555e39ffde9924a6b27c51a
+--- /dev/null
++++ b/test/registered/unit/parser/test_nemotron_literal_reasoning_markers.py
+@@ -0,0 +1,61 @@
++"""Reasoning delimiters inside the final answer are data, not a new channel."""
++
++import json
++
++import pytest
++
++from sglang.srt.parser.reasoning_parser import Nemotron3Detector
++
++ANSWER = json.dumps({"text": "<think>literal not reasoning</think>", "end": "after"})
++
++
++@pytest.mark.parametrize("prefix", ["", "analysis</think>", "<think>analysis</think>"])
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_literal_markers_preserved_at_every_split(prefix, stream_reasoning):
++    raw = prefix + ANSWER
++    force = prefix == "analysis</think>"
++    expected_reasoning = "analysis" if prefix else ""
++    detector = Nemotron3Detector(force_reasoning=force)
++    result = detector.detect_and_parse(raw)
++    assert (result.reasoning_text, result.normal_text) == (expected_reasoning, ANSWER)
++
++    for cut in range(len(raw) + 1):
++        detector = Nemotron3Detector(
++            force_reasoning=force, stream_reasoning=stream_reasoning
++        )
++        parts = [
++            detector.parse_streaming_increment(raw[:cut]),
++            detector.parse_streaming_increment(raw[cut:]),
++            detector.finish(),
++        ]
++        assert "".join(p.reasoning_text for p in parts) == expected_reasoning, cut
++        assert "".join(p.normal_text for p in parts) == ANSWER, cut
++
++
++@pytest.mark.parametrize("width", [1, 3, 7, 19, 10000])
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_answer_does_not_reopen_reasoning(width, stream_reasoning):
++    detector = Nemotron3Detector(
++        force_reasoning=True, stream_reasoning=stream_reasoning
++    )
++    raw = "analysis</think>" + ANSWER
++    parts = [
++        detector.parse_streaming_increment(raw[i : i + width])
++        for i in range(0, len(raw), width)
++    ]
++    parts.append(detector.finish())
++    assert "".join(p.reasoning_text for p in parts) == "analysis"
++    assert "".join(p.normal_text for p in parts) == ANSWER
++
++
++@pytest.mark.parametrize("previous", ['{"text":"', '<think>analysis</think>{"text":"'])
++def test_continued_final_answer_preserves_a_leading_literal(previous):
++    tail = '<think>literal</think>"}'
++    kwargs = dict(continue_final_message=True, previous_content=previous)
++    result = Nemotron3Detector(**kwargs).detect_and_parse(tail)
++    assert (result.reasoning_text, result.normal_text) == ("", tail)
++    detector = Nemotron3Detector(**kwargs)
++    parts = [detector.parse_streaming_increment(c) for c in tail]
++    parts.append(detector.finish())
++    assert "".join(p.reasoning_text for p in parts) == ""
++    assert "".join(p.normal_text for p in parts) == tail

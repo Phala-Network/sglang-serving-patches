@@ -1,0 +1,2874 @@
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/c1.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/c1.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca1200c3ad89725e51c58306bfc960e8f7ccb110
+--- /dev/null
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/c1.cuh
+@@ -0,0 +1,312 @@
++#include <sgl_kernel/tensor.h>
++#include <sgl_kernel/utils.h>
++
++#include <sgl_kernel/math.cuh>
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++#include <sgl_kernel/vec.cuh>
++#include <sgl_kernel/warp.cuh>
++
++#include <sgl_kernel/deepseek_v4/fp4_utils.cuh>
++#include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++#include <sgl_kernel/deepseek_v4/kv_layout.cuh>
++
++#include <tvm/ffi/container/tensor.h>
++
++#include <bit>
++#include <cstdint>
++
++namespace sglang {
++
++/// \brief Ratio-1 decode compressor: RMSNorm and the whole main-KV write.
++///
++/// At ratio 1 the latent stands for the token itself, so the kernel's input is the
++/// `wkv` GEMM output and its RoPE position is `positions`, not `positions - 1`.
++/// `kv_output` is the pre-RoPE latent, for the index-K branch's `wk` projection.
++struct Compress1DecodeParams {
++  const bf16_t* __restrict__ kv_input;     // [num_tokens, kHeadDim] bf16
++  bf16_t* __restrict__ kv_output;          // [num_tokens, kHeadDim] bf16, pre-RoPE
++  const bf16_t* __restrict__ norm_weight;  // [kHeadDim] bf16
++  const float* __restrict__ freqs_cis;     // [max_pos, kRopeDim] fp32, real/imag interleaved
++  const void* __restrict__ positions;      // [num_tokens] PosT
++  const void* __restrict__ out_loc;        // [num_tokens] LocT compressed slot; 0 marks a padded row
++  uint8_t* __restrict__ kvcache;           // [npages, kPageBytes] uint8
++  float eps;
++};
++
++/// Elements per thread; 256 threads per token measured fastest on B200 decode batches.
++/// At (512, 64) it also keeps the nope/rope split warp-aligned, as the fp8 amax reduction requires.
++constexpr uint32_t kC1VecSize = 2;
++
++/// \brief RMSNorm + RoPE tail + fp4 fake-quant + the FlashMLA store.
++///
++/// One CTA per token, `kHeadDim / kC1VecSize` threads over the row.
++///
++/// The three reductions have different widths and are not interchangeable: the RMSNorm
++/// statistic spans the row, an fp8 store scale 64 elements, an fp4 block 16.
++///
++/// kLayout is the cache's page format: V4 and V41 store the fake-quantized value; V41_FP4
++/// stores the e2m1 codes and their e4m3 scales directly, so the fp4 rounding happens once.
++template <
++    int64_t kHeadDim,
++    int64_t kRopeDim,
++    int32_t kPageBits,
++    typename PosT,
++    typename LocT,
++    deepseek_v4::KVLayout kLayout,
++    bool kUsePDL>
++__global__ __launch_bounds__(kHeadDim / kC1VecSize) void flash_c1_decode_kernel(
++    const __grid_constant__ Compress1DecodeParams params) {
++  using namespace device;
++  using deepseek_v4::KVLayout;
++  using deepseek_v4::fp8::cast_to_ue8m0;
++  using deepseek_v4::fp8::inv_scale_ue8m0;
++  using deepseek_v4::fp8::pack_fp8;
++
++  /// Threads over one token; the leading kNopeLanes carry the fp8 nope part, the rest the bf16 RoPE tail.
++  constexpr uint32_t kVecSize = kC1VecSize;
++  constexpr uint32_t kRowLanes = kHeadDim / kVecSize;
++  constexpr uint32_t kNopeLanes = (kHeadDim - kRopeDim) / kVecSize;
++  constexpr uint32_t kRowWarps = kRowLanes / kWarpThreads;
++  constexpr uint32_t kFp8Lanes = 64 / kVecSize;
++  constexpr uint32_t kFp4Lanes = deepseek_v4::fp4::kCompressedKVBlockSize / kVecSize;
++  using Paged = deepseek_v4::PagedKV<kLayout, kPageBits>;
++  static_assert(kHeadDim == 512 && kRopeDim == 64, "the FlashMLA layouts require (512, 64)");
++  static_assert(kHeadDim % kVecSize == 0 && kVecSize % 2 == 0);
++  static_assert(kRowLanes % kWarpThreads == 0, "a token owns a whole number of warps");
++  static_assert(kNopeLanes % kFp8Lanes == 0, "the nope part must end on an fp8 scale block");
++  static_assert(
++      (kHeadDim - kRopeDim) % deepseek_v4::fp4::kCompressedKVBlockSize == 0,
++      "no fp4 block may straddle the nope/rope seam");
++  static_assert(kFp8Lanes <= kWarpThreads && kFp4Lanes <= kWarpThreads);
++
++  using bf16_vec_t = AlignedVector<bf16x2_t, kVecSize / 2>;
++  using fp8_vec_t = AlignedVector<fp8x2_e4m3_t, kVecSize / 2>;
++  using freq_vec_t = AlignedVector<float, kVecSize>;
++
++  const uint32_t tx = threadIdx.x;
++  const uint32_t row = blockIdx.x;
++
++  // `out_loc` and `positions` are step metadata, independent of the PDL producer.
++  // Slots fit in int32; padded rows are suppressed at the cache store.
++  const auto out_loc = static_cast<int32_t>(static_cast<const LocT*>(params.out_loc)[row]);
++  const auto position = static_cast<int64_t>(static_cast<const PosT*>(params.positions)[row]);
++  PDLWaitPrimary<kUsePDL>();
++
++  float data[kVecSize];
++  bf16_vec_t latent;
++  {
++    bf16_vec_t input, weight;
++    input.load(params.kv_input + row * kHeadDim, tx);
++    weight.load(params.norm_weight, tx);
++
++    // `project` already returns bf16 at ratio 1, so `finish`'s `.to(bfloat16)`
++    // is a no-op and the statistic is taken over the loaded values as they are.
++    float local_sqrsum = 0.0f;
++#pragma unroll
++    for (uint32_t j = 0; j < kVecSize / 2; ++j) {
++      const auto [x, y] = cast<fp32x2_t>(input[j]);
++      local_sqrsum += x * x;
++      local_sqrsum += y * y;
++      data[j * 2 + 0] = x;
++      data[j * 2 + 1] = y;
++    }
++
++    __shared__ float s_warp_sum[kRowWarps];
++    s_warp_sum[tx / kWarpThreads] = warp::reduce_sum(local_sqrsum);
++    __syncthreads();
++    float sqrsum = 0.0f;
++#pragma unroll
++    for (uint32_t i = 0; i < kRowWarps; ++i) {
++      sqrsum += s_warp_sum[i];
++    }
++    constexpr float kInvHeadDim = 1.0f / static_cast<float>(kHeadDim);
++    const auto norm_factor = math::rsqrt(sqrsum * kInvHeadDim + params.eps);
++
++#pragma unroll
++    for (uint32_t j = 0; j < kVecSize / 2; ++j) {
++      const auto [wx, wy] = cast<fp32x2_t>(weight[j]);
++      const auto x = data[j * 2 + 0] * norm_factor * wx;
++      const auto y = data[j * 2 + 1] * norm_factor * wy;
++      latent[j] = cast<bf16x2_t>(fp32x2_t{x, y});
++    }
++  }
++
++  latent.store(params.kv_output + row * kHeadDim, tx);
++  PDLTriggerSecondary<kUsePDL>();
++
++  // Match finish()'s bf16 rounding before the main-KV RoPE.
++#pragma unroll
++  for (uint32_t j = 0; j < kVecSize / 2; ++j) {
++    const auto [x, y] = cast<fp32x2_t>(latent[j]);
++    data[j * 2 + 0] = x;
++    data[j * 2 + 1] = y;
++  }
++
++  if (tx >= kNopeLanes) {
++    // Match rope_tail()'s bf16 rounding: it ends in `.to(x.dtype)` before the fake-quant.
++    freq_vec_t freq;
++    freq.load(params.freqs_cis + position * kRopeDim, tx - kNopeLanes);
++#pragma unroll
++    for (uint32_t j = 0; j < kVecSize / 2; ++j) {
++      const auto k = j * 2;
++      const auto x_real = data[k + 0];
++      const auto x_imag = data[k + 1];
++      const auto f_real = freq[k + 0];
++      const auto f_imag = freq[k + 1];
++      const auto rotated =
++          cast<bf16x2_t>(fp32x2_t{x_real * f_real - x_imag * f_imag, x_real * f_imag + x_imag * f_real});
++      const auto [r0, r1] = cast<fp32x2_t>(rotated);
++      data[k + 0] = r0;
++      data[k + 1] = r1;
++    }
++  }
++
++  if constexpr (kLayout == KVLayout::V41_FP4) {
++    // The fp4 cache takes the rotated bf16 value as is: its row quantizer is the fake quant, minus the dequant.
++    if (out_loc <= 0) return;
++    const auto kv_row = Paged::row(params.kvcache, out_loc);
++    return deepseek_v4::v41::store_row<kLayout>(kv_row.data, kv_row.scale, tx, data);
++  }
++
++  // FP4/E4M3 fake-quant over 16 elements, i.e. kFp4Lanes threads.
++  {
++    float amax = fabsf(data[0]);
++#pragma unroll
++    for (uint32_t i = 1; i < kVecSize; ++i) {
++      amax = fmaxf(amax, fabsf(data[i]));
++    }
++    amax = warp::reduce_max<kFp4Lanes>(amax);
++    const auto scale = deepseek_v4::fp4::compressed_kv_scale(amax);
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      const auto [x, y] = deepseek_v4::fp4::fake_quant_compressed_kv_x2({data[i * 2 + 0], data[i * 2 + 1]}, scale);
++      data[i * 2 + 0] = x;
++      data[i * 2 + 1] = y;
++    }
++  }
++
++  // A padded CUDA-graph row carries `out_loc == 0`, the reserved dummy slot, and must publish
++  // nothing: at ratio 1 the compressed slot is the FULL slot, so there is no other marker to read.
++  if (out_loc <= 0) return;
++  const auto kv_row = Paged::row(params.kvcache, out_loc);
++
++  if constexpr (kLayout == KVLayout::V41) {
++    // fp8 with one ue8m0 scale per 32 elements over the whole row, RoPE included.
++    return deepseek_v4::v41::store_row<kLayout>(kv_row.data, kv_row.scale, tx, data);
++  }
++
++  const auto value_ptr = kv_row.data;
++
++  if (tx >= kNopeLanes) {
++    bf16_vec_t rope_out;
++#pragma unroll
++    for (uint32_t j = 0; j < kVecSize / 2; ++j) {
++      rope_out[j] = cast<bf16x2_t>(fp32x2_t{data[j * 2 + 0], data[j * 2 + 1]});
++    }
++    rope_out.store(value_ptr + (kHeadDim - kRopeDim), tx - kNopeLanes);
++  } else {
++    // fp8 e4m3 with one ue8m0 scale per 64 elements.
++    float abs_max = fabsf(data[0]);
++#pragma unroll
++    for (uint32_t i = 1; i < kVecSize; ++i) {
++      abs_max = fmaxf(abs_max, fabsf(data[i]));
++    }
++    abs_max = warp::reduce_max<kFp8Lanes>(abs_max);
++    const auto scale_ue8m0 = cast_to_ue8m0(fmaxf(1e-4f, abs_max) / math::FP8_E4M3_MAX);
++    const auto inv_scale = inv_scale_ue8m0(scale_ue8m0);
++    fp8_vec_t nope_out;
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      nope_out[i] = pack_fp8(data[i * 2 + 0] * inv_scale, data[i * 2 + 1] * inv_scale);
++    }
++    nope_out.store(value_ptr, tx);
++    kv_row.scale[tx / kFp8Lanes] = scale_ue8m0;
++  }
++}
++
++/// \brief Host side of `flash_c1_decode_kernel`.
++template <int64_t kHeadDim, int64_t kRopeDim, uint32_t kPageSize, deepseek_v4::KVLayout kLayout, bool kUsePDL>
++struct FlashCompress1Kernel {
++  static constexpr int32_t kPageBits = std::bit_width(kPageSize) - 1;
++  static constexpr int64_t kPageBytes = deepseek_v4::kv_page_bytes<kLayout>(kPageSize);
++  static constexpr uint32_t kBlockSize = kHeadDim / kC1VecSize;
++
++  static_assert(std::has_single_bit(kPageSize), "the page/slot split needs a power-of-two page");
++  static_assert(kBlockSize % device::kWarpThreads == 0 && kBlockSize <= 1024);
++  static_assert(kLayout != deepseek_v4::KVLayout::V4 || kPageBytes == host::div_ceil(584ll * kPageSize, 576) * 576);
++
++  template <typename PosT, typename LocT>
++  static constexpr auto kernel = flash_c1_decode_kernel<kHeadDim, kRopeDim, kPageBits, PosT, LocT, kLayout, kUsePDL>;
++
++  /// \brief The (`positions`, `out_loc`) dtype pair, resolved at run time.
++  static auto select(const bool pos_i32, const bool loc_i32) {
++    if (pos_i32) return loc_i32 ? kernel<int32_t, int32_t> : kernel<int32_t, int64_t>;
++    return loc_i32 ? kernel<int64_t, int32_t> : kernel<int64_t, int64_t>;
++  }
++
++  /// \brief RMSNorm + RoPE + fp4 fake-quant + the FlashMLA store, one launch.
++  ///
++  /// \param kv_input `[num_tokens, kHeadDim]` bf16, the `wkv` projection.
++  /// \param kv_output `[num_tokens, kHeadDim]` bf16, the pre-RoPE latent.
++  /// \param norm_weight `[kHeadDim]` bf16.
++  /// \param freqs_cis `[max_pos, kRopeDim]` fp32, real/imag interleaved.
++  /// \param positions `[num_tokens]` int32 or int64, indexed as-is.
++  /// \param out_loc `[num_tokens]` int32 or int64, the compressed slot; `0` is a padded row.
++  /// \param kvcache `[npages, kPageBytes]` uint8, or the pool's fp8 view of it.
++  static void run_decode_fusion(
++      const tvm::ffi::TensorView kv_input,
++      const tvm::ffi::TensorView kv_output,
++      const tvm::ffi::TensorView norm_weight,
++      const tvm::ffi::TensorView freqs_cis,
++      const tvm::ffi::TensorView positions,
++      const tvm::ffi::TensorView out_loc,
++      const tvm::ffi::TensorView kvcache,
++      const float eps) {
++    using namespace host;
++
++    auto N = SymbolicSize{"num_tokens"};
++    auto device_ = SymbolicDevice{};
++    device_.set_options<kDLCUDA>();
++
++    TensorMatcher({N, kHeadDim})  //
++        .with_dtype<bf16_t>()
++        .with_device(device_)
++        .verify(kv_input)
++        .verify(kv_output);
++    TensorMatcher({kHeadDim}).with_dtype<bf16_t>().with_device(device_).verify(norm_weight);
++    // Real/imag interleaved, so the trailing dim is kRopeDim, not kRopeDim / 2.
++    TensorMatcher({-1, kRopeDim}).with_dtype<fp32_t>().with_device(device_).verify(freqs_cis);
++    // The scheduler's `out_cache_loc` (which `c1_out_loc` aliases at ratio 1)
++    // is int64; the unit tests hand int32. Both are indexed as-is.
++    auto pos_dtype = SymbolicDType{};
++    auto loc_dtype = SymbolicDType{};
++    TensorMatcher({N}).with_dtype<int32_t, int64_t>(pos_dtype).with_device(device_).verify(positions);
++    TensorMatcher({N}).with_dtype<int32_t, int64_t>(loc_dtype).with_device(device_).verify(out_loc);
++    // The pool allocates the buffer as uint8 and hands it out viewed as its fp8
++    // dtype (`get_extra_key_buffer`); both are one byte per element.
++    TensorMatcher({-1, kPageBytes}).with_dtype<uint8_t, fp8_e4m3_t>().with_device(device_).verify(kvcache);
++
++    const auto num_tokens = static_cast<uint32_t>(N.unwrap());
++    if (num_tokens == 0) return;
++
++    const auto params = Compress1DecodeParams{
++        .kv_input = static_cast<const bf16_t*>(kv_input.data_ptr()),
++        .kv_output = static_cast<bf16_t*>(kv_output.data_ptr()),
++        .norm_weight = static_cast<const bf16_t*>(norm_weight.data_ptr()),
++        .freqs_cis = static_cast<const float*>(freqs_cis.data_ptr()),
++        .positions = positions.data_ptr(),
++        .out_loc = out_loc.data_ptr(),
++        .kvcache = static_cast<uint8_t*>(kvcache.data_ptr()),
++        .eps = eps,
++    };
++    const auto k = select(pos_dtype.is_type<int32_t>(), loc_dtype.is_type<int32_t>());
++    LaunchKernel(num_tokens, kBlockSize, device_.unwrap())  //
++        .enable_pdl(kUsePDL)(k, params);
++  }
++};
++
++// The JIT module names and wrappers spell the layouts as bare enumerators.
++using enum deepseek_v4::KVLayout;
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/c2.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/c2.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..60c96ba9244c1fdf9ba0a6afba63c0016bcc6a86
+--- /dev/null
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/c2.cuh
+@@ -0,0 +1,398 @@
++#include <sgl_kernel/tensor.h>
++#include <sgl_kernel/utils.h>
++
++#include <sgl_kernel/math.cuh>
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++#include <sgl_kernel/vec.cuh>
++#include <sgl_kernel/warp.cuh>
++
++#include <sgl_kernel/deepseek_v4/fp4_utils.cuh>
++#include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++#include <sgl_kernel/deepseek_v4/kv_layout.cuh>
++
++#include <tvm/ffi/container/tensor.h>
++
++#include <bit>
++#include <cstdint>
++
++namespace sglang {
++
++/// \brief Ratio-2 decode compressor: pair-pool, RMSNorm and the main-KV write.
++///
++/// `kv_input` and `kv_state` rows are `2 * kHeadDim` floats, kv then score.
++/// `kv_output` is the pre-RoPE latent, for the index-K branch's `wk`.
++struct Compress2DecodeParams {
++  const float* __restrict__ kv_input;  // [num_tokens, 2 * kHeadDim] fp32
++  /// `CompressStatePool`'s flat `KVAndScore` buffer, `[size, 2 * kHeadDim]` fp32, kv in the low
++  /// half and score in the high half; a request's pending pair lives at `req * ring_size + pos % ring_size`.
++  float* __restrict__ kv_state;
++  bf16_t* __restrict__ kv_output;          // [num_tokens, kHeadDim] bf16, pre-RoPE
++  const bf16_t* __restrict__ norm_weight;  // [kHeadDim] bf16
++  const float* __restrict__ freqs_cis;     // [max_pos, kRopeDim] fp32, real/imag interleaved
++  const void* __restrict__ positions;      // [num_tokens] PosT
++  const int64_t* __restrict__ req;         // [num_tokens], req_pool_idx per token
++  const void* __restrict__ raw_out_loc;    // [num_tokens] LocT, the FULL slot; 0 marks a padded row
++  uint8_t* __restrict__ kvcache;           // [npages, kPageBytes] uint8
++  /// Positions per request slot in the pair-state ring.
++  uint32_t ring_size;
++  float eps;
++};
++
++/// Elements per thread; 256 threads per token measured fastest on B200 decode batches.
++/// At (512, 64) it also keeps the nope/rope split warp-aligned, as the fp8 amax reduction requires.
++constexpr uint32_t kC2VecSize = 2;
++
++/// \brief grid = num_tokens, block = kHeadDim / kC2VecSize.
++///
++/// An odd position completes a group with its even predecessor; an even one parks in the state.
++///
++/// Under target-verify, `draft_len` consecutive positions per request: `blockIdx.x` is the
++/// position inside the block, `blockIdx.y` the request, and every row but the first takes its
++/// partner from the previous `kv_input` row instead of the ring.
++///
++/// The three reductions have different widths and are not interchangeable: the RMSNorm
++/// statistic spans the row, an fp8 store scale 64 elements, an fp4 block 16.
++///
++/// kLayout is the cache's page format: V4 and V41 store the fake-quantized value; V41_FP4
++/// stores the e2m1 codes and their e4m3 scales directly, so the fp4 rounding happens once.
++template <
++    bool kVerify,
++    int64_t kHeadDim,
++    int64_t kRopeDim,
++    int32_t kPageBits,
++    typename PosT,
++    typename LocT,
++    deepseek_v4::KVLayout kLayout,
++    bool kUsePDL>
++__global__ __launch_bounds__(kHeadDim / kC2VecSize) void flash_c2_decode_kernel(const Compress2DecodeParams params) {
++  using namespace device;
++  using deepseek_v4::KVLayout;
++  using deepseek_v4::fp8::cast_to_ue8m0;
++  using deepseek_v4::fp8::inv_scale_ue8m0;
++  using deepseek_v4::fp8::pack_fp8;
++
++  constexpr uint32_t kVecSize = kC2VecSize;
++  constexpr uint32_t kCTASize = kHeadDim / kVecSize;
++  constexpr int64_t kStride = kHeadDim * 2;
++  /// Threads covering the fp8 nope part; the rest carry the bf16 RoPE tail.
++  constexpr uint32_t kNopeThreads = (kHeadDim - kRopeDim) / kVecSize;
++  constexpr uint32_t kFp8Lanes = 64 / kVecSize;
++  constexpr uint32_t kFp4Lanes = deepseek_v4::fp4::kCompressedKVBlockSize / kVecSize;
++  using Paged = deepseek_v4::PagedKV<kLayout, kPageBits>;
++
++  static_assert(kHeadDim == (kVecSize * kCTASize));
++  static_assert(kCTASize % kWarpThreads == 0);
++  static_assert(kNopeThreads % kFp8Lanes == 0, "the nope part must end on an fp8 scale block");
++  static_assert(kWarpThreads % kFp8Lanes == 0 && kWarpThreads % kFp4Lanes == 0);
++  static_assert(kHeadDim == 512 && kRopeDim == 64, "the FlashMLA layouts require (512, 64)");
++  using fp32_vec_t = AlignedVector<float, kVecSize>;
++  using bf16_vec_t = AlignedVector<bf16x2_t, kVecSize / 2>;
++
++  const auto tx = threadIdx.x;
++  // Verify gives each request a CTA column; decode a flat grid of one row each.
++  const auto row = kVerify ? blockIdx.y * gridDim.x + blockIdx.x : blockIdx.x;
++  PDLWaitPrimary<kUsePDL>();
++  // Slots fit in int32 whatever width the scheduler hands them in.
++  const auto raw_out_loc = static_cast<int32_t>(static_cast<const LocT*>(params.raw_out_loc)[row]);
++  // CUDA graph padding is a completely inert row: do not read schedule, input,
++  // state, or RoPE data, and do not publish output or update the cache.
++  if (raw_out_loc == 0) return PDLTriggerSecondary<kUsePDL>();
++  const auto pos = static_cast<const PosT*>(params.positions)[row];
++  // A completing row reads the slot left by `pos - 1`;
++  // a pending row writes its own slot, so reads and writes stay disjoint.
++  const auto rid = params.req[row];
++
++  fp32_vec_t kv_new, score_new;
++  kv_new.load(params.kv_input + row * kStride, tx);
++  score_new.load(params.kv_input + row * kStride, tx + kCTASize);
++
++  const auto ring = static_cast<int64_t>(rid) * params.ring_size;
++  const auto read_row = ring + (pos - 1 + params.ring_size) % params.ring_size;
++  const auto write_row = ring + pos % params.ring_size;
++
++  fp32_vec_t kv_old, score_old;
++  const float* partner = params.kv_state + read_row * kStride;
++  if constexpr (kVerify) {
++    if (blockIdx.x != 0) partner = params.kv_input + static_cast<int64_t>(row - 1) * kStride;
++  }
++  kv_old.load(partner, tx);
++  score_old.load(partner, tx + kCTASize);
++
++  if ((pos & 1) == 0) {
++    kv_new.store(params.kv_state + write_row * kStride, tx);
++    score_new.store(params.kv_state + write_row * kStride, tx + kCTASize);
++    return PDLTriggerSecondary<kUsePDL>();
++  }
++
++  constexpr uint32_t kNumWarps = kCTASize / kWarpThreads;
++  __shared__ float s_warp_sum[kNumWarps];
++  fp32_vec_t staged, freq;
++  bf16_vec_t weight, out;
++  weight.load(params.norm_weight, tx);
++  if (tx >= kNopeThreads) freq.load(params.freqs_cis + (pos - 1) * kRopeDim, tx - kNopeThreads);
++
++  // With two scores `exp(-|s0 - s1|)` is the whole softmax: one exp, argument
++  // always <= 0, so no max-subtraction pass and no overflow.
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize; ++i) {
++    const auto delta = score_old[i] - score_new[i];
++    const auto scale = expf(-fabsf(delta));
++    const auto scale_0 = delta > 0 ? 1.0f : scale;
++    const auto scale_1 = delta > 0 ? scale : 1.0f;
++    staged[i] = (kv_old[i] * scale_0 + kv_new[i] * scale_1) / (1.0f + scale);
++  }
++
++  // `finish` casts to bf16 before the norm, so the sum of squares must see the rounded values.
++  float local_sqrsum = 0.0f;
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    const auto packed = fp32x2_t{staged[i * 2 + 0], staged[i * 2 + 1]};
++    const auto [x, y] = cast<fp32x2_t>(cast<bf16x2_t>(packed));
++    local_sqrsum += x * x;
++    local_sqrsum += y * y;
++    staged[i * 2 + 0] = x;
++    staged[i * 2 + 1] = y;
++  }
++  const auto warp_sum = warp::reduce_sum(local_sqrsum);
++  s_warp_sum[tx / kWarpThreads] = warp_sum;
++  __syncthreads();
++
++  float sqrsum = 0.0f;
++#pragma unroll
++  for (uint32_t i = 0; i < kNumWarps; ++i) {
++    sqrsum += s_warp_sum[i];
++  }
++  constexpr float kInvScale = 1.0f / static_cast<float>(kHeadDim);
++  const auto norm_factor = math::rsqrt(sqrsum * kInvScale + params.eps);
++
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    const auto [wx, wy] = cast<fp32x2_t>(weight[i]);
++    const auto x = staged[i * 2 + 0] * norm_factor * wx;
++    const auto y = staged[i * 2 + 1] * norm_factor * wy;
++    out[i] = cast<bf16x2_t>(fp32x2_t{x, y});
++  }
++  // The pre-RoPE latent, for the index-K branch's `wk` projection. Published
++  // before the trigger because that GEMM is the successor that reads it.
++  out.store(params.kv_output, static_cast<int64_t>(row) * kCTASize + tx);
++  PDLTriggerSecondary<kUsePDL>();
++
++  // ---- main-KV branch: RoPE tail, fp4 fake-quant, cache store ----
++  // Match finish()'s bf16 rounding before RoPE.
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    const auto [x, y] = cast<fp32x2_t>(out[i]);
++    staged[i * 2 + 0] = x;
++    staged[i * 2 + 1] = y;
++  }
++
++  if (tx >= kNopeThreads) {
++    // Match rope_tail()'s bf16 rounding before fake quantization.
++    // Only odd positions reach here; the latent represents `pos - 1`.
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      const auto x_real = staged[i * 2 + 0];
++      const auto x_imag = staged[i * 2 + 1];
++      const auto f_real = x_real * freq[i * 2 + 0] - x_imag * freq[i * 2 + 1];
++      const auto f_imag = x_real * freq[i * 2 + 1] + x_imag * freq[i * 2 + 0];
++      const auto rotated = cast<bf16x2_t>(fp32x2_t{f_real, f_imag});
++      const auto [r0, r1] = cast<fp32x2_t>(rotated);
++      staged[i * 2 + 0] = r0;
++      staged[i * 2 + 1] = r1;
++    }
++  }
++
++  if constexpr (kLayout == KVLayout::V41_FP4) {
++    // The fp4 cache takes the rotated bf16 value as is: its row quantizer is the fake quant, minus the dequant.
++    const int32_t out_loc = raw_out_loc >> 1;
++    const auto kv_row = Paged::row(params.kvcache, out_loc);
++    return deepseek_v4::v41::store_row<kLayout>(kv_row.data, kv_row.scale, tx, staged);
++  }
++
++  // FP4/E4M3 fake-quant over 16 elements, i.e. kFp4Lanes threads.
++  {
++    float amax = fabsf(staged[0]);
++#pragma unroll
++    for (uint32_t i = 1; i < kVecSize; ++i) {
++      amax = fmaxf(amax, fabsf(staged[i]));
++    }
++    amax = warp::reduce_max<kFp4Lanes>(amax);
++    const auto scale = deepseek_v4::fp4::compressed_kv_scale(amax);
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      const auto [x, y] = deepseek_v4::fp4::fake_quant_compressed_kv_x2({staged[i * 2 + 0], staged[i * 2 + 1]}, scale);
++      staged[i * 2 + 0] = x;
++      staged[i * 2 + 1] = y;
++    }
++  }
++
++  // `raw_out_loc / ratio`; ratio 2 makes it a shift.
++  const int32_t out_loc = raw_out_loc >> 1;
++  const auto kv_row = Paged::row(params.kvcache, out_loc);
++
++  if constexpr (kLayout == KVLayout::V41) {
++    // fp8 with one ue8m0 scale per 32 elements over the whole row, RoPE included.
++    return deepseek_v4::v41::store_row<kLayout>(kv_row.data, kv_row.scale, tx, staged);
++  }
++
++  const auto value_ptr = kv_row.data;
++
++  if (tx >= kNopeThreads) {
++    bf16_vec_t rope_out;
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      rope_out[i] = cast<bf16x2_t>(fp32x2_t{staged[i * 2 + 0], staged[i * 2 + 1]});
++    }
++    rope_out.store(value_ptr + (kHeadDim - kRopeDim), tx - kNopeThreads);
++  } else {
++    // fp8 e4m3 with one ue8m0 scale per 64 elements.
++    auto abs_max = fabsf(staged[0]);
++#pragma unroll
++    for (uint32_t i = 1; i < kVecSize; ++i) {
++      abs_max = fmaxf(abs_max, fabsf(staged[i]));
++    }
++    abs_max = warp::reduce_max<kFp8Lanes>(abs_max);
++    const auto scale_ue8m0 = cast_to_ue8m0(fmaxf(1e-4f, abs_max) / math::FP8_E4M3_MAX);
++    const auto inv_scale = inv_scale_ue8m0(scale_ue8m0);
++#pragma unroll
++    for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++      reinterpret_cast<fp8x2_e4m3_t*>(value_ptr)[tx * (kVecSize / 2) + i] =
++          pack_fp8(staged[i * 2 + 0] * inv_scale, staged[i * 2 + 1] * inv_scale);
++    }
++    kv_row.scale[tx / kFp8Lanes] = scale_ue8m0;
++  }
++}
++
++template <int64_t kHeadDim, int64_t kRopeDim, uint32_t kPageSize, deepseek_v4::KVLayout kLayout, bool kUsePDL>
++struct FlashCompress2Kernel {
++  static constexpr uint32_t kBlockSize = kHeadDim / kC2VecSize;
++  static constexpr int32_t kPageBits = std::bit_width(kPageSize) - 1;
++  static constexpr int64_t kPageBytes = deepseek_v4::kv_page_bytes<kLayout>(kPageSize);
++  static_assert(kLayout != deepseek_v4::KVLayout::V4 || kPageBytes == host::div_ceil(584ll * kPageSize, 576) * 576);
++  template <bool kVerify, typename PosT, typename LocT>
++  static constexpr auto kernel =
++      flash_c2_decode_kernel<kVerify, kHeadDim, kRopeDim, kPageBits, PosT, LocT, kLayout, kUsePDL>;
++
++  /// \brief The (`positions`, `raw_out_loc`) dtype pair, resolved at run time.
++  template <bool kVerify>
++  static auto select(const bool pos_i32, const bool loc_i32) {
++    if (pos_i32) return loc_i32 ? kernel<kVerify, int32_t, int32_t> : kernel<kVerify, int32_t, int64_t>;
++    return loc_i32 ? kernel<kVerify, int64_t, int32_t> : kernel<kVerify, int64_t, int64_t>;
++  }
++
++  // The sum of squares reduces through a fixed-size shared array, so the CTA must be whole warps.
++  static_assert(kHeadDim % (4 * device::kWarpThreads) == 0, "head_dim must be a multiple of 128");
++  static_assert(std::has_single_bit(kPageSize), "the page/slot split needs a power-of-two page");
++
++  /// \brief `run_decode_fusion` for a target-verify block.
++  ///
++  /// `draft_len` consecutive positions per request, request-major, which the
++  /// grid reproduces as `draft_len x batch`.
++  static void run_decode_fusion(
++      const tvm::ffi::TensorView kv_input,
++      const tvm::ffi::TensorView kv_state,
++      const tvm::ffi::TensorView kv_output,
++      const tvm::ffi::TensorView norm_weight,
++      const tvm::ffi::TensorView positions,
++      const tvm::ffi::TensorView req,
++      const tvm::ffi::TensorView raw_out_loc,
++      const float eps,
++      const tvm::ffi::TensorView freqs_cis,
++      const tvm::ffi::TensorView kvcache,
++      const int64_t ring_size,
++      const int64_t draft_len) {
++    launch(
++        kv_input,
++        kv_state,
++        kv_output,
++        norm_weight,
++        positions,
++        req,
++        raw_out_loc,
++        eps,
++        ring_size,
++        freqs_cis,
++        kvcache,
++        draft_len);
++  }
++
++ private:
++  static void launch(
++      const tvm::ffi::TensorView kv_input,
++      const tvm::ffi::TensorView kv_state,
++      const tvm::ffi::TensorView kv_output,
++      const tvm::ffi::TensorView norm_weight,
++      const tvm::ffi::TensorView positions,
++      const tvm::ffi::TensorView req,
++      const tvm::ffi::TensorView raw_out_loc,
++      const float eps,
++      const int64_t ring_size,
++      const tvm::ffi::TensorView freqs_cis,
++      const tvm::ffi::TensorView kvcache,
++      const int64_t draft_len) {
++    using namespace host;
++
++    auto N = SymbolicSize{"num_tokens"};
++    auto device_ = SymbolicDevice{};
++    device_.set_options<kDLGPU>();
++
++    TensorMatcher({N, kHeadDim * 2}).with_dtype<fp32_t>().with_device(device_).verify(kv_input);
++    TensorMatcher({-1, kHeadDim * 2}).with_dtype<fp32_t>().with_device(device_).verify(kv_state);
++    // Only rows that complete a group are written.
++    TensorMatcher({N, kHeadDim}).with_dtype<bf16_t>().with_device(device_).verify(kv_output);
++    TensorMatcher({kHeadDim}).with_dtype<bf16_t>().with_device(device_).verify(norm_weight);
++    // Metadata retains its original dtypes: the scheduler uses int64 locations,
++    // while callers may also supply int32 locations and positions.
++    auto pos_dtype = SymbolicDType{};
++    auto loc_dtype = SymbolicDType{};
++    TensorMatcher({N}).with_dtype<int32_t, int64_t>(pos_dtype).with_device(device_).verify(positions);
++    TensorMatcher({N}).with_dtype<int64_t>().with_device(device_).verify(req);
++    TensorMatcher({N}).with_dtype<int32_t, int64_t>(loc_dtype).with_device(device_).verify(raw_out_loc);
++
++    // Real/imag interleaved, so the trailing dim is kRopeDim, not kRopeDim / 2.
++    TensorMatcher({-1, kRopeDim}).with_dtype<fp32_t>().with_device(device_).verify(freqs_cis);
++    // The pool allocates the buffer as uint8 and hands it out viewed as its
++    // fp8 dtype (`get_extra_key_buffer`); both are one byte per element.
++    TensorMatcher({-1, kPageBytes}).with_dtype<uint8_t, fp8_e4m3_t>().with_device(device_).verify(kvcache);
++
++    const auto num_tokens = static_cast<uint32_t>(N.unwrap());
++    if (num_tokens == 0) return;
++    const auto is_verify = draft_len > 1;
++    CHECK_HOST(ring_size > 0 && draft_len >= 1);
++    CHECK_HOST(!is_verify || num_tokens % draft_len == 0);
++    CHECK_HOST(!is_verify || ring_size > draft_len)
++        << "the pair-state ring (" << ring_size << ") must be wider than the draft length (" << draft_len << ")";
++    const auto params = Compress2DecodeParams{
++        .kv_input = static_cast<const float*>(kv_input.data_ptr()),
++        .kv_state = static_cast<float*>(kv_state.data_ptr()),
++        .kv_output = static_cast<bf16_t*>(kv_output.data_ptr()),
++        .norm_weight = static_cast<const bf16_t*>(norm_weight.data_ptr()),
++        .freqs_cis = static_cast<const float*>(freqs_cis.data_ptr()),
++        .positions = positions.data_ptr(),
++        .req = static_cast<const int64_t*>(req.data_ptr()),
++        .raw_out_loc = raw_out_loc.data_ptr(),
++        .kvcache = static_cast<uint8_t*>(kvcache.data_ptr()),
++        .ring_size = static_cast<uint32_t>(ring_size),
++        .eps = eps,
++    };
++    // `LaunchKernel` is move-only, so each arm builds its own.
++    const auto pos_i32 = pos_dtype.is_type<int32_t>();
++    const auto loc_i32 = loc_dtype.is_type<int32_t>();
++    if (is_verify) {
++      const auto block = static_cast<uint32_t>(draft_len);
++      const auto k = select<true>(pos_i32, loc_i32);
++      LaunchKernel(dim3{block, num_tokens / block}, kBlockSize, device_.unwrap())  //
++          .enable_pdl(kUsePDL)(k, params);
++    } else {
++      const auto k = select<false>(pos_i32, loc_i32);
++      LaunchKernel(num_tokens, kBlockSize, device_.unwrap())  //
++          .enable_pdl(kUsePDL)(k, params);
++    }
++  }
++};
++
++// The JIT module names and wrappers spell the layouts as bare enumerators.
++using enum deepseek_v4::KVLayout;
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh
+index b157eebea28b87a99a3d15c8bd24aedcd80cf111..45ff0e203286417d23bac88a46ca0696c7776de2 100644
+--- a/python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/c_plan.cuh
+@@ -505,10 +505,12 @@ inline PrefillPlan plan_compress_prefill(
+   const auto f2s_ptr = static_cast<const F2S_T*>(full_to_state.data_ptr());
+ 
+   const auto batch_size = static_cast<uint32_t>(B.unwrap());
+-  constexpr auto kMaxTokens = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max());
++  // ragged_id is a zero-based uint16 index, so a 64K-token batch is valid.
++  constexpr auto kMaxTokens = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
+   RuntimeCheck(compress_ratio == 4 || compress_ratio == 128);
+   RuntimeCheck(!use_req_ring || compress_ratio == 4);
+-  RuntimeCheck(batch_size <= num_q_tokens && num_q_tokens <= kMaxTokens);
++  // Keep batch_id below 65535: pack_w(65535, 65535, ...) is the invalid sentinel.
++  RuntimeCheck(batch_size < kMaxTokens && batch_size <= num_q_tokens && num_q_tokens <= kMaxTokens);
+   // `swa_page_size` >= `ring_size` >= `compress_ratio`
+   RuntimeCheck(swa_page_size % ring_size == 0 && ring_size % compress_ratio == 0);
+   // Write pad: trailing tokens kept resident so a verify batch's committed tail survives
+@@ -750,9 +752,9 @@ inline PrefillPlan plan_compress_prefill_legacy(
+ 
+   const auto window_size = compress_ratio * (is_overlap ? 2 : 1);
+   const auto batch_size = static_cast<uint32_t>(B.unwrap());
+-  constexpr auto kMaxTokens = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max());
++  constexpr auto kMaxTokens = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
+   RuntimeCheck(compress_ratio == 4 || compress_ratio == 128);
+-  RuntimeCheck(batch_size <= num_q_tokens && num_q_tokens <= kMaxTokens);
++  RuntimeCheck(batch_size < kMaxTokens && batch_size <= num_q_tokens && num_q_tokens <= kMaxTokens);
+ 
+   uint32_t counter = 0;
+   uint32_t counter_c = 0;
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh
+index 0fda6b8a19721b2e9d5c6eb8595954d773a16103..f051708171d60e30692cad64d0e632b49009f283 100644
+--- a/python/sglang/kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh
+@@ -9,6 +9,7 @@
+ 
+ #include <sgl_kernel/deepseek_v4/compress_v2.cuh>
+ #include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++#include <sgl_kernel/deepseek_v4/kv_layout.cuh>
+ 
+ #include <tvm/ffi/container/tensor.h>
+ 
+@@ -386,14 +387,16 @@ constexpr int64_t kFp8TwoPoolRowBytes = 512;
+ // ----------------------------------------------------------------------------
+ // FlashMLA variant: kHeadDim = 512, 1 token per *block* (256 threads).
+ // Each thread loads kVecSize=2 BF16, so 256 threads cover the full 512 elems.
+-// Cache layout: 584 bytes/token = 448 fp8 nope + 64 (=32 bf16x2) rope + 8 scale.
++// Cache layout (kLayout): V4 = 584 bytes/token = 448 fp8 nope + 64 (=32 bf16x2) rope + 8 scale;
++// V41 / V41_FP4 = the fully quantized fp8 (528 B) / fp4 (288 B) rows, one scale per 32 / 16 values.
+ // ----------------------------------------------------------------------------
+ template <
+     typename DType,
+     ForwardMode kMode,
+     int32_t kPageBits,
++    bool kBf16Store,
++    deepseek_v4::KVLayout kLayout,
+     bool kUsePDL,
+-    bool kBf16Store = false,
+     bool kFp8TwoPool = false>
+ FLASHMLA_KERNEL void fused_norm_rope_flashmla(const __grid_constant__ FusedNormRopeStoreParams params) {
+   using namespace device;
+@@ -407,12 +410,15 @@ FLASHMLA_KERNEL void fused_norm_rope_flashmla(const __grid_constant__ FusedNormR
+   constexpr uint32_t kRopeWarp = kNumWarps - 1;
+   // kBf16Store: write the whole head_dim as plain BF16 (no fp8 / no scale) into a
+   // [num_slots, head_dim] bf16 cache (page_size==1) at row out_loc
++  static_assert(!(kBf16Store && kLayout != deepseek_v4::KVLayout::V4), "the bf16 store is not a paged layout");
++  using Paged = deepseek_v4::PagedKV<kLayout, kPageBits>;
+   // kFp8TwoPool: 512 B row holding the 448 fp8 nope + its UE8M0 scales, with rope
+   // split off into a second [num_slots, kRopeDim] bf16 pool at the same row
+   static_assert(!(kBf16Store && kFp8TwoPool));
+   constexpr int64_t kRowBytes = kBf16Store ? (kHeadDim * 2ll) : (kFp8TwoPool ? kFp8TwoPoolRowBytes : 576ll);
+   constexpr int64_t kPageBytes =
+       (kBf16Store || kFp8TwoPool) ? (kRowBytes << kPageBits) : host::div_ceil(584ll << kPageBits, 576) * 576;
++  static_assert(!(kFp8TwoPool && kLayout != deepseek_v4::KVLayout::V4), "the fp8 two-pool store is a V4 cache");
+   static_assert(kHeadDim == kBlockSize * kVecSize);
+   static_assert(kRopeDim == kWarpThreads * kVecSize);
+   static_assert(kHeadDim - kRopeDim == kRopeWarp * kWarpThreads * kVecSize);
+@@ -480,10 +486,36 @@ FLASHMLA_KERNEL void fused_norm_rope_flashmla(const __grid_constant__ FusedNormR
+     }
+   }
+ 
++  const auto row = Paged::row(params.kvcache, out_loc);
++
++  if constexpr (kLayout != deepseek_v4::KVLayout::V4) {
++    // V4.1 layouts: the whole row is quantized. Match the unfused path, which quantizes the bf16
++    // the norm produces: round the normed values, rotate in bf16, round again, quantize the row.
++    using Packed = packed_t<DType>;
++    PDLTriggerSecondary<kUsePDL>();
++
++    auto rounded = cast<fp32x2_t>(cast<Packed>(fp32x2_t{data[0], data[1]}));
++    if (warp_id == kRopeWarp) {
++      const auto x_real = rounded.x;
++      const auto x_imag = rounded.y;
++      const auto freq_real = freq[0];
++      const auto freq_imag = freq[1];
++      rounded = cast<fp32x2_t>(
++          cast<Packed>(fp32x2_t{x_real * freq_real - x_imag * freq_imag, x_real * freq_imag + x_imag * freq_real}));
++    }
++    const float v[2] = {rounded.x, rounded.y};
++    deepseek_v4::v41::store_row<kLayout>(row.data, row.scale, tx, v);
++    return;
++  }
++
++  // The bf16 cache is dense [num_slots, head_dim] rows and the fp8 two-pool cache kRowBytes rows,
++  // both addressed by out_loc directly rather than through the paged helper.
+   const int64_t page = out_loc >> kPageBits;
+   const int64_t offset = out_loc & ((1 << kPageBits) - 1);
+   const auto page_ptr = params.kvcache + page * kPageBytes;
+-  const auto value_ptr = page_ptr + offset * kRowBytes;
++  const auto value_ptr = kBf16Store    ? params.kvcache + static_cast<int64_t>(out_loc) * (kHeadDim * 2)
++                         : kFp8TwoPool ? page_ptr + offset * kRowBytes
++                                       : row.data;
+ 
+   PDLTriggerSecondary<kUsePDL>();
+ 
+@@ -534,8 +566,7 @@ FLASHMLA_KERNEL void fused_norm_rope_flashmla(const __grid_constant__ FusedNormR
+         scale_ptr[0] = scale_ue8m0;
+         scale_ptr[1] = scale_ue8m0;
+       } else {
+-        const auto scale_ptr = page_ptr + (576 << kPageBits) + offset * 8;
+-        static_cast<uint8_t*>(scale_ptr)[warp_id] = scale_ue8m0;
++        static_cast<uint8_t*>(row.scale)[warp_id] = scale_ue8m0;
+       }
+     }
+   }
+@@ -546,15 +577,19 @@ template <
+     int64_t kHeadDim,
+     int64_t kRopeDim,
+     uint32_t kPageSize,
+-    bool kUsePDL,
+-    int32_t kPreshuffleSize = 0,
+-    bool kBf16Store = false>
++    int32_t kPreshuffleSize,
++    bool kBf16Store,
++    deepseek_v4::KVLayout kLayout,
++    bool kUsePDL>
+ struct FusedNormRopeKernel {
+   static constexpr int32_t kLogPageSize = std::countr_zero(kPageSize);
+   static constexpr bool kIsIndexer = (kHeadDim == 128);
+   static_assert(!(kIsIndexer && kBf16Store), "bf16 store only for flashmla head_dim=512");
++  static_assert(
++      !(kIsIndexer && kLayout != deepseek_v4::KVLayout::V4), "the V4.1 layouts are FlashMLA (head_dim=512) caches");
+   static constexpr int64_t kIndexerBytes = 132 * kPageSize;
+-  static constexpr int64_t kFlashMLABytes = host::div_ceil(584 * kPageSize, 576) * 576;
++  static constexpr int64_t kFlashMLABytes = deepseek_v4::kv_page_bytes<kLayout>(kPageSize);
++  static_assert(kLayout != deepseek_v4::KVLayout::V4 || kFlashMLABytes == host::div_ceil(584 * kPageSize, 576) * 576);
+   static constexpr int64_t kBf16Bytes = kHeadDim * 2 * kPageSize;  // plain bf16 cache
+   static constexpr int64_t kPageBytes = kBf16Store ? kBf16Bytes : (kIsIndexer ? kIndexerBytes : kFlashMLABytes);
+ 
+@@ -567,7 +602,7 @@ struct FusedNormRopeKernel {
+     if constexpr (kIsIndexer) {
+       return fused_norm_rope_indexer<DType, kMode, kLogPageSize, kUsePDL, kPreshuffleSize>;
+     } else {
+-      return fused_norm_rope_flashmla<DType, kMode, kLogPageSize, kUsePDL, kBf16Store>;
++      return fused_norm_rope_flashmla<DType, kMode, kLogPageSize, kBf16Store, kLayout, kUsePDL>;
+     }
+   }
+ 
+@@ -575,7 +610,8 @@ struct FusedNormRopeKernel {
+   static constexpr auto select_fp8_2buff_kernel() {
+     static_assert(!kIsIndexer, "fp8 two-pool store is only defined for the flashmla latent");
+     static_assert(!kBf16Store, "fp8 two-pool store and bf16 store are separate layouts");
+-    return fused_norm_rope_flashmla<DType, kMode, kLogPageSize, kUsePDL, false, true>;
++    static_assert(kLayout == deepseek_v4::KVLayout::V4, "the fp8 two-pool store is a V4 cache");
++    return fused_norm_rope_flashmla<DType, kMode, kLogPageSize, false, kLayout, kUsePDL, true>;
+   }
+ 
+   template <ForwardMode kMode>
+@@ -791,4 +827,7 @@ struct FusedNormRopeKernel {
+   }
+ };
+ 
++// The JIT module names and wrappers spell the layouts as bare enumerators.
++using enum deepseek_v4::KVLayout;
++
+ }  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh
+index 483d6fe1cd9578a2480eb89c06e8fd77e618c3a9..481f230e8c4592afff64a6201a8405d0f4ae9a6a 100644
+--- a/python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh
+@@ -9,6 +9,7 @@
+ #include <sgl_kernel/warp.cuh>
+ 
+ #include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++#include <sgl_kernel/deepseek_v4/kv_layout.cuh>
+ 
+ #include <tvm/ffi/container/tensor.h>
+ 
+@@ -259,13 +260,20 @@ struct FusedKNormRopeFlashMLAParams {
+   float eps;
+ };
+ 
+-template <typename DType, int64_t kHeadDim, int64_t kRopeDim, typename PosT, int32_t kPageBits, bool kUsePDL>
++template <
++    typename DType,
++    int64_t kHeadDim,
++    int64_t kRopeDim,
++    typename PosT,
++    int32_t kPageBits,
++    deepseek_v4::KVLayout kLayout,
++    bool kUsePDL>
+ K_KERNEL void fused_k_norm_rope_flashmla(const __grid_constant__ FusedKNormRopeFlashMLAParams params) {
+   using namespace device;
+ 
+   constexpr int64_t kVecSize = 2;
+   constexpr uint32_t kRopeWarp = kFusedKNumWarps - 1;
+-  constexpr int64_t kPageBytes = host::div_ceil(584ll << kPageBits, 576) * 576;
++  using Paged = deepseek_v4::PagedKV<kLayout, kPageBits>;
+   static_assert(kHeadDim == kFusedKBlockSize * kVecSize);
+   static_assert(kRopeDim == kWarpThreads * kVecSize);
+   static_assert(kHeadDim - kRopeDim == kRopeWarp * kWarpThreads * kVecSize);
+@@ -325,10 +333,28 @@ K_KERNEL void fused_k_norm_rope_flashmla(const __grid_constant__ FusedKNormRopeF
+   // here, not at the load, so the out_loc prefetch overlaps the norm above.
+   if (out_loc < 0) return;
+ 
+-  const int32_t page = out_loc >> kPageBits;
+-  const int32_t offset = out_loc & ((1 << kPageBits) - 1);
+-  const auto page_ptr = params.kvcache + page * kPageBytes;
+-  const auto value_ptr = page_ptr + offset * 576;
++  const auto row = Paged::row(params.kvcache, out_loc);
++
++  if constexpr (kLayout != deepseek_v4::KVLayout::V4) {
++    // V4.1 layouts: every dim is quantized, one scale per 32 (fp8) or 16 (fp4) values. The
++    // reference rotates in bf16, so round the normed values, rotate, round again, then quantize.
++    using Packed = packed_t<DType>;
++    PDLTriggerSecondary<kUsePDL>();
++
++    auto rounded = cast<fp32x2_t>(cast<Packed>(fp32x2_t{data[0], data[1]}));
++    if (warp_id == kRopeWarp) {
++      const auto x_real = rounded.x;
++      const auto x_imag = rounded.y;
++      const auto freq_real = freq[0];
++      const auto freq_imag = freq[1];
++      rounded = cast<fp32x2_t>(
++          cast<Packed>(fp32x2_t{x_real * freq_real - x_imag * freq_imag, x_real * freq_imag + x_imag * freq_real}));
++    }
++    const float v[2] = {rounded.x, rounded.y};
++    return deepseek_v4::v41::store_row<kLayout>(row.data, row.scale, tx, v);
++  }
++
++  const auto value_ptr = row.data;
+ 
+   PDLTriggerSecondary<kUsePDL>();
+ 
+@@ -351,22 +377,30 @@ K_KERNEL void fused_k_norm_rope_flashmla(const __grid_constant__ FusedKNormRopeF
+     const auto scale_ue8m0 = cast_to_ue8m0(scale_raw);
+     const auto inv_scale = inv_scale_ue8m0(scale_ue8m0);
+     const auto result = pack_fp8(x * inv_scale, y * inv_scale);
+-    const auto scale_ptr = page_ptr + (576 << kPageBits) + offset * 8;
++    const auto scale_ptr = row.scale;
+     reinterpret_cast<fp8x2_e4m3_t*>(value_ptr)[tx] = result;
+     if (lane_id == 0) static_cast<uint8_t*>(scale_ptr)[warp_id] = scale_ue8m0;
+   }
+ }
+ 
+-template <typename DType, int64_t kHeadDim, int64_t kRopeDim, uint32_t kPageSize, bool kUsePDL>
++template <
++    typename DType,
++    int64_t kHeadDim,
++    int64_t kRopeDim,
++    uint32_t kPageSize,
++    deepseek_v4::KVLayout kLayout,
++    bool kUsePDL>
+ struct FusedKNormRopeFlashMLAKernel {
+   static constexpr int32_t kLogPageSize = std::countr_zero(kPageSize);
+-  static constexpr int64_t kPageBytes = host::div_ceil(584 * kPageSize, 576) * 576;
++  static constexpr int64_t kPageBytes = deepseek_v4::kv_page_bytes<kLayout>(kPageSize);
++  static_assert(kLayout != deepseek_v4::KVLayout::V4 || kPageBytes == host::div_ceil(584 * kPageSize, 576) * 576);
+   static_assert(std::has_single_bit(kPageSize), "kPageSize must be a power of 2");
+   static_assert(1 << kLogPageSize == kPageSize);
+   static_assert(kHeadDim == 512 && kRopeDim == 64, "FlashMLA layout requires (512, 64)");
+ 
+   template <typename PosT>
+-  static constexpr auto kernel = fused_k_norm_rope_flashmla<DType, kHeadDim, kRopeDim, PosT, kLogPageSize, kUsePDL>;
++  static constexpr auto kernel =
++      fused_k_norm_rope_flashmla<DType, kHeadDim, kRopeDim, PosT, kLogPageSize, kLayout, kUsePDL>;
+ 
+   static void forward(
+       const tvm::ffi::TensorView kv,
+@@ -881,4 +915,7 @@ struct FusedQIndexerRopeHadamardFp4QuantKernel {
+   }
+ };
+ 
++// The JIT module names and wrappers spell the layouts as bare enumerators.
++using enum deepseek_v4::KVLayout;
++
+ }  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
+index c08256e460e720d71a19d451f1ae345389c2edd8..5a7dc36da180b1b7f941d2254ebe236cfe9ec245 100644
+--- a/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh
+@@ -8,6 +8,7 @@
+ #include <sgl_kernel/warp.cuh>
+ 
+ #include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++#include <sgl_kernel/deepseek_v4/kv_layout.cuh>
+ 
+ #include <dlpack/dlpack.h>
+ #include <tvm/ffi/container/tensor.h>
+@@ -15,6 +16,7 @@
+ #include <bit>
+ #include <cstdint>
+ #include <cuda_fp8.h>
++#include <optional>
+ 
+ namespace sglang {
+ 
+@@ -29,12 +31,21 @@ struct FusedStoreCacheParam {
+   uint32_t num_tokens;
+ };
+ 
++/// Parameters of the V4.1 (fp8 / fp4) FlashMLA store; `freqs_cis` is the per-token
++/// (real, imag) pairs of the 64 RoPE dims, or nullptr when the input is already rotated.
++struct FusedStoreCacheV41Param {
++  const void* __restrict__ input;
++  void* __restrict__ cache;
++  const void* __restrict__ indices;
++  const float* __restrict__ freqs_cis;
++  uint32_t num_tokens;
++};
++
+ template <typename Float, typename IndicesT, uint32_t kPageBits, bool kUsePDL>
+ __global__ void fused_store_flashmla_cache(const __grid_constant__ FusedStoreCacheParam param) {
+   using namespace device;
+ 
+-  /// NOTE: 584 = 576 + 8
+-  constexpr int64_t kPageBytes = host::div_ceil(584 << kPageBits, 576) * 576;
++  using Paged = deepseek_v4::PagedKV<deepseek_v4::KVLayout::V4, kPageBits>;
+ 
+   // each warp handles 64 elements, 8 warps, each block handles 1 row
+   const auto& [input, cache, indices, num_tokens] = param;
+@@ -56,21 +67,76 @@ __global__ void fused_store_flashmla_cache(const __grid_constant__ FusedStoreCac
+     const auto scale_ue8m0 = cast_to_ue8m0(scale_raw);
+     const auto inv_scale = inv_scale_ue8m0(scale_ue8m0);
+     const auto result = pack_fp8(x * inv_scale, y * inv_scale);
+-    const int32_t page = index >> kPageBits;
+-    const int32_t offset = index & ((1 << kPageBits) - 1);
+-    const auto page_ptr = pointer::offset(cache, page * kPageBytes);
+-    const auto value_ptr = pointer::offset(page_ptr, offset * 576);
+-    const auto scale_ptr = pointer::offset(page_ptr, 576 << kPageBits, offset * 8);
+-    static_cast<fp8x2_e4m3_t*>(value_ptr)[tid] = result;
+-    static_cast<uint8_t*>(scale_ptr)[wid] = scale_ue8m0;
++    const auto row = Paged::row(static_cast<uint8_t*>(cache), index);
++    reinterpret_cast<fp8x2_e4m3_t*>(row.data)[tid] = result;
++    row.scale[wid] = scale_ue8m0;
+   } else {
+     const auto result = cast<bf16x2_t>(elems);
+-    const int32_t page = index >> kPageBits;
+-    const int32_t offset = index & ((1 << kPageBits) - 1);
+-    const auto page_ptr = pointer::offset(cache, page * kPageBytes);
+-    const auto value_ptr = pointer::offset(page_ptr, offset * 576, 448);
+-    static_cast<bf16x2_t*>(value_ptr)[tid - 7 * 32] = result;
++    const auto row = Paged::row(static_cast<uint8_t*>(cache), index);
++    reinterpret_cast<bf16x2_t*>(row.data + 448)[tid - 7 * 32] = result;
++  }
++
++  PDLTriggerSecondary<kUsePDL>();
++}
++
++/// Elements per thread of the V4.1 store (`512 / vec` threads per token): 4 for fp8 rows, 2 for
++/// fp4, whose per-element IEEE divisions spread better over more threads (measured on B200, bs 1..512).
++constexpr uint32_t v41_store_vec_size(deepseek_v4::KVLayout layout) {
++  return layout == deepseek_v4::KVLayout::V41 ? 4 : 2;
++}
++
++template <
++    typename Float,
++    typename IndicesT,
++    uint32_t kPageBits,
++    deepseek_v4::KVLayout kLayout,
++    bool kRope,
++    bool kUsePDL>
++__global__ void fused_store_flashmla_cache_v41(const __grid_constant__ FusedStoreCacheV41Param param) {
++  using namespace device;
++  using Paged = deepseek_v4::PagedKV<kLayout, kPageBits>;
++  static_assert(kLayout != deepseek_v4::KVLayout::V4, "the V4 layout has its own kernel above");
++
++  constexpr uint32_t kVecSize = v41_store_vec_size(kLayout);
++  constexpr uint32_t kNopeLanes = (512 - 64) / kVecSize;  // threads from here on hold the RoPE tail
++  using Packed = packed_t<Float>;
++  using Vec = AlignedVector<Packed, kVecSize / 2>;
++
++  const auto& [input, cache, indices, freqs_cis, num_tokens] = param;
++  const uint32_t bid = blockIdx.x;
++  const uint32_t tid = threadIdx.x;
++
++  PDLWaitPrimary<kUsePDL>();
++
++  const auto index = static_cast<const IndicesT*>(indices)[bid];
++  Vec elems;
++  elems.load(static_cast<const Float*>(input) + bid * 512, tid);
++  float v[kVecSize];
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    const auto [x, y] = cast<fp32x2_t>(elems[i]);
++    v[2 * i] = x;
++    v[2 * i + 1] = y;
+   }
++  if constexpr (kRope) {
++    if (tid >= kNopeLanes) {
++      // (real, imag) pairs of the tail, rotated and rounded back to the input dtype as `rope_tail` does.
++      AlignedVector<float, kVecSize> freq;
++      freq.load(freqs_cis + bid * 64, tid - kNopeLanes);
++#pragma unroll
++      for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++        const auto x = v[2 * i];
++        const auto y = v[2 * i + 1];
++        const auto rotated = cast<fp32x2_t>(
++            cast<Packed>(fp32x2_t{x * freq[2 * i] - y * freq[2 * i + 1], x * freq[2 * i + 1] + y * freq[2 * i]}));
++        v[2 * i] = rotated.x;
++        v[2 * i + 1] = rotated.y;
++      }
++    }
++  }
++
++  const auto row = Paged::row(static_cast<uint8_t*>(cache), index);
++  deepseek_v4::v41::store_row<kLayout>(row.data, row.scale, tid, v);
+ 
+   PDLTriggerSecondary<kUsePDL>();
+ }
+@@ -120,16 +186,41 @@ __global__ void fused_store_indexer_cache(const __grid_constant__ FusedStoreCach
+   PDLTriggerSecondary<kUsePDL>();
+ }
+ 
+-template <typename Float, typename IndicesT, uint32_t kPageSize, bool kUsePDL>
++template <typename Float, typename IndicesT, uint32_t kPageSize, deepseek_v4::KVLayout kLayout, bool kUsePDL>
+ struct FusedStoreCacheFlashMLAKernel {
+   static constexpr int32_t kLogSize = std::countr_zero(kPageSize);
+-  static constexpr int64_t kPageBytes = host::div_ceil(584 * kPageSize, 576) * 576;
+-  static constexpr auto kernel = fused_store_flashmla_cache<Float, IndicesT, kLogSize, kUsePDL>;
++  static constexpr bool kIsV4 = kLayout == deepseek_v4::KVLayout::V4;
++  static constexpr int64_t kPageBytes = deepseek_v4::kv_page_bytes<kLayout>(kPageSize);
++  static_assert(!kIsV4 || kPageBytes == host::div_ceil(584 * kPageSize, 576) * 576);
+ 
+   static_assert(std::has_single_bit(kPageSize), "kPageSize must be a power of 2");
+   static_assert(1 << kLogSize == kPageSize);
+ 
++  template <bool kRope>
++  static constexpr auto v41_kernel = fused_store_flashmla_cache_v41<Float, IndicesT, kLogSize, kLayout, kRope, kUsePDL>;
++
++  /// Store rows that are already normed and rotated.
+   static void run(tvm::ffi::TensorView input, tvm::ffi::TensorView cache, tvm::ffi::TensorView indices) {
++    launch(input, cache, indices, std::nullopt);
++  }
++
++  /// V4.1 layouts only: rotate the RoPE tail in-kernel with the per-token `freqs_cis`
++  /// (`[num_tokens, 64]` fp32, real / imag interleaved) before quantizing.
++  static void run_rope(
++      tvm::ffi::TensorView input,
++      tvm::ffi::TensorView cache,
++      tvm::ffi::TensorView indices,
++      tvm::ffi::TensorView freqs_cis) {
++    static_assert(!kIsV4, "the V4 layout keeps its RoPE dims in bf16 and has no in-kernel RoPE");
++    launch(input, cache, indices, freqs_cis);
++  }
++
++ private:
++  static void launch(
++      tvm::ffi::TensorView input,
++      tvm::ffi::TensorView cache,
++      tvm::ffi::TensorView indices,
++      std::optional<tvm::ffi::TensorView> freqs_cis) {
+     using namespace host;
+ 
+     auto N = SymbolicSize{"num_tokens"};
+@@ -148,16 +239,35 @@ struct FusedStoreCacheFlashMLAKernel {
+         .with_dtype<IndicesT>()
+         .with_device(device_)
+         .verify(indices);
++    if (freqs_cis.has_value()) {
++      // Real / imag interleaved, so the trailing dim is 64, not 32.
++      TensorMatcher({N, 64}).with_dtype<float>().with_device(device_).verify(*freqs_cis);
++    }
+     const auto num_tokens = static_cast<uint32_t>(N.unwrap());
+-    const auto params = FusedStoreCacheParam{
+-        .input = input.data_ptr(),
+-        .cache = cache.data_ptr(),
+-        .indices = indices.data_ptr(),
+-        .num_tokens = num_tokens,
+-    };
++    if (num_tokens == 0) return;
+     const auto kBlockSize = 256;
+     const auto num_blocks = num_tokens;
+-    LaunchKernel(num_blocks, kBlockSize, device_.unwrap()).enable_pdl(kUsePDL)(kernel, params);
++    if constexpr (kIsV4) {
++      RuntimeCheck(!freqs_cis.has_value(), "the V4 layout has no in-kernel RoPE");
++      const auto params = FusedStoreCacheParam{
++          .input = input.data_ptr(),
++          .cache = cache.data_ptr(),
++          .indices = indices.data_ptr(),
++          .num_tokens = num_tokens,
++      };
++      constexpr auto kernel = fused_store_flashmla_cache<Float, IndicesT, kLogSize, kUsePDL>;
++      LaunchKernel(num_blocks, kBlockSize, device_.unwrap()).enable_pdl(kUsePDL)(kernel, params);
++    } else {
++      const auto params = FusedStoreCacheV41Param{
++          .input = input.data_ptr(),
++          .cache = cache.data_ptr(),
++          .indices = indices.data_ptr(),
++          .freqs_cis = freqs_cis.has_value() ? static_cast<const float*>(freqs_cis->data_ptr()) : nullptr,
++          .num_tokens = num_tokens,
++      };
++      const auto kernel = freqs_cis.has_value() ? v41_kernel<true> : v41_kernel<false>;
++      LaunchKernel(num_blocks, 512 / v41_store_vec_size(kLayout), device_.unwrap()).enable_pdl(kUsePDL)(kernel, params);
++    }
+   }
+ };
+ 
+@@ -202,4 +312,7 @@ struct FusedStoreCacheIndexerKernel {
+   }
+ };
+ 
++// The JIT module names and wrappers spell the layouts as bare enumerators.
++using enum deepseek_v4::KVLayout;
++
+ }  // namespace sglang
+diff --git a/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/fp4_utils.cuh b/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/fp4_utils.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbb593f8c4aa64344ac608c1f8dc131791703d33
+--- /dev/null
++++ b/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/fp4_utils.cuh
+@@ -0,0 +1,60 @@
++#pragma once
++
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++
++#include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++
++#ifndef USE_ROCM
++#include <cuda_fp4.h>
++#endif
++
++// FP4 (e2m1) helpers: per-32 UE8M0 for the indexer, per-16 E4M3 for compressed KV.
++
++namespace sglang {
++
++namespace deepseek_v4::fp4 {
++
++/// Largest finite e2m1 value.
++constexpr float kMax = 6.0f;
++/// `6 * 2^-126`, the amax floor `torch_quant.fake_quant_fp4` clamps to.
++constexpr float kAmaxFloor = 6.0f * 1.1754943508222875e-38f;
++/// Elements sharing one ue8m0 scale.
++constexpr uint32_t kBlockSize = 32;
++/// Compressed-KV elements sharing one E4M3 scale.
++constexpr uint32_t kCompressedKVBlockSize = 16;
++
++/// \brief Round amax / 6 to a positive finite E4M3 scale, ties to even.
++SGL_DEVICE float compressed_kv_scale(float amax) {
++  const auto raw = fminf(fmaxf(amax * (1.0f / kMax), 0x1p-9f), 448.0f);
++  return static_cast<float>(__nv_fp8_e4m3(raw));
++}
++
++/// \brief Quantize compressed KV with its E4M3 scale and return dequantized values.
++SGL_DEVICE fp32x2_t fake_quant_compressed_kv_x2(fp32x2_t x, float scale) {
++  const fp32x2_t scaled{__fdiv_rn(x.x, scale) + 0.0f, __fdiv_rn(x.y, scale) + 0.0f};
++  const auto code = __nv_cvt_float2_to_fp4x2(scaled, __NV_E2M1, cudaRoundNearest);
++  const auto grid = device::cast<fp32x2_t>(fp16x2_t{__nv_cvt_fp4x2_to_halfraw2(code, __NV_E2M1)});
++  return {grid.x * scale, grid.y * scale};
++}
++
++/// \brief Per-block ue8m0 scale and its reciprocal, from the block's absmax.
++SGL_DEVICE fp32x2_t block_scale(float amax) {
++  const auto exponent = fp8::cast_to_ue8m0(fmaxf(amax, kAmaxFloor) * (1.0f / kMax));
++  return {__uint_as_float(static_cast<uint32_t>(exponent) << 23), fp8::inv_scale_ue8m0(exponent)};
++}
++
++/// \brief Round a pair onto the e2m1 grid and back, through `scale`.
++///
++/// Every e2m1 value is exact in fp16, so the roundtrip is lossless. Adding `0.0f` during
++/// scaling clears negative zero to match `torch.sign(0) == 0` in `torch_quant.round_fp4`.
++SGL_DEVICE fp32x2_t fake_quant_x2(fp32x2_t x, float scale, float inv_scale) {
++  const fp32x2_t scaled{__fmaf_rn(x.x, inv_scale, 0.0f), __fmaf_rn(x.y, inv_scale, 0.0f)};
++  const auto code = __nv_cvt_float2_to_fp4x2(scaled, __NV_E2M1, cudaRoundNearest);
++  const auto grid = device::cast<fp32x2_t>(fp16x2_t{__nv_cvt_fp4x2_to_halfraw2(code, __NV_E2M1)});
++  return {grid.x * scale, grid.y * scale};
++}
++
++}  // namespace deepseek_v4::fp4
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/kv_layout.cuh b/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/kv_layout.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..9317e9482ec45cd2e86f0464c6b83f6ac5c367eb
+--- /dev/null
++++ b/python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/kv_layout.cuh
+@@ -0,0 +1,212 @@
++#pragma once
++
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++#include <sgl_kernel/vec.cuh>
++#include <sgl_kernel/warp.cuh>
++
++#include <sgl_kernel/deepseek_v4/fp8_utils.cuh>
++
++#include <cstdint>
++#ifndef USE_ROCM
++#include <cuda_fp4.h>
++#include <cuda_fp8.h>
++#endif
++
++// Paged fp8 / fp4 KV cache layouts read by the d_qk = 512 sparse MLA decode
++// kernels. A page block is `page_size` data rows followed by `page_size` scale
++// rows, so the scale region starts at byte `page_size * kDataBytes`:
++//
++//   V4       584 B/token: 448 e4m3 + 64 bf16 (RoPE) data, 7 ue8m0 scales + 1 pad,
++//            one scale per 64 e4m3 values.
++//   V41      528 B/token: 512 e4m3 data (the RoPE dims are quantized too),
++//            16 ue8m0 scales, one per 32 values.
++//   V41_FP4  288 B/token: 512 e2m1 data packed two per byte (even index in the
++//            low nibble), 32 e4m3 scales, one per 16 values.
++//
++// The reader requires the rows of a page to be contiguous and the page stride
++// to be a multiple of kPageAlign (its TMA row stride), which is what
++// kv_page_bytes pads to. The pure-torch reference of the V41 (fp8) quantizer is
++// `sglang.kernels.ops.attention.dsv4.torch_quant`.
++
++namespace sglang {
++
++namespace deepseek_v4 {
++
++enum class KVLayout : int32_t { V4 = 0, V41 = 1, V41_FP4 = 2 };
++
++template <KVLayout kLayout>
++struct KVLayoutTraits;
++
++template <>
++struct KVLayoutTraits<KVLayout::V4> {
++  static constexpr int64_t kDataBytes = 576;
++  static constexpr int64_t kScaleBytes = 8;
++  static constexpr int64_t kTileSize = 64;
++  static constexpr int64_t kPageAlign = 576;
++  static constexpr int64_t kBytesPerToken = kDataBytes + kScaleBytes;
++};
++
++template <>
++struct KVLayoutTraits<KVLayout::V41> {
++  static constexpr int64_t kDataBytes = 512;
++  static constexpr int64_t kScaleBytes = 16;
++  static constexpr int64_t kTileSize = 32;
++  static constexpr int64_t kPageAlign = 512;
++  static constexpr int64_t kBytesPerToken = kDataBytes + kScaleBytes;
++};
++
++template <>
++struct KVLayoutTraits<KVLayout::V41_FP4> {
++  static constexpr int64_t kDataBytes = 256;
++  static constexpr int64_t kScaleBytes = 32;
++  static constexpr int64_t kTileSize = 16;
++  static constexpr int64_t kPageAlign = 256;
++  static constexpr int64_t kBytesPerToken = kDataBytes + kScaleBytes;
++};
++
++/// Bytes of one page block: `page_size` tokens, padded up to the reader's row stride.
++template <KVLayout kLayout>
++constexpr int64_t kv_page_bytes(int64_t page_size) {
++  using Traits = KVLayoutTraits<kLayout>;
++  return (page_size * Traits::kBytesPerToken + Traits::kPageAlign - 1) / Traits::kPageAlign * Traits::kPageAlign;
++}
++
++/// Addressing of a paged cache: `1 << kPageBits` data rows then as many scale rows, padded to kPageAlign.
++template <KVLayout kLayout, uint32_t kPageBits>
++struct PagedKV {
++  using Traits = KVLayoutTraits<kLayout>;
++  static constexpr int64_t kPageSize = int64_t{1} << kPageBits;
++  static constexpr int64_t kPageBytes = kv_page_bytes<kLayout>(kPageSize);
++  /// Byte offset of the scale rows inside a page.
++  static constexpr int64_t kScaleBase = Traits::kDataBytes << kPageBits;
++
++  template <typename LocT>
++  static constexpr LocT page_of(LocT loc) {
++    return loc >> kPageBits;
++  }
++  template <typename LocT>
++  static constexpr LocT slot_of(LocT loc) {
++    return loc & (static_cast<LocT>(kPageSize) - 1);
++  }
++  /// Byte offsets of token `loc`'s data row and scale row from the cache base.
++  template <typename LocT>
++  static constexpr int64_t data_offset(LocT loc) {
++    return page_of(loc) * kPageBytes + slot_of(loc) * Traits::kDataBytes;
++  }
++  template <typename LocT>
++  static constexpr int64_t scale_offset(LocT loc) {
++    return page_of(loc) * kPageBytes + kScaleBase + slot_of(loc) * Traits::kScaleBytes;
++  }
++
++  struct Row {
++    uint8_t* data;
++    uint8_t* scale;
++  };
++  /// The data row and scale row of token `loc`.
++  template <typename LocT>
++  SGL_DEVICE static Row row(uint8_t* cache, LocT loc) {
++    uint8_t* page = cache + page_of(loc) * kPageBytes;
++    return {page + slot_of(loc) * Traits::kDataBytes, page + kScaleBase + slot_of(loc) * Traits::kScaleBytes};
++  }
++};
++
++#ifndef USE_ROCM
++
++namespace v41 {
++
++/// The row helpers below quantize one 512-wide token spread over `512 / kVecSize` threads,
++/// thread `tx` holding elements `[kVecSize * tx, kVecSize * (tx + 1))` as fp32. They are
++/// warp-collective: every thread of the token must call them together. NaN / inf are not handled.
++
++/// Per-thread |max| over the vector.
++template <uint32_t kVecSize>
++SGL_DEVICE float vec_amax(const float (&v)[kVecSize]) {
++  float amax = fabsf(v[0]);
++#pragma unroll
++  for (uint32_t i = 1; i < kVecSize; ++i) {
++    amax = fmaxf(amax, fabsf(v[i]));
++  }
++  return amax;
++}
++
++/// V4.1 fp8 row: one ue8m0 scale per 32-element tile. `data_row` is the token's 512 B,
++/// `scale_row` its 16 scale bytes. Scale `2^ceil(log2(max(amax / 448, 1e-4)))` stored as the
++/// ue8m0 byte, payload `e4m3(x / scale)` rounded to nearest even (|x / scale| <= 448, so it
++/// never saturates).
++template <uint32_t kVecSize>
++SGL_DEVICE void store_row_fp8(uint8_t* data_row, uint8_t* scale_row, uint32_t tx, const float (&v)[kVecSize]) {
++  using namespace device;
++  constexpr uint32_t kTileLanes = KVLayoutTraits<KVLayout::V41>::kTileSize / kVecSize;
++  static_assert(kVecSize % 2 == 0 && kTileLanes >= 1 && (kTileLanes & (kTileLanes - 1)) == 0);
++
++  const float amax = warp::reduce_max<kTileLanes>(vec_amax(v));
++  // ceil(log2(max(amax / 448, 1e-4))) exactly, from the bits of amax: 448 = 1.75 * 2^8, so the
++  // quotient's exponent is amax's minus 8, plus one when the mantissa exceeds 1.75, floored at 2^-13.
++  const uint32_t bits = __float_as_uint(amax);
++  const int32_t exponent =
++      max(static_cast<int32_t>(bits >> 23) - 8 + static_cast<int32_t>((bits & 0x7FFFFFu) > 0x600000u), 114);
++  // The scale is a power of two, so the multiply by its reciprocal is the exact quotient.
++  const float inv_scale = fp8::inv_scale_ue8m0(exponent);
++  AlignedVector<fp8x2_e4m3_t, kVecSize / 2> out;
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    // `cvt.rn.satfinite.e4m3x2` directly: |x / scale| <= 448 needs no clamp.
++    out[i] = fp8x2_e4m3_t{fp32x2_t{v[2 * i] * inv_scale, v[2 * i + 1] * inv_scale}};
++  }
++  out.store(data_row, tx);
++  // Every lane of the tile holds the exponent; they all store the same byte.
++  scale_row[tx / kTileLanes] = static_cast<uint8_t>(exponent);
++}
++
++/// V4.1 fp4 row: one e4m3 scale per 16-element tile. `data_row` is the token's 256 B,
++/// `scale_row` its 32 scale bytes. Scale `e4m3(clamp(amax / 6, 2^-9, 448))` rounded to
++/// nearest even; codes `cvt.rn.satfinite.e2m1x2` of `x / scale` (ties to even, saturating
++/// at 6, the sign kept for a value that rounds to zero), the even element in the low nibble.
++template <uint32_t kVecSize>
++SGL_DEVICE void store_row_fp4(uint8_t* data_row, uint8_t* scale_row, uint32_t tx, const float (&v)[kVecSize]) {
++  using namespace device;
++  constexpr uint32_t kTileLanes = KVLayoutTraits<KVLayout::V41_FP4>::kTileSize / kVecSize;
++  static_assert(kVecSize % 2 == 0 && kTileLanes >= 1 && (kTileLanes & (kTileLanes - 1)) == 0);
++
++  const float amax = warp::reduce_max<kTileLanes>(vec_amax(v));
++  const __nv_fp8_e4m3 scale_e4m3{fminf(fmaxf(__fdiv_rn(amax, 6.0f), 0x1p-9f), 448.0f)};
++  const float scale = static_cast<float>(scale_e4m3);
++  AlignedVector<uint8_t, kVecSize / 2> out;
++#pragma unroll
++  for (uint32_t i = 0; i < kVecSize / 2; ++i) {
++    // IEEE division by the rounded scale, as the reference does; a reciprocal multiply could cross an e2m1 tie.
++    out[i] = static_cast<uint8_t>(__nv_cvt_float2_to_fp4x2(
++        fp32x2_t{__fdiv_rn(v[2 * i], scale), __fdiv_rn(v[2 * i + 1], scale)}, __NV_E2M1, cudaRoundNearest));
++  }
++  out.store(data_row, tx);
++  // Every lane of the tile holds the scale; they all store the same byte.
++  scale_row[tx / kTileLanes] = scale_e4m3.__x;
++}
++
++/// Dispatch on the layout for a 512-wide row held as `kVecSize` consecutive fp32 per thread.
++/// V4 has no row helper here: its writers keep their nope / RoPE split code.
++template <KVLayout kLayout, uint32_t kVecSize>
++SGL_DEVICE void store_row(uint8_t* data_row, uint8_t* scale_row, uint32_t tx, const float (&v)[kVecSize]) {
++  static_assert(kLayout != KVLayout::V4, "V4 rows are written by the caller");
++  if constexpr (kLayout == KVLayout::V41) {
++    store_row_fp8(data_row, scale_row, tx, v);
++  } else {
++    store_row_fp4(data_row, scale_row, tx, v);
++  }
++}
++
++/// Same, for a row kept in an `AlignedVector<float, kVecSize>`.
++template <KVLayout kLayout, std::size_t kVecSize>
++SGL_DEVICE void
++store_row(uint8_t* data_row, uint8_t* scale_row, uint32_t tx, const device::AlignedVector<float, kVecSize>& v) {
++  store_row<kLayout>(data_row, scale_row, tx, *reinterpret_cast<const float (*)[kVecSize]>(v.data()));
++}
++
++}  // namespace v41
++
++#endif  // USE_ROCM
++
++}  // namespace deepseek_v4
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/ops/attention/dsv4/attn.py b/python/sglang/kernels/ops/attention/dsv4/attn.py
+index 8996bb5226f64109de9fc5c9985559d64cfeef57..dba73d79eeaeefaecf617717f38835a075d8c9a0 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/attn.py
++++ b/python/sglang/kernels/ops/attention/dsv4/attn.py
+@@ -1,4 +1,4 @@
+-from typing import Literal, Tuple
++from typing import Literal, Optional, Tuple, Union
+ 
+ import torch
+ import triton
+@@ -12,6 +12,7 @@ from sglang.kernels.jit.utils import (
+     make_cpp_args,
+ )
+ 
++from .kv_layout import KVLayout
+ from .utils import make_name
+ 
+ 
+@@ -30,20 +31,32 @@ def _jit_fused_store_module(
+     input_dtype: torch.dtype,
+     index_dtype: torch.dtype,
+     page_size: int,
++    layout: KVLayout,
+ ):
+-    args = make_cpp_args(input_dtype, index_dtype, page_size, is_arch_support_pdl())
+-    cname = "FlashMLA" if name == "flashmla" else "Indexer"
++    if name == "flashmla":
++        args = make_cpp_args(
++            input_dtype, index_dtype, page_size, layout.cpp_name, is_arch_support_pdl()
++        )
++        # The V4 layout keeps its RoPE dims in bf16 and has no in-kernel RoPE.
++        cname = "FlashMLA"
++        wrappers = ["run"] if layout is KVLayout.V4 else ["run", "run_rope"]
++    else:
++        assert layout is KVLayout.V4, "only the FlashMLA cache has V4.1 layouts"
++        args = make_cpp_args(input_dtype, index_dtype, page_size, is_arch_support_pdl())
++        cname, wrappers = "Indexer", ["run"]
+     kernel_class = f"FusedStoreCache{cname}Kernel<{args}>"
+     return load_jit(
+         make_name("store_" + name),
+         *args,
+         cuda_files=["deepseek_v4/store.cuh"],
+-        cuda_wrappers=[("run", f"{kernel_class}::run")],
++        cuda_wrappers=[(w, f"{kernel_class}::{w}") for w in wrappers],
+     )
+ 
+ 
+ def get_paged_mqa_logits_metadata(seq_lens: torch.Tensor, page_size: int, num_sm: int):
+-    assert page_size == 64
++    # The schedule only depends on the sequence lengths (256-token splits), not
++    # on the page size.
++    assert page_size in (64, 128), page_size
+     seq_lens = seq_lens.view(-1).to(torch.int32)
+     bs = int(seq_lens.shape[0])
+     metadata = seq_lens.new_empty(num_sm + 1, 2)
+@@ -67,8 +80,25 @@ def fused_store_cache(
+     *,
+     page_size: int,
+     type: Literal["flashmla", "indexer"],
++    layout: Union[KVLayout, str] = KVLayout.V4,
++    freqs_cis: Optional[torch.Tensor] = None,
+ ) -> None:
++    """Quantize ``input`` ``[num_tokens, 512]`` (bf16, normed and rotated) into the
++    paged cache at ``indices``.
++
++    :param layout: the cache's :class:`KVLayout`. ``V4`` is the 584-byte layout
++        (fp8 nope, bf16 rope); ``V41`` (528 B) and ``V41_FP4`` (288 B) are the
++        V4.1 formats, fp8 with per-32 ue8m0 scales and e2m1 with per-16 e4m3
++        scales over all 512 dims.
++    :param freqs_cis: V4.1 layouts only. ``[num_tokens, 32]`` complex or
++        ``[num_tokens, 64]`` fp32 (real / imag interleaved); rotates the 64-dim
++        RoPE tail in-kernel, so ``input`` must then be the un-rotated latent.
++    """
++    layout = KVLayout.parse(layout)
+     if is_hip_runtime():
++        assert layout is KVLayout.V4 and freqs_cis is None, (
++            "the V4.1 KV layouts are CUDA (sm100) only"
++        )
+         from sglang.kernels.ops.kvcache.triton_store_cache import (
+             triton_fused_store_cache,
+         )
+@@ -80,8 +110,15 @@ def fused_store_cache(
+             input_dtype=input.dtype,
+             index_dtype=indices.dtype,
+             page_size=page_size,
++            layout=layout,
+         )
+-        module.run(input, cache, indices)
++        if freqs_cis is None:
++            module.run(input, cache, indices)
++        else:
++            assert layout is not KVLayout.V4, "the V4 layout has no in-kernel RoPE"
++            if freqs_cis.is_complex():
++                freqs_cis = torch.view_as_real(freqs_cis).flatten(-2)
++            module.run_rope(input, cache, indices, freqs_cis.contiguous())
+ 
+ 
+ @triton.jit
+diff --git a/python/sglang/kernels/ops/attention/dsv4/compress.py b/python/sglang/kernels/ops/attention/dsv4/compress.py
+index becf52f07d87013accec8501c1fee9f0fcd8b160..2d27cddbe39656bb926e28a51dbe267bd292be1b 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/compress.py
++++ b/python/sglang/kernels/ops/attention/dsv4/compress.py
+@@ -16,6 +16,7 @@ from sglang.srt.layers.attention.dsa.utils import (
+ )
+ from sglang.srt.utils import is_hip, is_xpu
+ 
++from .kv_layout import KVLayout
+ from .utils import make_name
+ 
+ _is_xpu = is_xpu()
+@@ -48,7 +49,8 @@ def _jit_compress_norm_rope_module(
+     head_dim: int,
+     rope_dim: int,
+     page_size: int,
+-    bf16_store: bool = False,
++    bf16_store: bool,
++    layout: KVLayout,
+     fp8_2buff: bool = False,
+ ) -> Module:
+     args = make_cpp_args(
+@@ -56,9 +58,10 @@ def _jit_compress_norm_rope_module(
+         head_dim,
+         rope_dim,
+         page_size,
+-        is_arch_support_pdl(),
+         INDEXER_K_CACHE_PRESHUFFLE_TILE if aiter_can_use_preshuffle_paged_mqa() else 0,
+         bf16_store,
++        layout.cpp_name,
++        is_arch_support_pdl(),
+     )
+     cuda_wrappers = [("forward", f"FusedNormRopeKernel<{args}>::forward")]
+     if head_dim == 128:
+@@ -455,9 +458,16 @@ def compress_norm_rope_store(
+     kvcache_scale: Optional[torch.Tensor] = None,
+     rope_cache: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+     fp4_k_write_metadata=None,
++    layout: Union[KVLayout, str] = KVLayout.V4,
+     fp8_2buff: bool = False,
+     kvcache_rope: Optional[torch.Tensor] = None,
+ ) -> None:
++    layout = KVLayout.parse(layout)
++    if layout is not KVLayout.V4:
++        assert kv.shape[-1] == 512 and not use_fp4 and not bf16_store, (
++            "the V4.1 layouts are paged FlashMLA main-KV caches"
++        )
++        assert not is_hip() and not _is_xpu, "the V4.1 KV layouts are CUDA (sm100) only"
+     if use_fp4:
+         assert kv.shape[-1] == 128
+     if is_hip() and use_fp4:
+@@ -482,6 +492,7 @@ def compress_norm_rope_store(
+ 
+     if fp8_2buff:
+         assert not (use_fp4 or bf16_store), "fp8 two-pool store is its own layout"
++        assert layout is KVLayout.V4, "fp8 two-pool store is a V4 (584 B page) cache"
+         assert kv.shape[-1] != 128, "fp8 two-pool store is the latent, not the indexer"
+         assert kvcache_rope is not None, "fp8 two-pool store needs the rope pool"
+         assert not _is_xpu, "fp8 two-pool store is only wired for the CUDA/HIP kernel"
+@@ -507,6 +518,7 @@ def compress_norm_rope_store(
+             freq_cis.shape[-1],
+             page_size,
+             bf16_store,
++            layout,
+             fp8_2buff,
+         )
+         if use_fp4:
+diff --git a/python/sglang/kernels/ops/attention/dsv4/dequant_k_cache.py b/python/sglang/kernels/ops/attention/dsv4/dequant_k_cache.py
+index c689de8f7e1082efd48089d6937b664b8451bad8..9d24953b13a5c7af08de4c6136c5f71d15804b7d 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/dequant_k_cache.py
++++ b/python/sglang/kernels/ops/attention/dsv4/dequant_k_cache.py
+@@ -1,9 +1,11 @@
+-from typing import Optional
++from typing import Optional, Union
+ 
+ import torch
+ import triton
+ import triton.language as tl
+ 
++from sglang.kernels.jit.utils import get_jit_cuda_arch, is_hip_runtime
++from sglang.kernels.ops.attention.dsv4.kv_layout import KVLayout
+ from sglang.kernels.ops.quantization.fp8_kernel import is_fp8_fnuz
+ 
+ fp8_dtype = torch.float8_e4m3fnuz if is_fp8_fnuz() else torch.float8_e4m3fn
+@@ -26,6 +28,7 @@ def dequantize_k_cache_paged(
+     page_table_1_flattened: torch.Tensor,
+     page_size: int,
+     out: Optional[torch.Tensor] = None,
++    layout: Union[KVLayout, str] = KVLayout.V4,
+ ) -> torch.Tensor:
+     """Dequantize the DeepSeek v4 paged KV cache for a list of token IDs.
+ 
+@@ -36,10 +39,16 @@ def dequantize_k_cache_paged(
+         out: optional (num_tokens, 1, DIM_NOPE + DIM_ROPE) bf16 destination.
+             May be a slice of a larger workspace; the kernel uses out.stride(0)
+             so contiguous-along-dim-0 slices work.
++        layout: the cache's :class:`KVLayout`.
+ 
+     Returns:
+         (num_tokens, 1, DIM_NOPE + DIM_ROPE) bfloat16.
+     """
++    layout = KVLayout.parse(layout)
++    if layout is not KVLayout.V4:
++        return dequantize_k_cache_paged_v41(
++            quant_k_cache, page_table_1_flattened, page_size, out=out, layout=layout
++        )
+     assert quant_k_cache.is_contiguous()
+     assert page_table_1_flattened.dtype in (torch.int32, torch.int64)
+ 
+@@ -85,6 +94,69 @@ def dequantize_k_cache_paged(
+     return out
+ 
+ 
++def dequantize_k_cache_paged_v41(
++    quant_k_cache: torch.Tensor,
++    page_table_1_flattened: torch.Tensor,
++    page_size: int,
++    out: Optional[torch.Tensor] = None,
++    layout: KVLayout = KVLayout.V41,
++) -> torch.Tensor:
++    """Dequantize a V4.1 paged cache (fp8 ``V41`` or fp4 ``V41_FP4``) for a list
++    of token IDs into ``(num_tokens, 1, 512)`` bf16.
++
++    Bit-exact with the pure-torch dequantizer of these formats.
++    """
++    layout = KVLayout.parse(layout)
++    assert layout in (KVLayout.V41, KVLayout.V41_FP4), layout
++    if is_hip_runtime() or get_jit_cuda_arch().major < 10:
++        raise RuntimeError(
++            "DeepSeek V4.1 KV cache dequantization requires CUDA SM100 or newer"
++        )
++    assert quant_k_cache.is_contiguous()
++    assert page_table_1_flattened.dtype in (torch.int32, torch.int64)
++
++    quant_k_cache_u8 = quant_k_cache.view(torch.uint8)
++    num_tokens = page_table_1_flattened.shape[0]
++    bytes_per_page = quant_k_cache_u8.shape[-1]
++    assert bytes_per_page >= page_size * layout.bytes_per_token, (
++        f"{bytes_per_page=} cannot hold {page_size} tokens of {layout}"
++    )
++    buf_fp8 = quant_k_cache_u8.view(fp8_dtype).reshape(-1)
++    buf_uint8 = quant_k_cache_u8.reshape(-1)
++
++    if out is None:
++        out = torch.empty(
++            (num_tokens, 1, DIM_NOPE + DIM_ROPE),
++            dtype=torch.bfloat16,
++            device=quant_k_cache.device,
++        )
++    else:
++        assert out.shape == (num_tokens, 1, DIM_NOPE + DIM_ROPE)
++        assert out.dtype == torch.bfloat16
++    if num_tokens == 0:
++        return out
++
++    kernel = (
++        _dequantize_k_cache_paged_v41_fp8_kernel
++        if layout is KVLayout.V41
++        else _dequantize_k_cache_paged_v41_fp4_kernel
++    )
++    kernel[(num_tokens,)](
++        out,
++        buf_fp8,
++        buf_uint8,
++        page_table_1_flattened,
++        out.stride(0),
++        BYTES_PER_PAGE=bytes_per_page,
++        PAGE_SIZE=page_size,
++        DATA_BYTES=layout.data_bytes,
++        SCALE_BYTES=layout.scale_bytes,
++        TILE_SIZE=layout.tile_size,
++        S_OFFSET_BYTES=layout.scale_offset(page_size),
++    )
++    return out
++
++
+ def gather_dequant_requant_fp8_paged(
+     quant_k_cache: torch.Tensor,
+     page_table_1_flattened: torch.Tensor,
+@@ -270,6 +342,103 @@ def _dequantize_k_cache_paged_kernel(
+     tl.store(output_ptr + out_row_base + DIM_NOPE + rope_offs, rope_data)
+ 
+ 
++@triton.jit
++def _ue8m0_to_fp32(scale_u8):
++    # Follows torch.float8_e8m0fnu: byte 0 is the denormal 2 ** -127, byte 255
++    # is NaN, otherwise 2 ** (byte - 127).
++    normal = (scale_u8.to(tl.int32) << 23).to(tl.float32, bitcast=True)
++    denormal = tl.full(scale_u8.shape, 0x00400000, tl.int32).to(
++        tl.float32, bitcast=True
++    )
++    scale = tl.where(scale_u8 == 0, denormal, normal)
++    return tl.where(scale_u8 == 255, float("nan"), scale)
++
++
++@triton.jit
++def _e2m1_code_to_fp32(code):
++    # The 4-bit e2m1 code: bit 3 is the sign, bits 0-2 index into
++    # [0, 0.5, 1, 1.5, 2, 3, 4, 6].
++    m = code & 7
++    e = m >> 1
++    f = (m & 1).to(tl.float32)
++    mag = tl.where(e == 0, 0.5 * f, tl.exp2((e - 1).to(tl.float32)) * (1.0 + 0.5 * f))
++    # Set the sign bit directly: a negated zero must stay -0.0 (code 0x8).
++    sign = (code & 8).to(tl.int32) << 28
++    return (mag.to(tl.int32, bitcast=True) | sign).to(tl.float32, bitcast=True)
++
++
++@triton.jit
++def _dequantize_k_cache_paged_v41_fp8_kernel(
++    output_ptr,
++    buf_fp8_ptr,
++    buf_uint8_ptr,
++    page_table_ptr,
++    output_stride_0,
++    BYTES_PER_PAGE: tl.constexpr,
++    PAGE_SIZE: tl.constexpr,
++    DATA_BYTES: tl.constexpr,
++    SCALE_BYTES: tl.constexpr,
++    TILE_SIZE: tl.constexpr,
++    S_OFFSET_BYTES: tl.constexpr,
++):
++    # V41: 512 e4m3 values per token, then 16 ue8m0 scales (one per 32 values).
++    tl.static_assert(DATA_BYTES == 512 and SCALE_BYTES == 16 and TILE_SIZE == 32)
++    token_id = tl.program_id(0).to(tl.int64)
++    loc = tl.load(page_table_ptr + token_id).to(tl.int64)
++    page_idx = loc // PAGE_SIZE
++    in_page = loc % PAGE_SIZE
++    page_byte_base = page_idx * BYTES_PER_PAGE
++    token_data_base = page_byte_base + in_page * DATA_BYTES
++    token_scale_base = page_byte_base + S_OFFSET_BYTES + in_page * SCALE_BYTES
++
++    offs = tl.arange(0, DATA_BYTES)
++    vals = tl.load(buf_fp8_ptr + token_data_base + offs).to(tl.float32)
++    scale_u8 = tl.load(buf_uint8_ptr + token_scale_base + offs // TILE_SIZE)
++    out = vals * _ue8m0_to_fp32(scale_u8)
++    tl.store(
++        output_ptr + token_id * output_stride_0 + offs,
++        out.to(output_ptr.dtype.element_ty),
++    )
++
++
++@triton.jit
++def _dequantize_k_cache_paged_v41_fp4_kernel(
++    output_ptr,
++    buf_fp8_ptr,
++    buf_uint8_ptr,
++    page_table_ptr,
++    output_stride_0,
++    BYTES_PER_PAGE: tl.constexpr,
++    PAGE_SIZE: tl.constexpr,
++    DATA_BYTES: tl.constexpr,
++    SCALE_BYTES: tl.constexpr,
++    TILE_SIZE: tl.constexpr,
++    S_OFFSET_BYTES: tl.constexpr,
++):
++    # V41_FP4: 512 e2m1 codes packed two per byte (even index in the low nibble),
++    # then 32 e4m3 scales (one per 16 values).
++    tl.static_assert(DATA_BYTES == 256 and SCALE_BYTES == 32 and TILE_SIZE == 16)
++    token_id = tl.program_id(0).to(tl.int64)
++    loc = tl.load(page_table_ptr + token_id).to(tl.int64)
++    page_idx = loc // PAGE_SIZE
++    in_page = loc % PAGE_SIZE
++    page_byte_base = page_idx * BYTES_PER_PAGE
++    token_data_base = page_byte_base + in_page * DATA_BYTES
++    token_scale_base = page_byte_base + S_OFFSET_BYTES + in_page * SCALE_BYTES
++
++    boffs = tl.arange(0, DATA_BYTES)
++    packed = tl.load(buf_uint8_ptr + token_data_base + boffs)
++    # Byte j holds elements 2j (low nibble) and 2j + 1, both in tile (2j) // 16.
++    scale = tl.load(buf_fp8_ptr + token_scale_base + (2 * boffs) // TILE_SIZE).to(
++        tl.float32
++    )
++    lo = _e2m1_code_to_fp32(packed & 0xF) * scale
++    hi = _e2m1_code_to_fp32(packed >> 4) * scale
++    out_base = output_ptr + token_id * output_stride_0
++    tl.store(out_base + 2 * boffs, lo.to(output_ptr.dtype.element_ty))
++    tl.store(out_base + 2 * boffs + 1, hi.to(output_ptr.dtype.element_ty))
++
++
+ @triton.jit
+ def _gather_dequant_requant_fp8_paged_kernel(
+     output_ptr,
+diff --git a/python/sglang/kernels/ops/attention/dsv4/elementwise.py b/python/sglang/kernels/ops/attention/dsv4/elementwise.py
+index 053eb01c6cb272d946a24bce8d028c2c85e9c08f..457829d429e057d06c8d907acf9d12e9b98732f5 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/elementwise.py
++++ b/python/sglang/kernels/ops/attention/dsv4/elementwise.py
+@@ -1,4 +1,4 @@
+-from typing import Optional, Tuple
++from typing import Optional, Tuple, Union
+ 
+ import torch
+ 
+@@ -10,6 +10,7 @@ from sglang.kernels.jit.utils import (
+ )
+ from sglang.srt.utils import is_hip, is_xpu
+ 
++from .kv_layout import KVLayout
+ from .utils import make_name
+ 
+ _is_hip = is_hip()
+@@ -55,9 +56,12 @@ def _jit_main_k_norm_rope_flashmla_module(
+     head_dim: int,
+     rope_dim: int,
+     page_size: int,
++    layout: KVLayout,
+ ):
+     """Main MLA path K kernel: rmsnorm + RoPE + write to FlashMLA paged cache."""
+-    args = make_cpp_args(dtype, head_dim, rope_dim, page_size, is_arch_support_pdl())
++    args = make_cpp_args(
++        dtype, head_dim, rope_dim, page_size, layout.cpp_name, is_arch_support_pdl()
++    )
+     return load_jit(
+         make_name("main_k_norm_rope_flashmla"),
+         *args,
+@@ -273,16 +277,21 @@ def fused_k_norm_rope_flashmla(
+     out_loc: torch.Tensor,
+     kvcache: torch.Tensor,
+     page_size: int,
++    layout: Union[KVLayout, str] = KVLayout.V4,
+ ) -> None:
++    """RMSNorm + RoPE ``kv`` and write it into the ``layout`` paged FlashMLA
++    cache at ``out_loc``."""
++    layout = KVLayout.parse(layout)
+     freqs_real = torch.view_as_real(freqs_cis).flatten(-2)
+     head_dim = kv.shape[-1]
+     rope_dim = freqs_real.shape[-1]
+     if _is_xpu:
++        assert layout is KVLayout.V4, "the V4.1 KV layouts are CUDA (sm100) only"
+         fused_k_norm_rope_flashmla_xpu(
+             kv, kv_weight, freqs_real, positions, out_loc, kvcache, eps, page_size
+         )
+     else:
+         module = _jit_main_k_norm_rope_flashmla_module(
+-            kv.dtype, head_dim, rope_dim, page_size
++            kv.dtype, head_dim, rope_dim, page_size, layout
+         )
+         module.forward(kv, kv_weight, freqs_real, positions, out_loc, kvcache, eps)
+diff --git a/python/sglang/kernels/ops/attention/dsv4/kv_layout.py b/python/sglang/kernels/ops/attention/dsv4/kv_layout.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb51e4361136ba74cc5d4f2e5b3098529a55f20a
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/kv_layout.py
+@@ -0,0 +1,74 @@
++"""Paged fp8 / fp4 KV cache layouts of the DeepSeek-V4 family sparse MLA decode kernels.
++
++A page block stores ``page_size`` data rows followed by ``page_size`` scale rows.
++The reader selects the format from the bytes per token (the last dim of the
++``(num_pages, page_size, 1, bytes_per_token)`` view) and requires the page
++stride to be a multiple of its TMA row stride, which :meth:`KVLayout.page_bytes`
++pads to. Mirrors ``sgl_kernel/deepseek_v4/kv_layout.cuh``.
++"""
++
++from __future__ import annotations
++
++import enum
++from typing import Union
++
++
++class KVLayout(str, enum.Enum):
++    # 448 fp8 nope + 64 bf16 rope, 7 ue8m0 scales (+1 pad) per 64 values.
++    V4 = "v4"
++    # 512 fp8 (rope quantized too), 16 ue8m0 scales per 32 values.
++    V41 = "v41"
++    # 512 e2m1 packed two per byte (even index low nibble), 32 e4m3 scales per 16 values.
++    V41_FP4 = "v41_fp4"
++
++    @property
++    def data_bytes(self) -> int:
++        return {KVLayout.V4: 576, KVLayout.V41: 512, KVLayout.V41_FP4: 256}[self]
++
++    @property
++    def scale_bytes(self) -> int:
++        return {KVLayout.V4: 8, KVLayout.V41: 16, KVLayout.V41_FP4: 32}[self]
++
++    @property
++    def tile_size(self) -> int:
++        """Values sharing one scale."""
++        return {KVLayout.V4: 64, KVLayout.V41: 32, KVLayout.V41_FP4: 16}[self]
++
++    @property
++    def bytes_per_token(self) -> int:
++        return self.data_bytes + self.scale_bytes
++
++    @property
++    def page_align(self) -> int:
++        """Unit the page stride is padded to: the reader's TMA row stride."""
++        return {KVLayout.V4: 576, KVLayout.V41: 512, KVLayout.V41_FP4: 256}[self]
++
++    @property
++    def is_fp4(self) -> bool:
++        return self is KVLayout.V41_FP4
++
++    def page_bytes(self, page_size: int) -> int:
++        raw = page_size * self.bytes_per_token
++        return -(-raw // self.page_align) * self.page_align
++
++    def scale_offset(self, page_size: int) -> int:
++        """Byte offset of the scale rows inside a page."""
++        return page_size * self.data_bytes
++
++    @property
++    def cpp_name(self) -> str:
++        """The C++ enumerator, for JIT template arguments. Bare, because it is
++        also part of the JIT module name; the headers `using enum` it in."""
++        return self.name
++
++    @classmethod
++    def parse(cls, value: Union[str, KVLayout]) -> KVLayout:
++        if isinstance(value, KVLayout):
++            return value
++        return cls(str(value).lower())
++
++
++def is_valid_kv_layout_pair(kv: KVLayout, extra_kv: KVLayout) -> bool:
++    """The (main, extra) cache pairs the decode kernel accepts: identical layouts,
++    or the fp4 extra cache next to a V4.1 fp8 main cache."""
++    return extra_kv is kv or (kv is KVLayout.V41 and extra_kv is KVLayout.V41_FP4)
+diff --git a/python/sglang/kernels/ops/attention/dsv4/low_ratio_compress.py b/python/sglang/kernels/ops/attention/dsv4/low_ratio_compress.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbb559da978787f4560b576e97ccd9e4451d15b4
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/low_ratio_compress.py
+@@ -0,0 +1,183 @@
++"""Fused ratio-1 and ratio-2 decode compressors: RMSNorm, RoPE and the FlashMLA
++cache write in one launch.
++
++Ratio 1 takes the bf16 ``wkv`` projection as is: RoPE uses the token's own
++position and the compressed slot equals the FULL slot. Ratio 2 pair-pools the
++token against the pending partner in the state ring first. ``out_loc == 0``
++marks a padded graph row on both paths, and both return the pre-RoPE latent for
++the index-key projection.
++"""
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Optional, Union
++
++import torch
++
++from sglang.kernels.jit.utils import (
++    cache_once,
++    is_arch_support_pdl,
++    load_jit,
++    make_cpp_args,
++)
++
++from .kv_layout import KVLayout
++from .utils import make_name
++
++if TYPE_CHECKING:
++    from tvm_ffi.module import Module
++
++
++@cache_once
++def _jit_c1_module(head_dim: int, rope_dim: int, page_size: int, layout: KVLayout):
++    args = make_cpp_args(
++        head_dim,
++        rope_dim,
++        page_size,
++        layout.cpp_name,
++        is_arch_support_pdl(),
++    )
++    return load_jit(
++        make_name("c1_decode"),
++        *args,
++        cuda_files=["deepseek_v4/c1.cuh"],
++        cuda_wrappers=[
++            ("decode_fusion", f"FlashCompress1Kernel<{args}>::run_decode_fusion"),
++        ],
++    )
++
++
++def c1_decode_norm_rope_store(
++    kv_input: torch.Tensor,
++    norm_weight: torch.Tensor,
++    positions: torch.Tensor,
++    out_loc: torch.Tensor,
++    eps: float,
++    freqs_cis: torch.Tensor,
++    k_cache: torch.Tensor,
++    *,
++    page_size: int,
++    layout: Union[KVLayout, str] = KVLayout.V4,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """RMSNorm ``kv_input`` and write the main KV slot, in a single launch.
++
++    :param kv_input: ``[num_tokens, head_dim]`` bf16, the raw ``wkv`` projection
++                     output.
++    :param norm_weight: ``[head_dim]`` bf16, promoted to fp32 for the multiply.
++    :param positions: ``[num_tokens]`` int32 or int64, indexed into ``freqs_cis``
++                      as-is: at ratio 1 the latent stands for the token itself,
++                      so there is no ``- 1``.
++    :param out_loc: ``[num_tokens]`` int32 or int64 ``c1_out_loc``, which at ratio 1
++                    equals ``raw_out_loc`` (the scheduler's int64 ``out_cache_loc``).
++                    ``0`` marks a padded graph row: its latent is still computed
++                    and published, but nothing is written to the cache.
++    :param eps: RMSNorm epsilon.
++    :param freqs_cis: ``[max_pos, rope_dim]`` fp32, real/imag interleaved --
++                      ``torch.view_as_real(freqs).flatten(-2)``.
++    :param k_cache: the compressed KV pool buffer for this layer.
++    :param page_size: slots per page of that pool (``page_size // ratio``, i.e.
++                      the FULL page size at ratio 1).
++    :param layout: the pool's :class:`KVLayout`. The fp8 layouts (``V4``,
++                   ``V41``) store the fp4 fake-quantized value; ``V41_FP4``
++                   stores the e2m1 codes themselves, rounding once.
++    :param out: ``[num_tokens, head_dim]`` bf16 destination for the pre-RoPE
++                latent. Pass a persistent buffer under CUDA graphs.
++    :return: ``out``, the pre-RoPE post-norm latent.
++    """
++    num_tokens, head_dim = kv_input.shape
++    if out is None:
++        out = kv_input.new_empty((num_tokens, head_dim))
++
++    layout = KVLayout.parse(layout)
++    module = _jit_c1_module(head_dim, freqs_cis.shape[-1], page_size, layout)
++    module.decode_fusion(
++        kv_input,
++        out,
++        norm_weight,
++        freqs_cis,
++        positions,
++        out_loc,
++        k_cache,
++        float(eps),
++    )
++    return out
++
++
++@cache_once
++def _jit_c2_module(
++    head_dim: int,
++    rope_dim: int,
++    page_size: int,
++    layout: KVLayout,
++) -> Module:
++    args = make_cpp_args(
++        head_dim,
++        rope_dim,
++        page_size,
++        layout.cpp_name,
++        is_arch_support_pdl(),
++    )
++    return load_jit(
++        make_name("c2_decode"),
++        *args,
++        cuda_files=["deepseek_v4/c2.cuh"],
++        cuda_wrappers=[
++            ("decode_fusion", f"FlashCompress2Kernel<{args}>::run_decode_fusion"),
++        ],
++    )
++
++
++def c2_decode_norm_rope_store(
++    kv_input: torch.Tensor,
++    kv_state: torch.Tensor,
++    norm_weight: torch.Tensor,
++    positions: torch.Tensor,
++    req: torch.Tensor,
++    raw_out_loc: torch.Tensor,
++    eps: float,
++    freqs_cis: torch.Tensor,
++    k_cache: torch.Tensor,
++    *,
++    page_size: int,
++    ring_size: int,
++    draft_len: int = 1,
++    layout: Union[KVLayout, str] = KVLayout.V4,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """Pair-pool ``kv_input`` against ``kv_state``, RMSNorm, and write the main KV slot.
++
++    The cache store uses ``raw_out_loc // 2`` as its slot.
++
++    :param freqs_cis: ``[max_pos, rope_dim]`` fp32, real/imag interleaved --
++                      ``torch.view_as_real(freqs).flatten(-2)``. Indexed
++                      in-kernel at ``positions - 1``, the position the latent
++                      stands for.
++    :param k_cache: the compressed KV pool buffer for this layer.
++    :param page_size: slots per page of that pool (``page_size // ratio``).
++    :param layout: the pool's :class:`KVLayout`. The fp8 layouts (``V4``,
++                   ``V41``) store the fp4 fake-quantized value; ``V41_FP4``
++                   stores the e2m1 codes themselves, rounding once.
++    """
++    num_tokens, fused_dim = kv_input.shape
++    head_dim = fused_dim // 2
++    if out is None:
++        out = kv_input.new_empty((num_tokens, head_dim), dtype=torch.bfloat16)
++
++    layout = KVLayout.parse(layout)
++    module = _jit_c2_module(head_dim, freqs_cis.shape[-1], page_size, layout)
++    module.decode_fusion(
++        kv_input,
++        kv_state,
++        out,
++        norm_weight,
++        positions,
++        req,
++        raw_out_loc,
++        eps,
++        freqs_cis,
++        k_cache,
++        ring_size,
++        draft_len,
++    )
++    return out
+diff --git a/python/sglang/kernels/ops/attention/dsv4/metadata_kernel.py b/python/sglang/kernels/ops/attention/dsv4/metadata_kernel.py
+index 9025187f93f876a6010fac54c843570977abd708..8a647544c04a1fd43f258b0d3e9c23fb138f9582 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/metadata_kernel.py
++++ b/python/sglang/kernels/ops/attention/dsv4/metadata_kernel.py
+@@ -1,10 +1,70 @@
+-from typing import Optional, Tuple
++from typing import NamedTuple, Optional, Tuple
+ 
+ import torch
+ import triton
+ import triton.language as tl
+ 
+ 
++@triton.jit
++def _fill_all_compressed_indices_kernel(
++    page_table,
++    seq_lens,
++    page_indices,
++    raw_indices,
++    PAGE_STRIDE: tl.constexpr,
++    TOPK: tl.constexpr,
++    RATIO: tl.constexpr,
++    PAGE_SIZE: tl.constexpr,
++    BLOCK: tl.constexpr,
++):
++    row = tl.program_id(0)
++    positions = tl.arange(0, BLOCK)
++    length = tl.load(seq_lens + row)
++    valid = (positions < length) & (positions < TOPK)
++    slots_per_page = PAGE_SIZE // RATIO
++    pages = tl.load(
++        page_table + row * PAGE_STRIDE + positions // slots_per_page,
++        mask=valid,
++        other=0,
++    )
++    slots = pages * slots_per_page + positions % slots_per_page
++    tl.store(
++        page_indices + row * TOPK + positions,
++        tl.where(valid, slots, -1),
++        positions < TOPK,
++    )
++    if raw_indices is not None:
++        tl.store(
++            raw_indices + row * TOPK + positions,
++            tl.where(valid, positions, -1),
++            positions < TOPK,
++        )
++
++
++def fill_all_compressed_indices(
++    page_table: torch.Tensor,
++    compressed_seq_lens: torch.Tensor,
++    page_indices: torch.Tensor,
++    *,
++    compress_ratio: int,
++    page_size: int,
++    raw_indices: Optional[torch.Tensor] = None,
++) -> None:
++    """Fill all reachable slots; the caller guarantees compressed length <= top-k."""
++    topk = page_indices.shape[1]
++    _fill_all_compressed_indices_kernel[(compressed_seq_lens.numel(),)](
++        page_table,
++        compressed_seq_lens,
++        page_indices,
++        raw_indices,
++        page_table.stride(0),
++        topk,
++        compress_ratio,
++        page_size,
++        triton.next_power_of_2(topk),
++    )
++
++
+ @triton.jit(do_not_specialize=["bs", "num_write_tokens", "c128_cur_max_seq_len"])
+ def _init_compressed_attn_metadata_kernel(
+     seq_lens_ptr,
+@@ -215,3 +275,68 @@ def init_compression_metadata(
+         page_size,
+         compute_page_indices,
+     )
++
++
++@triton.jit
++def _low_ratio_metadata(
++    LENS,
++    LOC,
++    OUT1,
++    LEN1,
++    SPARSE1,
++    PAGE1,
++    OUT2,
++    LEN2,
++    SPARSE2,
++    PAGE2,
++    TOPK: tl.constexpr,
++    PADDED: tl.constexpr,
++    BLOCK: tl.constexpr,
++):
++    row = tl.program_id(0)
++    length = tl.load(LENS + row).to(tl.int32)
++    loc = tl.load(LOC + row).to(tl.int64)
++    len1, len2 = tl.maximum(length, 1), tl.maximum(length >> 1, 1)
++    tl.store(OUT1 + row, loc)
++    tl.store(OUT2 + row, tl.where((length & 1) == 0, loc >> 1, -1))
++    tl.store(LEN1 + row, len1)
++    tl.store(LEN2 + row, len2)
++    tl.store(SPARSE1 + row, tl.minimum(len1, TOPK))
++    tl.store(SPARSE2 + row, tl.minimum(len2, TOPK))
++    cols = tl.arange(0, BLOCK)
++    tl.store(PAGE1 + row * PADDED + cols, -1, cols < PADDED)
++    tl.store(PAGE2 + row * PADDED + cols, -1, cols < PADDED)
++
++
++class LowRatioMetadata(NamedTuple):
++    """Per-request slots and lengths of the ratio-1 and ratio-2 compressed caches."""
++
++    c1_out_loc: torch.Tensor
++    c1_seq_lens: torch.Tensor
++    c1_sparse_lens: torch.Tensor
++    c1_page_indices: torch.Tensor
++    c2_out_loc: torch.Tensor
++    c2_seq_lens: torch.Tensor
++    c2_sparse_lens: torch.Tensor
++    c2_page_indices: torch.Tensor
++
++
++def build_low_ratio_metadata(seq_lens, out_loc, topk) -> LowRatioMetadata:
++    assert seq_lens.numel() == out_loc.numel()
++    rows = seq_lens.numel()
++    kw = dict(device=seq_lens.device, dtype=torch.int32)
++    padded = triton.cdiv(topk, 64) * 64
++    outputs = []
++    for _ in range(2):
++        outputs.extend(
++            [
++                torch.empty(rows, device=out_loc.device, dtype=torch.int64),
++                torch.empty(rows, **kw),
++                torch.empty(rows, **kw),
++                torch.empty((rows, padded), **kw),
++            ]
++        )
++    _low_ratio_metadata[(rows,)](
++        seq_lens, out_loc, *outputs, topk, padded, triton.next_power_of_2(padded)
++    )
++    return LowRatioMetadata(*outputs)
+diff --git a/python/sglang/kernels/ops/attention/dsv4/torch_quant.py b/python/sglang/kernels/ops/attention/dsv4/torch_quant.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8683a243834947a63f6c09348b0a94a85423e9e7
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/torch_quant.py
+@@ -0,0 +1,118 @@
++"""Pure-torch FP4 fake quantization for DeepSeek-V4.1.
++
++Indexer values use per-32 UE8M0 scales; compressed KV uses per-16 E4M3 scales.
++Both paths round to the E2M1 grid with ties to even.
++"""
++
++from typing import Optional
++
++import torch
++
++FP8_MAX = 448.0
++FP4_MAX = 6.0
++FP8_BLOCK_SIZE = 32
++FP4_BLOCK_SIZE = 32
++FP4_AMAX_FLOOR = 6 * 2.0**-126
++
++
++def ceil_pow2(x: torch.Tensor) -> torch.Tensor:
++    """2 ** ceil(log2(x)) for positive fp32 x, computed on the IEEE bits so the
++    result is exact at powers of two."""
++    bits = x.contiguous().view(torch.int32)
++    exponent = ((bits >> 23) & 0xFF) - 127
++    has_mantissa = (bits & 0x7FFFFF) != 0
++    exponent = exponent + has_mantissa.to(torch.int32)
++    return ((exponent + 127) << 23).view(torch.float32)
++
++
++def block_scale(x: torch.Tensor, block_size: int, fmax: float, amax_floor: float):
++    """Per-block ue8m0 scale, as fp32 powers of two, shape [..., N // block_size]."""
++    amax = x.float().unflatten(-1, (-1, block_size)).abs().amax(dim=-1)
++    amax = amax.clamp_min(amax_floor)
++    # The kernel multiplies by the fp32 reciprocal rather than dividing. A Python
++    # scalar keeps this free of host tensors, so it can run under CUDA graph capture.
++    return ceil_pow2(amax * (1.0 / fmax))
++
++
++def round_fp4(x: torch.Tensor) -> torch.Tensor:
++    """Round fp32 values in [-6, 6] onto the e2m1 grid with round-to-nearest-even."""
++    magnitude = x.abs()
++    step = torch.where(magnitude < 2.0, 0.5, torch.where(magnitude < 4.0, 1.0, 2.0))
++    return torch.round(magnitude / step) * step * torch.sign(x)
++
++
++def fake_quant_fp4(x: torch.Tensor, block_size: int = FP4_BLOCK_SIZE) -> torch.Tensor:
++    """Quantize to fp4 (per-block ue8m0 scale) and back, in x's dtype."""
++    scale = block_scale(x, block_size, FP4_MAX, FP4_AMAX_FLOOR)
++    scaled = x.float().unflatten(-1, (-1, block_size)) / scale.unsqueeze(-1)
++    deq = round_fp4(scaled.clamp(-FP4_MAX, FP4_MAX)) * scale.unsqueeze(-1)
++    return deq.flatten(-2).to(x.dtype)
++
++
++def fake_quant_compressed_kv(x: torch.Tensor) -> torch.Tensor:
++    """FP4 round-trip with one E4M3FN scale per 16 compressed-KV elements.
++
++    Round amax / 6 to E4M3 with ties to even, clamping the scale to its
++    positive finite range [2**-9, 448]. Zero blocks remain zero.
++    """
++    blocks = x.float().unflatten(-1, (-1, 16))
++    amax = blocks.abs().amax(dim=-1, keepdim=True)
++    scale = (amax * (1.0 / FP4_MAX)).clamp(min=2**-9, max=FP8_MAX)
++    scale = scale.to(torch.float8_e4m3fn).float()
++    scaled = (blocks / scale).clamp(-FP4_MAX, FP4_MAX)
++    deq = round_fp4(scaled) * scale
++    return deq.flatten(-2).to(x.dtype)
++
++
++# ---------------------------------------------------------------------------
++# Pure-torch reference of the paged V4.1 fp8 KV cache format read by the sparse
++# decode kernel (528 B/token, "V41").
++# ---------------------------------------------------------------------------
++
++
++def ceil_pow2_scale(x: torch.Tensor) -> torch.Tensor:
++    """``2 ** ceil(log2(max(x, 1e-4)))`` as fp32, computed on the IEEE bits so
++    that it is exact at (and just above) powers of two."""
++    x = x.float()
++    scale = ceil_pow2(torch.clamp_min(x, 1e-4))
++    # ceil_pow2 works on the bits of a finite value; a NaN or inf amax passes
++    # through (both become the ue8m0 NaN byte, but only the NaN one turns the
++    # whole tile's payload into NaN).
++    return torch.where(torch.isfinite(x), scale, x)
++
++
++def quantize_k_cache_v41(
++    k: torch.Tensor, page_bytes: Optional[int] = None
++) -> torch.Tensor:
++    """``k`` ``[num_pages, page_size, 512]`` -> uint8 ``[num_pages, page_bytes]``
++    pages of the V41 layout: 512 e4m3 per token, then 16 ue8m0 scales per token
++    (one per 32 values), ``scale = 2 ** ceil(log2(max(amax / 448, 1e-4)))``."""
++    num_pages, page_size, d = k.shape
++    assert d == 512
++    x = k.float().view(num_pages, page_size, 16, 32)
++    scale = ceil_pow2_scale(x.abs().amax(dim=-1) / 448.0)
++    data = (x / scale.unsqueeze(-1)).to(torch.float8_e4m3fn).view(torch.uint8)
++    scale_u8 = scale.to(torch.float8_e8m0fnu).view(torch.uint8)
++    raw = page_size * 528
++    if page_bytes is None:
++        page_bytes = -(-raw // 512) * 512
++    assert page_bytes >= raw
++    out = torch.zeros((num_pages, page_bytes), dtype=torch.uint8, device=k.device)
++    out[:, : page_size * 512] = data.reshape(num_pages, page_size * 512)
++    out[:, page_size * 512 : raw] = scale_u8.reshape(num_pages, page_size * 16)
++    return out
++
++
++def dequantize_k_cache_v41(pages: torch.Tensor, page_size: int) -> torch.Tensor:
++    """Inverse of :func:`quantize_k_cache_v41`: ``[num_pages, page_size, 512]`` bf16."""
++    num_pages = pages.shape[0]
++    pages = pages.view(torch.uint8)
++    data = pages[:, : page_size * 512].reshape(num_pages, page_size, 512)
++    scale = pages[:, page_size * 512 : page_size * 528].reshape(
++        num_pages, page_size, 16
++    )
++    values = data.view(torch.float8_e4m3fn).to(torch.bfloat16)
++    scale_bf16 = scale.view(torch.float8_e8m0fnu).to(torch.bfloat16)
++    return (values.view(num_pages, page_size, 16, 32) * scale_bf16.unsqueeze(-1)).view(
++        num_pages, page_size, 512
++    )
+diff --git a/python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py b/python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py
+index bbb28952c9e161e1d7c36d5b2ed35b8fd880c29a..d93bbee70a15e0332cf43e5277e6297f14c47743 100644
+--- a/python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py
++++ b/python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py
+@@ -524,3 +524,71 @@ def build_causal_swa_page_indices_triton(
+         BLOCK_K=BLOCK_K,
+     )
+     return out
++
++
++@triton.jit
++def _small_page_table(
++    REQ_TO_TOKEN,
++    REQS,
++    LENS,
++    OUT_LENS,
++    POS,
++    PAGES,
++    SWA,
++    STRIDE: tl.constexpr,
++    NUM_PAGES: tl.constexpr,
++    PAGE_SIZE: tl.constexpr,
++    WINDOW: tl.constexpr,
++    BLOCK: tl.constexpr,
++):
++    row, tile = tl.program_id(0), tl.program_id(1)
++    if tile == 0:
++        length = tl.load(LENS + row).to(tl.int32)
++        tl.store(OUT_LENS + row, length)
++        tl.store(POS + row, length - 1)
++        tl.store(SWA + row, tl.minimum(length, WINDOW))
++    req = tl.load(REQS + row).to(tl.int64)
++    p = tile * BLOCK + tl.arange(0, BLOCK)
++    slot = tl.load(
++        REQ_TO_TOKEN + req * STRIDE + p.to(tl.int64) * PAGE_SIZE,
++        mask=p < NUM_PAGES,
++        other=0,
++    ).to(tl.int32)
++    tl.store(PAGES + row * NUM_PAGES + p, slot // PAGE_SIZE, mask=p < NUM_PAGES)
++
++
++def build_page_table_positions_small(
++    *,
++    req_to_token,
++    req_pool_indices_repeated,
++    seq_lens_casual,
++    max_seq_len,
++    page_size,
++    swa_window,
++):
++    assert page_size > 0 and page_size & (page_size - 1) == 0
++    rows = seq_lens_casual.numel()
++    pages = triton.cdiv(max_seq_len, page_size)
++    kw = dict(device=seq_lens_casual.device, dtype=torch.int32)
++    lengths, positions, swa = [torch.empty(rows, **kw) for _ in range(3)]
++    table = torch.empty((rows, pages), **kw)
++    _small_page_table[(rows, triton.cdiv(pages, 256))](
++        req_to_token,
++        req_pool_indices_repeated,
++        seq_lens_casual,
++        lengths,
++        positions,
++        table,
++        swa,
++        req_to_token.stride(0),
++        pages,
++        page_size,
++        swa_window,
++        256,
++    )
++    return PageTablePositionsResult(
++        seq_lens_casual=lengths,
++        positions_casual=positions,
++        page_table=table,
++        swa_topk_lengths=swa,
++    )
+diff --git a/test/registered/kernel/attention/test_deepseek_v4_compress_plan_bounds.py b/test/registered/kernel/attention/test_deepseek_v4_compress_plan_bounds.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..37bd285bffc655a61a7a76a48ea6df4b0e38f8f5
+--- /dev/null
++++ b/test/registered/kernel/attention/test_deepseek_v4_compress_plan_bounds.py
+@@ -0,0 +1,72 @@
++"""Boundary tests for the packed indices in the DSV4 prefill write plan."""
++
++from __future__ import annotations
++
++import unittest
++
++import torch
++
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.kernels.deepseek_v4.common import (
++    make_legacy_context,
++    make_paged_context,
++    to_seq_extend,
++)
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=20, stage="base-b-kernel-unit", runner_config="1-gpu-large")
++
++
++class TestCompressWritePlanBounds(CustomTestCase):
++    def test_64k_prefill_preserves_last_token(self):
++        """65536 tokens fit uint16 indices; the last token must not wrap or vanish."""
++        for cr in (4, 128):
++            paged = make_paged_context(
++                bs=16, compress_ratio=cr, num_swa_pages_per_req=16
++            )
++            legacy = make_legacy_context(bs=16, compress_ratio=cr)
++            seq_lens, extend_lens, num_q = to_seq_extend([(4096, 4096)] * 16)
++            for ctx, on_gpu in ((paged, False), (paged, True), (legacy, False)):
++                with self.subTest(cr=cr, paged=ctx is paged, on_gpu=on_gpu):
++                    device = "cuda" if on_gpu else "cpu"
++                    plan = ctx.make_prefill_plan(
++                        seq_lens.to(device), extend_lens.to(device), num_q
++                    )
++                    c = plan.plan_c.cpu().view(torch.int32).view(-1, 4)
++                    valid_c = c[:, 0] != -1
++                    ids = c[valid_c, 1].bitwise_and(0xFFFF).sort().values
++                    torch.testing.assert_close(
++                        ids, torch.arange(cr - 1, num_q, cr, dtype=torch.int32)
++                    )
++                    w = plan.plan_w.cpu().view(torch.int32).view(-1, 2)
++                    last = w[w[:, 0] == 65535]
++                    if cr == 4:
++                        self.assertEqual(len(last), 1)
++                        self.assertEqual(int(last[0, 1]), ctx.state_loc(15, 4095))
++                    else:
++                        # Non-overlapping C128 consumed the complete final block;
++                        # no raw tail remains to persist into the state ring.
++                        self.assertEqual(len(w[w[:, 0] != -1]), 0)
++
++    def test_prefill_rejects_uint16_index_overflow(self):
++        for ctx in (
++            make_paged_context(bs=16, compress_ratio=4, num_swa_pages_per_req=17),
++            make_legacy_context(bs=16, compress_ratio=4),
++        ):
++            seq_lens, extend_lens, num_q = to_seq_extend(
++                [(4096, 4096)] * 15 + [(4097, 4097)]
++            )
++            with self.assertRaisesRegex(RuntimeError, "plan_compress_prefill"):
++                ctx.make_prefill_plan(seq_lens, extend_lens, num_q)
++
++    def test_prefill_rejects_packed_invalid_sentinel(self):
++        # A 65536-request, one-token-per-request batch makes the last packed
++        # (batch_id, ragged_id) equal (65535, 65535), the invalid write sentinel.
++        ctx = make_legacy_context(bs=65536, compress_ratio=4)
++        seq_lens, extend_lens, num_q = to_seq_extend([(1, 1)] * 65536)
++        with self.assertRaisesRegex(RuntimeError, "plan_compress_prefill"):
++            ctx.make_prefill_plan(seq_lens, extend_lens, num_q)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernels/ops/attention/test_deepseek_v4_compress_plan_draft_pad.py b/test/registered/kernels/ops/attention/test_deepseek_v4_compress_plan_draft_pad.py
+deleted file mode 100644
+index 8765cb7c8df45e9a0d7df8eb9fd8b025ae12950b..0000000000000000000000000000000000000000
+--- a/test/registered/kernels/ops/attention/test_deepseek_v4_compress_plan_draft_pad.py
++++ /dev/null
+@@ -1,217 +0,0 @@
+-"""Kernel-level tests for the DSV4 compress write-plan (`plan_prefill`).
+-
+-`plan_w` decides which tokens' raw KV get persisted into the compress-state ring
+-for a *future* compression window to read. A speculative verify batch plans from
+-the optimistic `seq_len = prefix + num_draft_tokens` but rolls back to
+-`prefix + accept_len`, so every committed token must stay resident whatever the
+-accept length -- i.e. the plan must write all of `[prefix, seq_len)`.
+-
+-`c_plan.cuh` used to cap that pad at 4 (`kMaxMTPDraftTokens`), silently
+-under-writing the ring for larger draft counts -- no IMA, no NaN, just wrong
+-compressed state. The pad now comes from the ring itself
+-(`ring_size - window_size + 2`), covering every draft count the ring can serve.
+-Tests pin the invariant on both planner paths (CPU host loop and GPU
+-`plan_compress_prefill_kernel0`) and both compress ratios.
+-"""
+-
+-from __future__ import annotations
+-
+-import unittest
+-
+-import torch
+-
+-from sglang.test.ci.ci_register import register_cuda_ci
+-from sglang.test.kernels.deepseek_v4.common import make_paged_context, to_seq_extend
+-from sglang.test.test_utils import CustomTestCase
+-
+-register_cuda_ci(est_time=20, stage="base-b-kernel-unit", runner_config="1-gpu-large")
+-
+-C4_RING_SIZE = 16  # get_compress_state_ring_size(4, is_speculative=True)
+-C128_RING_SIZE = 256  # get_compress_state_ring_size(128, is_speculative=True)
+-C4_RING_SIZE_NO_SPEC = 8  # get_compress_state_ring_size(4, is_speculative=False)
+-C128_RING_SIZE_NO_SPEC = 128  # get_compress_state_ring_size(128, is_speculative=False)
+-
+-
+-def _window_size(compress_ratio: int) -> int:
+-    """Tokens read by one compression: c4 overlaps two chunks, c128 does not."""
+-    return compress_ratio * (2 if compress_ratio == 4 else 1)
+-
+-
+-def _max_draft_tokens(compress_ratio: int, ring_size: int) -> int:
+-    """Largest draft count this ring serves; mirrors `mtp_pad` in c_plan.cuh."""
+-    window = _window_size(compress_ratio)
+-    return ring_size - window + 2 if ring_size > window else 0
+-
+-
+-def _written_positions(plan_w: torch.Tensor, prefix_len: int) -> set[int]:
+-    """Decode `plan_w` into the set of positions written, for a bs=1 plan.
+-
+-    `plan_w` is `[n, 8]` uint8 = (uint32 ragged_id, int32 write_loc). Stage 1
+-    overwrites `write_loc` with the final state slot, but `ragged_id` survives and
+-    equals the token's index within the ragged layout, so for a single request
+-    `position = prefix_len + ragged_id`.
+-    """
+-    words = plan_w.cpu().view(torch.uint32).view(-1, 2)
+-    ragged_ids = words[:, 0]
+-    valid = ragged_ids != 0xFFFFFFFF
+-    return {prefix_len + int(r) for r in ragged_ids[valid]}
+-
+-
+-class TestCompressWritePlanDraftPad(CustomTestCase):
+-    def _make_plan_positions(
+-        self,
+-        *,
+-        compress_ratio: int,
+-        ring_size: int,
+-        prefix_len: int,
+-        num_draft_tokens: int,
+-        on_gpu: bool = False,
+-    ) -> set[int]:
+-        """Build a bs=1 verify plan and return the positions it writes.
+-
+-        `on_gpu=True` moves the planner inputs to device, which routes
+-        `plan_prefill` to `plan_compress_prefill_kernel0` instead of the host loop.
+-        """
+-        ctx = make_paged_context(
+-            bs=1, compress_ratio=compress_ratio, ring_size=ring_size
+-        )
+-        seq_lens, extend_lens, num_q = to_seq_extend(
+-            [(prefix_len + num_draft_tokens, num_draft_tokens)]
+-        )
+-        if on_gpu:
+-            seq_lens = seq_lens.to(ctx.req_to_token.device)
+-            extend_lens = extend_lens.to(ctx.req_to_token.device)
+-        plan = ctx.make_prefill_plan(seq_lens, extend_lens, num_q)
+-        return _written_positions(plan.plan_w, prefix_len)
+-
+-    def _assert_ring_residency(self, compress_ratio: int, ring_size: int):
+-        """Every committed token must be written, for each (D, sl mod cr) combo.
+-
+-        This is the sufficient condition, which is why there is no multi-step replay
+-        test: if a step writes all of `[prefix, prefix + D)`, then whatever the accept
+-        length, the tokens the next compression window needs are either from this step
+-        (written here) or older (written by an earlier step, same invariant by
+-        induction).
+-        """
+-        max_d = _max_draft_tokens(compress_ratio, ring_size)
+-        # Vary `seq_len % compress_ratio`: that residue decides whether the unpadded rule
+-        # alone would have sufficed. Four is enough -- with the pad in place it dominates
+-        # `last_c_pos` for every residue, so the rest repeat one branch. Bases are
+-        # page-aligned so the swa-page-boundary clause does not mask the pad.
+-        bases = [512 + off for off in range(min(compress_ratio, 4))]
+-        draft_counts = sorted(
+-            {1, 2, 3, 4, 5, max_d - 1, max_d} & set(range(1, max_d + 1))
+-        )
+-        for num_draft_tokens in draft_counts:
+-            for prefix_len in bases:
+-                with self.subTest(
+-                    cr=compress_ratio,
+-                    D=num_draft_tokens,
+-                    prefix=prefix_len,
+-                ):
+-                    written = self._make_plan_positions(
+-                        compress_ratio=compress_ratio,
+-                        ring_size=ring_size,
+-                        prefix_len=prefix_len,
+-                        num_draft_tokens=num_draft_tokens,
+-                    )
+-                    seq_len = prefix_len + num_draft_tokens
+-                    missing = set(range(prefix_len, seq_len)) - written
+-                    self.assertEqual(
+-                        missing,
+-                        set(),
+-                        f"plan_w skipped committed positions {sorted(missing)}; "
+-                        f"a later compression would read stale ring slots",
+-                    )
+-
+-    def test_c4_ring_residency(self):
+-        self._assert_ring_residency(4, C4_RING_SIZE)
+-
+-    def test_c128_ring_residency(self):
+-        self._assert_ring_residency(128, C128_RING_SIZE)
+-
+-    def test_cpu_and_gpu_planner_agree(self):
+-        """Both planner paths must emit the same write set.
+-
+-        The residency invariants above are checked on the host-loop plan; this
+-        pins the GPU `plan_compress_prefill_kernel0` plan to it, so the pad fix
+-        has to hold on both paths.
+-        """
+-        for compress_ratio, ring_size in ((4, C4_RING_SIZE), (128, C128_RING_SIZE)):
+-            max_d = _max_draft_tokens(compress_ratio, ring_size)
+-            for num_draft_tokens in (1, 4, max_d):
+-                for prefix_len in (512, 513, 515):
+-                    with self.subTest(
+-                        cr=compress_ratio, D=num_draft_tokens, prefix=prefix_len
+-                    ):
+-                        kwargs = dict(
+-                            compress_ratio=compress_ratio,
+-                            ring_size=ring_size,
+-                            prefix_len=prefix_len,
+-                            num_draft_tokens=num_draft_tokens,
+-                        )
+-                        self.assertEqual(
+-                            self._make_plan_positions(**kwargs, on_gpu=False),
+-                            self._make_plan_positions(**kwargs, on_gpu=True),
+-                        )
+-
+-    def test_plain_prefill_write_set(self):
+-        """A non-speculative ring is exactly one window wide, so the pad is 0 and the
+-        base write rule stands unchanged for both ratios."""
+-        for compress_ratio, ring_size in (
+-            (4, C4_RING_SIZE_NO_SPEC),
+-            (128, C128_RING_SIZE_NO_SPEC),
+-        ):
+-            self.assertEqual(_max_draft_tokens(compress_ratio, ring_size), 0)
+-            is_overlap = compress_ratio == 4
+-            for seq_len in (512, 600, 777):
+-                with self.subTest(cr=compress_ratio, sl=seq_len):
+-                    ctx = make_paged_context(
+-                        bs=1, compress_ratio=compress_ratio, ring_size=ring_size
+-                    )
+-                    seq_lens, extend_lens, num_q = to_seq_extend([(seq_len, seq_len)])
+-                    plan = ctx.make_prefill_plan(seq_lens, extend_lens, num_q)
+-                    written = _written_positions(plan.plan_w, 0)
+-
+-                    last_c_pos = seq_len // compress_ratio * compress_ratio
+-                    first_w_pos = last_c_pos - (compress_ratio if is_overlap else 0)
+-                    sps = ctx.swa_page_size
+-                    expected = {
+-                        p
+-                        for p in range(seq_len)
+-                        if p >= first_w_pos
+-                        or (is_overlap and p % sps >= sps - compress_ratio)
+-                    }
+-                    self.assertEqual(written, expected)
+-
+-    def test_over_capacity_under_writes(self):
+-        """Beyond the ring's capacity the plan silently under-writes.
+-
+-        The planner cannot tell an over-configured verify batch from an ordinary long
+-        prefill, so it cannot fail loudly -- hence the startup check in
+-        `DSV4PoolConfigurator._assert_ring_serves_draft_tokens`.
+-        """
+-        for compress_ratio, ring_size in ((4, C4_RING_SIZE), (128, C128_RING_SIZE)):
+-            max_d = _max_draft_tokens(compress_ratio, ring_size)
+-            # Far enough over that the `last_c_pos` term cannot cover the gap for any
+-            # residue of `seq_len % compress_ratio`.
+-            too_many = max_d + compress_ratio + 1
+-            prefix_len = 512
+-            with self.subTest(cr=compress_ratio, D=too_many):
+-                written = self._make_plan_positions(
+-                    compress_ratio=compress_ratio,
+-                    ring_size=ring_size,
+-                    prefix_len=prefix_len,
+-                    num_draft_tokens=too_many,
+-                )
+-                missing = set(range(prefix_len, prefix_len + too_many)) - written
+-                self.assertNotEqual(
+-                    missing,
+-                    set(),
+-                    "expected the plan to under-write past the ring capacity; if this "
+-                    "now covers everything, the startup bound can be relaxed",
+-                )
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()

@@ -1,0 +1,87 @@
+diff --git a/python/sglang/srt/function_call/muse_glimmer_detector.py b/python/sglang/srt/function_call/muse_glimmer_detector.py
+index 1acdca78105b917b26305f33bf4862fe3c72c2f6..6589a9d5cfc0d7a05e44a27d8e9fab04c264c5f3 100644
+--- a/python/sglang/srt/function_call/muse_glimmer_detector.py
++++ b/python/sglang/srt/function_call/muse_glimmer_detector.py
+@@ -335,12 +335,13 @@ class MuseGlimmerDetector(BaseFormatDetector):
+         return False
+ 
+     def parses_required_natively(self) -> bool:
+-        """Keep Muse's native ATEM framing for unconstrained required calls.
++        """Require a schema constraint for OpenAI ``tool_choice=required``.
+ 
+-        Named tool choice remains schema-constrained by FunctionCallParser so
+-        the requested function name is enforced.
++        Muse can decline an unconstrained required call and emit a normal final
++        answer. The constrained-output parser below preserves Muse's channel
++        framing while enforcing that at least one registered tool is emitted.
+         """
+-        return True
++        return False
+ 
+     def structure_info(self) -> _GetInfoFunc:
+         return lambda name: StructureInfo(
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_responses.py b/test/registered/unit/entrypoints/openai/test_serving_responses.py
+index 458128764ff6f787b6f6332158e16470c075af65..140faaa84f9cb59f5e9c3cbd0b0f3936f853303e 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_responses.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_responses.py
+@@ -691,9 +691,8 @@ class OutputItemsTestCase(CustomTestCase):
+             [],
+         )
+ 
+-    def test_required_tool_choice_skips_json_fallback_for_native_parser(self):
+-        """muse reports parses_required_natively, so required output must not
+-        be pushed through the orjson JSON-array fallback (mirrors chat)."""
++    def test_required_tool_choice_uses_json_fallback_for_muse_parser(self):
++        """Muse required output is schema constrained and remains parseable."""
+         serving = self.serving
+         serving.tool_call_parser = "muse"
+         request = ResponsesRequest(
+@@ -715,19 +714,16 @@ class OutputItemsTestCase(CustomTestCase):
+             request, raw, tokenizer=Mock(), require_reasoning=False
+         )
+ 
++        tool_calls = [
++            item for item in output_items if isinstance(item, ResponseFunctionToolCall)
++        ]
++        self.assertEqual(len(tool_calls), 1)
++        self.assertEqual(tool_calls[0].name, "get_weather")
++        self.assertEqual(tool_calls[0].arguments, '{"city": "Beijing"}')
+         self.assertEqual(
+-            [
+-                item
+-                for item in output_items
+-                if isinstance(item, ResponseFunctionToolCall)
+-            ],
++            [item for item in output_items if isinstance(item, ResponseOutputMessage)],
+             [],
+         )
+-        message_items = [
+-            item for item in output_items if isinstance(item, ResponseOutputMessage)
+-        ]
+-        self.assertEqual(len(message_items), 1)
+-        self.assertEqual(message_items[0].content[0].text, raw)
+ 
+     def test_no_tool_call_extraction_when_tool_choice_none(self):
+         serving = self.serving
+diff --git a/test/registered/unit/function_call/test_muse_glimmer_detector.py b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+index eb1da5b58ee155945aa00cfa5b4e58c55736196c..7d607162ed2cc042dbccba8f862cb8ddd2668f7b 100644
+--- a/test/registered/unit/function_call/test_muse_glimmer_detector.py
++++ b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+@@ -135,10 +135,15 @@ class TestMuseGlimmerDetector(CustomTestCase):
+             "muse", tool_call_parser_active=True
+         ).parse_non_stream(raw)
+         parser = FunctionCallParser(self.tools, "muse", constrained_output=True)
+-        self.assertTrue(parser.detector.parses_required_natively())
++        self.assertFalse(parser.detector.parses_required_natively())
+         self.assertTrue(parser.detector.parses_constrained_output_natively())
+         constraint = parser.get_structure_constraint("required")
+-        self.assertIsNone(constraint)
++        self.assertEqual(constraint[0], "json_schema")
++        self.assertEqual(constraint[1]["minItems"], 1)
++        self.assertEqual(
++            constraint[1]["items"]["anyOf"][0]["properties"]["name"]["enum"],
++            ["get_weather"],
++        )
+         self.assertTrue(parser.has_tool_call(remainder))
+         content, calls = parser.parse_non_stream(remainder)
+         self.assertEqual(reasoning, "Need weather.")

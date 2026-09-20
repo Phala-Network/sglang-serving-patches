@@ -1,0 +1,260 @@
+diff --git a/PORTING-V0520.md b/PORTING-V0520.md
+index 728e9a09c76850a670c0665cf7248fa162286e1a..0c35da024304a0064a9b81f2680fdc539f7a95e1 100644
+--- a/PORTING-V0520.md
++++ b/PORTING-V0520.md
+@@ -13,6 +13,8 @@ This is an actual v0.5.20 source branch, rooted at `94602c9c2b7cbdb8efd5c52802da
+ 
+ The final candidate commit and archive/tree hashes belong in the parent's build-input manifest after this file is committed. They are deliberately not self-referenced here.
+ 
++Post-freeze review correction: source `2d625cff` omitted the donor's `_pad_intermediate_size(layer)` call in MXFP4 weight postprocessing. A follow-up commit restores it after the MegaMoE bypass and before gate/up reorder or byte shuffling. The former source archive/build is superseded. The actual-method CPU-stub regression reproduced one failure before the correction and all three cases pass afterward; the padding helper, create/load/scale registration and routed quantization functions are AST-identical to donor `a6cf0581`. Real torch CPU fixtures additionally check 576→640 zero/one padding and aligned/no-op behavior; run those in the image because local Windows has no torch.
++
+ ## Donor closure and adaptations
+ 
+ | Donor commit | Upstream change | Candidate role |
+@@ -65,7 +67,7 @@ Required changed native extension interfaces:
+ 1. `sglang.srt.rust_extensions._multimodal`: `_multimodal.dsv41.resize_patchify` from `rust/sglang-mm`.
+ 2. `sglang.srt.mem_cache.rust_tree_core.mem_cache`: updated C1/C2 pool-name serialization from `rust/sglang-radix-tree`.
+ 
+-Build these through **the main `python/setup.py`**, not `pip install rust/sglang-radix-tree` (that crate has no standalone Python pyproject). The setup discovers the independent radix manifest, its `torch_2_13_compat.h`, and passes Cargo `--locked`.
++Build these through **the main `python/setup.py`**, not `pip install rust/sglang-radix-tree` (that crate has no standalone Python pyproject). The setup discovers the independent radix manifest, its `torch_2_13_compat.h`, and passes Cargo `--locked`. Explicitly set `RUSTUP_TOOLCHAIN=1.92.0` for metadata and build invocations: Cargo launched from the `python/` cwd does not necessarily discover the sibling `rust/rust-toolchain.toml`. Record `rustc --version` and `cargo --version` under that override.
+ 
+ Parent packaging design uses a fresh measured `/opt/phala-source`, explicitly copies unchanged `_server`/`_grpc` extensions from the immutable base, builds `SGLANG_BUILD_RUST_EXTS=multimodal,mem_cache`, installs editable with `--no-deps --no-build-isolation`, and binds import resolution to that source tree. Verify all four extension files after installation; a partial wheel reinstall must not silently uninstall the two inherited binaries. Alternatively build all extensions when publishing a full replacement wheel.
+ 
+@@ -75,7 +77,7 @@ Source-archive install outline (commands for the parent builder, not executed he
+ 
+ ```sh
+ python3 -c 'import setuptools_rust, setuptools_scm, torch; assert torch.__version__.startswith("2.13.0")'
+-SGLANG_BUILD_RUST_EXTS=multimodal,mem_cache python3 -m pip install --no-deps --no-build-isolation -e /opt/phala-source/python
++RUSTUP_TOOLCHAIN=1.92.0 SGLANG_BUILD_RUST_EXTS=multimodal,mem_cache python3 -m pip install --no-deps --no-build-isolation -e /opt/phala-source/python
+ python3 -c 'from sglang.srt.rust_extensions import _multimodal, _grpc, _server; assert callable(_multimodal.dsv41.resize_patchify); import sglang.srt.mem_cache.rust_tree_core.mem_cache'
+ ```
+ 
+@@ -95,6 +97,7 @@ Run in the source-bound/final-image CPU environment (separate final-image tests
+ ```sh
+ python3 test/phala_deepseek_v41/audit_v0520_source.py
+ python3 test/phala_deepseek_v41/test_cpu_contracts_v0520.py -v
++python3 test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py -v
+ python3 test/phala_deepseek_v41/selftest.py
+ python3 -m pytest -q test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py test/registered/unit/layers/test_dsv41_candidate_blocks.py test/registered/unit/models/test_dsv41_medium_finalize_selection.py
+ python3 -m pytest -q test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py test/registered/unit/model_executor/test_pool_configurator.py test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
+diff --git a/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py b/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
+index f6c7949731cd2156c2a1cf22c684c7be3e100b4e..cc8deb657bcfec52e0b293bd0c46dde5569ef772 100644
+--- a/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
++++ b/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
+@@ -110,6 +110,8 @@ class Mxfp8RoutedInputPreQuant(NamedTuple):
+     x_q: torch.Tensor
+     x_sf: torch.Tensor
+     ready: Optional[torch.cuda.Event]
++
++
+ class Mxfp4FlashinferTrtllmMoEMethod:
+     fuse_routed_scaling_factor_in_topk = True
+ 
+@@ -213,6 +215,8 @@ class Mxfp4FlashinferTrtllmMoEMethod:
+         if getattr(layer, "_mega_moe_weights_built", False):
+             return
+ 
++        _pad_intermediate_size(layer)
++
+         w13_w, w13_s = reorder_w1w3_to_w3w1(
+             layer.w13_weight.data, layer.w13_weight_scale_inv.data
+         )
+diff --git a/test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py b/test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..932c27f095530f8f7d8e9240c845661bd969eafe
+--- /dev/null
++++ b/test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py
+@@ -0,0 +1,121 @@
++"""Execute the actual weight-load prefix with CPU stubs; no GPU imports."""
++
++import ast
++from pathlib import Path
++import sys
++from types import ModuleType, SimpleNamespace
++import unittest
++from unittest.mock import patch
++
++
++SOURCE = (
++    Path(__file__).resolve().parents[2]
++    / "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py"
++)
++
++
++def load_weight_method(trace):
++    parsed = ast.parse(SOURCE.read_text(encoding="utf-8"))
++    cls = next(
++        n
++        for n in parsed.body
++        if isinstance(n, ast.ClassDef) and n.name == "Mxfp4FlashinferTrtllmMoEMethod"
++    )
++    fn = next(
++        n
++        for n in cls.body
++        if isinstance(n, ast.FunctionDef) and n.name == "process_weights_after_loading"
++    )
++    namespace = {
++        "Module": object,
++        "_pad_intermediate_size": lambda layer: trace.append("pad"),
++    }
++    exec(
++        compile(
++            ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])),
++            str(SOURCE),
++            "exec",
++        ),
++        namespace,
++    )
++    return namespace[fn.name], fn
++
++
++class ReorderReached(Exception):
++    pass
++
++
++class WeightLoadContract(unittest.TestCase):
++    def test_actual_method_orders_loader_then_padding_then_reorder(self):
++        trace = []
++        method, _ = load_weight_method(trace)
++        quant_utils = ModuleType("sglang.srt.layers.quantization.utils")
++
++        def reorder(*args):
++            trace.append("reorder")
++            raise ReorderReached
++
++        quant_utils.reorder_w1w3_to_w3w1 = reorder
++        owner = SimpleNamespace(
++            _fp8=SimpleNamespace(
++                process_weights_after_loading=lambda layer: trace.append("fp8-load")
++            )
++        )
++        layer = SimpleNamespace(
++            w13_weight=SimpleNamespace(data=None),
++            w13_weight_scale_inv=SimpleNamespace(data=None),
++        )
++        with patch.dict(sys.modules, {quant_utils.__name__: quant_utils}):
++            with self.assertRaises(ReorderReached):
++                method(owner, layer)
++        self.assertEqual(trace, ["fp8-load", "pad", "reorder"])
++
++    def test_mega_moe_bypass_never_pads_or_shuffles(self):
++        trace = []
++        method, _ = load_weight_method(trace)
++        quant_utils = ModuleType("sglang.srt.layers.quantization.utils")
++        quant_utils.reorder_w1w3_to_w3w1 = lambda *args: self.fail("unexpected reorder")
++        owner = SimpleNamespace(
++            _fp8=SimpleNamespace(
++                process_weights_after_loading=lambda layer: trace.append("fp8-load")
++            )
++        )
++        layer = SimpleNamespace(_mega_moe_weights_built=True)
++        with patch.dict(sys.modules, {quant_utils.__name__: quant_utils}):
++            method(owner, layer)
++        self.assertEqual(trace, ["fp8-load"])
++
++    def test_both_scale_tensors_keep_ue8m0_conversion_before_byte_shuffle(self):
++        _, fn = load_weight_method([])
++        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
++        converted = {
++            call.func.value.id
++            for call in calls
++            if isinstance(call.func, ast.Attribute)
++            and call.func.attr == "to"
++            and isinstance(call.func.value, ast.Name)
++            and len(call.args) == 1
++            and ast.unparse(call.args[0]) == "torch.float8_e8m0fnu"
++        }
++        self.assertEqual(converted, {"w13_scale", "w2_scale"})
++        converted_lines = [
++            call.lineno
++            for call in calls
++            if isinstance(call.func, ast.Attribute)
++            and call.func.attr == "to"
++            and call.args
++            and ast.unparse(call.args[0]) == "torch.float8_e8m0fnu"
++        ]
++        byte_views = [
++            call.lineno
++            for call in calls
++            if isinstance(call.func, ast.Attribute)
++            and call.func.attr == "view"
++            and call.args
++            and ast.unparse(call.args[0]) == "torch.uint8"
++        ]
++        self.assertLess(max(converted_lines), min(byte_views))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py b/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
+index 1497cbadd61f5443a90d46722d3ba81ab19ae996..6dbd6ba782fb9cc3ab59770ae3954151fa237aab 100644
+--- a/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
++++ b/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
+@@ -51,6 +51,67 @@ def make_weights(intermediate, hidden=256, device="cpu"):
+ 
+ 
+ class TestMxfp4TrtllmPadding(CustomTestCase):
++    def test_cpu_weight_load_pads_before_reorder(self):
++        """Exercise the real caller and padding helper, stopping before GPU shuffle."""
++        weights = make_weights(576)
++        layer = make_layer([tensor.clone() for tensor in weights])
++        layer.intermediate_size_per_partition = 576
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++
++        class ReorderReached(Exception):
++            pass
++
++        def check_reorder(weight, scales):
++            self.assertEqual(layer.intermediate_size_per_partition, 640)
++            self.assertEqual(weight.shape, (8, 1280, 128))
++            self.assertEqual(scales.shape, (8, 1280, 8))
++            self.assertEqual(layer.w2_weight.shape, (8, 256, 320))
++            self.assertEqual(layer.w2_weight_scale_inv.shape, (8, 256, 20))
++            torch.testing.assert_close(weight[:, :576], weights[0][:, :576])
++            torch.testing.assert_close(weight[:, 640:1216], weights[0][:, 576:])
++            torch.testing.assert_close(scales[:, :576], weights[2][:, :576])
++            torch.testing.assert_close(scales[:, 640:1216], weights[2][:, 576:])
++            self.assertEqual(torch.count_nonzero(weight[:, 576:640]).item(), 0)
++            self.assertEqual(torch.count_nonzero(weight[:, 1216:]).item(), 0)
++            self.assertTrue(torch.all(scales[:, 576:640] == 1).item())
++            self.assertTrue(torch.all(scales[:, 1216:] == 1).item())
++            torch.testing.assert_close(layer.w2_weight[..., :288], weights[1])
++            torch.testing.assert_close(layer.w2_weight_scale_inv[..., :18], weights[3])
++            self.assertEqual(torch.count_nonzero(layer.w2_weight[..., 288:]).item(), 0)
++            self.assertTrue(torch.all(layer.w2_weight_scale_inv[..., 18:] == 1).item())
++            raise ReorderReached
++
++        with (
++            patch(
++                "sglang.srt.layers.quantization.utils.reorder_w1w3_to_w3w1",
++                side_effect=check_reorder,
++            ),
++            patch.object(mxfp4, "print_warning_once"),
++            self.assertRaises(ReorderReached),
++        ):
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++
++    def test_cpu_aligned_padding_is_identity(self):
++        layer = make_layer(make_weights(640))
++        layer.intermediate_size_per_partition = 640
++        before = {name: value.data_ptr() for name, value in layer.named_parameters()}
++        mxfp4._pad_intermediate_size(layer)
++        self.assertEqual(
++            before, {name: value.data_ptr() for name, value in layer.named_parameters()}
++        )
++        self.assertEqual(layer.intermediate_size_per_partition, 640)
++
++    def test_cpu_mega_moe_does_not_enter_padding(self):
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++        layer = SimpleNamespace(_mega_moe_weights_built=True)
++        with patch.object(mxfp4, "_pad_intermediate_size") as pad:
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++        pad.assert_not_called()
++
+     @unittest.skipUnless(
+         torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
+         "Requires Blackwell",

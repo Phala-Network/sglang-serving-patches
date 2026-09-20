@@ -1,0 +1,636 @@
+diff --git a/python/sglang/srt/layers/linear.py b/python/sglang/srt/layers/linear.py
+index d84019fbdce51d7aa68914335e51e25f380cee1f..6e002ba57b953b76ae4917c9685bb3fa0e4fe26f 100644
+--- a/python/sglang/srt/layers/linear.py
++++ b/python/sglang/srt/layers/linear.py
+@@ -601,6 +601,13 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
+         is_gguf_weight = getattr(param, "is_gguf_weight", False)
+         is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
+         if is_gguf_weight_type:
++            # param.data[loaded_shard_id] is a 0-dim slot.  A checkpoint whose
++            # fused shards are split by a packed weight loader hands one
++            # 1-element (not 0-dim) chunk per shard, which copy_ rejects with
++            # "output with shape [] doesn't match the broadcast shape [1]".
++            # The next line already treats the value as a scalar.
++            if loaded_weight.numel() == 1:
++                loaded_weight = loaded_weight.reshape(())
+             param.data[loaded_shard_id].copy_(loaded_weight)
+             param.shard_weight_type[loaded_shard_id] = loaded_weight.item()
+             return
+diff --git a/python/sglang/srt/model_loader/gguf_name_maps.py b/python/sglang/srt/model_loader/gguf_name_maps.py
+index 434f337af3636b5382e8a96486ce07da726e7179..d39b7441d954a9965d29687e0055d0c5254bd5aa 100644
+--- a/python/sglang/srt/model_loader/gguf_name_maps.py
++++ b/python/sglang/srt/model_loader/gguf_name_maps.py
+@@ -24,10 +24,13 @@ GGUF tensor left out of the map is skipped by ``gguf_quant_weights_iterator``,
+ which is how dummy tensors are dropped.
+ """
+ 
+-from typing import Callable, Dict
++from typing import TYPE_CHECKING, Callable, Dict, Sequence
+ 
+ from transformers import PretrainedConfig
+ 
++if TYPE_CHECKING:
++    import torch
++
+ # Sandwich naming: ffn_norm is the pre-FFN norm.
+ _MUSE_GLIMMER_LAYER_TENSORS = {
+     "attn_norm": "input_layernorm",
+@@ -70,3 +73,342 @@ def build_muse_glimmer_name_map(config: PretrainedConfig) -> Dict[str, str]:
+ GGUF_HF_NAME_MAP_BUILDERS: Dict[str, Callable[[PretrainedConfig], Dict[str, str]]] = {
+     "muse_glimmer": build_muse_glimmer_name_map,
+ }
++
++
++# =============================================================================
++# Qwen3.5 (Gated DeltaNet) GGUF support
++# =============================================================================
++#
++# Three things stop a llama.cpp-produced Qwen3.5 GGUF from loading correctly and
++# none of them can be expressed as a name map alone:
++#
++#  1. gguf-py spells the architecture "qwen35" while transformers spells the
++#     model_type "qwen3_5" / "qwen3_5_text", and gguf-py's name map cannot
++#     resolve ``linear_attn.A_log`` / ``linear_attn.dt_bias`` because
++#     ``_get_gguf_weights_map`` splits an HF name on its LAST dot and asks the
++#     map about the remainder ("....linear_attn").  Fixed by the builder below.
++#
++#  2. llama.cpp orders the Gated-DeltaNet VALUE heads differently from HF.  The
++#     GDN kernels pair value head ``i`` with key head ``i // (n_v / n_k)``
++#     (k-group-major) in SGLang and in transformers, but llama.cpp broadcasts
++#     the key/query heads with a plain ``ggml_repeat`` (see
++#     ``llama_model_qwen35::graph::build_layer_attn_linear``), which pairs value
++#     head ``p`` with key head ``p % n_k``.  llama.cpp's converter therefore
++#     stores the value-head-indexed tensors transposed:
++#         GGUF value head p  ==  HF value head (p % n_k) * (n_v / n_k) + p // n_k
++#     Loading those rows verbatim silently mis-pairs every value head with a
++#     key head, which does not crash and does not look wrong in a checksum --
++#     it just produces incoherent text.
++#
++#  3. llama.cpp stores ``blk.N.ssm_a`` already exponentiated and negated,
++#     ``-exp(A_log)``, because its graph multiplies the gate by it directly
++#     ("-A_log.exp() * softplus" in build_layer_attn_linear).  SGLang's
++#     ``fused_gdn_gating`` kernel computes ``-exp(A_log) * softplus`` itself,
++#     so the tensor must be turned back into ``A_log = log(-ssm_a)``.
++#
++# Plus one shape convention: the depthwise causal conv weight is [conv_dim, 1,
++# kernel] in HF and [conv_dim, kernel] in GGUF (llama.cpp drops the singleton).
++#
++# 2 and 3 and the conv rank are weight *values*, not names, so they are applied
++# by a weight transform (GGUF_WEIGHT_TRANSFORMS) that GGUFModelLoader runs over
++# the weight iterator.
++
++_QWEN3_5_MODEL_TYPES = ("qwen3_5", "qwen3_5_text")
++
++# Qwen3.5 uses a zero-centred RMSNorm everywhere except the Gated-DeltaNet's own
++# gated norm: transformers' Qwen3_5RMSNorm.forward is
++#     output = _norm(x) * (1.0 + self.weight)
++# (modeling_qwen3_5.py:736) and SGLang matches it by building these five norms
++# with GemmaRMSNorm (qwen3_5.py:939, 1179-1185, 1652).  llama.cpp has only a
++# plain RMS norm, so its converter folds the +1 into the stored weight.  The
++# GDN norm (Qwen3_5RMSNormGated / RMSNormGated, plain `self.weight * x`) is
++# stored raw and must NOT be touched -- it is the exception that makes this
++# defect easy to miss.
++_QWEN3_5_GEMMA_NORM_SUFFIXES = (
++    ".input_layernorm.weight",
++    ".post_attention_layernorm.weight",
++    ".q_norm.weight",
++    ".k_norm.weight",
++)
++_QWEN3_5_GEMMA_NORM_EXACT = ("model.norm.weight",)
++
++# gguf tensor suffix -> HF parameter suffix, for the two parameters gguf-py's
++# name map cannot resolve.
++_QWEN3_5_GDN_EXTRA = {
++    "ssm_a": "linear_attn.A_log",
++    "ssm_dt.bias": "linear_attn.dt_bias",
++}
++
++
++def build_qwen3_5_name_map(config: PretrainedConfig) -> Dict[str, str]:
++    """{gguf_tensor_name: hf_param_name} for qwen3_5 / qwen3_5_text."""
++    import gguf
++    import torch
++    from transformers import AutoModelForCausalLM
++
++    text_config = getattr(config, "text_config", None) or config
++    num_layers = text_config.num_hidden_layers
++
++    # transformers' Qwen3_5DecoderLayer reads config.layer_types[layer_idx].  A
++    # Qwen3_5TextConfig rebuilt from GGUF metadata (or narrowed from a VL
++    # config) can arrive without it; the schedule is fully determined by
++    # full_attention_interval.
++    if getattr(text_config, "layer_types", None) is None:
++        interval = getattr(text_config, "full_attention_interval", 4)
++        text_config.layer_types = [
++            "full_attention" if (i + 1) % interval == 0 else "linear_attention"
++            for i in range(num_layers)
++        ]
++
++    arch = None
++    for key, value in gguf.MODEL_ARCH_NAMES.items():
++        if value == "qwen35":
++            arch = key
++            break
++    if arch is None:
++        raise RuntimeError(
++            "gguf-py does not know the 'qwen35' architecture; a newer gguf "
++            f"package is required (have {getattr(gguf, '__version__', 'unknown')})"
++        )
++    name_map = gguf.get_tensor_name_map(arch, num_layers)
++
++    with torch.device("meta"):
++        dummy_model = AutoModelForCausalLM.from_config(text_config)
++    state_dict = dummy_model.state_dict()
++
++    gguf_to_hf_name_map: Dict[str, str] = {}
++    unresolved = []
++    for hf_name in state_dict:
++        stem, _, suffix = hf_name.rpartition(".")
++        gguf_name = name_map.get_name(stem)
++        if gguf_name is None:
++            unresolved.append(hf_name)
++            continue
++        gguf_to_hf_name_map[f"{gguf_name}.{suffix}"] = hf_name
++
++    for layer in range(num_layers):
++        for gguf_suffix, hf_suffix in _QWEN3_5_GDN_EXTRA.items():
++            hf_name = f"model.layers.{layer}.{hf_suffix}"
++            if hf_name in state_dict:
++                gguf_to_hf_name_map[f"blk.{layer}.{gguf_suffix}"] = hf_name
++                if hf_name in unresolved:
++                    unresolved.remove(hf_name)
++
++    if unresolved:
++        raise RuntimeError(
++            f"{len(unresolved)} Qwen3.5 parameters have no GGUF tensor name, "
++            f"e.g. {unresolved[:4]}"
++        )
++    return gguf_to_hf_name_map
++
++
++def _permute_head_blocks(
++    tensor: "torch.Tensor", index: Sequence[int], block: int, offset: int = 0
++):
++    """Reorder ``len(index)`` groups of ``block`` consecutive rows.
++
++    Row ``offset + i * block + j`` of the result is row
++    ``offset + index[i] * block + j`` of the input.  Rows before ``offset`` are
++    left alone.  For a GGUF-quantised tensor the rows are packed bytes and each
++    row is self-contained, so this is an exact byte move for every quant type.
++    """
++    import torch
++
++    body = tensor[offset:]
++    n = len(index)
++    if body.shape[0] != n * block:
++        raise ValueError(
++            f"cannot split {body.shape[0]} rows into {n} groups of {block}"
++        )
++    rest = tuple(body.shape[1:])
++    body = body.reshape(n, block, *rest)[list(index)].reshape(n * block, *rest)
++    if offset == 0:
++        return body
++    return torch.cat([tensor[:offset], body], dim=0)
++
++
++class Qwen3_5GGUFWeightTransform:
++    """Turn llama.cpp's Gated-DeltaNet weight conventions into HF's.
++
++    Called with the HF parameter name, the tensor as it comes out of
++    ``gguf_quant_weights_iterator`` (packed uint8 rows for a quantised tensor,
++    real values for F32) and the GGML type id the loader announced for it.
++    """
++
++    def __init__(self, config: PretrainedConfig):
++        text_config = getattr(config, "text_config", None) or config
++        self.num_k_heads = int(text_config.linear_num_key_heads)
++        self.num_v_heads = int(text_config.linear_num_value_heads)
++        self.head_k_dim = int(text_config.linear_key_head_dim)
++        self.head_v_dim = int(text_config.linear_value_head_dim)
++        if min(self.num_k_heads, self.num_v_heads, self.head_k_dim, self.head_v_dim) <= 0:
++            raise ValueError("Qwen3.5 linear attention geometry must be positive")
++        self.key_dim = self.num_k_heads * self.head_k_dim
++        self.value_dim = self.num_v_heads * self.head_v_dim
++        if self.num_v_heads % self.num_k_heads:
++            raise ValueError(
++                f"linear_num_value_heads {self.num_v_heads} is not a multiple "
++                f"of linear_num_key_heads {self.num_k_heads}"
++            )
++        group = self.num_v_heads // self.num_k_heads
++        # HF value head h is stored by llama.cpp at GGUF value head
++        # (h % group) * num_k_heads + h // group  -- the inverse of
++        # perm[p] = (p % num_k_heads) * group + p // num_k_heads.
++        self.gguf_index_of_hf_head = [
++            (h % group) * self.num_k_heads + h // group for h in range(self.num_v_heads)
++        ]
++        self.counts = {}
++
++    def _count(self, what: str):
++        self.counts[what] = self.counts.get(what, 0) + 1
++
++    def _permute_columns(self, name: str, tensor, weight_type):
++        """Permute value-head groups along the INPUT dim of out_proj."""
++        import torch
++
++        index = self.gguf_index_of_hf_head
++        if tensor.dtype != torch.uint8:
++            # unquantised: columns are real values
++            if tensor.shape[1] != self.value_dim:
++                raise ValueError(f"{name}: expected {self.value_dim} columns")
++            return (
++                _permute_head_blocks(
++                    tensor.transpose(0, 1).contiguous(), index, self.head_v_dim
++                )
++                .transpose(0, 1)
++                .contiguous()
++            )
++
++        import gguf
++
++        quant = gguf.GGMLQuantizationType(int(weight_type))
++        block_size, type_size = gguf.GGML_QUANT_SIZES[quant]
++        if self.head_v_dim % block_size:
++            raise NotImplementedError(
++                f"{name}: value head dim {self.head_v_dim} is not a multiple of "
++                f"the {quant.name} block size {block_size}, so llama.cpp's "
++                "value-head order cannot be undone without requantising. "
++                "Re-quantise this tensor with a type whose block size divides "
++                f"{self.head_v_dim} (e.g. Q8_0)."
++            )
++        group_bytes = (self.head_v_dim // block_size) * type_size
++        if tensor.shape[1] != self.num_v_heads * group_bytes:
++            raise ValueError(
++                f"{name}: {tensor.shape[1]} bytes per row, expected "
++                f"{self.num_v_heads * group_bytes} for {quant.name}"
++            )
++        out = tensor.reshape(tensor.shape[0], self.num_v_heads, group_bytes)
++        return out[:, list(index), :].reshape(tensor.shape[0], -1).contiguous()
++
++    def __call__(self, name: str, tensor, weight_type):
++        import torch
++
++        index = self.gguf_index_of_hf_head
++
++        # GGUFReader exposes BF16 payloads as packed bytes; torch must see
++        # BF16 elements before embedding or unquantized matrix dispatch.
++        if name.endswith(".qweight") and weight_type == 30:
++            if tensor.dtype != torch.uint8 or tensor.shape[-1] % 2:
++                raise ValueError(f"{name}: invalid packed GGUF BF16 payload")
++            tensor = tensor.contiguous().view(torch.bfloat16)
++
++        if name in _QWEN3_5_GEMMA_NORM_EXACT or (
++            name.endswith(_QWEN3_5_GEMMA_NORM_SUFFIXES)
++            and ".linear_attn.norm." not in name
++        ):
++            if tensor.dtype == torch.uint8:
++                raise NotImplementedError(
++                    f"{name}: a zero-centred RMSNorm weight must be loaded "
++                    "unquantised so the folded +1 can be removed"
++                )
++            self._count("gemma_norm")
++            return tensor - 1.0
++
++        if ".linear_attn." not in name:
++            return tensor
++
++        if name.endswith(".linear_attn.A_log"):
++            # llama.cpp stores -exp(A_log); SGLang's gating kernel exponentiates
++            # A_log itself.
++            tensor = _permute_head_blocks(tensor, index, 1)
++            if not bool((torch.isfinite(tensor) & (tensor < 0)).all()):
++                raise ValueError(
++                    f"{name}: expected every ssm_a entry to be negative "
++                    "(-exp(A_log)); this GGUF does not follow llama.cpp's "
++                    "qwen35 convention"
++                )
++            self._count("A_log")
++            return torch.log(-tensor.to(torch.float32)).to(tensor.dtype)
++
++        if name.endswith(".linear_attn.dt_bias"):
++            self._count("dt_bias")
++            return _permute_head_blocks(tensor, index, 1)
++
++        if ".linear_attn.conv1d." in name:
++            # rows are [key_dim (q), key_dim (k), value_dim (v)] channels
++            tensor = _permute_head_blocks(
++                tensor, index, self.head_v_dim, offset=2 * self.key_dim
++            )
++            if tensor.dim() == 2:
++                # HF keeps the depthwise singleton channel dim that llama.cpp drops
++                tensor = tensor.unsqueeze(1)
++            self._count("conv1d")
++            return tensor
++
++        if ".linear_attn.in_proj_qkv." in name:
++            self._count("in_proj_qkv")
++            return _permute_head_blocks(
++                tensor, index, self.head_v_dim, offset=2 * self.key_dim
++            )
++
++        if ".linear_attn.in_proj_z." in name:
++            self._count("in_proj_z")
++            return _permute_head_blocks(tensor, index, self.head_v_dim)
++
++        if ".linear_attn.in_proj_b." in name or ".linear_attn.in_proj_a." in name:
++            self._count("in_proj_ba")
++            return _permute_head_blocks(tensor, index, 1)
++
++        if ".linear_attn.out_proj." in name:
++            self._count("out_proj")
++            return self._permute_columns(name, tensor, weight_type)
++
++        return tensor
++
++
++def build_qwen3_5_weight_transform(config: PretrainedConfig):
++    return Qwen3_5GGUFWeightTransform(config)
++
++
++GGUF_HF_NAME_MAP_BUILDERS.update(
++    {model_type: build_qwen3_5_name_map for model_type in _QWEN3_5_MODEL_TYPES}
++)
++
++# Keyed like GGUF_HF_NAME_MAP_BUILDERS, by HF ``config.model_type``.  A builder
++# returns ``f(hf_param_name, tensor, ggml_type_id) -> tensor``; ``ggml_type_id``
++# is None for a tensor the GGUF stores unquantised.
++GGUF_WEIGHT_TRANSFORMS: Dict[str, Callable[[PretrainedConfig], Callable]] = {
++    model_type: build_qwen3_5_weight_transform for model_type in _QWEN3_5_MODEL_TYPES
++}
++
++
++def get_gguf_weight_transform(config: PretrainedConfig):
++    builder = GGUF_WEIGHT_TRANSFORMS.get(config.model_type)
++    return None if builder is None else builder(config)
++
++
++def apply_gguf_weight_transform(weights_iterator, transform):
++    """Run ``transform`` over a GGUF weight iterator.
++
++    ``gguf_quant_weights_iterator`` yields every ``*.qweight_type`` first and
++    the tensors afterwards, so the GGML type of each quantised tensor is known
++    by the time its data arrives.
++    """
++    weight_types = {}
++    for name, tensor in weights_iterator:
++        if name.endswith(".qweight_type"):
++            weight_types[name[: -len(".qweight_type")]] = int(tensor.reshape(-1)[0])
++            yield name, tensor
++            continue
++        stem, _, suffix = name.rpartition(".")
++        yield name, transform(name, tensor, weight_types.get(stem))
+diff --git a/python/sglang/srt/model_loader/loader.py b/python/sglang/srt/model_loader/loader.py
+index 3211f0c41cb4b4153dd8b8207b158c545abd7b55..a759b8cc5cef267bb3570d1e599fd675a16cf36c 100644
+--- a/python/sglang/srt/model_loader/loader.py
++++ b/python/sglang/srt/model_loader/loader.py
+@@ -3135,6 +3135,14 @@ class GGUFModelLoader(BaseModelLoader):
+     def _prepare_weights(self, model_name_or_path: str):
+         if os.path.isfile(model_name_or_path):
+             return model_name_or_path
++        elif os.path.isdir(model_name_or_path):
++            gguf_files = glob.glob(os.path.join(model_name_or_path, "*.gguf"))
++            if len(gguf_files) == 1:
++                return gguf_files[0]
++            raise ValueError(
++                f"Expected exactly one GGUF file in {model_name_or_path}, "
++                f"found {len(gguf_files)}."
++            )
+         else:
+             raise ValueError(f"{model_name_or_path} is not a file.")
+ 
+@@ -3192,9 +3200,28 @@ class GGUFModelLoader(BaseModelLoader):
+         return gguf_to_hf_name_map
+ 
+     def _get_weights_iterator(
+-        self, model_name_or_path: str, gguf_to_hf_name_map: Dict[str, str]
++        self,
++        model_name_or_path: str,
++        gguf_to_hf_name_map: Dict[str, str],
++        model_config: Optional[ModelConfig] = None,
+     ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+-        return gguf_quant_weights_iterator(model_name_or_path, gguf_to_hf_name_map)
++        from sglang.srt.model_loader.gguf_name_maps import (
++            apply_gguf_weight_transform,
++            get_gguf_weight_transform,
++        )
++
++        weights = gguf_quant_weights_iterator(model_name_or_path, gguf_to_hf_name_map)
++        # Some architectures need the *values* converted, not just renamed:
++        # llama.cpp may store a tensor in a different head order or a different
++        # value domain from the HF checkpoint it was converted from.
++        transform = (
++            None
++            if model_config is None
++            else get_gguf_weight_transform(model_config.hf_config)
++        )
++        if transform is None:
++            return weights
++        return apply_gguf_weight_transform(weights, transform)
+ 
+     def download_model(self, model_config: ModelConfig) -> None:
+         self._prepare_weights(model_config.model_path)
+@@ -3219,10 +3246,22 @@ class GGUFModelLoader(BaseModelLoader):
+         with set_default_torch_dtype(model_config.dtype):
+             with target_device:
+                 model = _initialize_model(model_config, self.load_config, quant_config)
+-            model.load_weights(
+-                self._get_weights_iterator(local_model_path, gguf_weights_map)
++            loaded_params = model.load_weights(
++                self._get_weights_iterator(
++                    local_model_path, gguf_weights_map, model_config
++                )
+             )
+ 
++            if model_config.hf_config.model_type == "qwen3_5_text":
++                all_params = set(dict(model.named_parameters(remove_duplicate=False)))
++                missing = sorted(all_params - set(loaded_params or ()))
++                logger.info(
++                    "Qwen3.5 GGUF load audit: loaded=%d total=%d missing=%s",
++                    len(loaded_params or ()), len(all_params), missing,
++                )
++                if missing:
++                    raise RuntimeError(f"Incomplete Qwen3.5 GGUF weights: {missing}")
++
+             for _, module in model.named_modules():
+                 quant_method = getattr(module, "quant_method", None)
+                 if quant_method is not None:
+diff --git a/python/sglang/srt/models/qwen3_5.py b/python/sglang/srt/models/qwen3_5.py
+index 2268b835d9cd9b445d172a445eb5ab93e8d25b8c..07feccdb3a0c1ebedd496f6cfd46a3b9e11cb9cc 100644
+--- a/python/sglang/srt/models/qwen3_5.py
++++ b/python/sglang/srt/models/qwen3_5.py
+@@ -500,7 +500,18 @@ class Qwen3_5GatedDeltaNet(nn.Module):
+ 
+     def _bind_packed_weight_loaders(self, module):
+         """Bind packed-checkpoint-aware loaders to all relevant params of a merged module."""
+-        for attr_name in ("weight", "weight_scale_inv", "weight_scale", "input_scale"):
++        for attr_name in (
++            "weight",
++            "weight_scale_inv",
++            "weight_scale",
++            "input_scale",
++            # GGUF spells the packed weight "qweight" and carries an accompanying
++            # "qweight_type"; without them the tuple shard id (0, 1, 2) that
++            # in_proj_qkv needs never reaches _make_packed_weight_loader and
++            # MergedColumnParallelLinear.weight_loader dies on param.data[(0,1,2)].
++            "qweight",
++            "qweight_type",
++        ):
+             param = getattr(module, attr_name, None)
+             if param is None:
+                 continue
+@@ -1563,6 +1574,8 @@ class Qwen3_5ForCausalLM(nn.Module):
+                 config.hidden_size,
+                 org_num_embeddings=config.vocab_size,
+                 enable_tp=not is_dp_attention_enabled(),
++                quant_config=quant_config,
++                prefix=add_prefix("embed_tokens", prefix),
+             )
+         else:
+             self.embed_tokens = PPMissingLayer()
+diff --git a/python/sglang/srt/models/qwen3_5_text.py b/python/sglang/srt/models/qwen3_5_text.py
+index 95a2d08441fccd32a428befa0c8e33878442846e..6b158bffa548eba4ff4e86f659002ce5a1fca3a9 100644
+--- a/python/sglang/srt/models/qwen3_5_text.py
++++ b/python/sglang/srt/models/qwen3_5_text.py
+@@ -198,17 +198,23 @@ class Qwen3_5ForCausalLM(nn.Module):
+             for name, loaded_weight in weights:
+                 if name.startswith(_MODEL_PREFIX):
+                     yield name[len(_MODEL_PREFIX) :], loaded_weight
+-                elif name == "lm_head.weight":
++                elif name.startswith("lm_head."):
++                    # A GGUF checkpoint spells the quantised head
++                    # "lm_head.qweight" / "lm_head.qweight_type", so matching
++                    # "lm_head.weight" exactly would silently drop the head and
++                    # leave it uninitialised.  Accept any lm_head parameter the
++                    # model actually declares, which is what the generic
++                    # per-model loading loops already do.
+                     if self.config.tie_word_embeddings:
+                         continue
+-                    if "lm_head.weight" not in params_dict:
++                    if name not in params_dict:
+                         continue
+-                    param = params_dict["lm_head.weight"]
++                    param = params_dict[name]
+                     weight_loader = getattr(
+                         param, "weight_loader", default_weight_loader
+                     )
+                     weight_loader(param, loaded_weight)
+-                    loaded_params.add("lm_head.weight")
++                    loaded_params.add(name)
+ 
+         body_loaded = self.model.load_weights(body_weights())
+         loaded_params.update(f"{_MODEL_PREFIX}{n}" for n in body_loaded)
+diff --git a/test/registered/unit/test_qwen35_gguf_weight_transform.py b/test/registered/unit/test_qwen35_gguf_weight_transform.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..da90ed9efc49b10c8908f57a2d6ad17a299199e1
+--- /dev/null
++++ b/test/registered/unit/test_qwen35_gguf_weight_transform.py
+@@ -0,0 +1,110 @@
++"""CPU regression tests for llama.cpp Qwen3.5 checkpoint conventions."""
++import tempfile
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++
++import torch
++
++from sglang.srt.model_loader.gguf_name_maps import (
++    Qwen3_5GGUFWeightTransform,
++    apply_gguf_weight_transform,
++    get_gguf_weight_transform,
++)
++
++
++class TestQwen35GGUFTransform(unittest.TestCase):
++    def setUp(self):
++        self.config = SimpleNamespace(
++            model_type="qwen3_5_text",
++            linear_num_key_heads=2,
++            linear_num_value_heads=6,
++            linear_key_head_dim=32,
++            linear_value_head_dim=32,
++        )
++        self.transform = Qwen3_5GGUFWeightTransform(self.config)
++        self.head_order = [0, 2, 4, 1, 3, 5]
++
++    def test_state_conversion_and_gqa_order(self):
++        hf_log = torch.arange(6, dtype=torch.float32) / 4
++        gguf_log = hf_log.reshape(2, 3).T.reshape(-1)
++        actual = self.transform("model.layers.0.linear_attn.A_log", -gguf_log.exp(), None)
++        torch.testing.assert_close(actual, hf_log)
++        actual_bias = self.transform("model.layers.0.linear_attn.dt_bias", gguf_log, None)
++        torch.testing.assert_close(actual_bias, hf_log)
++
++    def test_folded_norm_and_gated_norm_are_distinct(self):
++        weight = torch.tensor([1.25, 0.75])
++        for name in ("model.norm.weight", "model.layers.3.self_attn.q_norm.weight",
++                     "model.layers.3.self_attn.k_norm.weight", "model.layers.0.input_layernorm.weight",
++                     "model.layers.0.post_attention_layernorm.weight"):
++            torch.testing.assert_close(self.transform(name, weight, None), weight - 1)
++        self.assertIs(self.transform("model.layers.0.linear_attn.norm.weight", weight, None), weight)
++
++    def test_qkv_and_conv_preserve_key_rows(self):
++        weight = torch.arange((128 + 192) * 4).reshape(320, 4)
++        expected = torch.cat((weight[:128], weight[128:].reshape(6, 32, 4)[self.head_order].reshape(192, 4)))
++        torch.testing.assert_close(self.transform("model.layers.0.linear_attn.in_proj_qkv.qweight", weight, 8), expected)
++        torch.testing.assert_close(self.transform("model.layers.0.linear_attn.conv1d.weight", weight, None), expected.unsqueeze(1))
++
++    def test_q8_output_projection_is_exact_byte_permutation(self):
++        # Q8_0 uses 34 stored bytes for each 32-element block.
++        weight = torch.arange(2 * 6 * 34).remainder(256).to(torch.uint8).reshape(2, 204)
++        expected = weight.reshape(2, 6, 34)[:, self.head_order].reshape(2, 204)
++        torch.testing.assert_close(self.transform("model.layers.0.linear_attn.out_proj.qweight", weight, 8), expected)
++
++    def test_bf16_embedding_reinterprets_bytes(self):
++        original = torch.tensor([[1.5, -2.0, 0.25]], dtype=torch.bfloat16)
++        weights = [("model.embed_tokens.qweight_type", torch.tensor(30)),
++                   ("model.embed_tokens.qweight", original.view(torch.uint8))]
++        converted = list(apply_gguf_weight_transform(weights, self.transform))
++        torch.testing.assert_close(converted[1][1], original)
++
++    def test_reject_invalid_decay_and_geometry(self):
++        for invalid in (torch.zeros(6), torch.full((6,), -float("inf")), torch.full((6,), float("nan"))):
++            with self.assertRaises(ValueError):
++                self.transform("model.layers.0.linear_attn.A_log", invalid, None)
++        self.config.linear_num_key_heads = 0
++        with self.assertRaises(ValueError):
++            Qwen3_5GGUFWeightTransform(self.config)
++
++    def test_unaligned_superblock_is_rejected(self):
++        # Q6_K spans 256 elements and cannot be permuted as 32-element heads.
++        with self.assertRaises(NotImplementedError):
++            self.transform("model.layers.0.linear_attn.out_proj.qweight", torch.zeros(2, 210, dtype=torch.uint8), 14)
++
++    def test_other_architectures_unchanged(self):
++        self.assertIsNone(get_gguf_weight_transform(SimpleNamespace(model_type="gemma4")))
++        self.assertIsNone(get_gguf_weight_transform(SimpleNamespace(model_type="qwen3_next")))
++
++    def test_snapshot_requires_a_single_gguf(self):
++        from sglang.srt.model_loader.loader import GGUFModelLoader
++
++        loader = object.__new__(GGUFModelLoader)
++        with tempfile.TemporaryDirectory() as directory:
++            with self.assertRaises(ValueError):
++                loader._prepare_weights(directory)
++            weight = Path(directory) / "target.gguf"
++            weight.touch()
++            self.assertEqual(loader._prepare_weights(directory), str(weight))
++            (Path(directory) / "draft.gguf").touch()
++            with self.assertRaises(ValueError):
++                loader._prepare_weights(directory)
++
++    def test_packed_type_metadata_broadcasts_to_each_shard(self):
++        from sglang.srt.layers.linear import MergedColumnParallelLinear
++        from sglang.srt.models.qwen3_5 import Qwen3_5GatedDeltaNet
++
++        module = SimpleNamespace(output_sizes=[4, 4, 12, 12])
++        param = torch.nn.Parameter(torch.zeros(4), requires_grad=False)
++        param.is_gguf_weight_type = True
++        param.shard_weight_type = {}
++        original = lambda p, value, shard: MergedColumnParallelLinear.weight_loader(module, p, value, shard)
++        loader = Qwen3_5GatedDeltaNet._make_packed_weight_loader(module, original)
++        loader(param, torch.tensor(8), (0, 1, 2))
++        torch.testing.assert_close(param.data, torch.tensor([8., 8., 8., 0.]))
++        self.assertEqual(param.shard_weight_type, {0: 8, 1: 8, 2: 8})
++
++
++if __name__ == "__main__":
++    unittest.main()

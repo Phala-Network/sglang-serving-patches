@@ -1,0 +1,30 @@
+{
+  "schema": "phala.sglang.selector-verification.v1",
+  "base": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "reference_engine": "4281309187007db579a2195f40adfd4baa538528",
+  "tree_reference": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+  "method": "clean detached worktree, git apply --ignore-whitespace --check and apply; Windows checkout line endings normalized by Git",
+  "results": {
+    "kimi-k3-v0520-candidate": {
+      "passed": true,
+      "patch_count": 6,
+      "applied_tree": "candidate-only-diff-from-428",
+      "scope": "Source/tree replay only; Linux, runtime, model and Governor acceptance pending"
+    },
+    "muse-glimmer-v0520-candidate": {
+      "passed": true,
+      "patch_count": 1,
+      "scope": "Source/tree replay only; Linux, runtime and model acceptance pending"
+    },
+    "deepseek-v4.1-v0520": {
+      "passed": false,
+      "applied_before_failure": 10,
+      "failed_patch": "dsv41-0011-chat-encoding.patch",
+      "reason": "The complete native/model closure does not cleanly apply to engine428; retain all real files but keep selector blocked until source-base/native recipe reconciliation",
+      "scope": "No bitmap-only or Python-only claim"
+    },
+    "nemotron-v0519-historical": {"passed": false, "status": "pending_v0520_semantic_migration"},
+    "gemma-v0519-historical": {"passed": false, "status": "no_replayable_v0520_model_only_patch"}
+  },
+  "test_boundary": "No Linux/GPU/model-serving execution; failures retained as evidence"
+}

@@ -1,0 +1,182 @@
+diff --git a/python/sglang/srt/function_call/muse_glimmer_detector.py b/python/sglang/srt/function_call/muse_glimmer_detector.py
+index 15519c1a9623402c62942a315800f69d0c7cb2de..61ad511f8118cb718571fcb6beea2971bf35baa9 100644
+--- a/python/sglang/srt/function_call/muse_glimmer_detector.py
++++ b/python/sglang/srt/function_call/muse_glimmer_detector.py
+@@ -36,6 +36,9 @@ _PARAM_RE = re.compile(
+     r"</atem:parameter>",
+     re.DOTALL,
+ )
++_CHANNEL_HEADER_RE = re.compile(
++    rf"(?:^|{re.escape(START)}assistant)\s*to=([^\s<]+){re.escape(MESSAGE)}"
++)
+ 
+ # Recipients whose bodies are prose, never tool calls.
+ _NON_TOOL_RECIPIENTS = frozenset({"self", "user"})
+@@ -46,6 +49,19 @@ def _is_tool_channel(recipient: Optional[str]) -> bool:
+     return recipient is not None and recipient not in _NON_TOOL_RECIPIENTS
+ 
+ 
++def _has_tool_channel_header(text: str) -> bool:
++    """Whether ``text`` contains a Muse channel routed to a registered tool.
++
++    Required/named tool choice may constrain the body to a JSON array while the
++    model still emits its native ``to=<tool><|message|>`` channel header.  ATEM
++    marker detection alone misses that valid form.
++    """
++    return any(
++        _is_tool_channel(match.group(1))
++        for match in _CHANNEL_HEADER_RE.finditer(text)
++    )
++
++
+ def _decode_value(raw: str):
+     try:
+         return json.loads(raw)
+@@ -82,7 +98,7 @@ class MuseGlimmerDetector(BaseFormatDetector):
+         self._open_invoke: Optional[str] = None
+ 
+     def has_tool_call(self, text: str) -> bool:
+-        return has_atem_markers(text)
++        return has_atem_markers(text) or _has_tool_channel_header(text)
+ 
+     def _registered_names(self, tools: Optional[List[Tool]]) -> Set[str]:
+         return {t.function.name for t in tools or [] if t.function and t.function.name}
+@@ -227,7 +243,12 @@ class MuseGlimmerDetector(BaseFormatDetector):
+             if self._open_invoke is None:
+                 m = _INVOKE_OPEN_RE.search(chunk, pos)
+                 if m is None:
+-                    return pos if not final else len(chunk)
++                    if not final:
++                        return pos
++                    self._emit_json_calls(
++                        chunk[pos:], registered, calls, normal_parts
++                    )
++                    return len(chunk)
+                 self._open_invoke = m.group("name")
+                 pos = m.end()
+                 continue
+@@ -248,6 +269,67 @@ class MuseGlimmerDetector(BaseFormatDetector):
+ 
+         return len(chunk)
+ 
++    def _emit_json_calls(
++        self,
++        chunk: str,
++        registered: Set[str],
++        calls: List[ToolCallItem],
++        normal_parts: List[str],
++    ) -> None:
++        """Parse the JSON-array body produced by required/named constraints.
++
++        This is the non-ATEM recovery path proposed in upstream PR #34577.  It
++        is scoped to a channel already identified as a tool recipient; quoted
++        JSON or ATEM markup inside ``to=self`` and ``to=user`` stays content.
++        """
++        residue = chunk
++        for marker in (FUNCTION_CALLS_OPEN, FUNCTION_CALLS_CLOSE, INVOKE_CLOSE):
++            residue = residue.replace(marker, "")
++        if not residue.strip():
++            return
++
++        start = min(
++            (i for i in (residue.find("["), residue.find("{")) if i != -1),
++            default=-1,
++        )
++        payload = None
++        if start != -1:
++            try:
++                payload = json.loads(residue[start:].strip())
++            except (json.JSONDecodeError, ValueError):
++                payload = None
++        if payload is None:
++            normal_parts.append(chunk)
++            return
++        if isinstance(payload, dict):
++            payload = [payload]
++
++        emitted = False
++        for entry in payload if isinstance(payload, list) else []:
++            if not isinstance(entry, dict) or "name" not in entry:
++                continue
++            args = entry.get("parameters", entry.get("arguments")) or {}
++            if isinstance(args, str):
++                args = _decode_value(args)
++            if not isinstance(args, dict):
++                continue
++            item = self._emit_call(entry["name"], args, registered)
++            if item is not None:
++                calls.append(item)
++                emitted = True
++        if not emitted:
++            normal_parts.append(chunk)
++
++    def parses_required_natively(self) -> bool:
++        """Keep Muse channel framing for required/named tool choice.
++
++        A generic JSON grammar constrains only the body and leaves the model's
++        channel header in front of it, which the generic required-tool fallback
++        then tries (and fails) to parse as JSON.  The Muse detector understands
++        the complete native frame and must own this path.
++        """
++        return True
++
+     def supports_structural_tag(self) -> bool:
+         return False
+ 
+diff --git a/test/registered/unit/function_call/test_muse_glimmer_detector.py b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+index 62ba8d0aed28c2d204a6753d7e9c030f2150d64f..584bfb4e9c241907cf78204a475cfc8d92326ed4 100644
+--- a/test/registered/unit/function_call/test_muse_glimmer_detector.py
++++ b/test/registered/unit/function_call/test_muse_glimmer_detector.py
+@@ -118,6 +118,52 @@ class TestMuseGlimmerDetector(CustomTestCase):
+         self.assertIn("It is sunny.", normal)
+         self.assert_streaming_matches(text)
+ 
++    def test_required_json_array_in_tool_channel(self):
++        """Regression for the live required-tool failure: the grammar-shaped
++        JSON body retains Muse's channel header and must still become a call."""
++        raw = (
++            " to=self<|message|>Need weather.<|eom|>"
++            '<|start|>assistant to=get_weather<|message|>'
++            '[{"name":"get_weather","parameters":{"city":"Paris"}}]'
++        )
++        reasoning, remainder = ReasoningParser(
++            "muse", tool_call_parser_active=True
++        ).parse_non_stream(raw)
++        parser = FunctionCallParser(self.tools, "muse")
++        self.assertTrue(parser.detector.parses_required_natively())
++        self.assertTrue(parser.has_tool_call(remainder))
++        content, calls = parser.parse_non_stream(remainder)
++        self.assertEqual(reasoning, "Need weather.")
++        self.assertEqual(content, "")
++        self.assertEqual(
++            [(call.name, json.loads(call.parameters)) for call in calls],
++            [("get_weather", {"city": "Paris"})],
++        )
++        for chunk_size in (1, 7, 100):
++            s_reasoning, s_content, s_calls = self.pipeline_stream(raw, chunk_size)
++            self.assertEqual(s_reasoning, "Need weather.")
++            self.assertEqual(s_content, "")
++            self.assertEqual(s_calls, [("get_weather", {"city": "Paris"})])
++
++    def test_required_json_array_quoted_in_answer_is_not_a_call(self):
++        """The broader header detector must not activate a quoted tool frame."""
++        quoted = (
++            '<|start|>assistant to=get_weather<|message|>'
++            '[{"name":"get_weather","parameters":{"city":"X"}}]'
++        )
++        raw = (
++            " to=self<|message|>r<|eom|>"
++            f"<|start|>assistant to=user<|message|>Example: {quoted}"
++        )
++        _, remainder = ReasoningParser(
++            "muse", tool_call_parser_active=True
++        ).parse_non_stream(raw)
++        parser = FunctionCallParser(self.tools, "muse")
++        self.assertTrue(parser.has_tool_call(remainder))
++        content, calls = parser.parse_non_stream(remainder)
++        self.assertEqual(calls, [])
++        self.assertIn(quoted, content)
++
+     def test_namespaced_name_passes_through(self):
+         tools = [
+             Tool(

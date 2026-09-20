@@ -1,0 +1,570 @@
+diff --git a/python/sglang/srt/constrained/llguidance_backend.py b/python/sglang/srt/constrained/llguidance_backend.py
+index 50bbeb990ba76d4e87868b068eb232cd5eb94123..ee7d1ad9002752cf7e4a5af9dd1ce140b7e6a1dc 100644
+--- a/python/sglang/srt/constrained/llguidance_backend.py
++++ b/python/sglang/srt/constrained/llguidance_backend.py
+@@ -36,12 +36,16 @@ from sglang.srt.constrained.base_grammar_backend import (
+     InvalidGrammarObject,
+     register_vocab_mask_buffer,
+ )
++from sglang.srt.constrained.torch_ops.token_filter_torch_ops import (
++    set_token_filter_torch,
++)
+ from sglang.srt.constrained.utils import is_legacy_structural_tag
+-from sglang.srt.utils import get_int_env_var
++from sglang.srt.utils import get_int_env_var, is_hip
+ from sglang.srt.utils.common import is_pin_memory_available
+ 
+ logger = logging.getLogger(__name__)
+ _LLGUIDANCE_LOG_LEVEL = get_int_env_var("LLGUIDANCE_LOG_LEVEL", 1)
++_is_hip = is_hip()
+ 
+ 
+ class GrammarDraftRow(NamedTuple):
+@@ -255,6 +259,54 @@ class GuidanceBackend(BaseGrammarBackend):
+         )
+         return register_vocab_mask_buffer(name, vocab_mask, max_rows)
+ 
++    @property
++    def is_support_token_filter(self):
++        return True
++
++    def allocate_vocab_mask(
++        self, vocab_size: int, batch_size: int, device
++    ) -> torch.Tensor:
++        return _allocate_token_bitmask(
++            batch_size, self.llguidance_tokenizer.vocab_size, device
++        )
++
++    @staticmethod
++    def move_vocab_mask(vocab_mask: torch.Tensor, device) -> torch.Tensor:
++        return vocab_mask.to(device, non_blocking=True)
++
++    @staticmethod
++    def apply_vocab_mask(logits: torch.Tensor, vocab_mask: torch.Tensor) -> None:
++        apply_token_bitmask_inplace(logits, vocab_mask)
++
++    @staticmethod
++    def set_token_filter(
++        vocab_mask: torch.Tensor,
++        token_ids: List[int],
++        batch_idx: int,
++        is_allowed: bool = True,
++        reset_vocab_mask: bool = True,
++    ):
++        if _is_hip or vocab_mask.device.type != "cuda":
++            set_token_filter_torch(
++                vocab_mask,
++                token_ids,
++                batch_idx,
++                is_allowed=is_allowed,
++                reset_vocab_mask=reset_vocab_mask,
++            )
++        else:
++            from sglang.kernels.ops.grammar.token_filter_ops import (
++                set_token_filter_triton,
++            )
++
++            set_token_filter_triton(
++                vocab_mask,
++                token_ids,
++                batch_idx,
++                is_allowed=is_allowed,
++                reset_vocab_mask=reset_vocab_mask,
++            )
++
+     def _from_serialized(self, serialized_grammar) -> BaseGrammarObject:
+         try:
+             return GuidanceGrammar(
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 5a1adcb06c3b6a04a613104272f2dd18e2fbe6c4..03de745011683d16a17a397b8ab2b1704a5c7dad 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -926,6 +926,7 @@ class ChatCompletionRequest(BaseModel):
+     session_params: Optional[Dict] = None
+     separate_reasoning: bool = True
+     stream_reasoning: bool = True
++    include_reasoning: Optional[bool] = None
+     chat_template_kwargs: Optional[Dict] = None
+ 
+     # SGLang multimodal controls (extensions)
+@@ -1044,8 +1045,11 @@ class ChatCompletionRequest(BaseModel):
+             )
+             if isinstance(enabled, str):
+                 enabled = enabled.strip().lower() in {"1", "true", "yes", "y", "on"}
+-            if enabled:
+-                thinking = True
++            if r.get("enabled") is not None or r.get("enable") is not None:
++                thinking = bool(enabled)
++
++            if r.get("exclude") is True:
++                values["include_reasoning"] = False
+ 
+         effort = values.get("reasoning_effort")
+         if effort is not None:
+@@ -1100,6 +1104,12 @@ class ChatCompletionRequest(BaseModel):
+             # - "enable_thinking" for qwen3, glm45, nemotron_3, interns1
+             ctk.setdefault("thinking", thinking)
+             ctk.setdefault("enable_thinking", thinking)
++            # Muse-Glimmer's checkpoint template uses reasoning_strength rather
++            # than the common boolean toggles.
++            if isinstance(effort, str) and effort != "minimal":
++                ctk.setdefault("reasoning_strength", effort)
++            elif thinking is False:
++                ctk.setdefault("reasoning_strength", "none")
+             values["chat_template_kwargs"] = ctk
+ 
+         return values
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 3331198218765a012c40e137631bf242f4ac1de4..2497ab1f42618a4d34130aad7101507b822ec131 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -843,7 +843,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 request,
+                 finish_reason_type,
+             )
+-            if reasoning_text:
++            if reasoning_text and request.include_reasoning is not False:
+                 usage = None
+                 if continuous_usage_stats:
+                     usage = UsageProcessor.calculate_token_usage(
+@@ -2053,7 +2053,11 @@ class OpenAIServingChat(OpenAIServingBase):
+                     role="assistant",
+                     content=text if text else "",
+                     tool_calls=tool_calls,
+-                    reasoning_content=reasoning_text if reasoning_text else None,
++                    reasoning_content=(
++                        reasoning_text
++                        if reasoning_text and request.include_reasoning is not False
++                        else None
++                    ),
+                 ),
+                 logprobs=choice_logprobs,
+                 finish_reason=finish_reason["type"] if finish_reason else None,
+@@ -2531,6 +2535,13 @@ class OpenAIServingChat(OpenAIServingBase):
+         if not self.reasoning_parser:
+             return False
+ 
++        if self.reasoning_parser == "muse":
++            # Muse-Glimmer uses reasoning_strength and a direct-final prompt for
++            # reasoning-off requests. This also activates grammar from token 1.
++            return (request.chat_template_kwargs or {}).get(
++                "reasoning_strength"
++            ) != "none"
++
+         if self.reasoning_parser == "minimax-m3":
+             # M3 template prefills <mm:think> for thinking_mode=enabled, so it never
+             # appears in output and reasoning must be forced. Mirrors reasoning_parser.py.
+diff --git a/python/sglang/srt/function_call/utils.py b/python/sglang/srt/function_call/utils.py
+index d1a87a90c419a451324ccef3848f6380d5a444fb..b45f89bde147e92eaa982f7d3dbf3718419973a6 100644
+--- a/python/sglang/srt/function_call/utils.py
++++ b/python/sglang/srt/function_call/utils.py
+@@ -292,6 +292,7 @@ def _get_tool_schema_defs(tools: List[Tool]) -> dict:
+ 
+ def _get_tool_schema(tool: Tool) -> dict:
+     return {
++        "type": "object",
+         "properties": {
+             "name": {"type": "string", "enum": [tool.function.name]},
+             "parameters": (
+@@ -457,6 +458,12 @@ def get_json_schema_constraint(
+                 }
+                 if not parallel_tool_calls:
+                     schema["maxItems"] = 1
++                # Hoist the tool's $defs to the schema root so any
++                # "#/$defs/..." refs inside its parameters stay resolvable,
++                # matching the "required" branch below.
++                json_schema_defs = _get_tool_schema_defs([tool])
++                if json_schema_defs:
++                    schema["$defs"] = json_schema_defs
+                 return schema
+         return None
+     elif tool_choice == "required":
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 328dd09c7926651772a9ee579a825412e891f474..e6f8509fc0c3d5ac687192f45b2fad15b801d72c 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -219,8 +219,20 @@ class BaseTpWorker(ABC):
+         )
+ 
+     def update_weights_from_tensor(self, recv_req: UpdateWeightsFromTensorReqInput):
++        try:
++            named_tensors = self._deserialize_own_rank(
++                recv_req.serialized_named_tensors
++            )
++        except Exception as exc:
++            message = (
++                "Invalid update_weights_from_tensor serialized payload: "
++                f"{type(exc).__name__}: {exc}"
++            )
++            logger.error(message)
++            return False, message
++
+         success, message = self.model_runner.weight_updater.update_weights_from_tensor(
+-            named_tensors=self._deserialize_own_rank(recv_req.serialized_named_tensors),
++            named_tensors=named_tensors,
+             load_format=recv_req.load_format,
+         )
+         return success, message
+diff --git a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+index ecbfa7a713f7ed2c05d9d0d3e51d3bf96d881dcc..bb091c7632395dfa483882b5c5264db797e43913 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
++++ b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+@@ -327,6 +327,29 @@ class WeightUpdater:
+ 
+         monkey_patch_torch_reductions()
+         self._assert_weight_cache_inactive("update_weights_from_tensor")
++        validation_error = _validate_update_weights_from_tensor_payload(
++            named_tensors, load_format, tp_rank=self.tp_rank
++        )
++        if validation_error is not None:
++            logger.error(validation_error)
++            return False, validation_error
++
++        if load_format not in (None, "direct", "flattened_bucket"):
++            if not isinstance(load_format, str):
++                message = (
++                    "Invalid update_weights_from_tensor payload: "
++                    "load_format must be a string or null"
++                )
++                logger.error(message)
++                return False, message
++            if load_format not in self.custom_weight_loaders:
++                message = (
++                    "Invalid update_weights_from_tensor payload: "
++                    f"unknown load_format={load_format}"
++                )
++                logger.error(message)
++                return False, message
++
+         if load_format == "flattened_bucket":
+             # Handle flattened bucket format
+             return self._update_weights_from_flattened_bucket(
+@@ -337,10 +360,23 @@ class WeightUpdater:
+         device_module = torch.get_device_module(self.device)
+         infered_device = device_module.current_device()
+ 
+-        named_tensors = [
+-            (name, _unwrap_tensor(tensor, tp_rank=self.tp_rank, device=infered_device))
+-            for name, tensor in named_tensors
+-        ]
++        try:
++            named_tensors = [
++                (
++                    name,
++                    _unwrap_tensor(
++                        tensor, tp_rank=self.tp_rank, device=infered_device
++                    ),
++                )
++                for name, tensor in named_tensors
++            ]
++        except Exception as exc:
++            message = (
++                "Invalid update_weights_from_tensor payload: failed to unwrap "
++                f"tensor: {type(exc).__name__}: {exc}"
++            )
++            logger.error(message)
++            return False, message
+         if load_format == "direct":
+             _model_load_weights_direct(self.get_model(), named_tensors)
+         elif load_format in self.custom_weight_loaders:
+@@ -428,3 +464,89 @@ class LocalSerializedTensor:
+ 
+     def get(self, rank: int):
+         return MultiprocessingSerializer.deserialize(self.values[rank])
++
++
++def _validate_update_weights_from_tensor_payload(
++    named_tensors, load_format, tp_rank=None
++):
++    """Reject malformed payloads before any model parameter can be modified."""
++    error_prefix = "Invalid update_weights_from_tensor payload"
++    if load_format == "flattened_bucket":
++        if not isinstance(named_tensors, dict):
++            return f"{error_prefix}: flattened_bucket payload must be a mapping"
++        if not {"flattened_tensor", "metadata"}.issubset(named_tensors):
++            return (
++                f"{error_prefix}: flattened_bucket payload requires "
++                "flattened_tensor and metadata"
++            )
++        if not isinstance(named_tensors["flattened_tensor"], torch.Tensor):
++            return f"{error_prefix}: flattened_tensor must be a torch.Tensor"
++        if not isinstance(named_tensors["metadata"], (list, tuple)):
++            return f"{error_prefix}: metadata must be a list or tuple"
++        flattened_numel = named_tensors["flattened_tensor"].numel()
++        for index, metadata in enumerate(named_tensors["metadata"]):
++            if not isinstance(metadata, FlattenedTensorMetadata):
++                return (
++                    f"{error_prefix}: metadata entry {index} must be a "
++                    "FlattenedTensorMetadata"
++                )
++            if not isinstance(metadata.name, str) or not metadata.name:
++                return f"{error_prefix}: metadata entry {index} has an invalid name"
++            if not isinstance(metadata.shape, (list, tuple, torch.Size)) or any(
++                not isinstance(dimension, int) or dimension < 0
++                for dimension in metadata.shape
++            ):
++                return f"{error_prefix}: metadata entry {index} has an invalid shape"
++            if not isinstance(metadata.dtype, torch.dtype):
++                return f"{error_prefix}: metadata entry {index} has an invalid dtype"
++            offsets = (metadata.start_idx, metadata.end_idx, metadata.numel)
++            if any(not isinstance(value, int) or value < 0 for value in offsets):
++                return (
++                    f"{error_prefix}: metadata entry {index} has invalid offsets"
++                )
++            if (
++                metadata.end_idx < metadata.start_idx
++                or metadata.end_idx > flattened_numel
++                or metadata.end_idx - metadata.start_idx != metadata.numel
++            ):
++                return (
++                    f"{error_prefix}: metadata entry {index} is outside the "
++                    "flattened tensor"
++                )
++        return None
++
++    if not isinstance(named_tensors, (list, tuple)):
++        return f"{error_prefix}: named_tensors must be a list or tuple"
++
++    for index, item in enumerate(named_tensors):
++        if not isinstance(item, (list, tuple)) or len(item) != 2:
++            return f"{error_prefix}: entry {index} must be a (name, tensor) pair"
++        name, tensor = item
++        if not isinstance(name, str) or not name:
++            return f"{error_prefix}: entry {index} has an invalid tensor name"
++        if not isinstance(tensor, (torch.Tensor, LocalSerializedTensor)):
++            return f"{error_prefix}: entry {index} has an invalid tensor value"
++        if isinstance(tensor, LocalSerializedTensor):
++            if not isinstance(tensor.values, (list, tuple)) or not tensor.values:
++                return (
++                    f"{error_prefix}: entry {index} has invalid serialized "
++                    "tensor values"
++                )
++            if any(
++                not isinstance(value, (bytes, bytearray, memoryview))
++                for value in tensor.values
++            ):
++                return (
++                    f"{error_prefix}: entry {index} has a non-bytes serialized "
++                    "tensor value"
++                )
++            if tp_rank is not None and (
++                not isinstance(tp_rank, int)
++                or tp_rank < 0
++                or tp_rank >= len(tensor.values)
++            ):
++                return (
++                    f"{error_prefix}: entry {index} has no serialized tensor "
++                    f"for TP rank {tp_rank}"
++                )
++    return None
+diff --git a/test/registered/unit/managers/test_malformed_weight_update_payload.py b/test/registered/unit/managers/test_malformed_weight_update_payload.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3dd4e370680c20fccbb1f08e32b808ca4511d79c
+--- /dev/null
++++ b/test/registered/unit/managers/test_malformed_weight_update_payload.py
+@@ -0,0 +1,205 @@
++import unittest
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
++
++import torch
++
++from sglang.srt.model_executor.model_runner_components.weight_updater import (
++    FlattenedTensorMetadata,
++    LocalSerializedTensor,
++    WeightUpdater,
++    _validate_update_weights_from_tensor_payload,
++)
++from sglang.srt.managers.tp_worker import BaseTpWorker
++from sglang.srt.utils import MultiprocessingSerializer
++
++
++class FakeTpWorker:
++    _deserialize_own_rank = BaseTpWorker._deserialize_own_rank
++
++    def __init__(self, updater):
++        self.ps = SimpleNamespace(tp_rank=0)
++        self.model_runner = SimpleNamespace(weight_updater=updater)
++
++
++class TestMalformedWeightUpdatePayload(unittest.TestCase):
++    def test_rejects_non_collection(self):
++        self.assertIn(
++            "named_tensors must be",
++            _validate_update_weights_from_tensor_payload(7, None),
++        )
++
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "_unsupported_derived_weight_cache_error",
++        return_value=None,
++    )
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "monkey_patch_torch_reductions"
++    )
++    def test_weight_updater_rejects_integer_without_raising(self, _patch, _error):
++        fake_updater = SimpleNamespace(
++            _assert_weight_cache_inactive=Mock(),
++            tp_rank=0,
++            custom_weight_loaders={},
++        )
++        success, message = WeightUpdater.update_weights_from_tensor(
++            fake_updater, 7, None
++        )
++        self.assertFalse(success)
++        self.assertIn("named_tensors must be", message)
++        fake_updater._assert_weight_cache_inactive.assert_called_once_with(
++            "update_weights_from_tensor"
++        )
++
++    def test_tp_worker_rejects_corrupt_serialization(self):
++        fake_worker = FakeTpWorker(
++            SimpleNamespace(update_weights_from_tensor=Mock())
++        )
++        request = SimpleNamespace(
++            serialized_named_tensors=[b"not-a-pickle"], load_format=None
++        )
++        success, message = BaseTpWorker.update_weights_from_tensor(
++            fake_worker, request
++        )
++        self.assertFalse(success)
++        self.assertIn("Invalid update_weights_from_tensor serialized payload", message)
++        fake_worker.model_runner.weight_updater.update_weights_from_tensor.assert_not_called()
++
++    def test_tp_worker_forwards_valid_serialized_shape(self):
++        fake_updater = Mock(return_value=(False, "validated"))
++        fake_worker = FakeTpWorker(
++            SimpleNamespace(update_weights_from_tensor=fake_updater)
++        )
++        request = SimpleNamespace(
++            serialized_named_tensors=[MultiprocessingSerializer.serialize(7)],
++            load_format=None,
++        )
++        self.assertEqual(
++            BaseTpWorker.update_weights_from_tensor(fake_worker, request),
++            (False, "validated"),
++        )
++        fake_updater.assert_called_once_with(named_tensors=7, load_format=None)
++
++    def test_rejects_malformed_entries(self):
++        cases = [
++            [7],
++            [("name",)],
++            [(7, torch.zeros(1))],
++            [("name", 7)],
++        ]
++        for payload in cases:
++            with self.subTest(payload=payload):
++                self.assertIsNotNone(
++                    _validate_update_weights_from_tensor_payload(payload, None)
++                )
++
++    def test_accepts_named_tensor_entries(self):
++        payload = [
++            ("weight", torch.zeros(1)),
++            ("local", LocalSerializedTensor(values=[b"payload"])),
++        ]
++        self.assertIsNone(
++            _validate_update_weights_from_tensor_payload(payload, None)
++        )
++
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "_unsupported_derived_weight_cache_error",
++        return_value=None,
++    )
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "monkey_patch_torch_reductions"
++    )
++    def test_rejects_invalid_local_tensor_without_raising(self, _patch, _error):
++        fake_updater = SimpleNamespace(
++            _assert_weight_cache_inactive=Mock(),
++            tp_rank=0,
++            device="cpu",
++            custom_weight_loaders={},
++        )
++        payload = [
++            (
++                "weight",
++                LocalSerializedTensor(
++                    values=[MultiprocessingSerializer.serialize(7)]
++                ),
++            )
++        ]
++        success, message = WeightUpdater.update_weights_from_tensor(
++            fake_updater, payload, None
++        )
++        self.assertFalse(success)
++        self.assertIn("failed to unwrap tensor", message)
++
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "_unsupported_derived_weight_cache_error",
++        return_value=None,
++    )
++    @patch(
++        "sglang.srt.model_executor.model_runner_components.weight_updater."
++        "monkey_patch_torch_reductions"
++    )
++    def test_rejects_unknown_load_format_without_raising(self, _patch, _error):
++        fake_updater = SimpleNamespace(
++            _assert_weight_cache_inactive=Mock(),
++            tp_rank=0,
++            custom_weight_loaders={},
++        )
++        success, message = WeightUpdater.update_weights_from_tensor(
++            fake_updater, [("weight", torch.zeros(1))], "unknown"
++        )
++        self.assertFalse(success)
++        self.assertIn("unknown load_format", message)
++
++    def test_validates_flattened_bucket_shape(self):
++        valid = {
++            "flattened_tensor": torch.zeros(4, dtype=torch.uint8),
++            "metadata": [
++                FlattenedTensorMetadata(
++                    name="weight",
++                    shape=torch.Size([1]),
++                    dtype=torch.float32,
++                    start_idx=0,
++                    end_idx=4,
++                    numel=4,
++                )
++            ],
++        }
++        invalid = [
++            7,
++            {},
++            {"flattened_tensor": 7, "metadata": []},
++            {"flattened_tensor": torch.zeros(1), "metadata": 7},
++            {"flattened_tensor": torch.zeros(1), "metadata": [7]},
++            {
++                "flattened_tensor": torch.zeros(1, dtype=torch.uint8),
++                "metadata": [
++                    FlattenedTensorMetadata(
++                        name="weight",
++                        shape=torch.Size([1]),
++                        dtype=torch.float32,
++                        start_idx=0,
++                        end_idx=4,
++                        numel=4,
++                    )
++                ],
++            },
++        ]
++        self.assertIsNone(
++            _validate_update_weights_from_tensor_payload(valid, "flattened_bucket")
++        )
++        for payload in invalid:
++            with self.subTest(payload=payload):
++                self.assertIsNotNone(
++                    _validate_update_weights_from_tensor_payload(
++                        payload, "flattened_bucket"
++                    )
++                )
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1,0 +1,2968 @@
+diff --git a/python/sglang/kernels/jit/csrc/deepseek_v4/flashmla_sched_meta.cuh b/python/sglang/kernels/jit/csrc/deepseek_v4/flashmla_sched_meta.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..dffffd19794472aaac90201ab7f02501bd564202
+--- /dev/null
++++ b/python/sglang/kernels/jit/csrc/deepseek_v4/flashmla_sched_meta.cuh
+@@ -0,0 +1,276 @@
++#include <sgl_kernel/tensor.h>
++#include <sgl_kernel/utils.h>
++
++#include <sgl_kernel/utils.cuh>
++
++#include <tvm/ffi/container/tensor.h>
++
++#include <cstdint>
++
++// Tile-scheduler metadata for FlashMLA's split-KV decode.
++//
++// FlashMLA computes this itself when handed no metadata, in a <<<1, 32>>> kernel
++// whose whole partition walk runs on thread 0 and stores each 32-byte entry
++// straight to global memory.  Inside a cuda graph that sits fully exposed on the
++// critical path, and it cannot be hoisted out because the schedule depends on
++// the per-request `topk_length` of the step being replayed.
++//
++// This kernel produces the same output bit for bit; the shared-memory layout
++// matches FlashMLA's exactly because the idle-tail fill below reads one entry
++// past `first_block_idx_shared`, as FlashMLA does.
++
++namespace sglang {
++
++namespace flashmla {
++
++// sizeof(DecodingSchedMeta)/4: begin/end req, begin/end block, begin split,
++// the two per-end split flags, one pad word.
++constexpr int kMetaInts = 8;
++constexpr int kBlockSize = 256;
++
++struct Params {
++  int b;
++  int block_size_n;
++  int fixed_overhead_num_blocks;
++  int topk;        // -1 for a dense model
++  int extra_topk;  // 0 when there is no extra cache
++  const int* __restrict__ topk_length;
++  const int* __restrict__ extra_topk_length;
++  const int* __restrict__ seqlens_k;  // dense only
++  int* __restrict__ tile_scheduler_metadata;
++  int* __restrict__ num_splits;
++  int num_sm_parts;
++};
++
++__device__ __forceinline__ int ceil_div_i(int a, int b) {
++  return (a + b - 1) / b;
++}
++
++// ku::ceil: round up to a multiple of b.
++__device__ __forceinline__ int ceil_to_i(int a, int b) {
++  return (a + b - 1) / b * b;
++}
++
++__global__ void __launch_bounds__(kBlockSize) flashmla_sched_meta_kernel(__grid_constant__ const Params p) {
++  extern __shared__ int smem[];
++  const int b = p.b;
++  int* num_blocks_shared = smem;                   // [b]
++  int* num_splits_shared = smem + b;               // [b + 1]
++  int* seqlens_k_shared = smem + b * 2 + 1;        // [b]
++  int* first_block_idx_shared = smem + b * 3 + 1;  // [b]
++  int* last_block_idx_shared = smem + b * 4 + 1;   // [b]
++  int* out_shared = smem + b * 5 + 1;              // [num_sm_parts * kMetaInts]
++
++  __shared__ int total_num_blocks_shared;
++
++  int partial = 0;
++  for (int i = threadIdx.x; i < b; i += kBlockSize) {
++    int cur_s_k;
++    if (p.topk == -1) {
++      cur_s_k = __ldg(p.seqlens_k + i);
++    } else {
++      cur_s_k = p.topk_length ? __ldg(p.topk_length + i) : p.topk;
++      if (cur_s_k == 0) cur_s_k = 1;  // the main loop must never be empty
++      if (p.extra_topk) {
++        cur_s_k = ceil_to_i(cur_s_k, p.block_size_n);
++        cur_s_k += p.extra_topk_length ? __ldg(p.extra_topk_length + i) : p.extra_topk;
++      }
++    }
++    seqlens_k_shared[i] = cur_s_k;
++    const int last_token_idx = max(cur_s_k - 1, 0);
++    const int cur_first_block_idx = 0;  // first_token_idx is always 0
++    const int cur_last_block_idx = last_token_idx / p.block_size_n;
++    const int num_blocks = cur_last_block_idx - cur_first_block_idx + 1;
++    partial += num_blocks + p.fixed_overhead_num_blocks;
++    num_blocks_shared[i] = num_blocks;
++    first_block_idx_shared[i] = cur_first_block_idx;
++    last_block_idx_shared[i] = cur_last_block_idx;
++  }
++
++  // Integer sum, so the tree order does not change the result.
++  for (int offset = 16; offset >= 1; offset /= 2) {
++    partial += __shfl_xor_sync(uint32_t(-1), partial, offset);
++  }
++  __shared__ int warp_sums[kBlockSize / 32];
++  if ((threadIdx.x & 31) == 0) warp_sums[threadIdx.x >> 5] = partial;
++  __syncthreads();
++  if (threadIdx.x == 0) {
++    int total = 0;
++#pragma unroll
++    for (int w = 0; w < kBlockSize / 32; ++w)
++      total += warp_sums[w];
++    total_num_blocks_shared = total;
++  }
++  __syncthreads();
++
++  const int fixed_overhead_num_blocks = p.fixed_overhead_num_blocks;
++  __shared__ int first_idle_part_shared;
++
++  if (threadIdx.x == 0) {
++    const int payload = ceil_div_i(total_num_blocks_shared, p.num_sm_parts) + fixed_overhead_num_blocks;
++
++    int now_req_idx = 0, now_block = 0, now_n_split_idx = 0, cum_num_splits = 0;
++    // The request being consumed, and the one before it, held across partitions.
++    int cur_c = num_blocks_shared[0], cur_lb = last_block_idx_shared[0], cur_sk = seqlens_k_shared[0];
++    int prev_lb = 0, prev_sk = 0;
++    num_splits_shared[0] = 0;
++    int i = 0;
++    for (; i < p.num_sm_parts; ++i) {
++      int* meta = out_shared + i * kMetaInts;
++      const int begin_req_idx = now_req_idx;
++      // first_block_idx is 0 for every request: the first token index is 0.
++      const int begin_block_idx = now_block;
++      const int begin_split_idx = now_n_split_idx;
++      int is_first_req_splitted = (now_block != 0);
++      int remain_payload = payload;
++      while (now_req_idx < b) {
++        const int now_remain_blocks = cur_c - now_block;
++        if (remain_payload >= now_remain_blocks + fixed_overhead_num_blocks) {
++          cum_num_splits += now_n_split_idx + 1;
++          num_splits_shared[now_req_idx + 1] = cum_num_splits;
++          remain_payload -= now_remain_blocks + fixed_overhead_num_blocks;
++          ++now_req_idx;
++          now_block = 0;
++          now_n_split_idx = 0;
++          prev_lb = cur_lb;
++          prev_sk = cur_sk;
++          if (now_req_idx < b) {
++            cur_c = num_blocks_shared[now_req_idx];
++            cur_lb = last_block_idx_shared[now_req_idx];
++            cur_sk = seqlens_k_shared[now_req_idx];
++          }
++        } else {
++          if (remain_payload - fixed_overhead_num_blocks > 0) {
++            now_block += remain_payload - fixed_overhead_num_blocks;
++            ++now_n_split_idx;
++            remain_payload = 0;
++          }
++          break;
++        }
++      }
++      const int split_open = now_block > 0;
++      const int end_req_idx = split_open ? now_req_idx : now_req_idx - 1;
++      const int end_lb = split_open ? cur_lb : prev_lb;
++      const int end_sk = split_open ? cur_sk : prev_sk;
++      const int end_block_idx = split_open ? now_block : (end_sk == 0 ? 0 : end_lb + 1);
++      int is_last_req_splitted = (end_block_idx != end_lb + 1) && (end_sk != 0);
++      if (begin_req_idx == end_req_idx) {
++        is_first_req_splitted = is_last_req_splitted = is_first_req_splitted || is_last_req_splitted;
++      }
++      meta[0] = begin_req_idx;
++      meta[1] = end_req_idx;
++      meta[2] = begin_block_idx;
++      meta[3] = end_block_idx;
++      meta[4] = begin_split_idx;
++      meta[5] = is_first_req_splitted;
++      meta[6] = is_last_req_splitted;
++      meta[7] = 0;
++      if (now_req_idx == b) {
++        ++i;
++        break;
++      }
++    }
++    first_idle_part_shared = i;
++  }
++  __syncthreads();
++
++  // Every partition past the walk describes the same empty range.
++  {
++    const int lb_last = last_block_idx_shared[b - 1];
++    const int sk_last = seqlens_k_shared[b - 1];
++    const int end_block_idx = (sk_last == 0) ? 0 : lb_last + 1;
++    // FlashMLA reads first_block_idx_shared[batch_size] for these, one past the
++    // end of that array, which aliases last_block_idx_shared[0].
++    const int begin_block_idx = last_block_idx_shared[0];
++    const int is_last_req_splitted = (end_block_idx != lb_last + 1) && (sk_last != 0);
++    for (int i = first_idle_part_shared + threadIdx.x; i < p.num_sm_parts; i += kBlockSize) {
++      int* meta = out_shared + i * kMetaInts;
++      meta[0] = b;
++      meta[1] = b - 1;
++      meta[2] = begin_block_idx;
++      meta[3] = end_block_idx;
++      meta[4] = 0;
++      meta[5] = 0;
++      meta[6] = is_last_req_splitted;
++      meta[7] = 0;
++    }
++  }
++  __syncthreads();
++
++  const int meta_words = p.num_sm_parts * kMetaInts;
++  for (int i = threadIdx.x; i < meta_words; i += kBlockSize) {
++    p.tile_scheduler_metadata[i] = out_shared[i];
++  }
++  for (int i = threadIdx.x; i <= b; i += kBlockSize) {
++    p.num_splits[i] = num_splits_shared[i];
++  }
++}
++
++}  // namespace flashmla
++
++void flashmla_sched_meta(
++    tvm::ffi::TensorView tile_scheduler_metadata,
++    tvm::ffi::TensorView num_splits,
++    tvm::ffi::Optional<tvm::ffi::TensorView> topk_length,
++    tvm::ffi::Optional<tvm::ffi::TensorView> extra_topk_length,
++    tvm::ffi::Optional<tvm::ffi::TensorView> seqlens_k,
++    int64_t block_size_n,
++    int64_t fixed_overhead_num_blocks,
++    int64_t topk,
++    int64_t extra_topk) {
++  using namespace host;
++  using namespace flashmla;
++
++  auto parts = SymbolicSize{"num_sm_parts"};
++  auto meta_ints = SymbolicSize{"meta_ints"};
++  auto b_plus_one = SymbolicSize{"batch_size_plus_one"};
++  auto device_ = SymbolicDevice{};
++  device_.set_options<kDLGPU>();
++
++  TensorMatcher({parts, meta_ints}).with_dtype<int32_t>().with_device(device_).verify(tile_scheduler_metadata);
++  TensorMatcher({b_plus_one}).with_strides({1}).with_dtype<int32_t>().with_device(device_).verify(num_splits);
++
++  const int num_sm_parts = static_cast<int>(parts.unwrap());
++  const int b = static_cast<int>(b_plus_one.unwrap()) - 1;
++  RuntimeCheck(
++      static_cast<int>(meta_ints.unwrap()) == kMetaInts,
++      "tile_scheduler_metadata must be [num_sm_parts, ",
++      kMetaInts,
++      "], got last dim ",
++      meta_ints.unwrap());
++  RuntimeCheck(b >= 1, "batch size must be positive, got ", b);
++  RuntimeCheck(num_sm_parts >= 1, "num_sm_parts must be positive, got ", num_sm_parts);
++  RuntimeCheck(block_size_n >= 1, "block_size_n must be positive, got ", block_size_n);
++
++  auto opt_ptr = [&](const tvm::ffi::Optional<tvm::ffi::TensorView>& t, const char* name) -> const int* {
++    if (!t.has_value()) return nullptr;
++    auto n = SymbolicSize{"batch_size"};
++    auto dev = SymbolicDevice{};
++    dev.set_options<kDLGPU>();
++    TensorMatcher({n}).with_strides({1}).with_dtype<int32_t>().with_device(dev).verify(t.value());
++    RuntimeCheck(static_cast<int>(n.unwrap()) == b, name, " must have ", b, " entries, got ", n.unwrap());
++    return static_cast<const int*>(t.value().data_ptr());
++  };
++
++  RuntimeCheck(topk != -1 || seqlens_k.has_value(), "a dense schedule (topk == -1) needs seqlens_k");
++
++  const Params p{
++      b,
++      static_cast<int>(block_size_n),
++      static_cast<int>(fixed_overhead_num_blocks),
++      static_cast<int>(topk),
++      static_cast<int>(extra_topk),
++      opt_ptr(topk_length, "topk_length"),
++      opt_ptr(extra_topk_length, "extra_topk_length"),
++      opt_ptr(seqlens_k, "seqlens_k"),
++      static_cast<int*>(tile_scheduler_metadata.data_ptr()),
++      static_cast<int*>(num_splits.data_ptr()),
++      num_sm_parts,
++  };
++
++  const std::size_t smem = sizeof(int) * static_cast<std::size_t>(b * 5 + 1 + num_sm_parts * kMetaInts);
++  RuntimeCheck(smem <= 48 * 1024, "schedule does not fit in shared memory: ", smem, " bytes");
++  LaunchKernel(1, kBlockSize, device_.unwrap(), smem)(flashmla_sched_meta_kernel, p);
++}
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/gemm/small_gemm_bf16.cuh b/python/sglang/kernels/jit/csrc/gemm/small_gemm_bf16.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ac8a02f58305e822bc2dd5f1a4aa9a436d7a043
+--- /dev/null
++++ b/python/sglang/kernels/jit/csrc/gemm/small_gemm_bf16.cuh
+@@ -0,0 +1,249 @@
++/// \file small_gemm_bf16.cuh
++/// \brief Small bf16 GEMMs for two fixed shapes, `out[m, n] = sum_k a[m, k] * b[n, k]`
++/// with N = 128, K = 512 (one warp per output column) and N = 32, K = 5120 (one CTA
++/// per output column).
++///
++/// The thread-to-K mapping and reduction order are those of tiny_gemm's N-variant,
++/// so results are row-invariant across M and bitwise equal to tiny_gemm where both
++/// apply; cuBLAS uses a different reduction order.
++
++#include <sgl_kernel/tensor.h>
++#include <sgl_kernel/utils.h>
++
++#include <sgl_kernel/tile.cuh>
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++#include <sgl_kernel/vec.cuh>
++#include <sgl_kernel/warp.cuh>
++
++#include <sgl_kernel/gemm/dot_product.cuh>
++
++#include <tvm/ffi/container/tensor.h>
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <utility>
++
++namespace sglang {
++
++struct SmallGemmParams {
++  bf16_t* __restrict__ out;
++  const bf16_t* __restrict__ a;
++  const bf16_t* __restrict__ b;
++  int64_t stride_a;  // row stride of `a`, in elements
++  uint32_t m;        // batch size
++};
++
++template <uint32_t M_SPLIT_>
++struct N128K512Trait {
++  static constexpr uint32_t N = 128;
++  static constexpr uint32_t K = 512;
++  static constexpr uint32_t kMaxMSplit = 8;
++  static constexpr uint32_t M_SPLIT = M_SPLIT_;  // rows of `a` one warp handles
++  static_assert(M_SPLIT >= 1 && M_SPLIT <= kMaxMSplit, "M_SPLIT must be in [1, 8]");
++  static constexpr uint32_t kVecSize = device::kMaxVecBytes / sizeof(bf16_t);
++  static constexpr uint32_t kNumVecs = K / (kVecSize * device::kWarpThreads);
++  static_assert(K % (kVecSize * device::kWarpThreads) == 0, "K must be a whole number of warp-wide vectors");
++  using vec_t = device::AlignedVector<bf16x2_t, kVecSize / 2>;
++  static constexpr uint32_t kBlockSize = 128;
++  static constexpr uint32_t kNumWarps = kBlockSize / device::kWarpThreads;
++  static_assert(N % kNumWarps == 0, "every warp of a block owns one output column");
++  static constexpr uint32_t kGridX = N / kNumWarps;
++};
++
++template <typename T, bool kUsePDL>
++__global__ __launch_bounds__(T::kBlockSize, 1) void n128k512_kernel(const SmallGemmParams params) {
++  using namespace device;
++  constexpr uint32_t kNumVecs = T::kNumVecs;
++  constexpr uint32_t M_SPLIT = T::M_SPLIT;
++  constexpr uint32_t K = T::K;
++  constexpr uint32_t N = T::N;
++  using vec_t = typename T::vec_t;
++
++  const uint32_t M = params.m;
++  const uint32_t warp_id = threadIdx.x / kWarpThreads;
++  const uint32_t n = blockIdx.x * T::kNumWarps + warp_id;
++  const uint32_t m_start = blockIdx.y * M_SPLIT;
++  const auto gmem = tile::Memory<vec_t>::warp();
++
++  // The weight row does not depend on the previous kernel: load it before the PDL wait.
++  vec_t b[kNumVecs];
++#pragma unroll
++  for (uint32_t j = 0; j < kNumVecs; ++j) {
++    b[j] = gmem.load(params.b + n * K, j);
++  }
++
++  PDLWaitPrimary<kUsePDL>();
++
++  // Clamp padded loads to the last valid row to keep vector loads branch-free;
++  // only stores are guarded.
++  vec_t a[M_SPLIT][kNumVecs];
++#pragma unroll
++  for (uint32_t i = 0; i < M_SPLIT; ++i) {
++    const uint32_t m = min(m_start + i, M - 1);
++#pragma unroll
++    for (uint32_t j = 0; j < kNumVecs; ++j) {
++      a[i][j] = gmem.load(params.a + m * params.stride_a, j);
++    }
++  }
++
++#pragma unroll
++  for (uint32_t i = 0; i < M_SPLIT; ++i) {
++    float acc = 0.0f;
++#pragma unroll
++    for (uint32_t j = 0; j < kNumVecs; ++j) {
++      dot_product_vec(a[i][j], b[j], acc);
++    }
++    acc = warp::reduce_sum(acc);
++    const uint32_t m = m_start + i;
++    if (m < M) {
++      params.out[m * N + n] = cast<bf16_t>(acc);
++    }
++  }
++
++  PDLTriggerSecondary<kUsePDL>();
++}
++
++template <uint32_t M_SPLIT_>
++struct N32K5120Trait {
++  static constexpr uint32_t N = 32;
++  static constexpr uint32_t K = 5120;
++  static constexpr uint32_t kMaxMSplit = 8;
++  static constexpr uint32_t M_SPLIT = M_SPLIT_;  // rows of `a` one CTA handles
++  static_assert(M_SPLIT >= 1 && M_SPLIT <= kMaxMSplit, "M_SPLIT must be in [1, 8]");
++  static constexpr uint32_t kVecSize = device::kMaxVecBytes / sizeof(bf16_t);
++  // Ten warps preserve tiny_gemm's mapping: thread t owns [16t, 16t + 16).
++  static constexpr uint32_t kBlockSize = 320;
++  static constexpr uint32_t kNumWarps = kBlockSize / device::kWarpThreads;
++  static constexpr uint32_t kNumVecs = K / (kVecSize * kBlockSize);  // vectors per thread
++  static_assert(K % (kVecSize * kBlockSize) == 0, "K must be a whole number of CTA-wide vectors");
++  static_assert(kBlockSize % device::kWarpThreads == 0, "the reduction needs whole warps");
++  static_assert(M_SPLIT <= kBlockSize, "one thread finishes one row");
++  using vec_t = device::AlignedVector<bf16x2_t, kVecSize / 2>;
++  static constexpr uint32_t kGridX = N;  // one CTA per output column
++};
++
++template <typename T, bool kUsePDL>
++__global__ __launch_bounds__(T::kBlockSize, 1) void n32k5120_kernel(const SmallGemmParams params) {
++  using namespace device;
++  constexpr uint32_t kNumVecs = T::kNumVecs;
++  constexpr uint32_t kNumWarps = T::kNumWarps;
++  constexpr uint32_t M_SPLIT = T::M_SPLIT;
++  constexpr uint32_t K = T::K;
++  constexpr uint32_t N = T::N;
++  using vec_t = typename T::vec_t;
++
++  const uint32_t M = params.m;
++  const uint32_t tx = threadIdx.x;
++  const uint32_t warp_id = tx / kWarpThreads;
++  const uint32_t n = blockIdx.x;
++  const uint32_t m_start = blockIdx.y * M_SPLIT;
++  const auto gmem = tile::Memory<vec_t>::cta(T::kBlockSize);
++
++  // The weight column does not depend on the previous kernel: load it before the PDL wait.
++  vec_t b[kNumVecs];
++#pragma unroll
++  for (uint32_t j = 0; j < kNumVecs; ++j) {
++    b[j] = gmem.load(params.b + n * K, j);
++  }
++
++  PDLWaitPrimary<kUsePDL>();
++
++  // Clamp padded loads to the last valid row to keep vector loads branch-free;
++  // only stores are guarded.
++  vec_t a[M_SPLIT][kNumVecs];
++#pragma unroll
++  for (uint32_t i = 0; i < M_SPLIT; ++i) {
++    const uint32_t m = min(m_start + i, M - 1);
++#pragma unroll
++    for (uint32_t j = 0; j < kNumVecs; ++j) {
++      a[i][j] = gmem.load(params.a + m * params.stride_a, j);
++    }
++  }
++
++  __shared__ float s_acc[kNumWarps][M_SPLIT];
++#pragma unroll
++  for (uint32_t i = 0; i < M_SPLIT; ++i) {
++    float acc = 0.0f;
++#pragma unroll
++    for (uint32_t j = 0; j < kNumVecs; ++j) {
++      dot_product_vec(a[i][j], b[j], acc);
++    }
++    acc = warp::reduce_sum(acc);
++    if (tx % kWarpThreads == 0) s_acc[warp_id][i] = acc;
++  }
++
++  PDLTriggerSecondary<kUsePDL>();
++  __syncthreads();
++
++  // One thread per row sums the warps in a fixed order, so a row's result does
++  // not depend on which rows share its CTA.
++  if (tx < M_SPLIT) {
++    float acc = s_acc[0][tx];
++#pragma unroll
++    for (uint32_t w = 1; w < kNumWarps; ++w) {
++      acc += s_acc[w][tx];
++    }
++    const uint32_t m = m_start + tx;
++    if (m < M) {
++      params.out[m * N + n] = cast<bf16_t>(acc);
++    }
++  }
++}
++
++// Which kernel serves a trait family; the launcher below is shared.
++template <typename T, bool kUsePDL>
++struct SmallGemmLaunch;
++
++template <uint32_t M_SPLIT, bool kUsePDL>
++struct SmallGemmLaunch<N128K512Trait<M_SPLIT>, kUsePDL> {
++  static constexpr void (*kFn)(SmallGemmParams) = n128k512_kernel<N128K512Trait<M_SPLIT>, kUsePDL>;
++};
++
++template <uint32_t M_SPLIT, bool kUsePDL>
++struct SmallGemmLaunch<N32K5120Trait<M_SPLIT>, kUsePDL> {
++  static constexpr void (*kFn)(SmallGemmParams) = n32k5120_kernel<N32K5120Trait<M_SPLIT>, kUsePDL>;
++};
++
++template <template <uint32_t> class Trait, bool kUsePDL>
++struct SmallGemmKernel {
++  using Trait1 = Trait<1>;
++  static constexpr uint32_t kMaxMSplit = Trait1::kMaxMSplit;
++  using KernelFn = void (*)(SmallGemmParams);
++
++  template <std::size_t... I>
++  static constexpr auto make_table(std::index_sequence<I...>) {
++    return std::array<KernelFn, kMaxMSplit + 1>{nullptr, SmallGemmLaunch<Trait<I + 1>, kUsePDL>::kFn...};
++  }
++  static constexpr auto kTable = make_table(std::make_index_sequence<kMaxMSplit>{});
++
++  static void run(const tvm::ffi::TensorView a, const tvm::ffi::TensorView b, const tvm::ffi::TensorView out) {
++    using namespace host;
++    auto M = SymbolicSize{"num_tokens"};
++    auto device = SymbolicDevice{};
++    device.set_options<kDLCUDA>();
++    TensorMatcher({M, Trait1::K}).with_strides({-1, 1}).with_dtype<bf16_t>().with_device(device).verify(a);
++    TensorMatcher({Trait1::N, Trait1::K}).with_dtype<bf16_t>().with_device(device).verify(b);
++    TensorMatcher({M, Trait1::N}).with_dtype<bf16_t>().with_device(device).verify(out);
++    const auto m = static_cast<uint32_t>(M.unwrap());
++    if (m == 0) return;
++    // Rows are loaded as whole vectors, so a row-sliced view must keep its row starts vector-aligned.
++    CHECK_HOST(a.stride(0) % Trait1::kVecSize == 0)
++        << "a rows must stay aligned to the vector width, got stride " << a.stride(0);
++    // Spread the rows evenly over as few y-blocks as kMaxMSplit rows each allow.
++    const uint32_t grid_y = div_ceil(m, kMaxMSplit);
++    const uint32_t m_split = div_ceil(m, grid_y);
++    const auto params = SmallGemmParams{
++        .out = static_cast<bf16_t*>(out.data_ptr()),
++        .a = static_cast<const bf16_t*>(a.data_ptr()),
++        .b = static_cast<const bf16_t*>(b.data_ptr()),
++        .stride_a = static_cast<int64_t>(a.stride(0)),
++        .m = m,
++    };
++    LaunchKernel(dim3(Trait1::kGridX, grid_y), dim3(Trait1::kBlockSize), device.unwrap())
++        .enable_pdl(kUsePDL)(kTable[m_split], params);
++  }
++};
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/jit/csrc/gemm/tiny_gemm.cuh b/python/sglang/kernels/jit/csrc/gemm/tiny_gemm.cuh
+index 1cabaddf37270781ad04b5b930f6273dd63c9512..d4db025da6fecdc34232f52fe4689120ef3777f4 100644
+--- a/python/sglang/kernels/jit/csrc/gemm/tiny_gemm.cuh
++++ b/python/sglang/kernels/jit/csrc/gemm/tiny_gemm.cuh
+@@ -6,6 +6,8 @@
+ #include <sgl_kernel/vec.cuh>
+ #include <sgl_kernel/warp.cuh>
+ 
++#include <sgl_kernel/gemm/dot_product.cuh>
++
+ #include <tvm/ffi/container/tensor.h>
+ 
+ #include <array>
+@@ -66,23 +68,6 @@ struct TinyGEMMParams {
+   int64_t stride_x;
+ };
+ 
+-template <std::size_t N>
+-SGL_DEVICE void dot_product(device::AlignedVector<bf16x2_t, N> a, device::AlignedVector<bf16x2_t, N> b, float& acc) {
+-  using namespace device;
+-#pragma unroll
+-  for (uint32_t i = 0; i < N; ++i) {
+-#if SGL_ARCH_BLACKWELL_OR_GREATER
+-    acc = device::math::fma_f32_bf16(a[i].x, b[i].x, acc);
+-    acc = device::math::fma_f32_bf16(a[i].y, b[i].y, acc);
+-#else
+-    const auto [a0, a1] = cast<fp32x2_t>(a[i]);
+-    const auto [b0, b1] = cast<fp32x2_t>(b[i]);
+-    acc += a0 * b0;
+-    acc += a1 * b1;
+-#endif
+-  }
+-}
+-
+ template <typename Trait, uint32_t M, typename Out, bool kUsePDL>
+ TINY_GEMM_KERNEL void tiny_n_gemm_kernel(const TinyGEMMParams params) {
+   using namespace device;
+@@ -130,7 +115,7 @@ TINY_GEMM_KERNEL void tiny_n_gemm_kernel(const TinyGEMMParams params) {
+       float acc = 0.0f;
+ #pragma unroll
+       for (uint32_t u = 0; u < kUnroll; ++u) {
+-        dot_product(xv[m][u], wv[n][u], acc);
++        dot_product_vec(xv[m][u], wv[n][u], acc);
+       }
+       s_acc[warp_id][m * N_SPLIT + n] = warp::reduce_sum(acc);
+     }
+@@ -185,7 +170,7 @@ TINY_GEMM_KERNEL void tiny_k_gemm_kernel(const TinyGEMMParams params) {
+ #pragma unroll
+   for (uint32_t m = 0; m < M; ++m) {
+     float acc = 0.0f;
+-    dot_product(xv[m], wv, acc);
++    dot_product_vec(xv[m], wv, acc);
+     // Broadcast store: every lane of the group holds the reduced sum.
+     const auto sum = warp::reduce_sum<kNumKLanes>(acc);
+     static_cast<Out*>(params.out)[m * N + n_idx] = cast<Out>(sum);
+diff --git a/python/sglang/kernels/jit/include/sgl_kernel/gemm/dot_product.cuh b/python/sglang/kernels/jit/include/sgl_kernel/gemm/dot_product.cuh
+new file mode 100644
+index 0000000000000000000000000000000000000000..140980cdb9343fbc3e3970bcc8dca345e4e0706e
+--- /dev/null
++++ b/python/sglang/kernels/jit/include/sgl_kernel/gemm/dot_product.cuh
+@@ -0,0 +1,40 @@
++/// \file dot_product.cuh
++/// \brief bf16 x bf16 -> fp32 dot product of two packed vectors, shared by the
++/// small-GEMM kernels so that they accumulate in the same order and agree
++/// bitwise where both apply.
++#pragma once
++
++#include <sgl_kernel/math.cuh>
++#include <sgl_kernel/type.cuh>
++#include <sgl_kernel/utils.cuh>
++#include <sgl_kernel/vec.cuh>
++
++#include <cstddef>
++#include <cstdint>
++
++namespace sglang {
++
++namespace device {
++
++/// Accumulate `sum_i a[i] * b[i]` into `acc`, in element order, one fp32 fma per
++/// product. On Blackwell the mixed-precision fma consumes bf16 directly; the
++/// fallback converts first, which is exact, so both round once per product.
++template <std::size_t N>
++SGL_DEVICE void dot_product_vec(AlignedVector<bf16x2_t, N> a, AlignedVector<bf16x2_t, N> b, float& acc) {
++#pragma unroll
++  for (uint32_t i = 0; i < N; ++i) {
++#if SGL_ARCH_BLACKWELL_OR_GREATER
++    acc = math::fma_f32_bf16(a[i].x, b[i].x, acc);
++    acc = math::fma_f32_bf16(a[i].y, b[i].y, acc);
++#else
++    const auto [a0, a1] = cast<fp32x2_t>(a[i]);
++    const auto [b0, b1] = cast<fp32x2_t>(b[i]);
++    acc += a0 * b0;
++    acc += a1 * b1;
++#endif
++  }
++}
++
++}  // namespace device
++
++}  // namespace sglang
+diff --git a/python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py b/python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8f0cfe615a08bc7780434d0dee8fc0a79ae3ca1
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py
+@@ -0,0 +1,207 @@
++"""Candidate-block scores and visibility masking for paged indexer logits."""
++
++import torch
++import triton
++import triton.language as tl
++
++from sglang.kernels.jit.utils import is_arch_support_pdl
++
++
++@triton.jit
++def _maximum_with_nan(a, b):
++    return tl.maximum(a, b, propagate_nan=tl.PropagateNan.ALL)
++
++
++@triton.jit
++def _candidate_scores_kernel(
++    X,
++    LENS,
++    OUT,
++    SCORES,
++    WIDTH: tl.constexpr,
++    STRIDE: tl.constexpr,
++    BLOCKS: tl.constexpr,
++    GROUP: tl.constexpr,
++    GROUP_PAD: tl.constexpr,
++    TILE: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    blocks = tl.program_id(1) * TILE + tl.arange(0, TILE)
++    offsets = tl.arange(0, GROUP_PAD)
++    cols = blocks[:, None] * GROUP + offsets[None, :]
++    length = tl.load(LENS + row)
++    in_bounds = (cols < WIDTH) & (offsets[None, :] < GROUP)
++    values = tl.load(
++        X + row * STRIDE + cols, in_bounds & (cols < length), other=-float("inf")
++    ).to(tl.float32)
++    tl.store(OUT + row * WIDTH + cols, values, in_bounds)
++    scores = tl.reduce(values, axis=1, combine_fn=_maximum_with_nan)
++    scores = tl.where(
++        (length > 0) & (blocks == (length - 1) // GROUP), float("inf"), scores
++    )
++    tl.store(SCORES + row * BLOCKS + blocks, scores, blocks < BLOCKS)
++
++
++@triton.jit
++def _candidate_mask_kernel(
++    X,
++    LENS,
++    KEEP,
++    OUT,
++    WIDTH: tl.constexpr,
++    STRIDE: tl.constexpr,
++    KEEP_STRIDE: tl.constexpr,
++    KEEP_COL_STRIDE: tl.constexpr,
++    TILE: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    cols = tl.program_id(1) * TILE + tl.arange(0, TILE)
++    visible = (cols < WIDTH) & (cols < tl.load(LENS + row))
++    keep = tl.load(KEEP + row * KEEP_STRIDE + cols * KEEP_COL_STRIDE, visible, other=0)
++    values = tl.load(X + row * STRIDE + cols, visible & keep, other=-float("inf")).to(
++        tl.float32
++    )
++    tl.store(OUT + row * WIDTH + cols, values, cols < WIDTH)
++
++
++@triton.jit
++def _publish_candidate_mask_kernel(
++    INDICES,
++    VALUES,
++    KEEP,
++    WIDTH: tl.constexpr,
++    GROUP: tl.constexpr,
++    TOPK: tl.constexpr,
++    TILE: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    i = tl.program_id(1) * TILE + tl.arange(0, TILE)
++    selected = tl.load(INDICES + row * TOPK + i // GROUP, i < TOPK * GROUP, 0)
++    score = tl.load(VALUES + row * TOPK + i // GROUP, i < TOPK * GROUP, -float("inf"))
++    cols = selected * GROUP + i % GROUP
++    # torch.topk returns unique block indices: each output position has one writer.
++    tl.store(
++        KEEP + row * WIDTH + cols,
++        score > -float("inf"),
++        (i < TOPK * GROUP) & (cols < WIDTH),
++    )
++
++
++def candidate_block_logits(
++    logits: torch.Tensor,
++    seq_lens: torch.Tensor,
++    *,
++    topk_blocks: int,
++    block_size: int,
++    published: torch.Tensor | None,
++) -> tuple[torch.Tensor, torch.Tensor | None]:
++    """Keep torch.topk's block selection, including its tie behavior.
++
++    Without ``published`` (a source) mask the unread tail while scoring blocks;
++    with it (a consumer) apply visibility and the published mask in one pass.
++    """
++    rows, width = logits.shape
++    output = torch.empty((rows, width), dtype=torch.float32, device=logits.device)
++    if published is not None:
++        _candidate_mask_kernel[(rows, triton.cdiv(width, 4096))](
++            logits,
++            seq_lens,
++            published,
++            output,
++            width,
++            logits.stride(0),
++            published.stride(0),
++            published.stride(1),
++            4096,
++        )
++        return output, None
++
++    blocks = triton.cdiv(width, block_size)
++    scores = torch.empty((rows, blocks), dtype=torch.float32, device=logits.device)
++    group_pad = triton.next_power_of_2(block_size)
++    tile = max(1, 1024 // group_pad)
++    _candidate_scores_kernel[(rows, triton.cdiv(blocks, tile))](
++        logits,
++        seq_lens,
++        output,
++        scores,
++        width,
++        logits.stride(0),
++        blocks,
++        block_size,
++        group_pad,
++        tile,
++    )
++    # Publication only needs membership; sorting the selected pairs is unused.
++    top = scores.topk(min(topk_blocks, blocks), dim=-1, sorted=False)
++    keep = torch.zeros((rows, width), dtype=torch.bool, device=logits.device)
++    _publish_candidate_mask_kernel[
++        (rows, triton.cdiv(top.indices.shape[1] * block_size, 256))
++    ](
++        top.indices,
++        top.values,
++        keep,
++        width,
++        block_size,
++        top.indices.shape[1],
++        256,
++        num_warps=4,
++    )
++    return output, keep
++
++
++@triton.jit
++def _candidate_row_lens_kernel(
++    LENS,
++    NBLOCKS,
++    VALID,
++    ROWS,
++    TOPK: tl.constexpr,
++    BLOCK: tl.constexpr,
++    TILE: tl.constexpr,
++    USE_PDL: tl.constexpr,
++):
++    rows = tl.program_id(0) * TILE + tl.arange(0, TILE)
++    mask = rows < ROWS
++    if USE_PDL:
++        tl.extra.cuda.gdc_wait()  # LENS is the previous kernel's output
++    length = tl.load(LENS + rows, mask, 0).to(tl.int32)
++    if USE_PDL:
++        tl.extra.cuda.gdc_launch_dependents()
++    nblocks = (length + (BLOCK - 1)) // BLOCK
++    kept = tl.minimum(nblocks, TOPK)
++    # the kept blocks laid out back to back, the newest one possibly partial
++    valid = BLOCK * (kept - 1) + (length - 1) % BLOCK + 1
++    valid = tl.where(length > 0, valid, 0)
++    tl.store(NBLOCKS + rows, nblocks, mask)
++    tl.store(VALID + rows, valid, mask)
++
++
++def candidate_row_lens(
++    seq_lens: torch.Tensor, topk_blocks: int, block_size: int = 8
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Per row: its number of blocks ``ceil(seq_len / block_size)`` and the
++    length of its sparse logits row once the ``min(topk_blocks, blocks)`` kept
++    blocks are laid out back to back (the newest block possibly partial):
++    ``block_size * (kept - 1) + (seq_len - 1) % block_size + 1``. Both int32
++    ``[rows]``; a zero-length row gets 0 for both."""
++    assert seq_lens.dim() == 1 and seq_lens.is_contiguous()
++    rows = seq_lens.numel()
++    nblocks = torch.empty(rows, dtype=torch.int32, device=seq_lens.device)
++    valid = torch.empty_like(nblocks)
++    tile = 256
++    use_pdl = is_arch_support_pdl()
++    pdl_kwargs = {"launch_pdl": True} if use_pdl else {}
++    _candidate_row_lens_kernel[(triton.cdiv(rows, tile),)](
++        seq_lens,
++        nblocks,
++        valid,
++        rows,
++        topk_blocks,
++        block_size,
++        tile,
++        use_pdl,
++        num_warps=4,
++        **pdl_kwargs,
++    )
++    return nblocks, valid
+diff --git a/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py b/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..224504aa861d1c3754f08b8758205eea7357b401
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py
+@@ -0,0 +1,69 @@
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Optional
++
++import torch
++
++from sglang.kernels.jit.utils import cache_once, load_jit
++
++from .utils import make_name
++
++if TYPE_CHECKING:
++    from tvm_ffi.module import Module
++
++# sizeof(DecodingSchedMeta) / 4, fixed by FlashMLA's params.h.
++META_INTS = 8
++
++
++@cache_once
++def _jit_flashmla_sched_meta_module() -> Module:
++    return load_jit(
++        make_name("flashmla_sched_meta"),
++        cuda_files=["deepseek_v4/flashmla_sched_meta.cuh"],
++        cuda_wrappers=[("flashmla_sched_meta", "flashmla_sched_meta")],
++    )
++
++
++def flashmla_sched_meta(
++    tile_scheduler_metadata: torch.Tensor,
++    num_splits: torch.Tensor,
++    *,
++    topk_length: Optional[torch.Tensor] = None,
++    extra_topk_length: Optional[torch.Tensor] = None,
++    seqlens_k: Optional[torch.Tensor] = None,
++    block_size_n: int,
++    fixed_overhead_num_blocks: int,
++    topk: int,
++    extra_topk: int = 0,
++) -> None:
++    """Fill FlashMLA's split-KV tile-scheduler metadata in place.
++
++    Produces the schedule FlashMLA computes for itself when handed no metadata,
++    so passing the filled tensors as the cached ``tile_scheduler_metadata`` /
++    ``num_splits`` lets it skip its own kernel. The schedule has to fit in 48 KB
++    of shared memory, ``4 * (5 * batch_size + 1 + 8 * num_sm_parts)`` bytes, so
++    a few thousand requests at most.
++
++    Args:
++        tile_scheduler_metadata: ``[num_sm_parts, 8]`` int32, written.
++        num_splits: ``[batch_size + 1]`` int32, written.
++        topk_length: ``[batch_size]`` int32 per-request candidate count, or None
++            to use ``topk`` for every request.
++        extra_topk_length: the same for the extra cache, when ``extra_topk``.
++        seqlens_k: ``[batch_size]`` int32, required only for a dense schedule.
++        block_size_n: the kernel's KV block size.
++        fixed_overhead_num_blocks: the implementation's per-request overhead.
++        topk: the sparse top-k, or -1 for a dense model.
++        extra_topk: the extra cache's top-k, 0 when there is none.
++    """
++    _jit_flashmla_sched_meta_module().flashmla_sched_meta(
++        tile_scheduler_metadata,
++        num_splits,
++        topk_length,
++        extra_topk_length,
++        seqlens_k,
++        block_size_n,
++        fixed_overhead_num_blocks,
++        topk,
++        extra_topk,
++    )
+diff --git a/python/sglang/kernels/ops/attention/dsv4/indexer_postprocess.py b/python/sglang/kernels/ops/attention/dsv4/indexer_postprocess.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9983326e16e288c8fa99bc8b4e56c099a5796cf
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/indexer_postprocess.py
+@@ -0,0 +1,74 @@
++"""Filter selected indexer scores and map logical positions to KV slots."""
++
++import torch
++import triton
++import triton.language as tl
++
++
++@triton.jit
++def _filter_topk_pages(
++    SCORES,
++    INDICES,
++    PAGES,
++    OUT,
++    RAW,
++    WIDTH: tl.constexpr,
++    TOPK: tl.constexpr,
++    PAGE_SIZE: tl.constexpr,
++    SS: tl.constexpr,
++    SI: tl.constexpr,
++    SP: tl.constexpr,
++    SO: tl.constexpr,
++    SR: tl.constexpr,
++    WRITE_RAW: tl.constexpr,
++    BLOCK: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
++    index = tl.load(INDICES + row * SI + col, col < TOPK, -1).to(tl.int64)
++    in_bounds = (index >= 0) & (index < WIDTH) & (col < TOPK)
++    score = tl.load(SCORES + row * SS + index, in_bounds, -float("inf"))
++    # This comparison also rejects NaN; +inf remains a valid score.
++    valid = in_bounds & (score > -float("inf"))
++    page = tl.load(PAGES + row * SP + index // PAGE_SIZE, valid, 0)
++    slot = (page * PAGE_SIZE).to(tl.int64) + index % PAGE_SIZE
++    tl.store(OUT + row * SO + col, tl.where(valid, slot, -1), col < TOPK)
++    if WRITE_RAW:
++        tl.store(RAW + row * SR + col, tl.where(valid, index, -1), col < TOPK)
++
++
++def filter_topk_pages(
++    scores: torch.Tensor,
++    indices: torch.Tensor,
++    page_table: torch.Tensor,
++    page_indices: torch.Tensor,
++    page_size: int,
++    raw_indices: torch.Tensor | None = None,
++) -> None:
++    """Preserve top-k order, write -1 for invalid scores, and map valid slots."""
++    rows, topk = indices.shape
++    assert scores.ndim == page_table.ndim == page_indices.ndim == 2
++    assert scores.shape[0] == page_table.shape[0] == page_indices.shape[0] == rows
++    assert page_indices.shape[1] == topk and scores.shape[1] > 0
++    assert page_table.shape[1] * page_size >= scores.shape[1]
++    assert all(t.stride(1) == 1 for t in (scores, indices, page_table, page_indices))
++    if raw_indices is not None:
++        assert raw_indices.shape == indices.shape and raw_indices.stride(1) == 1
++    _filter_topk_pages[(rows, triton.cdiv(topk, 256))](
++        scores,
++        indices,
++        page_table,
++        page_indices,
++        raw_indices,
++        scores.shape[1],
++        topk,
++        page_size,
++        scores.stride(0),
++        indices.stride(0),
++        page_table.stride(0),
++        page_indices.stride(0),
++        raw_indices.stride(0) if raw_indices is not None else 0,
++        raw_indices is not None,
++        256,
++        num_warps=4,
++    )
+diff --git a/python/sglang/kernels/ops/attention/dsv4/q_rope_store.py b/python/sglang/kernels/ops/attention/dsv4/q_rope_store.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4ac682d4b6f5ffb576ef0fec314d1a63a52ce3d
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/q_rope_store.py
+@@ -0,0 +1,107 @@
++"""Rotate Q while writing the padded buffer consumed by sparse attention."""
++
++import torch
++import triton
++import triton.language as tl
++
++from sglang.kernels.jit.utils import is_arch_support_pdl
++
++
++@triton.jit
++def _q_rope_store(
++    X, Y, F, POS, SX: tl.constexpr, SY: tl.constexpr, USE_GDC: tl.constexpr = False
++):
++    row, head = tl.program_id(0), tl.program_id(1)
++    r = tl.arange(0, 512)
++    if USE_GDC:
++        tl.extra.cuda.gdc_wait()  # X is the wq_b GEMM output; POS may be in-graph
++    value = tl.load(X + row * SX + head * 512 + r).to(tl.float32)
++    partner = tl.gather(value, r ^ 1, 0)
++    position = tl.load(POS + row)
++    cos = tl.load(F + position * 64 + (r - 448) // 2 * 2, r >= 448, 0)
++    sin = tl.load(F + position * 64 + (r - 448) // 2 * 2 + 1, r >= 448, 0)
++    # Match the operation order of deepseek_rope_kernel before BF16 rounding.
++    even = tl.fma(value, cos, -partner * sin)
++    odd = tl.fma(partner, sin, value * cos)
++    rotated = tl.where((r & 1) == 0, even, odd)
++    tl.store(Y + row * SY + head * 512 + r, tl.where(r >= 448, rotated, value))
++    if USE_GDC:
++        tl.extra.cuda.gdc_launch_dependents()
++
++
++@triton.jit
++def _q_rope_store_prefill(
++    X,
++    Y,
++    F,
++    POS,
++    M,
++    H: tl.constexpr,
++    SX: tl.constexpr,
++    SY: tl.constexpr,
++    BLOCK_HEADS: tl.constexpr,
++):
++    # Keep token count dynamic to avoid compiling every prefill batch length.
++    heads = tl.program_id(0) * BLOCK_HEADS + tl.arange(0, BLOCK_HEADS)
++    row, head = heads // H, heads % H
++    r = tl.arange(0, 512)
++    # The padded output can exceed 2 GiB at the 64K prefill ceiling.
++    x_offset = row[:, None].to(tl.int64) * SX + head[:, None] * 512 + r[None, :]
++    value = tl.load(X + x_offset, row[:, None] < M, 0).to(tl.float32)
++    partner = tl.gather(value, tl.broadcast_to((r ^ 1)[None, :], (BLOCK_HEADS, 512)), 1)
++    position = tl.load(POS + row, row < M, 0)
++    freq_offset = position[:, None].to(tl.int64) * 64 + (r[None, :] - 448) // 2 * 2
++    rope_mask = (row[:, None] < M) & (r[None, :] >= 448)
++    cos = tl.load(F + freq_offset, rope_mask, 0)
++    sin = tl.load(F + freq_offset + 1, rope_mask, 0)
++    # Keep the same arithmetic and BF16 rounding as the decode kernel.
++    even = tl.fma(value, cos, -partner * sin)
++    odd = tl.fma(partner, sin, value * cos)
++    rotated = tl.where((r[None, :] & 1) == 0, even, odd)
++    y_offset = row[:, None].to(tl.int64) * SY + head[:, None] * 512 + r[None, :]
++    tl.store(
++        Y + y_offset,
++        tl.where(r[None, :] >= 448, rotated, value),
++        row[:, None] < M,
++    )
++
++
++def q_rope_store(
++    q: torch.Tensor,
++    output: torch.Tensor,
++    freqs_cis: torch.Tensor,
++    positions: torch.Tensor,
++) -> None:
++    """Apply 64-wide forward RoPE to 512-wide heads without changing Q padding."""
++    assert q.shape == output.shape and q.ndim == 3 and q.shape[2] == 512
++    assert q.dtype == output.dtype == torch.bfloat16
++    assert q.stride(2) == output.stride(2) == 1
++    assert q.stride(1) == output.stride(1) == 512
++    assert freqs_cis.dtype == torch.complex64 and freqs_cis.is_contiguous()
++    assert freqs_cis.shape[1] == 32 and positions.shape == (q.shape[0],)
++    assert positions.dtype in (torch.int32, torch.int64) and positions.is_contiguous()
++    if q.shape[0] >= 4096 and q.shape[1] == 16:
++        _q_rope_store_prefill[(triton.cdiv(q.shape[0] * q.shape[1], 4),)](
++            q,
++            output,
++            torch.view_as_real(freqs_cis),
++            positions,
++            q.shape[0],
++            q.shape[1],
++            q.stride(0),
++            output.stride(0),
++            BLOCK_HEADS=4,
++            num_warps=4,
++        )
++        return
++    pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
++    _q_rope_store[(q.shape[0], q.shape[1])](
++        q,
++        output,
++        torch.view_as_real(freqs_cis),
++        positions,
++        q.stride(0),
++        output.stride(0),
++        num_warps=4,
++        **pdl_kwargs,
++    )
+diff --git a/python/sglang/kernels/ops/attention/dsv4/wo_a_bf16.py b/python/sglang/kernels/ops/attention/dsv4/wo_a_bf16.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d3ce9968dae1428136039a1b5fe952539e3b45c6
+--- /dev/null
++++ b/python/sglang/kernels/ops/attention/dsv4/wo_a_bf16.py
+@@ -0,0 +1,138 @@
++"""Grouped BF16 WO-A projections for decode: a single-token GEMV, a split-K
++small-batch GEMM, and the small-batch variant with a fused MXFP8 epilogue."""
++
++import torch
++import triton
++import triton.language as tl
++
++from sglang.kernels.ops.layernorm.mxfp8_epilogue import ue8m0_scale
++
++
++@triton.jit
++def _wo_a_bf16_gemv_kernel(X, W, Y, R: tl.constexpr, D: tl.constexpr, BN: tl.constexpr):
++    group = tl.program_id(1)
++    rows = tl.program_id(0) * BN + tl.arange(0, BN)
++    columns = tl.arange(0, D)
++    x = tl.load(X + group * D + columns).to(tl.float32)
++    w = tl.load(
++        W + (group * R + rows[:, None]) * D + columns[None, :],
++        rows[:, None] < R,
++        0,
++    ).to(tl.float32)
++    result = tl.sum(w * x[None, :], axis=1)
++    tl.store(Y + group * R + rows, result, rows < R)
++
++
++def wo_a_bf16_gemv(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
++    """Compute ``einsum('tgd,grd->tgr', x, weight)`` for one token."""
++    assert x.shape[0] == 1 and x.ndim == weight.ndim == 3
++    assert x.dtype == weight.dtype == torch.bfloat16
++    assert x.is_cuda and x.device == weight.device
++    assert x.is_contiguous() and weight.is_contiguous()
++    groups, rows, dim = weight.shape
++    assert x.shape[1:] == (groups, dim) and dim == triton.next_power_of_2(dim)
++    result = torch.empty((1, groups, rows), dtype=x.dtype, device=x.device)
++    # One output row per CTA keeps register use low and exposes enough
++    # independent weight loads for single-token decode.
++    _wo_a_bf16_gemv_kernel[(rows, groups)](
++        x,
++        weight,
++        result,
++        rows,
++        dim,
++        1,
++        num_warps=4,
++        enable_fp_fusion=False,
++    )
++    return result
++
++
++@triton.jit
++def _wo_a_partial(X, W, P, M: tl.constexpr, SX: tl.constexpr):
++    tile, group, split = tl.program_id(0), tl.program_id(1), tl.program_id(2)
++    m = tl.arange(0, 16)
++    n = tile * 64 + tl.arange(0, 64)
++    k = split * 512 + tl.arange(0, 128)
++    acc = tl.zeros((16, 64), tl.float32)
++    for i in range(4):
++        offsets = k + i * 128
++        x = tl.load(
++            X + m[:, None] * SX + group * 4096 + offsets[None, :], m[:, None] < M, 0
++        )
++        w = tl.load(W + (group * 1024 + n[None, :]) * 4096 + offsets[:, None])
++        acc += tl.dot(x, w)
++    tl.store(
++        P + ((split * M + m[:, None]) * 2 + group) * 1024 + n[None, :],
++        acc,
++        m[:, None] < M,
++    )
++
++
++@triton.jit
++def _wo_a_reduce(P, Y, E: tl.constexpr):
++    i = tl.program_id(0) * 256 + tl.arange(0, 256)
++    split = tl.arange(0, 8)
++    values = tl.load(P + split[:, None] * E + i[None, :], i[None, :] < E, 0)
++    tl.store(Y + i, tl.sum(values, 0), i < E)
++
++
++def wo_a_bf16_small_batch(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
++    """Compute ``einsum('tgd,grd->tgr', x, weight)`` for the TP4 WO-A shape.
++    Partial sums stay in FP32 until the final BF16, token-major store."""
++    m = x.shape[0]
++    assert 2 <= m <= 8 and x.shape[1:] == (2, 4096)
++    assert weight.shape == (2, 1024, 4096) and weight.is_contiguous()
++    assert x.dtype == weight.dtype == torch.bfloat16
++    assert x.is_cuda and x.device == weight.device
++    assert x.stride(2) == 1 and x.stride(1) == 4096 and x.stride(0) >= 8192
++    result = torch.empty((m, 2, 1024), dtype=x.dtype, device=x.device)
++    partial = torch.empty((8, m, 2, 1024), dtype=torch.float32, device=x.device)
++    _wo_a_partial[(16, 2, 8)](
++        x, weight, partial, m, x.stride(0), num_warps=4, num_stages=3
++    )
++    _wo_a_reduce[(triton.cdiv(m * 2048, 256),)](partial, result, m * 2048, num_warps=4)
++    return result
++
++
++@triton.jit
++def _wo_a_reduce_quant(P, Q, S, M: tl.constexpr):
++    row, tile = tl.program_id(0), tl.program_id(1)
++    i = tile * 256 + tl.arange(0, 256)
++    split = tl.arange(0, 8)
++    v = tl.load(P + split[:, None] * (M * 2048) + row * 2048 + i[None, :])
++    y = tl.sum(v, 0).to(tl.bfloat16).to(tl.float32).reshape((8, 32))
++    amax = tl.max(tl.abs(y), 1)
++    sf, inv = ue8m0_scale(amax)
++    quant = tl.minimum(tl.maximum(y * inv[:, None], -448.0), 448.0).to(tl.float8e4nv)
++    tl.store(Q + row * 2048 + i, quant.reshape((256,)))
++    col = tile * 8 + tl.arange(0, 8)
++    off = (col // 4) * 512 + row * 16 + col % 4
++    tl.store(S + off, sf.to(tl.uint8))
++    # Zero only padding rows; valid scale bytes have disjoint writers above.
++    for z in tl.static_range(triton.cdiv(8192, M * 8 * 256)):
++        s = (row * 8 + tile) * 256 + tl.arange(0, 256) + z * (M * 8 * 256)
++        sr = (s % 512) // 16 + ((s % 16) // 4) * 32
++        tl.store(S + s, 0, (s < 8192) & (sr >= M))
++
++
++def _quantize_partial(p):
++    m = p.shape[1]
++    q = torch.empty((m, 2048), device=p.device, dtype=torch.float8_e4m3fn)
++    s = torch.empty(8192, device=p.device, dtype=torch.uint8)
++    _wo_a_reduce_quant[(m, 8)](p, q, s, m, num_warps=4)
++    return q, s
++
++
++def wo_a_bf16_small_batch_mxfp8(x: torch.Tensor, weight: torch.Tensor):
++    """WO-A with BF16 rounding followed by FlashInfer-compatible MXFP8 quantization."""
++    m = x.shape[0]
++    assert 2 <= m <= 8 and x.shape[1:] == (2, 4096)
++    assert x.dtype == weight.dtype == torch.bfloat16
++    assert weight.shape == (2, 1024, 4096) and weight.is_contiguous()
++    assert x.is_cuda and x.device == weight.device
++    assert x.stride(2) == 1 and x.stride(1) == 4096 and x.stride(0) >= 8192
++    partial = torch.empty((8, m, 2, 1024), dtype=torch.float32, device=x.device)
++    _wo_a_partial[(16, 2, 8)](
++        x, weight, partial, m, x.stride(0), num_warps=4, num_stages=3
++    )
++    return _quantize_partial(partial)
+diff --git a/python/sglang/kernels/ops/embeddings/__init__.py b/python/sglang/kernels/ops/embeddings/__init__.py
+index 103d8a705b10d6556fabd6f2ac5ac78cfb15d82b..d318222ccb9a4810e1adf7080b58a2e347e479fb 100644
+--- a/python/sglang/kernels/ops/embeddings/__init__.py
++++ b/python/sglang/kernels/ops/embeddings/__init__.py
+@@ -14,4 +14,44 @@ register_kernel(
+     )
+ )
+ 
++register_kernel(
++    KernelSpec(
++        op="embeddings.engram_gather",
++        backend=KernelBackend.TRITON,
++        target="sglang.kernels.ops.embeddings.engram_gather:engram_gather",
++    )
++)
++
++register_kernel(
++    KernelSpec(
++        op="embeddings.engram_hash_ids",
++        backend=KernelBackend.TRITON,
++        target="sglang.kernels.ops.embeddings.engram_hash:engram_hash_ids",
++    )
++)
++
++register_kernel(
++    KernelSpec(
++        op="embeddings.engram_hash_ids_and_commit",
++        backend=KernelBackend.TRITON,
++        target="sglang.kernels.ops.embeddings.engram_hash:engram_hash_ids_and_commit",
++    )
++)
++
++register_kernel(
++    KernelSpec(
++        op="embeddings.engram_commit_history",
++        backend=KernelBackend.TRITON,
++        target="sglang.kernels.ops.embeddings.engram_hash:engram_commit_history",
++    )
++)
++
++register_kernel(
++    KernelSpec(
++        op="embeddings.fused_engram_gate",
++        backend=KernelBackend.TRITON,
++        target="sglang.kernels.ops.embeddings.engram_gate:fused_engram_gate",
++    )
++)
++
+ __all__ = []
+diff --git a/python/sglang/kernels/ops/embeddings/engram_gate.py b/python/sglang/kernels/ops/embeddings/engram_gate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..994c5b7b7af5ec235ed1a46544e79928885be38a
+--- /dev/null
++++ b/python/sglang/kernels/ops/embeddings/engram_gate.py
+@@ -0,0 +1,76 @@
++"""Fused FP32 Engram gate with a single final cast to the activation dtype."""
++
++import torch
++import triton
++import triton.language as tl
++from triton.language.extra import libdevice
++
++
++@triton.jit
++def _engram_gate_kernel(
++    X,
++    KV,
++    QW,
++    KW,
++    O,
++    D: tl.constexpr,
++    HC: tl.constexpr,
++    EPS: tl.constexpr,
++    CLAMP: tl.constexpr,
++    B: tl.constexpr,
++):
++    row = tl.program_id(0)
++    token = row // HC
++    hc = row % HC
++    col = tl.arange(0, B)
++    mask = col < D
++    x = tl.load(X + row * D + col, mask, 0).to(tl.float32)
++    key = tl.load(KV + token * (HC + 1) * D + hc * D + col, mask, 0).to(tl.float32)
++    q_weight = tl.load(QW + hc * D + col, mask, 0).to(tl.float32)
++    k_weight = tl.load(KW + hc * D + col, mask, 0).to(tl.float32)
++    weight = q_weight * k_weight
++    rstd = tl.rsqrt(tl.sum(x * x, 0) / D + EPS) * tl.rsqrt(
++        tl.sum(key * key, 0) / D + EPS
++    )
++    dot = tl.sum((x * weight) * key, 0) * rstd * (D**-0.5)
++    gate = tl.sigmoid(libdevice.copysign(tl.sqrt(tl.maximum(tl.abs(dot), CLAMP)), dot))
++    value = tl.load(KV + token * (HC + 1) * D + HC * D + col, mask, 0).to(tl.float32)
++    tl.store(O + row * D + col, x + gate * value, mask)
++
++
++def fused_engram_gate(
++    x: torch.Tensor,
++    kv: torch.Tensor,
++    q_weight: torch.Tensor,
++    k_weight: torch.Tensor,
++    eps: float,
++    clamp_value: float,
++) -> torch.Tensor:
++    assert x.ndim == 3 and kv.ndim == 2
++    t, hc, d = x.shape
++    assert kv.shape == (t, (hc + 1) * d)
++    assert q_weight.shape == k_weight.shape == (hc, d)
++    assert all(
++        a.is_cuda and a.is_contiguous() and a.device == x.device
++        for a in (x, kv, q_weight, k_weight)
++    )
++    assert all(
++        a.dtype in (torch.bfloat16, torch.float32) for a in (x, kv, q_weight, k_weight)
++    )
++    out = torch.empty_like(x)
++    if t:
++        _engram_gate_kernel[(t * hc,)](
++            x,
++            kv,
++            q_weight,
++            k_weight,
++            out,
++            d,
++            hc,
++            eps,
++            clamp_value,
++            triton.next_power_of_2(d),
++            num_warps=4,
++            enable_fp_fusion=False,
++        )
++    return out
+diff --git a/python/sglang/kernels/ops/embeddings/engram_gather.py b/python/sglang/kernels/ops/embeddings/engram_gather.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..82c6d491419d6e6c9f8c7ecb880f09c88daf9986
+--- /dev/null
++++ b/python/sglang/kernels/ops/embeddings/engram_gather.py
+@@ -0,0 +1,85 @@
++"""Triton gather of DeepSeek-V4.1 engram rows: fp8 e4m3 payload, e8m0 block scales.
++
++The table pointers arrive as raw addresses so one kernel serves a device table, a
++pinned host table, or (on Grace-Blackwell, through ATS) a plain host mapping. The
++output is bf16 computed as fp32(row) * 2**(exp - 127) then rounded once, which is
++the arithmetic of the torch lookup it replaces.
++"""
++
++import torch
++import triton
++import triton.language as tl
++
++# e8m0 has no zero: the exponent byte 0 encodes 2**-127.
++_E8M0_ZERO = 2.0**-127
++
++
++@triton.jit
++def _engram_gather_kernel(
++    w_ptr,
++    s_ptr,
++    ids_ptr,
++    out_ptr,
++    row_lo,
++    row_hi,
++    DIM: tl.constexpr,
++    BLK: tl.constexpr,
++    E8M0_ZERO: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    idx = tl.load(ids_ptr + row).to(tl.int64)
++    # The table holds rows [row_lo, row_hi); an id outside it is not read and
++    # comes out as zeros, which is what the sharded all-reduce sums.
++    owned = (idx >= row_lo) & (idx < row_hi)
++    local = tl.where(owned, idx - row_lo, 0)
++    w = w_ptr.to(tl.int64).to(tl.pointer_type(tl.float8e4nv))
++    s = s_ptr.to(tl.int64).to(tl.pointer_type(tl.uint8))
++    offs = tl.arange(0, DIM)
++    vals = tl.load(w + local * DIM + offs, mask=owned, other=0.0).to(tl.float32)
++    exps = tl.load(s + local * (DIM // BLK) + offs // BLK, mask=owned, other=0).to(
++        tl.int32
++    )
++    # 2**(e - 127) from the exponent bits: exact, no exp2 rounding or denormal flush.
++    scale = (exps << 23).to(tl.float32, bitcast=True)
++    scale = tl.where(exps == 0, E8M0_ZERO, scale)
++    out = tl.where(owned, vals * scale, 0.0)
++    tl.store(out_ptr + row * DIM + offs, out.to(tl.bfloat16))
++
++
++def engram_gather(
++    weight_ptr: int,
++    scale_ptr: int,
++    ids: torch.Tensor,
++    out: torch.Tensor,
++    dim: int,
++    block_size: int,
++    row_lo: int = 0,
++    row_hi: int = 2**62,
++) -> torch.Tensor:
++    """Gather rows ``ids`` ([N] int) into ``out`` ([N, dim] bf16, contiguous).
++
++    ``weight_ptr`` addresses [rows, dim] fp8 e4m3 bytes and ``scale_ptr``
++    [rows, dim // block_size] e8m0 bytes for global rows [row_lo, row_hi); both
++    may live in device or host memory. Ids outside the range produce zero rows.
++    """
++    assert dim > 0 and dim & (dim - 1) == 0 and block_size > 0, (dim, block_size)
++    assert dim % block_size == 0, (dim, block_size)
++    assert (
++        ids.is_cuda and ids.is_contiguous() and ids.dtype in (torch.int32, torch.int64)
++    )
++    assert out.is_contiguous() and out.dtype == torch.bfloat16
++    assert out.device == ids.device and out.shape == (ids.numel(), dim), out.shape
++    n = ids.numel()
++    if n:
++        _engram_gather_kernel[(n,)](
++            weight_ptr,
++            scale_ptr,
++            ids,
++            out,
++            row_lo,
++            row_hi,
++            DIM=dim,
++            BLK=block_size,
++            E8M0_ZERO=_E8M0_ZERO,
++        )
++    return out
+diff --git a/python/sglang/kernels/ops/embeddings/engram_hash.py b/python/sglang/kernels/ops/embeddings/engram_hash.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8e49e5f5c9b59f6b6daa37ee99ff7bd42dc81e9
+--- /dev/null
++++ b/python/sglang/kernels/ops/embeddings/engram_hash.py
+@@ -0,0 +1,363 @@
++"""Triton n-gram hash ids for the DeepSeek-V4.1 engram, one launch per forward.
++
++Each token t needs its n predecessors: shift 0 is the token itself, shift s an
++earlier token of the same request. Shifts that reach past the request's first token
++of this forward come from a per-request history row (oldest first). A shift that runs
++off the sequence start, or (with vision) reaches an image token, is PAD, and so is
++every older shift. The compressed ids are multiplied per (layer, shift), XOR-folded
++one shift at a time and bucketed by that n-gram size's per-head primes.
++
++The arithmetic must remain bit-identical to EngramHasher's torch path
++in sglang.srt.layers.engram.
++"""
++
++from typing import Optional
++
++import torch
++import triton
++import triton.language as tl
++
++MODE_DECODE = 0
++MODE_VERIFY = 1
++MODE_EXTEND = 2
++
++
++@triton.jit
++def _engram_commit_history_kernel(
++    history_ptr,
++    tokens_ptr,
++    slots_ptr,
++    commit_ptr,
++    HISTORY_STRIDE: tl.constexpr,
++    HISTORY_WIDTH: tl.constexpr,
++    TOKEN_STRIDE: tl.constexpr,
++    BLOCK: tl.constexpr,
++):
++    row = tl.program_id(0)
++    slot = tl.load(slots_ptr + row).to(tl.int64)
++    commit = tl.load(commit_ptr + row)
++    col = tl.arange(0, BLOCK)
++    source_col = commit + col
++    valid = col < HISTORY_WIDTH
++    old = tl.load(
++        history_ptr + slot * HISTORY_STRIDE + source_col,
++        mask=valid & (source_col < HISTORY_WIDTH),
++        other=0,
++    )
++    new = tl.load(
++        tokens_ptr + row * TOKEN_STRIDE + source_col - HISTORY_WIDTH,
++        mask=valid & (source_col >= HISTORY_WIDTH),
++        other=0,
++    )
++    values = tl.where(source_col < HISTORY_WIDTH, old, new)
++    # Every lane must finish reading the old row before any lane overwrites it.
++    tl.debug_barrier()
++    tl.store(history_ptr + slot * HISTORY_STRIDE + col, values, mask=valid)
++
++
++def engram_commit_history(
++    history: torch.Tensor,
++    verify_ids: torch.Tensor,
++    req_slots: torch.Tensor,
++    commit_lens: torch.Tensor,
++) -> None:
++    """Update distinct live request slots with anchor + correct drafts, not bonus."""
++    bs = req_slots.numel()
++    width = history.shape[1]
++    if bs == 0 or width == 0:
++        return
++    assert history.stride(1) == 1 and verify_ids.stride(1) == 1
++    assert req_slots.stride(0) == 1 and commit_lens.stride(0) == 1
++    _engram_commit_history_kernel[(bs,)](
++        history,
++        verify_ids,
++        req_slots,
++        commit_lens,
++        HISTORY_STRIDE=history.stride(0),
++        HISTORY_WIDTH=width,
++        TOKEN_STRIDE=verify_ids.stride(0),
++        BLOCK=triton.next_power_of_2(width),
++        num_warps=4,
++    )
++
++
++@triton.jit
++def _engram_hash_kernel(
++    ids_ptr,
++    pos_ptr,
++    row_ptr,
++    starts_ptr,
++    slots_ptr,
++    hist_ptr,
++    token_map_ptr,
++    mult_ptr,
++    primes_ptr,
++    offsets_ptr,
++    out_loc_ptr,
++    tokens_out_ptr,
++    out_ptr,
++    num_tokens,
++    num_real,
++    pad_id,
++    image_token_id,
++    mm_pad_shift,
++    MODE: tl.constexpr,
++    BLOCK: tl.constexpr,
++    HIST_VIA_SLOTS: tl.constexpr,
++    HAS_IMAGE: tl.constexpr,
++    COMMIT: tl.constexpr,
++    WRITE_TOKENS: tl.constexpr,
++    N: tl.constexpr,
++    L: tl.constexpr,
++    H: tl.constexpr,
++    BLOCK_T: tl.constexpr,
++):
++    COLS: tl.constexpr = (N - 1) * H
++    t = tl.program_id(0) * BLOCK_T + tl.arange(0, BLOCK_T)
++    tmask = t < num_tokens
++    real = t < num_real
++    # Request row r and the token's offset inside its run for this forward.
++    if MODE == 0:
++        r = t.to(tl.int64)
++        off = t * 0
++    elif MODE == 1:
++        r = (t // BLOCK).to(tl.int64)
++        off = t - (t // BLOCK) * BLOCK
++    else:
++        r = tl.load(row_ptr + t, mask=real, other=0).to(tl.int64)
++        off = t - tl.load(starts_ptr + r, mask=real, other=0).to(tl.int32)
++    if HIST_VIA_SLOTS:
++        hrow = tl.load(slots_ptr + r, mask=real, other=0).to(tl.int64)
++    else:
++        hrow = r
++    pos = tl.load(pos_ptr + t, mask=tmask, other=0).to(tl.int32)
++
++    t2 = t[:, None]
++    s = tl.arange(0, N)[None, :]
++    tmask2 = tmask[:, None] & (s >= 0)
++    real2 = real[:, None] & (s >= 0)
++    off2 = off[:, None]
++    # Predecessor at shift s: an earlier token of the same run when s <= off, else
++    # history[row, n - 2 - (s - off - 1)]; the history is oldest first.
++    from_batch = tl.load(ids_ptr + tl.maximum(t2 - s, 0), mask=tmask2, other=0).to(
++        tl.int64
++    )
++    hcol = tl.minimum(tl.maximum(N - 2 - (s - off2 - 1), 0), N - 2)
++    from_hist = tl.load(
++        hist_ptr + hrow[:, None] * (N - 1) + hcol, mask=tmask2, other=0
++    ).to(tl.int64)
++    tok = tl.where(s <= off2, from_batch, from_hist)
++    tok = tl.where(real2, tok, 0)
++    blk = (pos[:, None] < s) | (real2 == 0)
++    if HAS_IMAGE:
++        # Scheduler-provided history still carries the multimodal pad ids.
++        tok = tl.where(tok >= mm_pad_shift, image_token_id, tok)
++        blk = blk | (tok == image_token_id)
++    # Once a shift is blocked every older shift is too (cummax along s).
++    blocked = tl.cumsum(blk.to(tl.int32), axis=1) > 0
++    if WRITE_TOKENS:
++        tl.store(tokens_out_ptr + t2 * N + s, tok.to(tl.int32), mask=tmask2)
++    if COMMIT:
++        # Decode: the token and its n - 2 newest predecessors become the request's
++        # history, oldest first. Graph-padded rows (out_cache_loc 0) write nothing.
++        live = tl.load(out_loc_ptr + t, mask=real, other=0) != 0
++        cmask = real2 & live[:, None] & (s <= N - 2)
++        tl.store(
++            hist_ptr + hrow[:, None] * (N - 1) + (N - 2 - s),
++            tok.to(tl.int32),
++            mask=cmask,
++        )
++    mapped = tl.load(token_map_ptr + tok, mask=tmask2, other=0).to(tl.int64)
++    comp = tl.where(blocked, pad_id, mapped)
++
++    h = tl.arange(0, H)[None, :]
++    omask = tmask[:, None] & (h >= 0)
++    for l in tl.static_range(L):
++        mult = tl.load(mult_ptr + l * N + s)
++        prod = comp * mult
++        for i in tl.static_range(1, N):
++            # (i + 1)-gram hash: XOR of the first i + 1 shifts' products.
++            rolling = tl.xor_sum(tl.where(s <= i, prod, 0), axis=1)
++            primes = tl.load(primes_ptr + l * COLS + (i - 1) * H + h)
++            offsets = tl.load(offsets_ptr + l * COLS + (i - 1) * H + h)
++            val = rolling[:, None] % primes + offsets
++            tl.store(
++                out_ptr + t2 * (L * COLS) + l * COLS + (i - 1) * H + h, val, mask=omask
++            )
++
++
++def _launch_hash_kernel(
++    input_ids: torch.Tensor,
++    positions: torch.Tensor,
++    *,
++    mode: int,
++    history: torch.Tensor,
++    token_map: torch.Tensor,
++    multipliers: torch.Tensor,
++    primes: torch.Tensor,
++    offsets: torch.Tensor,
++    pad_id: int,
++    num_real: Optional[int],
++    req_slots: Optional[torch.Tensor],
++    block: int,
++    row: Optional[torch.Tensor],
++    starts: Optional[torch.Tensor],
++    image_token_id: Optional[int],
++    mm_pad_shift: int,
++    out_cache_loc: Optional[torch.Tensor],
++    write_tokens: bool,
++    block_t: int,
++) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
++    num_tokens = input_ids.shape[0]
++    L, N = multipliers.shape
++    H = primes.shape[-1]
++    assert N & (N - 1) == 0 and H & (H - 1) == 0, (N, H)
++    assert primes.shape == (L, N - 1, H) and offsets.shape == (L, (N - 1) * H)
++    assert history.dim() == 2 and history.shape[1] == N - 1, history.shape
++    if mode == MODE_EXTEND:
++        assert row is not None and starts is not None
++    if out_cache_loc is not None:
++        assert mode == MODE_DECODE and req_slots is not None, "commit is decode-only"
++        assert out_cache_loc.shape[0] == num_tokens, out_cache_loc.shape
++    if num_real is None:
++        num_real = num_tokens
++    device = input_ids.device
++    out = torch.empty(num_tokens, L, (N - 1) * H, dtype=torch.int64, device=device)
++    tokens = (
++        torch.empty(num_tokens, N, dtype=torch.int32, device=device)
++        if write_tokens
++        else None
++    )
++    if num_tokens == 0:
++        return out, tokens
++    dummy = out  # unused pointer slots; never dereferenced under their constexprs
++    _engram_hash_kernel[(triton.cdiv(num_tokens, block_t),)](
++        input_ids,
++        positions,
++        row if row is not None else dummy,
++        starts if starts is not None else dummy,
++        req_slots if req_slots is not None else dummy,
++        history,
++        token_map,
++        multipliers,
++        primes,
++        offsets,
++        out_cache_loc if out_cache_loc is not None else dummy,
++        tokens if tokens is not None else dummy,
++        out,
++        num_tokens,
++        num_real,
++        pad_id,
++        image_token_id if image_token_id is not None else -1,
++        mm_pad_shift,
++        MODE=mode,
++        BLOCK=block,
++        HIST_VIA_SLOTS=req_slots is not None,
++        HAS_IMAGE=image_token_id is not None,
++        COMMIT=out_cache_loc is not None,
++        WRITE_TOKENS=write_tokens,
++        N=N,
++        L=L,
++        H=H,
++        BLOCK_T=block_t,
++        num_warps=4,
++    )
++    return out, tokens
++
++
++def engram_hash_ids(
++    input_ids: torch.Tensor,
++    positions: torch.Tensor,
++    *,
++    mode: int,
++    history: torch.Tensor,
++    token_map: torch.Tensor,
++    multipliers: torch.Tensor,
++    primes: torch.Tensor,
++    offsets: torch.Tensor,
++    pad_id: int,
++    num_real: Optional[int] = None,
++    req_slots: Optional[torch.Tensor] = None,
++    block: int = 1,
++    row: Optional[torch.Tensor] = None,
++    starts: Optional[torch.Tensor] = None,
++    image_token_id: Optional[int] = None,
++    mm_pad_shift: int = 0,
++    block_t: int = 32,
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Hash ids [T, L, (n - 1) * heads] int64 and the predecessor table [T, n] int32.
++    Reads ``history`` and never writes it.
++
++    ``mode``: MODE_DECODE (row = t, offset 0), MODE_VERIFY (row = t // block),
++    MODE_EXTEND (``row`` [num_real] and ``starts`` [bs] give each token's request and
++    the run's first token). ``history`` is [rows, n - 1] oldest first; with
++    ``req_slots`` given it is indexed by ``req_slots[row]``, else by ``row``.
++    Tokens at or past ``num_real`` are padding: PAD ids, zero predecessors.
++    """
++    out, tokens = _launch_hash_kernel(
++        input_ids,
++        positions,
++        mode=mode,
++        history=history,
++        token_map=token_map,
++        multipliers=multipliers,
++        primes=primes,
++        offsets=offsets,
++        pad_id=pad_id,
++        num_real=num_real,
++        req_slots=req_slots,
++        block=block,
++        row=row,
++        starts=starts,
++        image_token_id=image_token_id,
++        mm_pad_shift=mm_pad_shift,
++        out_cache_loc=None,
++        write_tokens=True,
++        block_t=block_t,
++    )
++    return out, tokens
++
++
++def engram_hash_ids_and_commit(
++    input_ids: torch.Tensor,
++    positions: torch.Tensor,
++    *,
++    history: torch.Tensor,
++    req_slots: torch.Tensor,
++    out_cache_loc: torch.Tensor,
++    token_map: torch.Tensor,
++    multipliers: torch.Tensor,
++    primes: torch.Tensor,
++    offsets: torch.Tensor,
++    pad_id: int,
++    image_token_id: Optional[int] = None,
++    mm_pad_shift: int = 0,
++    block_t: int = 32,
++) -> torch.Tensor:
++    """One decode step: hash ids [T, L, (n - 1) * heads] for the T = bs tokens, and
++    ``history[req_slots[t]]`` advanced in place to the token and its n - 2 newest
++    predecessors (oldest first). Rows whose ``out_cache_loc`` is 0 are CUDA-graph
++    padding and leave the table untouched.
++    """
++    out, _ = _launch_hash_kernel(
++        input_ids,
++        positions,
++        mode=MODE_DECODE,
++        history=history,
++        token_map=token_map,
++        multipliers=multipliers,
++        primes=primes,
++        offsets=offsets,
++        pad_id=pad_id,
++        num_real=None,
++        req_slots=req_slots,
++        block=1,
++        row=None,
++        starts=None,
++        image_token_id=image_token_id,
++        mm_pad_shift=mm_pad_shift,
++        out_cache_loc=out_cache_loc,
++        write_tokens=False,
++        block_t=block_t,
++    )
++    return out
+diff --git a/python/sglang/kernels/ops/gemm/__init__.py b/python/sglang/kernels/ops/gemm/__init__.py
+index 4e66ef727cb1aec58ce244c425e2443f5e3f791e..f8b6187ee08498be1787fb86ea7705fcd9cf4777 100644
+--- a/python/sglang/kernels/ops/gemm/__init__.py
++++ b/python/sglang/kernels/ops/gemm/__init__.py
+@@ -215,6 +215,32 @@ register_kernel(
+         description="Tiny bf16 GEMM (sglang.kernels.jit, JIT-only).",
+     )
+ )
++register_kernel(
++    KernelSpec(
++        op="gemm.n128k512",
++        backend=KernelBackend.JIT,
++        target="sglang.kernels.ops.gemm.small_gemm_bf16:n128k512_gemm_bf16",
++        capabilities=_CUDA,
++        format_signature=FormatSignature(
++            supported_dtypes=("bfloat16",),
++            description="[m, 512] @ [128, 512].T for decode batches m <= 32",
++        ),
++        description="bf16 GEMM specialised for N = 128, K = 512 (sglang.kernels.jit, JIT-only).",
++    )
++)
++register_kernel(
++    KernelSpec(
++        op="gemm.n32k5120",
++        backend=KernelBackend.JIT,
++        target="sglang.kernels.ops.gemm.small_gemm_bf16:n32k5120_gemm_bf16",
++        capabilities=_CUDA,
++        format_signature=FormatSignature(
++            supported_dtypes=("bfloat16",),
++            description="[m, 5120] @ [32, 5120].T for decode batches m <= 32",
++        ),
++        description="bf16 GEMM specialised for N = 32, K = 5120 (sglang.kernels.jit, JIT-only).",
++    )
++)
+ register_kernel(
+     KernelSpec(
+         op="gemm.qwen3x_nvfp4",
+@@ -298,6 +324,26 @@ def tiny_gemm_bf16(
+     return impl(x, w, out, out_dtype=out_dtype, max_m=max_m)
+ 
+ 
++def n128k512_gemm_bf16(
++    x: torch.Tensor,
++    w: torch.Tensor,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """bf16 GEMM ``x[m, 512] @ w[128, 512].T`` for decode batches (m <= 32)."""
++    impl = get_kernel("gemm.n128k512", KernelBackend.JIT)
++    return impl(x, w, out)
++
++
++def n32k5120_gemm_bf16(
++    x: torch.Tensor,
++    w: torch.Tensor,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """bf16 GEMM ``x[m, 5120] @ w[32, 5120].T`` for decode batches (m <= 32)."""
++    impl = get_kernel("gemm.n32k5120", KernelBackend.JIT)
++    return impl(x, w, out)
++
++
+ def try_qwen3x_nvfp4_gemm(
+     input: torch.Tensor,
+     weight: torch.Tensor,
+@@ -335,6 +381,8 @@ __all__ = [
+     "bmm_fp8",
+     "dsv3_fused_a_gemm",
+     "fp8_scaled_mm",
++    "n128k512_gemm_bf16",
++    "n32k5120_gemm_bf16",
+     "tiny_gemm_bf16",
+     "try_qwen3x_nvfp4_gemm",
+     "try_sm120_fp8_linear",
+diff --git a/python/sglang/kernels/ops/gemm/small_gemm_bf16.py b/python/sglang/kernels/ops/gemm/small_gemm_bf16.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c873842de7548cacbe5121580a0349cd8e75f284
+--- /dev/null
++++ b/python/sglang/kernels/ops/gemm/small_gemm_bf16.py
+@@ -0,0 +1,123 @@
++"""Decode-batch bf16 GEMMs for two fixed shapes: ``x[m, 512] @ w[128, 512].T`` and
++``x[m, 5120] @ w[32, 5120].T``.
++
++Shares dot_product_vec's reduction order with tiny_gemm_bf16 for bitwise parity;
++a row's result does not depend on the batch composition.
++"""
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Optional
++
++import torch
++
++from sglang.kernels.jit.utils import (
++    cache_once,
++    get_jit_cuda_arch,
++    is_arch_support_pdl,
++    is_hip_runtime,
++    load_jit,
++    make_cpp_args,
++)
++from sglang.kernels.kernel_api_logging import debug_kernel_api
++from sglang.srt.utils.custom_op import register_custom_op
++
++if TYPE_CHECKING:
++    from tvm_ffi.module import Module
++
++# Decode batches only: above this the caller keeps the general GEMM. The kernels
++# accept any m (rows are split over blockIdx.y), this is a policy cap.
++MAX_M: int = 32
++
++
++@cache_once
++def _jit_small_gemm_module(trait: str) -> Module:
++    args = make_cpp_args(is_arch_support_pdl())
++    return load_jit(
++        f"small_gemm_bf16_{trait}",
++        *args,
++        cuda_files=["gemm/small_gemm_bf16.cuh"],
++        cuda_wrappers=[("run", f"SmallGemmKernel<{trait}, {args}>::run")],
++        extra_cuda_cflags=["-O3"],
++    )
++
++
++@register_custom_op(op_name="n128k512_gemm_bf16", mutates_args=["out"])
++def _n128k512_gemm_custom_op(
++    x: torch.Tensor, w: torch.Tensor, out: torch.Tensor
++) -> None:
++    _jit_small_gemm_module("N128K512Trait").run(x, w, out)
++
++
++@register_custom_op(op_name="n32k5120_gemm_bf16", mutates_args=["out"])
++def _n32k5120_gemm_custom_op(
++    x: torch.Tensor, w: torch.Tensor, out: torch.Tensor
++) -> None:
++    _jit_small_gemm_module("N32K5120Trait").run(x, w, out)
++
++
++@cache_once
++def _arch_supported() -> bool:
++    return not is_hip_runtime() and get_jit_cuda_arch().major >= 9
++
++
++def can_use_n128k512_gemm(n: int, k: int, m: int, max_m: int = MAX_M) -> bool:
++    """Whether :func:`n128k512_gemm_bf16` serves ``[m, k] @ [n, k].T``.
++    Callers fall back to a general GEMM when this is False."""
++    return n == 128 and k == 512 and 1 <= m <= max_m and _arch_supported()
++
++
++@debug_kernel_api
++def n128k512_gemm_bf16(
++    x: torch.Tensor,
++    w: torch.Tensor,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """Equal to ``torch.nn.functional.linear(x, w)`` for ``w`` of shape [128, 512].
++
++    Call :func:`can_use_n128k512_gemm` first: other shapes raise rather than fall
++    back. ``x`` may be a row-sliced view (``x.stride(1) == 1``), but each row must
++    start on a 32-byte boundary because rows are loaded as whole vectors.
++
++    :param x: Shape [m, 512], bf16.
++    :param w: Shape [128, 512], bf16, contiguous.
++    :param out: Optional [m, 128] bf16 buffer to write into.
++    """
++    m = x.shape[0]
++    if out is None:
++        out = torch.empty((m, 128), dtype=torch.bfloat16, device=x.device)
++    if m == 0:
++        return out
++    _n128k512_gemm_custom_op(x, w, out)
++    return out
++
++
++def can_use_n32k5120_gemm(n: int, k: int, m: int, max_m: int = MAX_M) -> bool:
++    """Whether :func:`n32k5120_gemm_bf16` serves ``[m, k] @ [n, k].T``.
++    Callers fall back to a general GEMM when this is False."""
++    return n == 32 and k == 5120 and 1 <= m <= max_m and _arch_supported()
++
++
++@debug_kernel_api
++def n32k5120_gemm_bf16(
++    x: torch.Tensor,
++    w: torch.Tensor,
++    out: Optional[torch.Tensor] = None,
++) -> torch.Tensor:
++    """Equal to ``torch.nn.functional.linear(x, w)`` for ``w`` of shape [32, 5120].
++
++    Call :func:`can_use_n32k5120_gemm` first: other shapes raise rather than fall
++    back. ``x`` may be a row-sliced view (``x.stride(1) == 1``), but each row must
++    start on a 32-byte boundary because rows are loaded as whole vectors.
++
++    :param x: Shape [m, 5120], bf16.
++    :param w: Shape [32, 5120], bf16, contiguous.
++    :param out: Optional [m, 32] bf16 buffer to write into.
++    """
++    m = x.shape[0]
++    if out is None:
++        out = torch.empty((m, 32), dtype=torch.bfloat16, device=x.device)
++    if m == 0:
++        return out
++    _n32k5120_gemm_custom_op(x, w, out)
++    return out
+diff --git a/python/sglang/kernels/ops/layernorm/__init__.py b/python/sglang/kernels/ops/layernorm/__init__.py
+index 93293d82ba1ad6698c482a8370f9de02ae831a75..46959aef5ab4b15bd21f0b674d2367f3c5110be9 100644
+--- a/python/sglang/kernels/ops/layernorm/__init__.py
++++ b/python/sglang/kernels/ops/layernorm/__init__.py
+@@ -527,6 +527,23 @@ for _mod, _fn, _bk in _PHASE25_KERNELS:
+     )
+ del _mod, _fn, _bk
+ 
++# Fused hyper-connection combine / norm kernels for small speculative batches.
++_HC_NORM_KERNELS = [
++    ("hc_combine_norm", "hc_combine_norm"),
++    ("mhc_post_split_h", "mhc_post_split_h"),
++    ("hc_combine_norm", "hc_combine_norm_mxfp8"),
++    ("mxfp8_epilogue", "rmsnorm_mxfp8"),
++]
++for _mod, _fn in _HC_NORM_KERNELS:
++    register_kernel(
++        KernelSpec(
++            op=f"layernorm.{_fn}",
++            backend=KernelBackend.TRITON,
++            target=f"sglang.kernels.ops.layernorm.{_mod}:{_fn}",
++        )
++    )
++del _mod, _fn
++
+ # The fused-rmsnorm variants physically live in the shared fused-pointwise
+ # collection (sglang.kernels.ops.elementwise.elementwise) but stay layernorm ops.
+ for _fn in ("fused_dual_residual_rmsnorm", "fused_rmsnorm"):
+diff --git a/python/sglang/kernels/ops/layernorm/hc_combine_norm.py b/python/sglang/kernels/ops/layernorm/hc_combine_norm.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab5018d45b2552cc2ba41cfe01acb7f2506d9c06
+--- /dev/null
++++ b/python/sglang/kernels/ops/layernorm/hc_combine_norm.py
+@@ -0,0 +1,146 @@
++"""Collapse the hyper-connection streams and normalize the sublayer input."""
++
++import torch
++import triton
++import triton.language as tl
++
++from sglang.kernels.ops.layernorm.mxfp8_epilogue import mxfp8_epilogue
++
++
++@triton.jit
++def _hc_combine_norm(X, P, W, Y, SX: tl.constexpr, SP: tl.constexpr, EPS: tl.constexpr):
++    row, part = tl.program_id(0), tl.program_id(1)
++    h = tl.arange(0, 8192)
++    value = tl.full((8192,), 0, tl.float32)
++    for c in tl.static_range(4):
++        pre = tl.load(P + row * SP + c).to(tl.float32)
++        x = tl.load(X + row * SX + c * 5120 + h, h < 5120, 0).to(tl.float32)
++        value += x * pre
++    # The unfused combine stores BF16 before RMSNorm reads it.
++    value = value.to(tl.bfloat16).to(tl.float32)
++    inv_rms = tl.rsqrt(tl.sum(value * value, 0) / 5120 + EPS)
++    mask = (h >= part * 1280) & (h < (part + 1) * 1280)
++    weight = tl.load(W + h, mask, 0).to(tl.float32)
++    tl.store(Y + row * 5120 + h, value * inv_rms * weight, mask)
++
++
++@triton.jit
++def _hc_combine_norm_prefill(
++    X, P, W, Y, SX: tl.constexpr, SP: tl.constexpr, EPS: tl.constexpr
++):
++    # Large batches have enough rows to use one CTA per row without repeating
++    # the combine and RMS reduction for each output partition.
++    row = tl.program_id(0).to(tl.int64)
++    h = tl.arange(0, 8192)
++    value = tl.full((8192,), 0, tl.float32)
++    for c in tl.static_range(4):
++        pre = tl.load(P + row * SP + c).to(tl.float32)
++        x = tl.load(X + row * SX + c * 5120 + h, h < 5120, 0).to(tl.float32)
++        value += x * pre
++    value = value.to(tl.bfloat16).to(tl.float32)
++    inv_rms = tl.rsqrt(tl.sum(value * value, 0) / 5120 + EPS)
++    weight = tl.load(W + h, h < 5120, 0).to(tl.float32)
++    tl.store(Y + row * 5120 + h, value * inv_rms * weight, h < 5120)
++
++
++def hc_combine_norm(
++    x: torch.Tensor, pre: torch.Tensor, weight: torch.Tensor, eps: float
++) -> torch.Tensor:
++    """Fuse four-stream combine and RMSNorm for BF16 batches of width 5120."""
++    m = x.shape[0]
++    assert (0 < m <= 8 or 4096 <= m <= 65536) and x.shape == (m, 20480)
++    assert pre.shape == (m, 4) and pre.stride(1) == 1
++    assert weight.shape == (5120,) and weight.is_contiguous()
++    assert x.dtype == weight.dtype == torch.bfloat16 and x.stride(1) == 1
++    y = torch.empty((m, 5120), dtype=x.dtype, device=x.device)
++    if m >= 4096:
++        _hc_combine_norm_prefill[(m,)](
++            x, pre, weight, y, x.stride(0), pre.stride(0), eps, num_warps=4
++        )
++        return y
++    # Four CTAs per row trade redundant statistics for more concurrent loads
++    # when only a few speculative tokens are being processed.
++    _hc_combine_norm[(m, 4)](
++        x, pre, weight, y, x.stride(0), pre.stride(0), eps, num_warps=8
++    )
++    return y
++
++
++@triton.jit
++def _hc_combine_norm_mxfp8_kernel(
++    X,
++    P,
++    W,
++    Y,
++    Q,
++    S,
++    SX: tl.constexpr,
++    SP: tl.constexpr,
++    EPS: tl.constexpr,
++    K: tl.constexpr,
++    BLOCK: tl.constexpr,
++    GROUPS: tl.constexpr,
++    SLICE: tl.constexpr,
++):
++    row, part = tl.program_id(0), tl.program_id(1)
++    h = tl.arange(0, BLOCK)
++    m = h < K
++    value = tl.full((BLOCK,), 0, tl.float32)
++    for c in tl.static_range(4):
++        pre = tl.load(P + row * SP + c).to(tl.float32)
++        x = tl.load(X + row * SX + c * K + h, m, 0).to(tl.float32)
++        value += x * pre
++    # The unfused combine stores BF16 before RMSNorm reads it.
++    value = value.to(tl.bfloat16).to(tl.float32)
++    inv_rms = tl.rsqrt(tl.sum(value * value, 0) / K + EPS)
++    weight = tl.load(W + h, m, 0).to(tl.float32)
++    y = (value * inv_rms * weight).to(tl.bfloat16)
++    tl.store(Y + row * K + h, y, m & (h >= part * SLICE) & (h < (part + 1) * SLICE))
++    mxfp8_epilogue(
++        y, row, Q, S, K, BLOCK, GROUPS, part * (SLICE // 32), (part + 1) * (SLICE // 32)
++    )
++
++
++def _parts_for(k: int) -> int:
++    # Row splits: recomputing the statistic beats running 6 CTAs on 148 SMs.
++    parts = 4
++    while parts > 1 and (k % (parts * 32)):
++        parts //= 2
++    return parts
++
++
++def _alloc(m, k, device):
++    q = torch.empty((m, k), dtype=torch.float8_e4m3fn, device=device)
++    s = torch.zeros(
++        (k // 32) * (triton.cdiv(m, 128) * 128), dtype=torch.uint8, device=device
++    )
++    return q, s
++
++
++def hc_combine_norm_mxfp8(
++    x: torch.Tensor, pre: torch.Tensor, weight: torch.Tensor, eps: float
++):
++    """Four-stream combine + RMSNorm returning ``(y_bf16, y_q, y_sf)``."""
++    m = x.shape[0]
++    assert 0 < m <= 8, "the fused MXFP8 epilogue only supports small decode/verify"
++    k = x.shape[1] // 4
++    y = torch.empty((m, k), dtype=x.dtype, device=x.device)
++    q, s = _alloc(m, k, x.device)
++    parts = _parts_for(k)
++    _hc_combine_norm_mxfp8_kernel[(m, parts)](
++        x,
++        pre,
++        weight,
++        y,
++        q,
++        s,
++        SX=x.stride(0),
++        SP=pre.stride(0),
++        EPS=eps,
++        K=k,
++        BLOCK=triton.next_power_of_2(k),
++        GROUPS=k // 32,
++        SLICE=k // parts,
++        num_warps=8,
++    )
++    return y, q, s
+diff --git a/python/sglang/kernels/ops/layernorm/mhc_post_split_h.py b/python/sglang/kernels/ops/layernorm/mhc_post_split_h.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2331fe18c8e8ee586191a103c40a014d5c90a982
+--- /dev/null
++++ b/python/sglang/kernels/ops/layernorm/mhc_post_split_h.py
+@@ -0,0 +1,49 @@
++"""Small-batch HC=4 post-mix with independent hidden-dimension CTAs."""
++
++import torch
++import triton
++import triton.language as tl
++
++
++@triton.jit
++def _mhc_post_split_h_kernel(X, R, P, C, Y, H: tl.constexpr, B: tl.constexpr):
++    token = tl.program_id(0)
++    h = tl.program_id(1) * B + tl.arange(0, B)
++    channel = tl.arange(0, 4)
++    x = tl.load(X + token * H + h, h < H, 0).to(tl.float32)
++    post = tl.load(P + token * 4 + channel)
++    residual0 = tl.load(R + token * 4 * H + h, h < H, 0).to(tl.float32)
++    comb0 = tl.load(C + token * 16 + channel)
++    # Match NVCC's contraction in mhc_post_tilelang: round comb[0]*residual[0]
++    # first, then FMA post*x into it. Reversing these two terms changes BF16
++    # rounding on rare ties even though the symbolic expression is the same.
++    acc = tl.fma(post[:, None], x[None, :], comb0[:, None] * residual0[None, :])
++    for i in tl.static_range(1, 4):
++        residual = tl.load(R + (token * 4 + i) * H + h, h < H, 0).to(tl.float32)
++        comb = tl.load(C + token * 16 + i * 4 + channel)
++        acc = tl.fma(comb[:, None], residual[None, :], acc)
++    tl.store(Y + (token * 4 + channel[:, None]) * H + h[None, :], acc, h[None, :] < H)
++
++
++def mhc_post_split_h(
++    x: torch.Tensor, residual: torch.Tensor, post: torch.Tensor, comb: torch.Tensor
++) -> torch.Tensor:
++    """Same result as the TileLang post kernel for contiguous BF16 HC=4 inputs."""
++    assert x.dtype == residual.dtype == torch.bfloat16
++    assert post.dtype == comb.dtype == torch.float32
++    assert residual.shape == (x.shape[0], 4, x.shape[1])
++    assert all(t.is_contiguous() for t in (x, residual, post, comb))
++    output = torch.empty_like(residual)
++    block = 128 if x.shape[0] <= 8 else 1024
++    _mhc_post_split_h_kernel[(x.shape[0], triton.cdiv(x.shape[1], block))](
++        x,
++        residual,
++        post,
++        comb,
++        output,
++        H=x.shape[1],
++        B=block,
++        num_warps=4,
++        enable_fp_fusion=False,
++    )
++    return output
+diff --git a/python/sglang/kernels/ops/layernorm/mxfp8_epilogue.py b/python/sglang/kernels/ops/layernorm/mxfp8_epilogue.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4267d49ff2614288eb0f95c8d82e28914a3bfec
+--- /dev/null
++++ b/python/sglang/kernels/ops/layernorm/mxfp8_epilogue.py
+@@ -0,0 +1,111 @@
++"""MXFP8 quantization written as an epilogue of the kernel that produces the row.
++
++At the speculative BS=1 shapes (<=8 rows) the standalone FlashInfer
++``mxfp8_quantize`` launch costs about as much as the norm it follows, even
++though it only re-reads what that norm just wrote.  These kernels do the norm
++and the quantization in one pass; the quantized values come from the same BF16
++rounding the standalone pair produces, so both outputs are bitwise identical to
++``rmsnorm`` followed by ``mxfp8_quantize(..., is_sf_swizzled_layout=True)``.
++
++The scale factors use FlashInfer's 128x4 swizzle:
++``off = (g // 4) * 512 + ((r % 32) * 4 + ((r // 32) % 4)) * 4 + (g % 4)``
++over a row count padded to a multiple of 128, with the UE8M0 conversion
++(positive rounding, subnormals included) that ``mxfp8_quantize`` uses.
++"""
++
++from __future__ import annotations
++
++import torch
++import triton
++import triton.language as tl
++
++
++# FlashInfer's positive-rounding UE8M0 conversion of a per-group amax, subnormals
++# included: the scale byte and the multiplier that maps the group into e4m3 range.
++@triton.jit
++def ue8m0_scale(amax):
++    normalized = amax * (1.0 / 448.0)
++    bits = normalized.to(tl.int32, bitcast=True)
++    exponent = (bits >> 23) & 255
++    mantissa = bits & 0x7FFFFF
++    bump = (mantissa != 0) & ~((exponent == 0) & (mantissa <= 0x400000))
++    sf = tl.where(normalized <= 0, 0, tl.minimum(exponent + bump.to(tl.int32), 254))
++    inv = tl.where(sf == 0, 0, ((254 - sf) << 23)).to(tl.float32, bitcast=True)
++    return sf, inv
++
++
++@triton.jit
++def mxfp8_epilogue(
++    y, row, Q, S, K: tl.constexpr, BLOCK: tl.constexpr, GROUPS: tl.constexpr, g_lo, g_hi
++):
++    # Stores only groups in [g_lo, g_hi) so a row can be split across CTAs.
++    GP: tl.constexpr = BLOCK // 32
++    g = tl.arange(0, GP)
++    gmask = (g < GROUPS) & (g >= g_lo) & (g < g_hi)
++    e = tl.arange(0, 32)
++    idx = g[:, None] * 32 + e[None, :]
++    v = tl.reshape(y.to(tl.float32), (GP, 32))
++    amax = tl.max(tl.abs(v), 1)
++    sf, scale = ue8m0_scale(amax)
++    q = tl.minimum(tl.maximum(v * scale[:, None], -448.0), 448.0).to(tl.float8e4nv)
++    tl.store(Q + row * K + idx, q, gmask[:, None])
++    off = (g // 4) * 512 + ((row % 32) * 4 + ((row // 32) % 4)) * 4 + (g % 4)
++    tl.store(S + off, sf.to(tl.uint8), gmask)
++
++
++@triton.jit
++def _rmsnorm_mxfp8_kernel(
++    X,
++    W,
++    Y,
++    Q,
++    S,
++    SX: tl.constexpr,
++    M: tl.constexpr,
++    K: tl.constexpr,
++    EPS: tl.constexpr,
++    BLOCK: tl.constexpr,
++    GROUPS: tl.constexpr,
++):
++    row = tl.program_id(0)
++    if row < M:
++        h = tl.arange(0, BLOCK)
++        v = tl.load(X + row * SX + h, h < K, 0).to(tl.float32)
++        weight = tl.load(W + h, h < K, 0).to(tl.float32)
++        inv = tl.rsqrt(tl.sum(v * v, 0) / K + EPS)
++        y = (v * inv * weight).to(tl.bfloat16)
++        tl.store(Y + row * K + h, y, h < K)
++        mxfp8_epilogue(y, row, Q, S, K, BLOCK, GROUPS, 0, GROUPS)
++    else:
++        # Padding scale entries are disjoint from the live rows above.
++        off = (row - M) * 512 + tl.arange(0, 512)
++        pad_row = ((off // 4) % 4) * 32 + ((off // 16) % 32)
++        tl.store(S + off, 0, (off < GROUPS * 128) & (pad_row >= M))
++
++
++def rmsnorm_mxfp8(
++    x: torch.Tensor, weight: torch.Tensor, eps: float
++) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """RMSNorm returning ``(y_bf16, y_q, y_sf)`` with the same MXFP8 epilogue."""
++    m, k = x.shape
++    assert 0 < m <= 8 and k % 32 == 0
++    assert x.dtype == weight.dtype == torch.bfloat16 and x.stride(1) == 1
++    y = torch.empty_like(x, memory_format=torch.contiguous_format)
++    q = torch.empty((m, k), dtype=torch.float8_e4m3fn, device=x.device)
++    s = torch.empty((k // 32) * 128, dtype=torch.uint8, device=x.device)
++    _rmsnorm_mxfp8_kernel[(m + triton.cdiv(s.numel(), 512),)](
++        x,
++        weight,
++        y,
++        q,
++        s,
++        SX=x.stride(0),
++        M=m,
++        K=k,
++        EPS=eps,
++        BLOCK=triton.next_power_of_2(k),
++        GROUPS=k // 32,
++        num_warps=8,
++        enable_fp_fusion=False,
++    )
++    return y, q, s
+diff --git a/python/sglang/kernels/ops/layernorm/rmsnorm_fp32.py b/python/sglang/kernels/ops/layernorm/rmsnorm_fp32.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..28704c88f208983f4987ed505c0dcd373196569f
+--- /dev/null
++++ b/python/sglang/kernels/ops/layernorm/rmsnorm_fp32.py
+@@ -0,0 +1,39 @@
++"""Out-of-place RMSNorm with FP32 statistics and weight multiplication."""
++
++import torch
++import triton
++import triton.language as tl
++
++
++@triton.jit
++def _rmsnorm_fp32_kernel(X, W, Y, D: tl.constexpr, EPS: tl.constexpr, B: tl.constexpr):
++    row = tl.program_id(0)
++    col = tl.arange(0, B)
++    x = tl.load(X + row * D + col, col < D, 0).to(tl.float32)
++    weight = tl.load(W + col, col < D, 0).to(tl.float32)
++    inv_rms = tl.rsqrt(tl.sum(x * x, axis=0) / D + EPS)
++    normalized = x * inv_rms
++    tl.store(Y + row * D + col, normalized * weight, col < D)
++
++
++def rmsnorm_fp32(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
++    """Match ``weight * (x.float() * rsqrt(mean(x.float()**2) + eps))``."""
++    assert x.is_cuda and x.is_contiguous() and weight.is_contiguous()
++    assert x.dtype in (torch.bfloat16, torch.float32)
++    assert weight.dtype in (torch.bfloat16, torch.float32)
++    assert x.device == weight.device and weight.shape == (x.shape[-1],)
++    output = torch.empty_like(x)
++    dim = x.shape[-1]
++    rows = x.numel() // dim
++    if rows:
++        _rmsnorm_fp32_kernel[(rows,)](
++            x,
++            weight,
++            output,
++            dim,
++            eps,
++            triton.next_power_of_2(dim),
++            num_warps=4,
++            enable_fp_fusion=False,
++        )
++    return output
+diff --git a/python/sglang/kernels/ops/speculative/__init__.py b/python/sglang/kernels/ops/speculative/__init__.py
+index a67dab0cc97a3b2c4734368506397cf44de833e0..644296c5087bffb35e0688e757db2ec6f6167651 100644
+--- a/python/sglang/kernels/ops/speculative/__init__.py
++++ b/python/sglang/kernels/ops/speculative/__init__.py
+@@ -22,6 +22,7 @@ _TRITON_KERNELS = [
+     ("ragged_verify_kernels", "pad_verify_lens_to_bucket"),
+     ("ragged_verify_kernels", "build_qo_indptr"),
+     ("reject_sampling", "chain_speculative_sampling_triton"),
++    ("row_argmax", "row_argmax"),
+ ]
+ for _mod, _fn in _TRITON_KERNELS:
+     register_kernel(
+diff --git a/python/sglang/kernels/ops/speculative/row_argmax.py b/python/sglang/kernels/ops/speculative/row_argmax.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6dbc6c5c0f08ea2c1c1325ffffff15635de31131
+--- /dev/null
++++ b/python/sglang/kernels/ops/speculative/row_argmax.py
+@@ -0,0 +1,65 @@
++"""Row-wise argmax for the tall-and-thin speculative verify logits.
++
++``torch.argmax`` reduces each row in a single block, which leaves most of the
++machine idle for a handful of very wide rows; a flat two-stage split over the
++vocabulary saturates it instead.
++
++Ties resolve to the lowest index, matching ``ArgMaxOps``' strict ``>``.
++"""
++
++import torch
++import triton
++import triton.language as tl
++
++
++@triton.jit
++def _argmax_partial_kernel(
++    X, OUTV, OUTI, N, SX, SPLITS: tl.constexpr, BLOCK: tl.constexpr
++):
++    row = tl.program_id(0)
++    part = tl.program_id(1)
++    per = tl.cdiv(N, SPLITS)
++    start = part * per
++    best_v = float("-inf")
++    best_i = N
++    for off in tl.range(start, tl.minimum(start + per, N), BLOCK):
++        idx = off + tl.arange(0, BLOCK)
++        m = idx < tl.minimum(start + per, N)
++        v = tl.load(X + row * SX + idx, m, float("-inf"))
++        cur_v = tl.max(v, 0)
++        # lowest index among the maxima of this tile
++        cur_i = tl.min(tl.where(v == cur_v, idx, N), 0)
++        take = (cur_v > best_v) | ((cur_v == best_v) & (cur_i < best_i))
++        best_i = tl.where(take, cur_i, best_i)
++        best_v = tl.where(take, cur_v, best_v)
++    tl.store(OUTV + row * SPLITS + part, best_v)
++    tl.store(OUTI + row * SPLITS + part, best_i)
++
++
++@triton.jit
++def _argmax_final_kernel(INV, INI, OUT, SPLITS: tl.constexpr, BLOCK: tl.constexpr):
++    row = tl.program_id(0)
++    o = tl.arange(0, BLOCK)
++    m = o < SPLITS
++    v = tl.load(INV + row * SPLITS + o, m, float("-inf"))
++    i = tl.load(INI + row * SPLITS + o, m, 0x7FFFFFFF)
++    best_v = tl.max(v, 0)
++    best_i = tl.min(tl.where(v == best_v, i, 0x7FFFFFFF), 0)
++    tl.store(OUT + row, best_i.to(tl.int64))
++
++
++_SPLITS = 64
++
++
++def row_argmax(x: torch.Tensor) -> torch.Tensor:
++    """``x.argmax(dim=-1)`` for a 2D FP32 tensor with few rows and a wide vocab."""
++    assert x.dim() == 2 and x.dtype == torch.float32 and x.stride(1) == 1
++    rows, n = x.shape
++    out = torch.empty((rows,), dtype=torch.int64, device=x.device)
++    pv = torch.empty((rows, _SPLITS), dtype=torch.float32, device=x.device)
++    pi = torch.empty((rows, _SPLITS), dtype=torch.int32, device=x.device)
++    _argmax_partial_kernel[(rows, _SPLITS)](
++        x, pv, pi, n, x.stride(0), SPLITS=_SPLITS, BLOCK=2048, num_warps=8
++    )
++    _argmax_final_kernel[(rows,)](pv, pi, out, SPLITS=_SPLITS, BLOCK=64, num_warps=2)
++    return out
+diff --git a/test/registered/kernel/attention/test_dsv4_q_rope_store.py b/test/registered/kernel/attention/test_dsv4_q_rope_store.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c4943112a83bb0df76f7e91c52ff77f6442220c7
+--- /dev/null
++++ b/test/registered/kernel/attention/test_dsv4_q_rope_store.py
+@@ -0,0 +1,94 @@
++import unittest
++
++import torch
++
++from sglang.kernels.ops.attention.dsv4.elementwise import fused_rope_inplace
++from sglang.kernels.ops.attention.dsv4.q_rope_store import q_rope_store
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=40, stage="base-b-kernel-unit", runner_config="1-gpu-large")
++
++
++class TestQRopeStore(CustomTestCase):
++    def test_exact_output_and_padding(self):
++        torch.manual_seed(911)
++        freqs = torch.polar(
++            torch.ones(8192, 32, device="cuda"), torch.randn(8192, 32, device="cuda")
++        )
++        for rows in (1, 2, 5, 6, 8):
++            for heads in (8, 16, 32):
++                for dtype in (torch.int32, torch.int64):
++                    q = torch.randn(
++                        rows, heads + 1, 512, device="cuda", dtype=torch.bfloat16
++                    )[:, :heads]
++                    padding = torch.full(
++                        (rows, 64, 512), 7.0, device="cuda", dtype=q.dtype
++                    )
++                    output = padding[:, :heads]
++                    positions = torch.randint(
++                        0, 8192, (rows,), device="cuda", dtype=dtype
++                    )
++                    original = q.clone()
++                    expected = q.clone()
++                    fused_rope_inplace(expected[..., 448:], None, freqs, positions)
++                    q_rope_store(q, output, freqs, positions)
++                    torch.testing.assert_close(output, expected, rtol=0, atol=0)
++                    torch.testing.assert_close(q, original, rtol=0, atol=0)
++                    self.assertTrue((padding[:, heads:] == 7).all().item())
++
++    def test_large_prefill_exact_output_and_padding(self):
++        torch.manual_seed(911)
++        freqs = torch.polar(
++            torch.ones(8192, 32, device="cuda"), torch.randn(8192, 32, device="cuda")
++        )
++        for rows in (4096, 4097, 65536):
++            for dtype in (torch.int32, torch.int64):
++                with self.subTest(rows=rows, dtype=dtype):
++                    q = torch.randn(rows, 17, 512, device="cuda", dtype=torch.bfloat16)[
++                        :, :16
++                    ]
++                    original = q.clone()
++                    expected = q.clone()
++                    padding = torch.full(
++                        (rows, 64, 512), 7.0, device="cuda", dtype=q.dtype
++                    )
++                    positions = torch.randint(
++                        0, 8192, (rows,), device="cuda", dtype=dtype
++                    )
++                    fused_rope_inplace(expected[..., 448:], None, freqs, positions)
++                    q_rope_store(q, padding[:, :16], freqs, positions)
++                    torch.testing.assert_close(
++                        padding[:, :16], expected, rtol=0, atol=0
++                    )
++                    torch.testing.assert_close(q, original, rtol=0, atol=0)
++                    self.assertTrue((padding[:, 16:] == 7).all().item())
++
++    def _check_graph_replay(self, rows):
++        q = torch.randn(rows, 16, 512, device="cuda", dtype=torch.bfloat16)
++        output = torch.zeros(rows, 64, 512, device="cuda", dtype=q.dtype)[:, :16]
++        freqs = torch.polar(
++            torch.ones(8192, 32, device="cuda"), torch.randn(8192, 32, device="cuda")
++        )
++        positions = torch.arange(rows, device="cuda") % 8192
++        q_rope_store(q, output, freqs, positions)
++        graph = torch.cuda.CUDAGraph()
++        with torch.cuda.graph(graph):
++            q_rope_store(q, output, freqs, positions)
++        for _ in range(3):
++            q.normal_()
++            positions.random_(0, 8192)
++            graph.replay()
++            expected = q.clone()
++            fused_rope_inplace(expected[..., 448:], None, freqs, positions)
++            torch.testing.assert_close(output, expected, rtol=0, atol=0)
++
++    def test_graph_replay(self):
++        self._check_graph_replay(6)
++
++    def test_large_prefill_graph_replay(self):
++        self._check_graph_replay(4097)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernel/attention/test_flashmla_sched_meta.py b/test/registered/kernel/attention/test_flashmla_sched_meta.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..14b37407b02071af681b4aaa6559d28a0b156916
+--- /dev/null
++++ b/test/registered/kernel/attention/test_flashmla_sched_meta.py
+@@ -0,0 +1,167 @@
++import sys
++
++import pytest
++import torch
++
++from sglang.srt.runtime_context import get_platform
++from sglang.test.ci.ci_register import register_cuda_ci
++
++register_cuda_ci(est_time=25, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++pytestmark = pytest.mark.skipif(
++    not torch.cuda.is_available()
++    or torch.version.cuda is None
++    or not get_platform().is_blackwell,
++    reason="the FlashMLA split-KV schedule is Blackwell-only here",
++)
++
++H_Q, D_QK, D_V = 64, 512, 512
++# The only cache format this build's sparse decode takes for both caches, and a
++# page size that keeps page * bytes_per_token a multiple of 576.
++BYTES_PER_TOKEN, PAGE = 584, 288
++BLOCK_SIZE_N, FIXED_OVERHEAD = 64, 5
++
++
++def _cache():
++    n = 8192 // PAGE + 16
++    return torch.randint(
++        0, 200, (n, PAGE, 1, BYTES_PER_TOKEN), device="cuda", dtype=torch.uint8
++    )
++
++
++def _call(kv, b, s_q, topk, topk_length, *, extra=None, meta=None):
++    import sgl_kernel.flash_mla as flash_mla
++
++    g = torch.Generator(device="cuda").manual_seed(b * 7 + s_q * 13 + topk)
++    q = torch.randn(
++        (b, s_q, H_Q, D_QK), device="cuda", dtype=torch.bfloat16, generator=g
++    )
++    indices = torch.randint(
++        0, 5120, (b, s_q, topk), device="cuda", dtype=torch.int32, generator=g
++    )
++    sink = torch.randn((H_Q,), device="cuda", dtype=torch.float32, generator=g)
++    kwargs = {}
++    if extra is not None:
++        extra_kv, extra_indices, extra_topk_length = extra
++        kwargs = dict(
++            extra_k_cache=extra_kv,
++            extra_indices_in_kvcache=extra_indices,
++            extra_topk_length=extra_topk_length,
++        )
++    sched = flash_mla.FlashMLASchedMeta()
++    if meta is not None:
++        sched.tile_scheduler_metadata, sched.num_splits = meta
++    out, lse = flash_mla.flash_mla_with_kvcache(
++        q,
++        kv,
++        None,
++        None,
++        D_V,
++        sched,
++        indices=indices,
++        is_fp8_kvcache=True,
++        softmax_scale=0.1,
++        causal=False,
++        topk_length=topk_length,
++        attn_sink=sink,
++        **kwargs,
++    )
++    torch.cuda.synchronize()
++    return out, lse, sched
++
++
++def _ours(
++    like_meta, like_splits, topk_length, topk, *, extra_topk_length=None, extra_topk=0
++):
++    from sglang.kernels.ops.attention.dsv4.flashmla_sched_meta import (
++        flashmla_sched_meta,
++    )
++
++    meta = torch.empty_like(like_meta)
++    splits = torch.empty_like(like_splits)
++    flashmla_sched_meta(
++        meta,
++        splits,
++        topk_length=topk_length,
++        extra_topk_length=extra_topk_length,
++        block_size_n=BLOCK_SIZE_N,
++        fixed_overhead_num_blocks=FIXED_OVERHEAD,
++        topk=topk,
++        extra_topk=extra_topk,
++    )
++    return meta, splits
++
++
++def _lengths(b, topk, mode, seed):
++    g = torch.Generator(device="cuda").manual_seed(seed)
++    if mode == "full":
++        return torch.full((b,), topk, device="cuda", dtype=torch.int32)
++    if mode == "ones":
++        return torch.ones((b,), device="cuda", dtype=torch.int32)
++    if mode == "zeros":
++        return torch.zeros((b,), device="cuda", dtype=torch.int32)
++    lengths = torch.randint(
++        0, topk + 1, (b,), device="cuda", dtype=torch.int32, generator=g
++    )
++    if mode == "mixed":
++        lengths[0] = 0
++        lengths[-1] = topk
++    return lengths
++
++
++# FlashMLA's DecodingSchedMeta ends in a `_pad` word it never writes, so the
++# reference carries whatever torch::empty left there.
++DEFINED = slice(0, 7)
++
++
++@pytest.mark.parametrize("b", [1, 6, 64])
++@pytest.mark.parametrize("s_q", [1, 6])
++@pytest.mark.parametrize("topk", [2048])
++@pytest.mark.parametrize("mode", ["full", "random", "zeros", "ones", "mixed"])
++def test_matches_flashmla_schedule(b: int, s_q: int, topk: int, mode: str):
++    kv = _cache()
++    topk_length = _lengths(b, topk, mode, b * 1000 + s_q * 37 + topk + len(mode))
++    _, _, sched = _call(kv, b, s_q, topk, topk_length)
++    if sched.tile_scheduler_metadata is None:
++        pytest.skip("FlashMLA did not split the KV for this shape")
++    meta, splits = _ours(
++        sched.tile_scheduler_metadata, sched.num_splits, topk_length, topk
++    )
++    assert torch.equal(meta[:, DEFINED], sched.tile_scheduler_metadata[:, DEFINED])
++    assert torch.equal(splits, sched.num_splits)
++
++
++@pytest.mark.parametrize("b", [1, 8])
++@pytest.mark.parametrize("topk,extra_topk", [(512, 512), (2048, 512), (512, 2048)])
++def test_extra_cache_schedule(b: int, topk: int, extra_topk: int):
++    kv, extra_kv = _cache(), _cache()
++    s_q = 1
++    g = torch.Generator(device="cuda").manual_seed(b + topk + extra_topk)
++    topk_length = _lengths(b, topk, "random", b + topk)
++    extra_topk_length = torch.randint(
++        1, extra_topk + 1, (b,), device="cuda", dtype=torch.int32, generator=g
++    )
++    extra_indices = torch.randint(
++        0, 4096, (b, s_q, extra_topk), device="cuda", dtype=torch.int32, generator=g
++    )
++    extra = (extra_kv, extra_indices, extra_topk_length)
++    ref_out, ref_lse, sched = _call(kv, b, s_q, topk, topk_length, extra=extra)
++    if sched.tile_scheduler_metadata is None:
++        pytest.skip("FlashMLA did not split the KV for this shape")
++    meta, splits = _ours(
++        sched.tile_scheduler_metadata,
++        sched.num_splits,
++        topk_length,
++        topk,
++        extra_topk_length=extra_topk_length,
++        extra_topk=extra_topk,
++    )
++    assert torch.equal(meta[:, DEFINED], sched.tile_scheduler_metadata[:, DEFINED])
++    assert torch.equal(splits, sched.num_splits)
++    out, lse, _ = _call(kv, b, s_q, topk, topk_length, extra=extra, meta=(meta, splits))
++    assert torch.equal(out.view(torch.int16), ref_out.view(torch.int16))
++    assert torch.equal(lse.view(torch.int32), ref_lse.view(torch.int32))
++
++
++if __name__ == "__main__":
++    sys.exit(pytest.main([__file__]))
+diff --git a/test/registered/kernel/layernorm/test_mxfp8_epilogue.py b/test/registered/kernel/layernorm/test_mxfp8_epilogue.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a4024bd2b2d33ee79df9e58961b54ac98f4d76e
+--- /dev/null
++++ b/test/registered/kernel/layernorm/test_mxfp8_epilogue.py
+@@ -0,0 +1,153 @@
++"""MXFP8 epilogues stay bitwise identical to FlashInfer's standalone quantizer."""
++
++import sys
++
++import flashinfer
++import pytest
++import torch
++from flashinfer import mxfp8_quantize
++
++from sglang.kernels.ops.attention.dsv4.wo_a_bf16 import (
++    _quantize_partial,
++    _wo_a_reduce,
++    wo_a_bf16_small_batch,
++    wo_a_bf16_small_batch_mxfp8,
++)
++from sglang.kernels.ops.layernorm.mxfp8_epilogue import rmsnorm_mxfp8
++from sglang.srt.runtime_context import get_platform
++from sglang.test.ci.ci_register import register_cuda_ci
++
++register_cuda_ci(est_time=120, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++pytestmark = pytest.mark.skipif(
++    not torch.cuda.is_available()
++    or torch.version.cuda is None
++    or not get_platform().is_blackwell,
++    reason="the MXFP8 reference quantizer is Blackwell-only",
++)
++
++DEVICE = "cuda"
++
++HIDDEN = 5120
++STREAMS = 4
++
++
++@pytest.mark.parametrize("m", [1, 2, 5, 6, 8])
++@pytest.mark.parametrize("scale", [1e-3, 1.0, 1e3])
++@pytest.mark.parametrize("backend", ["cuda", "cute-dsl"])
++def test_bitwise_identical_to_norm_then_quantize(m: int, scale: float, backend: str):
++    from sglang.kernels.ops.layernorm.hc_combine_norm import (
++        hc_combine_norm,
++        hc_combine_norm_mxfp8,
++    )
++    from sglang.srt.layers.quantization.fp8_utils import flashinfer_mxfp8_quantize
++
++    g = torch.Generator(device="cuda").manual_seed(m * 31 + int(scale * 1000))
++    x = (
++        torch.randn(
++            (m, STREAMS * HIDDEN), device="cuda", dtype=torch.bfloat16, generator=g
++        )
++        * scale
++    )
++    pre = torch.randn(
++        (m, STREAMS), device="cuda", dtype=torch.bfloat16, generator=g
++    ).contiguous()
++    w = torch.randn((HIDDEN,), device="cuda", dtype=torch.bfloat16, generator=g)
++    eps = 1e-6
++
++    y_ref = hc_combine_norm(x, pre, w, eps)
++    q_ref, sf_ref = flashinfer_mxfp8_quantize(y_ref, True, 32, backend)
++    y, q, sf = hc_combine_norm_mxfp8(x, pre, w, eps)
++
++    assert torch.equal(y, y_ref)
++    assert torch.equal(
++        q.reshape(-1).view(torch.uint8), q_ref.reshape(-1).view(torch.uint8)
++    )
++    assert sf.shape == sf_ref.reshape(-1).shape
++    assert torch.equal(sf, sf_ref.reshape(-1))
++
++
++def check(x, w, got):
++    y, q, sf = got
++    expected = flashinfer.norm.rmsnorm(x, w, 1e-6)
++    eq, esf = flashinfer.mxfp8_quantize(expected, is_sf_swizzled_layout=True)
++    assert torch.equal(y.view(torch.int16), expected.view(torch.int16))
++    assert torch.equal(q.view(torch.uint8), eq.view(torch.uint8))
++    m = x.shape[0]
++    g = torch.arange(40, device=x.device)
++    row = torch.arange(m, device=x.device)[:, None]
++    offsets = (g // 4) * 512 + ((row % 32) * 4 + row // 32) * 4 + g % 4
++    assert torch.equal(sf[offsets], esf.flatten()[offsets])
++    pad = torch.ones_like(sf, dtype=torch.bool)
++    pad[offsets] = False
++    assert torch.count_nonzero(sf[pad]) == 0
++
++
++@pytest.mark.parametrize("m", [1, 5, 6, 8])
++@pytest.mark.parametrize("stride", [1280, 1792])
++def test_dynamic_graph(m, stride):
++    torch.manual_seed(941)
++    x = torch.randn((m, stride), device="cuda", dtype=torch.bfloat16)[:, :1280]
++    w = torch.randn(1280, device="cuda", dtype=torch.bfloat16)
++    for _ in range(3):
++        check(x, w, rmsnorm_mxfp8(x, w, 1e-6))
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        got = rmsnorm_mxfp8(x, w, 1e-6)
++    for scale in [0, 1e-4, 1, 100]:
++        x.copy_(torch.randn_like(x) * scale)
++        w.copy_(torch.randn_like(w))
++        graph.replay()
++        check(x, w, got)
++
++
++def test_wo_a_partial_quant_matches_quantize():
++    torch.manual_seed(0)
++    for rows in range(2, 9):
++        for magnitude in (0.0, 1e-37, 1e-7, 1.0, 448.0, 1e10):
++            partial = torch.randn(8, rows, 2, 1024, device=DEVICE) * magnitude
++            bf16 = torch.empty(rows, 2048, dtype=torch.bfloat16, device=DEVICE)
++            _wo_a_reduce[(rows * 8,)](partial, bf16, rows * 2048, num_warps=4)
++            expected_q, expected_s = mxfp8_quantize(bf16, True, alignment=32)
++            actual_q, actual_s = _quantize_partial(partial)
++            torch.testing.assert_close(
++                actual_q.view(torch.uint8),
++                expected_q.view(torch.uint8),
++                rtol=0,
++                atol=0,
++            )
++            torch.testing.assert_close(actual_s, expected_s, rtol=0, atol=0)
++
++        x = torch.randn(rows, 64, 512, device=DEVICE, dtype=torch.bfloat16)[
++            :, :16
++        ].view(rows, 2, 4096)
++        wo_a = torch.randn(2, 1024, 4096, device=DEVICE, dtype=torch.bfloat16) * 0.02
++        bf16 = wo_a_bf16_small_batch(x, wo_a).flatten(1)
++        q, s = wo_a_bf16_small_batch_mxfp8(x, wo_a)
++        expected_q, expected_s = mxfp8_quantize(bf16, True, alignment=32)
++        torch.testing.assert_close(
++            q.view(torch.uint8), expected_q.view(torch.uint8), rtol=0, atol=0
++        )
++        torch.testing.assert_close(s, expected_s, rtol=0, atol=0)
++
++    partial = torch.randn(8, 6, 2, 1024, device=DEVICE)
++    _quantize_partial(partial)
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        q, s = _quantize_partial(partial)
++    for _ in range(3):
++        partial.normal_()
++        # The replay must regenerate scale padding as well as live rows.
++        s.fill_(255)
++        graph.replay()
++        bf16 = torch.empty(6, 2048, dtype=torch.bfloat16, device=DEVICE)
++        _wo_a_reduce[(48,)](partial, bf16, 6 * 2048, num_warps=4)
++        eq, es = mxfp8_quantize(bf16, True, alignment=32)
++        torch.testing.assert_close(
++            q.view(torch.uint8), eq.view(torch.uint8), rtol=0, atol=0
++        )
++        torch.testing.assert_close(s, es, rtol=0, atol=0)
++
++
++if __name__ == "__main__":
++    sys.exit(pytest.main([__file__]))

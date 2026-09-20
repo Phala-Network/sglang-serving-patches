@@ -1,0 +1,573 @@
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index e7ce9277aba204737c907c7bf798ac98154ffca2..e145ea815f1ff661111b307bc11fd8770be24b31 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -605,12 +605,17 @@ class ModelConfig:
+                 or hasattr(self.hf_config, "audio_config")
+             )
+         )
++        has_dsv41_vision = (
++            self.hf_config.model_type == "deepseek_v41"
++            and self.hf_config.vision_n_layers > 0
++        )
+         self.is_multimodal = (
+             enable_multimodal
+             and not self.is_lm_only
+             and (
+                 is_multimodal_model(self.hf_config.architectures)
+                 or has_multimodal_subconfig
++                or has_dsv41_vision
+             )
+         )
+         self.is_audio_model = enable_multimodal and is_audio_model(
+@@ -629,6 +634,8 @@ class ModelConfig:
+             self.is_multimodal
+             and getattr(self.hf_config, "vision_config", None) is not None
+         )
++        if self.is_multimodal and has_dsv41_vision:
++            self.is_image_understandable_model = True
+ 
+         # Models expose audio_config at different nesting levels:
+         #   - top-level audio_config: e.g. Qwen2Audio
+diff --git a/python/sglang/srt/models/deepseek_v41_vit.py b/python/sglang/srt/models/deepseek_v41_vit.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5777a4f007eb2a12cace0d514de5028529d516d
+--- /dev/null
++++ b/python/sglang/srt/models/deepseek_v41_vit.py
+@@ -0,0 +1,151 @@
++"""DeepSeek-V4.1 vision tower and aligner."""
++
++from functools import lru_cache
++
++import torch
++import torch.nn.functional as F
++from torch import nn
++
++from sglang.srt.layers.attention.vision import (
++    VisionAttention,
++    VisionAttentionMetadata,
++    prepare_vision_attention_metadata,
++)
++from sglang.srt.layers.layernorm import RMSNorm
++
++
++def _rms_norm(dim: int) -> RMSNorm:
++    # The fused CUDA kernels do not take an fp32 weight with a bf16 input.
++    return RMSNorm(dim, eps=1e-6, weight_dtype=torch.float32, force_native=True)
++
++
++@lru_cache(8)
++def get_vision_cos_sin(n_h: int, n_w: int, dim: int, theta: float):
++    inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
++    hpos = torch.arange(n_h).unsqueeze(1).expand(n_h, n_w)
++    wpos = torch.arange(n_w).unsqueeze(0).expand(n_h, n_w)
++    freqs = torch.stack([hpos, wpos], dim=-1).reshape(-1, 2, 1).float() * inv_freq
++    freqs = freqs.flatten(1)
++    return freqs.cos().unsqueeze(1), freqs.sin().unsqueeze(1)
++
++
++def apply_rotary(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
++    dtype = x.dtype
++    x1, x2 = x.float().chunk(2, dim=-1)
++    return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1).to(dtype)
++
++
++class PatchEmbed(nn.Module):
++    def __init__(self, args):
++        super().__init__()
++        self.proj = nn.Linear(3 * args.vision_patch_size**2, args.vision_dim)
++
++    def forward(self, x: torch.Tensor) -> torch.Tensor:
++        return self.proj(x.flatten(1))
++
++
++def apply_vision_rotary(q, k, position_embeddings, x_shape):
++    # The reference pairs the two halves of each head, with FP32 arithmetic.
++    cos, sin = position_embeddings
++    return apply_rotary(q, cos, sin), apply_rotary(k, cos, sin)
++
++
++class Attention(VisionAttention):
++    def __init__(self, args):
++        super().__init__(
++            embed_dim=args.vision_dim,
++            num_heads=args.vision_n_heads,
++            projection_size=args.vision_dim,
++            use_qkv_parallel=True,
++            use_data_parallel=True,
++            customized_position_embedding_applier=apply_vision_rotary,
++        )
++
++    def forward(
++        self,
++        x: torch.Tensor,
++        cos: torch.Tensor,
++        sin: torch.Tensor,
++        metadata: VisionAttentionMetadata,
++    ) -> torch.Tensor:
++        return (
++            super()
++            .forward(
++                x,
++                position_embeddings=(cos, sin),
++                forward_metadata=metadata,
++            )
++            .squeeze(0)
++        )
++
++
++class MLP(nn.Module):
++    def __init__(self, args):
++        super().__init__()
++        self.w1 = nn.Linear(args.vision_dim, 2 * args.vision_inter_dim, bias=False)
++        self.w2 = nn.Linear(args.vision_inter_dim, args.vision_dim, bias=False)
++
++    def forward(self, x: torch.Tensor) -> torch.Tensor:
++        gate, up = self.w1(x).chunk(2, dim=-1)
++        return self.w2(F.silu(gate) * up)
++
++
++class Block(nn.Module):
++    def __init__(self, args):
++        super().__init__()
++        self.norm1 = _rms_norm(args.vision_dim)
++        self.attn = Attention(args)
++        self.norm2 = _rms_norm(args.vision_dim)
++        self.mlp = MLP(args)
++
++    def forward(
++        self,
++        x: torch.Tensor,
++        cos: torch.Tensor,
++        sin: torch.Tensor,
++        metadata: VisionAttentionMetadata,
++    ) -> torch.Tensor:
++        x = x + self.attn(self.norm1(x), cos, sin, metadata)
++        return x + self.mlp(self.norm2(x))
++
++
++class ViT(nn.Module):
++    """DeepSeek ViT: full bidirectional attention over one image with 2D RoPE."""
++
++    def __init__(self, args):
++        super().__init__()
++        self.rope_dim = args.vision_dim // args.vision_n_heads // 2
++        self.rope_theta = args.vision_rope_theta
++        self.patch_embed = PatchEmbed(args)
++        self.blocks = nn.ModuleList([Block(args) for _ in range(args.vision_n_layers)])
++        self.norm = _rms_norm(args.vision_dim)
++
++    def forward(self, patches: torch.Tensor, n_h: int, n_w: int) -> torch.Tensor:
++        x = self.patch_embed(patches)
++        cos, sin = get_vision_cos_sin(n_h, n_w, self.rope_dim, self.rope_theta)
++        cos, sin = cos.to(x.device), sin.to(x.device)
++        # Passing the known length avoids device-to-host length discovery per layer.
++        metadata = prepare_vision_attention_metadata(
++            torch.tensor([0, x.shape[0]], dtype=torch.int32),
++            x.device,
++            max_seqlen=x.shape[0],
++        )
++        for block in self.blocks:
++            x = block(x, cos, sin, metadata)
++        return self.norm(x)
++
++
++class Aligner(nn.Module):
++    def __init__(self, args):
++        super().__init__()
++        self.downsample_ratio = args.vision_downsample_ratio
++        in_dim = args.vision_dim * self.downsample_ratio**2
++        self.w1 = nn.Linear(in_dim, args.dim)
++        self.w2 = nn.Linear(args.dim, args.dim)
++
++    def forward(self, x: torch.Tensor, n_h: int, n_w: int) -> torch.Tensor:
++        r = self.downsample_ratio
++        x = x.view(n_h, n_w, -1).permute(2, 0, 1)
++        x = F.pad(x, (0, -n_w % r, 0, -n_h % r))
++        x = F.unfold(x.unsqueeze(0), r, stride=r).squeeze(0).transpose(0, 1)
++        return self.w2(F.gelu(self.w1(x)))
+diff --git a/python/sglang/srt/multimodal/deepseek_v41_image_processing.py b/python/sglang/srt/multimodal/deepseek_v41_image_processing.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d19b7beb776a90d6ad3bded89287ceba32b8d52
+--- /dev/null
++++ b/python/sglang/srt/multimodal/deepseek_v41_image_processing.py
+@@ -0,0 +1,200 @@
++"""Image preprocessing.
++
++An image becomes a `n_vit_h x n_vit_w` patch grid for the ViT and a `n_llm_h x n_llm_w` token grid
++after the 3x3 aligner downsample, which the LLM sees as
++
++    [IMAGE_START] + ([IMAGE] * n_llm_w + [IMAGE_NEW_LINE]) * n_llm_h + [IMAGE_END]
++
++Every one of those positions carries `image_token_id` in `input_ids`; only the token type tells them
++apart. The IMAGE slots are filled with aligner rows in reading order.
++"""
++
++import math
++
++import numpy as np
++import torch
++import torch.nn.functional as F
++from PIL import Image, ImageOps
++
++IMAGE_START, IMAGE, IMAGE_NEW_LINE, IMAGE_END = range(4)
++
++
++GPU_PLAN_KEY = "dsv41_gpu_plan"
++
++
++def num_image_tokens(n_llm_h: int, n_llm_w: int) -> int:
++    return n_llm_h * (n_llm_w + 1) + 2
++
++
++def llm_grid(best_height: int, best_width: int, patch_size: int, downsample_ratio: int):
++    """Token grid the aligner produces from a patch grid of this pixel size."""
++    return math.ceil((best_height // patch_size) / downsample_ratio), math.ceil(
++        (best_width // patch_size) / downsample_ratio
++    )
++
++
++def solve_resize_ratio(height, width, patch_size, downsample_ratio, max_n_token):
++    """Largest aspect-preserving pixel size whose token grid still fits in max_n_token."""
++    r = height / width
++    max_w_float = math.sqrt((max_n_token - 2) / r + 0.25) - 0.5
++    max_h_float = max_w_float * r
++    cell = patch_size * downsample_ratio
++    if max_w_float < 1.0:  # very tall: collapse to a single column
++        return (max_n_token - 2) // 2 * cell, cell
++    if max_h_float < 1.0:  # very wide: collapse to a single row
++        return cell, (max_n_token - 3) * cell
++    beta = min(
++        math.floor(max_w_float) * cell / width, math.floor(max_h_float) * cell / height
++    )
++    return math.floor(height * beta / patch_size) * patch_size, math.floor(
++        width * beta / patch_size
++    ) * patch_size
++
++
++def safe_resize(
++    height, width, best_height, best_width, patch_size, downsample_ratio, max_n_token
++):
++    """Shrink the pixel size until the image costs at most max_n_token LLM tokens."""
++    n_llm_h, n_llm_w = llm_grid(best_height, best_width, patch_size, downsample_ratio)
++    if num_image_tokens(n_llm_h, n_llm_w) > max_n_token:
++        best_height, best_width = solve_resize_ratio(
++            height, width, patch_size, downsample_ratio, max_n_token
++        )
++        n_llm_h, n_llm_w = llm_grid(
++            best_height, best_width, patch_size, downsample_ratio
++        )
++        assert num_image_tokens(n_llm_h, n_llm_w) <= max_n_token
++    return n_llm_h, n_llm_w, best_height, best_width
++
++
++def plan_image_grid(width: int, height: int, args):
++    """Resize plan for an image of the given original size; a pure function of its arguments."""
++    p = args.vision_patch_size
++    if (
++        args.vision_max_wh_ratio is not None
++        and width > height * args.vision_max_wh_ratio
++    ):
++        width = height * args.vision_max_wh_ratio
++    if 0 < width * height < args.vision_min_pixels:
++        ratio = (args.vision_min_pixels / (width * height)) ** 0.5
++        width = int(width * ratio)
++        height = int(height * ratio)
++    best_width = math.ceil(width / p) * p
++    best_height = math.ceil(height / p) * p
++    return safe_resize(
++        height,
++        width,
++        best_height,
++        best_width,
++        p,
++        args.vision_downsample_ratio,
++        args.vision_max_n_token,
++    )
++
++
++def to_rgb(image: Image.Image) -> Image.Image:
++    """The same RGB conversion for every preprocessing backend."""
++    return image.convert("RGB")
++
++
++def patchify_image(image, args):
++    p = args.vision_patch_size
++    image = to_rgb(image)
++    n_llm_h, n_llm_w, best_height, best_width = plan_image_grid(
++        image.width, image.height, args
++    )
++    n_vit_h, n_vit_w = best_height // p, best_width // p
++    if (
++        args.vision_max_wh_ratio is not None
++        and image.width >= args.vision_max_wh_ratio * image.height
++    ):
++        image = image.resize((best_width, best_height))
++    else:
++        image = ImageOps.pad(image, (best_width, best_height), color=(127, 127, 127))
++    x = torch.from_numpy(np.asarray(image, dtype=np.float32)).permute(2, 0, 1) / 255
++    x = ((x - 0.5) / 0.5).to(torch.bfloat16)
++    patches = (
++        x.reshape(3, n_vit_h, p, n_vit_w, p)
++        .permute(1, 3, 0, 2, 4)
++        .reshape(n_vit_h * n_vit_w, 3, p, p)
++    )
++    return patches, n_vit_h, n_vit_w, n_llm_h, n_llm_w
++
++
++def image_token_types(n_llm_h: int, n_llm_w: int) -> torch.Tensor:
++    types = [IMAGE_START]
++    types += ([IMAGE] * n_llm_w + [IMAGE_NEW_LINE]) * n_llm_h
++    types.append(IMAGE_END)
++    return torch.tensor(types, dtype=torch.int64)
++
++
++def prepare_image(image, args):
++    image = to_rgb(image)
++    lh, lw, height, width = plan_image_grid(image.width, image.height, args)
++    stretch = (
++        args.vision_max_wh_ratio is not None
++        and image.width >= args.vision_max_wh_ratio * image.height
++    )
++    resize_h, resize_w = height, width
++    if not stretch:
++        if image.width / image.height > width / height:
++            resize_h = round(image.height / image.width * width)
++        elif image.width / image.height < width / height:
++            resize_w = round(image.width / image.height * height)
++    plan = {
++        "height": height,
++        "width": width,
++        "resize_h": resize_h,
++        "resize_w": resize_w,
++        "top": round((height - resize_h) / 2),
++        "left": round((width - resize_w) / 2),
++        "patch_size": args.vision_patch_size,
++    }
++    return np.array(image, dtype=np.uint8), plan, lh, lw
++
++
++def patchify_image_rust(image, args, *, resize_patchify):
++    pixels, plan, lh, lw = prepare_image(image, args)
++    bits = resize_patchify(
++        pixels,
++        (plan["height"], plan["width"]),
++        (plan["resize_h"], plan["resize_w"]),
++        (plan["top"], plan["left"]),
++        plan["patch_size"],
++    )
++    p = plan["patch_size"]
++    h, w = plan["height"] // p, plan["width"] // p
++    patches = torch.from_numpy(bits).view(torch.bfloat16).view(h * w, 3, p, p)
++    return patches, h, w, lh, lw
++
++
++def prepare_image_gpu(image, args):
++    pixels, plan, lh, lw = prepare_image(image, args)
++    return torch.from_numpy(pixels).permute(2, 0, 1).contiguous(), plan, lh, lw
++
++
++def materialize_image_gpu(pixels: torch.Tensor, plan: dict) -> torch.Tensor:
++    """Resize, pad, normalize and patchify on the input tensor's device."""
++    x = pixels.unsqueeze(0).float()
++    target = (plan["resize_h"], plan["resize_w"])
++    # PIL resizes separably, rounding and clamping to uint8 after each pass;
++    # fusing the two passes into one float resize diverges on high-contrast images.
++    for size in ((x.shape[-2], target[1]), target):
++        if x.shape[-2:] != size:
++            x = (
++                F.interpolate(
++                    x, size=size, mode="bicubic", align_corners=False, antialias=True
++                )
++                .round()
++                .clamp_(0, 255)
++            )
++    top, left = plan["top"], plan["left"]
++    x = F.pad(
++        x,
++        (left, plan["width"] - target[1] - left, top, plan["height"] - target[0] - top),
++        value=127,
++    )
++    x = ((x / 255 - 0.5) / 0.5).to(torch.bfloat16)
++    p = plan["patch_size"]
++    h, w = plan["height"] // p, plan["width"] // p
++    return x.reshape(3, h, p, w, p).permute(1, 3, 0, 2, 4).reshape(h * w, 3, p, p)
+diff --git a/python/sglang/srt/multimodal/processors/deepseek_v41.py b/python/sglang/srt/multimodal/processors/deepseek_v41.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc18812f2f28963eec862a7f45f4e38142aaac44
+--- /dev/null
++++ b/python/sglang/srt/multimodal/processors/deepseek_v41.py
+@@ -0,0 +1,127 @@
++"""DeepSeek-V4.1 image preprocessing, preserving raw token IDs for Engram."""
++
++import asyncio
++import logging
++from functools import partial
++
++import torch
++
++from sglang.srt.environ import envs
++from sglang.srt.managers.schedule_batch import (
++    Modality,
++    MultimodalDataItem,
++    MultimodalProcessorOutput,
++)
++from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
++from sglang.srt.multimodal.deepseek_v41_image_processing import (
++    GPU_PLAN_KEY,
++    image_token_types,
++    patchify_image,
++    patchify_image_rust,
++    prepare_image_gpu,
++)
++from sglang.srt.multimodal.processors.base_processor import (
++    BaseMultimodalProcessor,
++    MultimodalSpecialTokens,
++)
++from sglang.srt.runtime_context import get_mm
++from sglang.srt.rust_extensions import load_rust_extension
++
++logger = logging.getLogger(__name__)
++
++
++class DeepseekV41ImageProcessor(BaseMultimodalProcessor):
++    models = [DeepseekV4ForCausalLM]
++    preserve_processor_input_ids = True
++    prefer_tokenized_input = True
++    gpu_image_decode = False
++
++    def __init__(self, hf_config, server_args, _processor, *args, **kwargs):
++        self.preprocess_backend = "cpu"
++        self.cpu_patchify = patchify_image
++        backend = get_mm().image_processor_backend
++        if backend == "pil" or get_mm().disable_fast_image_processor:
++            self.preprocess_backend = "cpu"
++        elif envs.SGLANG_ENCODER_IMAGE_PROCESSOR_USE_GPU.get():
++            self.preprocess_backend = "gpu"
++        elif backend == "auto":
++            # Resolved before super().__init__(), which fingerprints the backend;
++            # a load failure falls back to PIL, later image errors do not.
++            try:
++                extension = load_rust_extension(
++                    "sglang.srt.rust_extensions._multimodal"
++                )
++                resize_patchify = extension.dsv41.resize_patchify
++            except (ImportError, OSError, RuntimeError, AttributeError) as error:
++                logger.warning(
++                    "V4.1 Rust image processor unavailable; using PIL: %s", error
++                )
++            else:
++                self.preprocess_backend = "rust"
++                self.cpu_patchify = partial(
++                    patchify_image_rust, resize_patchify=resize_patchify
++                )
++        super().__init__(hf_config, server_args, _processor, *args, **kwargs)
++        self.image_token_id = hf_config.image_token_id
++        self.mm_tokens = MultimodalSpecialTokens(
++            image_token=_processor.convert_ids_to_tokens(self.image_token_id),
++            image_token_id=self.image_token_id,
++        ).build(_processor)
++
++    def preprocess_fingerprint_payload(self):
++        payload = super().preprocess_fingerprint_payload()
++        payload["dsv41_preprocess_backend"] = self.preprocess_backend
++        return payload
++
++    async def process_mm_data_async(
++        self, image_data, input_text, request_obj, *args, **kwargs
++    ):
++        base = await self.load_mm_data(
++            input_text, image_data=image_data, multimodal_tokens=self.mm_tokens
++        )
++        ids = (
++            input_text
++            if isinstance(input_text, list)
++            else self._processor.encode(input_text)
++        )
++        if ids.count(self.image_token_id) != len(base.images):
++            raise ValueError("Image placeholders and images must match")
++        images = iter(base.images)
++        tokens, items = [], []
++        for token in ids:
++            if token != self.image_token_id:
++                tokens.append(token)
++                continue
++            image = next(images)
++            plan = None
++            if self.preprocess_backend == "gpu":
++                patches, plan, lh, lw = await asyncio.to_thread(
++                    prepare_image_gpu, image, self.hf_config
++                )
++                h = plan["height"] // plan["patch_size"]
++                w = plan["width"] // plan["patch_size"]
++            else:
++                patches, h, w, lh, lw = await asyncio.to_thread(
++                    self.cpu_patchify, image, self.hf_config
++                )
++            if self.keep_mm_features_on_device:
++                patches = patches.to(torch.device("cuda", self.server_args.base_gpu_id))
++            metadata = {"n_vit_h": h, "n_vit_w": w}
++            if plan is not None:
++                metadata[GPU_PLAN_KEY] = plan
++            count = len(image_token_types(lh, lw))
++            start = len(tokens)
++            tokens.extend([self.image_token_id] * count)
++            items.append(
++                MultimodalDataItem(
++                    modality=Modality.IMAGE,
++                    feature=patches,
++                    offsets=[(start, start + count - 1)],
++                    model_specific_data=metadata,
++                )
++            )
++        return MultimodalProcessorOutput(
++            input_ids=tokens,
++            mm_items=self._prepare_mm_items_for_transport(items),
++            im_token_id=self.image_token_id,
++        )
+diff --git a/python/sglang/srt/utils/hf_transformers/processor.py b/python/sglang/srt/utils/hf_transformers/processor.py
+index c0c7a841161a3420ec240ff108c16b40f43a0200..f129ecf599674b05133eaeb28a6616aa7c967b8b 100644
+--- a/python/sglang/srt/utils/hf_transformers/processor.py
++++ b/python/sglang/srt/utils/hf_transformers/processor.py
+@@ -49,6 +49,7 @@ from .tokenizer import (
+     _fix_added_tokens_encoding,
+     _fix_special_tokens_pattern,
+     _install_tokenizer_warnings_filter,
++    get_tokenizer,
+ )
+ 
+ _IMAGE_PROCESSOR_BACKENDS = {"auto", "torchvision", "pil"}
+@@ -253,6 +254,10 @@ def get_processor(
+             revision=revision,
+             **kwargs,
+         )
++    if config.model_type == "deepseek_v41" and config.vision_n_layers > 0:
++        return get_tokenizer(
++            tokenizer_name, trust_remote_code=trust_remote_code, revision=revision
++        )
+     is_ocr2 = _is_deepseek_ocr2_model(config)
+     if _is_deepseek_ocr_model(config) or is_ocr2:
+         config.model_type = "deepseek-ocr"
+@@ -355,8 +360,6 @@ def get_processor(
+     # AutoProcessor may internally create a TokenizersBackend tokenizer
+     # (same issue as get_tokenizer). Replace it with a properly loaded one.
+     if type(tokenizer).__name__ == _TOKENIZERS_BACKEND:
+-        from .tokenizer import get_tokenizer
+-
+         logger.warning(
+             "Processor tokenizer for %s is TokenizersBackend, "
+             "reloading via get_tokenizer",
+diff --git a/test/registered/unit/multimodal/test_processor_async_call_sites.py b/test/registered/unit/multimodal/test_processor_async_call_sites.py
+index 3b2fa338c9f3876cb7aef4a054a516301d520777..b1955fe72289e15a9100c13c004f9dcbc64cd8eb 100644
+--- a/test/registered/unit/multimodal/test_processor_async_call_sites.py
++++ b/test/registered/unit/multimodal/test_processor_async_call_sites.py
+@@ -154,6 +154,9 @@ def test_overrides_take_the_worker_pools_processor_clone():
+ # explicitly so that adding a processor forces a decision instead of silently
+ # leaving it at one-worker speed.
+ _NO_WORKER_POOL_ROUTE = {
++    # Runs its own image preprocessing to keep the raw token ids the Engram
++    # hasher needs; the shared chain would re-tokenize them.
++    "deepseek_v41.py",
+     "dots_note_omni.py",
+     "inkling.py",
+     "lightonocr.py",

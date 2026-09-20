@@ -1,0 +1,188 @@
+diff --git a/test/registered/unit/constrained/test_xgrammar_string_fsm_blocks.py b/test/registered/unit/constrained/test_xgrammar_string_fsm_blocks.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..14bd900e4e924b42b23529574a6604674655f699
+--- /dev/null
++++ b/test/registered/unit/constrained/test_xgrammar_string_fsm_blocks.py
+@@ -0,0 +1,79 @@
++"""Decoded string minima and token rollback across finite-state block edges."""
++
++import json
++
++import pytest
++import torch
++import xgrammar as xg
++
++
++@pytest.fixture(scope="module")
++def compiler():
++    vocab = [bytes([i]) for i in range(256)] + [b"aa", b'a"', b'aa"', b"<eos>"]
++    info = xg.TokenizerInfo(vocab, xg.VocabType.RAW, stop_token_ids=[259])
++    return xg.GrammarCompiler(info, max_threads=2)
++
++
++@pytest.mark.parametrize("minimum", [1, 127, 128, 129, 200, 1000, 16385])
++@pytest.mark.parametrize("delta", [-1, 0, 1])
++@pytest.mark.parametrize("ascii_only", [False, True])
++def test_decoded_unicode_length_at_block_edges(compiler, minimum, delta, ascii_only):
++    ctx = compiler.compile_json_schema(
++        json.dumps({"type": "string", "minLength": minimum})
++    )
++    count = minimum + delta
++    value = "a" * max(count - 1, 0) + ("😀" if count else "")
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string(json.dumps(value, ensure_ascii=ascii_only)) == (
++        delta >= 0
++    )
++
++
++@pytest.mark.parametrize("escape", [r"\n", r"\"", r"\\", r"\u0041", r"\uD83D\uDE00"])
++def test_escape_is_one_character_at_128_boundary(compiler, escape):
++    ctx = compiler.compile_json_schema('{"type":"string","minLength":129}')
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string('"' + "a" * 127 + escape)
++    assert not matcher.accept_string('"')
++    assert matcher.accept_string('a"')
++
++
++@pytest.mark.parametrize(
++    "invalid", [r"\uD800", r"\uDC00", r"\uD83D\u0041", "\t", "\x00"]
++)
++def test_invalid_escape_or_raw_control_rejected(compiler, invalid):
++    ctx = compiler.compile_json_schema('{"type":"string","minLength":129}')
++    matcher = xg.GrammarMatcher(ctx)
++    assert not matcher.accept_string('"' + "a" * 128 + invalid + '"')
++
++
++def test_multichar_token_mask_and_rollback_across_block_boundary(compiler):
++    ctx = compiler.compile_json_schema('{"type":"string","minLength":129}')
++    matcher = xg.GrammarMatcher(ctx, max_rollback_tokens=5)
++    assert matcher.accept_string('"' + "a" * 127)
++    mask = xg.allocate_token_bitmask(1, 260)
++    matcher.fill_next_token_bitmask(mask)
++    before = mask.clone()
++
++    def allowed(index):
++        return bool(int(mask[0, index // 32]) & (1 << (index % 32)))
++
++    assert allowed(256)  # Two characters cross the minimum.
++    assert not allowed(257)  # One character plus quote is still too short.
++    assert allowed(258)  # Two characters plus quote close valid JSON.
++    assert matcher.accept_token(256)
++    matcher.fill_next_token_bitmask(mask)
++    reached = mask.clone()
++    assert allowed(ord('"'))
++    matcher.rollback(1)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, before)
++    assert matcher.accept_token(256)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
++    assert matcher.accept_token(ord('"'))
++    assert matcher.accept_token(259)
++    assert matcher.is_terminated()
++    matcher.rollback(2)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
+diff --git a/test/registered/unit/constrained/test_xgrammar_unbounded_prefix.py b/test/registered/unit/constrained/test_xgrammar_unbounded_prefix.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e90ff1b0de1396faca5f63935e8607e51f238f25
+--- /dev/null
++++ b/test/registered/unit/constrained/test_xgrammar_unbounded_prefix.py
+@@ -0,0 +1,97 @@
++"""Preserve counted-language and token rollback semantics for large minima."""
++
++import json
++
++import pytest
++import torch
++import xgrammar as xg
++
++
++@pytest.fixture(scope="module")
++def compiler():
++    vocab = [bytes([i]) for i in range(256)] + [b"<eos>"]
++    info = xg.TokenizerInfo(vocab, xg.VocabType.RAW, stop_token_ids=[256])
++    return xg.GrammarCompiler(info, max_threads=2)
++
++
++@pytest.mark.parametrize("minimum", [128, 129, 200, 1000])
++@pytest.mark.parametrize("delta", [-1, 0, 1, 129])
++def test_repetition_minimum_is_preserved(compiler, minimum, delta):
++    grammar = f'root ::= "[" ("ab" | "cd"){{{minimum},}} "]"'
++    matcher = xg.GrammarMatcher(compiler.compile_grammar(grammar))
++    assert matcher.accept_string("[" + "ab" * (minimum + delta))
++    assert matcher.accept_string("]") == (delta >= 0)
++    if delta >= 0:
++        assert matcher.accept_token(256)
++        assert matcher.is_terminated()
++
++
++@pytest.mark.parametrize("minimum", [129, 200])
++def test_rollback_across_minimum_and_termination(compiler, minimum):
++    matcher = xg.GrammarMatcher(
++        compiler.compile_grammar(f'root ::= "a"{{{minimum},}} "!"')
++    )
++    mask = xg.allocate_token_bitmask(1, 257)
++    for _ in range(minimum - 1):
++        assert matcher.accept_token(ord("a"))
++    matcher.fill_next_token_bitmask(mask)
++    before = mask.clone()
++    assert not (int(mask[0, ord("!") // 32]) & (1 << (ord("!") % 32)))
++    assert matcher.accept_token(ord("a"))
++    matcher.fill_next_token_bitmask(mask)
++    reached = mask.clone()
++    assert int(mask[0, ord("!") // 32]) & (1 << (ord("!") % 32))
++    matcher.rollback(1)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, before)
++    assert matcher.accept_token(ord("a"))
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
++    assert matcher.accept_token(ord("!"))
++    assert matcher.accept_token(256)
++    matcher.rollback(2)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
++
++
++@pytest.mark.parametrize("tail", ["a", "\n", '"', "\\", "中", "😀"])
++def test_json_length_counts_decoded_characters(compiler, tail):
++    schema = {"type": "string", "minLength": 129}
++    ctx = compiler.compile_json_schema(json.dumps(schema))
++    for count in (128, 129, 130):
++        matcher = xg.GrammarMatcher(ctx)
++        text = "a" * (count - 1) + tail
++        assert matcher.accept_string(json.dumps(text, ensure_ascii=True)) == (
++            count >= 129
++        )
++
++
++@pytest.mark.parametrize("count", [128, 129, 130, 200, 201])
++def test_bounded_range_unchanged(compiler, count):
++    ctx = compiler.compile_grammar('root ::= "[" "a"{129,200} "]"')
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string("[" + "a" * count + "]") == (129 <= count <= 200)
++
++
++def test_large_minimum_keeps_compact_compilation(compiler):
++    # A large client minimum must not turn into a million explicitly unrolled
++    # rules. Check the accepted language on both sides of the exact boundary.
++    ctx = compiler.compile_grammar('root ::= "a"{100000,} "!"')
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string("a" * 99999)
++    assert not matcher.accept_string("!")
++    assert matcher.accept_string("a!")
++
++
++@pytest.mark.parametrize("length", [128, 129, 258, 300])
++def test_overlapping_repeated_alternatives(compiler, length):
++    ctx = compiler.compile_grammar('root ::= ("a" | "aa"){129,} "!"')
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string("a" * length + "!") == (length >= 129)
++
++
++@pytest.mark.parametrize("length", [0, 1, 129, 200])
++def test_nullable_repeated_rule(compiler, length):
++    ctx = compiler.compile_grammar('root ::= ("a" | ""){129,} "!"')
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string("a" * length + "!")
