@@ -36,7 +36,11 @@
       "scope": "No bitmap-only or Python-only claim"
     },
     "nemotron-v0519-historical": {"passed": false, "status": "pending_v0520_semantic_migration"},
-    "gemma-v0519-historical": {"passed": false, "status": "no_replayable_v0520_model_only_patch"}
+    "gemma-v0519-historical": {"passed": false, "status": "no_replayable_v0520_model_only_patch"},
+    "qwen35-gguf-v0519-historical": {"passed": false, "status": "pending_v0520_semantic_migration", "authority": "Historical bytes retained; no v0.5.20 clean replay claimed"},
+    "qwen38-27b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"},
+    "qwen36-27b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"},
+    "qwen25-7b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"}
   },
   "test_boundary": "No Linux/GPU/model-serving execution; failures retained as evidence"
 }
