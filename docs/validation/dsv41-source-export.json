@@ -27,7 +27,7 @@
   "expected_composed_tree": null,
   "manifest": {
     "schema": "phala.sglang-serving-patches.v1",
-    "sha256": "ad213944de72532bef454461fbed251ef30f6aa58780048a8b94921796dc848c"
+    "sha256": "278a7fb1a1f87d8f7120eaf57f6a75c56e6cf7eb11a902b43b01b9576750b8f4"
   },
   "objects": {
     "complete_tree_blobs_checked": 9298,
@@ -45,7 +45,7 @@
         "dependencies": [],
         "parent": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "a463ed610a65a3ca5a85b49f0bf03cc2251630bf"
       }
     },
@@ -62,7 +62,7 @@
         ],
         "parent": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "505d56e8c71682250e67cd284efc547b1682c7f8"
       }
     },
@@ -79,7 +79,7 @@
         ],
         "parent": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "af1e62184e00d0c53184c4ea1e32701c04617f99"
       }
     },
@@ -96,7 +96,7 @@
         ],
         "parent": "ae829a492f29d50286ca62e524f66bdab7a314b3",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "63220ce6ee5cfa2b51776284e5e4b1a21ff81643"
       }
     },
@@ -113,7 +113,7 @@
         ],
         "parent": "2058fb0a106ef3e9a1431f6400d512333643f618",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "c3954df1342b5748e7594e24d9eb77f61729dea7"
       }
     },
@@ -130,7 +130,7 @@
         ],
         "parent": "d25d72a68e5b240851a0b645b98582d7924b540f",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "3662e562789ba43e0ebdebfefa4d4afa9fa46e5d"
       }
     },
@@ -147,7 +147,7 @@
         ],
         "parent": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "5dc5d0218ce988407cd94f9851d7b25bedccee46"
       }
     },
@@ -164,7 +164,7 @@
         ],
         "parent": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "1928f67e1eb7c605c6df7deafc65736617fcaeb9"
       }
     },
@@ -181,7 +181,7 @@
         ],
         "parent": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "bb0c53eb165b7811dbc7e5cb0c56ea985b802b6c"
       }
     },
@@ -198,7 +198,7 @@
         ],
         "parent": "a55765773e792cb3a7dbbf152a0968eb31c74354",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "e966dccd5b89314f1644a5099e1ff8a2fb25a7f1"
       }
     },
@@ -215,7 +215,7 @@
         ],
         "parent": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "5b1d7872a4d946be4f24adb67fa05abbf8d06235"
       }
     },
@@ -232,7 +232,7 @@
         ],
         "parent": "137f96a5cc08d3fd74c5c6cc8055aec73c59af07",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "2e1c8ac60bf5b8972a848dbf2b3b3bbec4a02ab6"
       }
     },
@@ -249,7 +249,7 @@
         ],
         "parent": "22d54075f900b0c78d677d8a28d4db855e274c4a",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "78df09762c4ebb5276fb72794f4226816925812d"
       }
     },
@@ -266,7 +266,7 @@
         ],
         "parent": "5648185cee4c1d0dc49525dc50d4bfab0fb9bc95",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "490924331c36cded7ef019e6ac241a214d1c6ae6"
       }
     },
@@ -283,7 +283,7 @@
         ],
         "parent": "e53312611f87fe7fffa895c1e0259f3f7e665e07",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/43",
         "tree": "45de451a395e591c40c554508de5ab68bf8ff897"
       }
     },
@@ -300,7 +300,7 @@
         ],
         "parent": "9af234a4891a8facbe92626a2c54fffce5f04637",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/44",
         "tree": "07f4954a652e1592e0114bea7f5a7fc4f6727d80"
       }
     },
@@ -317,7 +317,7 @@
         ],
         "parent": "5645663683f25062e10596ac09661d6a169a1993",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/44",
         "tree": "508b1ac86e76e281ba4ce804cfde34090456c6d1"
       }
     },
@@ -334,7 +334,7 @@
         ],
         "parent": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/45",
         "tree": "37667617c4ed35f01475d5a0c179f0a10b8eb3aa"
       }
     },
@@ -351,7 +351,7 @@
         ],
         "parent": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/46",
         "tree": "448e0f9395a4ea5e5c570dec4de71c9ea146d2dd"
       }
     },
@@ -368,7 +368,7 @@
         ],
         "parent": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/47",
         "tree": "9b0473a9b0355dff7df6c10a9467042495c4d77f"
       }
     },
@@ -385,7 +385,7 @@
         ],
         "parent": "437b982abfdfa1b563122e061ead1a1cd1211c29",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/48",
         "tree": "652ce49212294edf536bfed81206ff522b1408f5"
       }
     },
@@ -402,7 +402,7 @@
         ],
         "parent": "ecd9f93317e41aa19487948ddab05f754556a990",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/49",
         "tree": "c195099036cdee8da9b98c515ea74408acf90ecd"
       }
     },
@@ -419,7 +419,7 @@
         ],
         "parent": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/50",
         "tree": "29dcad4ff04a0d46bca379f0211d3ef52560a970"
       }
     },
@@ -436,7 +436,7 @@
         ],
         "parent": "81b67d8f1736b387aff2f908a2cddf011803367a",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/51",
         "tree": "bab9d3f50ab6c6a0afc7126e57cded8ab4b0b3da"
       }
     },
@@ -453,7 +453,7 @@
         ],
         "parent": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/52",
         "tree": "3461f5380ddcf971e6ca28783754f58f6733b3cd"
       }
     },
@@ -470,7 +470,7 @@
         ],
         "parent": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
         "repository": "https://github.com/Phala-Network/sglang",
-        "review_pr": "pending",
+        "review_pr": "https://github.com/Phala-Network/sglang/pull/53",
         "tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f"
       }
     }

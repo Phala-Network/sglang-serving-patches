@@ -33,8 +33,8 @@ source commit, and the model commit restores the complete protocol fixtures.
 
 All exports are generated from the recorded source commit and its real parent.
 The manifest records full trees, explicit prior-source dependencies, donor
-commits and original upstream PRs. The source review field is `pending` until
-the corresponding Phala source PR exists; a PR URL does not establish approval.
+commits and original upstream PRs. The source review fields link the Phala
+draft PRs below and record `draft_pending_review`; a PR URL does not establish approval.
 Donor trailers describe lineage, not byte equivalence after adaptations.
 Author and co-author attribution remain in the immutable source commits; raw
 diff exports do not replace source history or applicable upstream licenses.
@@ -43,6 +43,25 @@ Source code and tests are maintained in Phala-Network/sglang. Do not edit patch
 implementation here. Metadata and profile selection belong in this repository.
 The existing Qwen manifest/profile and shared source-verifier implementation are
 not modified by this addition.
+
+## Source review groups
+
+All 11 source PRs are drafts pending review. Their source commits are fixed in
+the manifest; the profile keeps the same 26 exports and full source tree.
+
+| Source group | Selected exports | Draft source PR |
+| --- | --- | --- |
+| Native model support and donor closure | 0001–0015 | [#43](https://github.com/Phala-Network/sglang/pull/43) |
+| Dense-prefill memory and consumer tests | 0016–0017 | [#44](https://github.com/Phala-Network/sglang/pull/44) |
+| Completed HiCache chunk backup | 0018 | [#45](https://github.com/Phala-Network/sglang/pull/45) |
+| Common async, usage and media contracts | 0019 | [#46](https://github.com/Phala-Network/sglang/pull/46) |
+| Model reasoning, roles and async opt-in | 0020 | [#47](https://github.com/Phala-Network/sglang/pull/47) |
+| Medium target finalize | 0021 | [#48](https://github.com/Phala-Network/sglang/pull/48) |
+| Stable transplant closure | 0022 | [#49](https://github.com/Phala-Network/sglang/pull/49) |
+| MXFP4 padding | 0023 | [#50](https://github.com/Phala-Network/sglang/pull/50) |
+| Protocol selftest alignment | 0024 | [#51](https://github.com/Phala-Network/sglang/pull/51) |
+| Routed-weight ABI | 0025 | [#52](https://github.com/Phala-Network/sglang/pull/52) |
+| Candidate bitmap extent | 0026 | [#53](https://github.com/Phala-Network/sglang/pull/53) |
 
 ## Deterministic verification
 
