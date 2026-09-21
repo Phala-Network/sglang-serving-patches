@@ -205,6 +205,86 @@
       ],
       "conflicts_with_source_commits": [],
       "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0008-hicache-reset-visibility",
+      "scope": "common",
+      "title": "Fix HiCache host pool reset visibility",
+      "path": "patches/sglang/v0.5.20/common/kimi-0008-hicache-reset-visibility.patch",
+      "sha256": "293e4ce685354c970ce80f453481c8752f380de653fe35320e1e49daa005e86d",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "17c60cf1c3b54ecbc3fa245ae125f25d199e7bd7",
+      "source_parent": "b873d248cdfb2ac62e9bbb1d14f45925c152f053",
+      "source_tree": "72b9802217baafce0f1b4cec6c83efd902a5ea7e",
+      "source_pr": null,
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-async-ack-release-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint",
+        "0005-file-storage-ownership",
+        "0006-restorable-prefix",
+        "0007-chunk-write-through"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0009-hicache-flush-gauges",
+      "scope": "common",
+      "title": "Refresh HiCache gauges after cache flush",
+      "path": "patches/sglang/v0.5.20/common/kimi-0009-hicache-flush-gauges.patch",
+      "sha256": "7717a46995cc105bf9190f70f2088d93cd2ffb7a1967545fdc2fc0bd3997e61e",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "afc97f134f7dea5e3575a11413a1ce2e66049b2f",
+      "source_parent": "17c60cf1c3b54ecbc3fa245ae125f25d199e7bd7",
+      "source_tree": "31c687817a6f1dd77e99f90a96a1cfd9f9651585",
+      "source_pr": null,
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-async-ack-release-r1",
+      "dependencies": [
+        "0008-hicache-reset-visibility"
+      ],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint",
+        "0005-file-storage-ownership",
+        "0006-restorable-prefix",
+        "0007-chunk-write-through",
+        "0008-hicache-reset-visibility"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
+    },
+    {
+      "id": "0010-hicache-async-ack-sync",
+      "scope": "common",
+      "title": "Pipeline HiCache ACK sync for selective host cache",
+      "path": "patches/sglang/v0.5.20/common/kimi-0010-hicache-async-ack-sync.patch",
+      "sha256": "2c91ca252cc47eca6370621d90874fa6c21235b4c6a503335ad5839f39d4d345",
+      "source_repository": "https://github.com/Phala-Network/sglang",
+      "source_commit": "22dfb99dfadbc06f5474ca594613986e9cff22b7",
+      "source_parent": "afc97f134f7dea5e3575a11413a1ce2e66049b2f",
+      "source_tree": "94aa4aeb1dc917d26f523517bdccaa346912bd16",
+      "source_pr": null,
+      "source_ref": "refs/heads/codex/kimi-k3-v0520-async-ack-release-r1",
+      "dependencies": [],
+      "review_ancestry_only": [
+        "0001-prefill-seq-cap",
+        "0002-chat-stream-close",
+        "0003-request-owner",
+        "0004-mamba-checkpoint",
+        "0005-file-storage-ownership",
+        "0006-restorable-prefix",
+        "0007-chunk-write-through",
+        "0008-hicache-reset-visibility",
+        "0009-hicache-flush-gauges"
+      ],
+      "conflicts_with_source_commits": [],
+      "validation_scope": "Kimi-K3 only; common is semantic scope, not cross-model qualification"
     }
   ]
 }

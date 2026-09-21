@@ -69,16 +69,36 @@
       "path": "patches/sglang/v0.5.20/common/kimi-0007-chunk-write-through.patch",
       "sha256": "4b4887fcf835150840a375bcb650de49cca6b5d5b36a606f71a74fbd494b317c",
       "dependencies": []
+    },
+    {
+      "id": "0008-hicache-reset-visibility",
+      "path": "patches/sglang/v0.5.20/common/kimi-0008-hicache-reset-visibility.patch",
+      "sha256": "293e4ce685354c970ce80f453481c8752f380de653fe35320e1e49daa005e86d",
+      "dependencies": []
+    },
+    {
+      "id": "0009-hicache-flush-gauges",
+      "path": "patches/sglang/v0.5.20/common/kimi-0009-hicache-flush-gauges.patch",
+      "sha256": "7717a46995cc105bf9190f70f2088d93cd2ffb7a1967545fdc2fc0bd3997e61e",
+      "dependencies": [
+        "0008-hicache-reset-visibility"
+      ]
+    },
+    {
+      "id": "0010-hicache-async-ack-sync",
+      "path": "patches/sglang/v0.5.20/common/kimi-0010-hicache-async-ack-sync.patch",
+      "sha256": "2c91ca252cc47eca6370621d90874fa6c21235b4c6a503335ad5839f39d4d345",
+      "dependencies": []
     }
   ],
   "governor": {
     "enabled": false,
     "hooks": []
   },
-  "expected_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574",
+  "expected_tree": "94aa4aeb1dc917d26f523517bdccaa346912bd16",
   "equivalence": {
-    "frozen_tested_commit": "739b517714012a8766a7d09d473f82aabd7f4d28",
-    "composed_commit": "b873d248cdfb2ac62e9bbb1d14f45925c152f053",
-    "frozen_tree": "25a790a2fb58644a31c15ce1bcaf3b4d37733574"
+    "frozen_tested_commit": "63d0313435d1a3da814664a1f10537f69fa8ec05",
+    "composed_commit": "22dfb99dfadbc06f5474ca594613986e9cff22b7",
+    "frozen_tree": "94aa4aeb1dc917d26f523517bdccaa346912bd16"
   }
 }

@@ -7,7 +7,7 @@ installing or enabling Governor.
 
 | Directory | Scope |
 | --- | --- |
-| `common/` | Control-message correlation, lifecycle/SHM cleanup, worker metadata, grammar identity, ownership/queue diagnostics, TOKEN auth/redaction, protocol/schema validation, generic reasoning bounds/visibility, media validation and watchdog behavior |
+| `common/` | Control-message correlation, lifecycle/SHM cleanup, worker metadata, grammar identity, ownership/queue diagnostics, HiCache reset/gauge/ACK synchronization, TOKEN auth/redaction, protocol/schema validation, generic reasoning bounds/visibility, media validation and watchdog behavior |
 | `models/qwen3_5/` | Qwen template system-message folding, effort aliases/budgets and tool reasoning history; Qwen3.8 uses this template family |
 | `models/qwen3_coder/` | Qwen XML/parser argument coercion and parallel/required tool-call behavior |
 
