@@ -21,16 +21,17 @@ pinned versions of these projects.
 Apply [series](series) in order, using the exact inputs in [manifest.json](manifest.json):
 
 - Upstream SGLang v0.5.20: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
-- Complete engine: `a43a9d30eb9879ec54c607d1d2edfdb5c536bb07`.
-- Complete tree: `0dacab8ac525e59aa02875bfd83c1157637a4bc9`.
+- Complete engine: `354d47922eafa95ebc2d7bd63b7627d780a01c26`.
+- Complete tree: `2733a3bae11d56e4bf3f694fbb49f8e9e156086d`.
 - 31 serving/source patches: the prior 30-step stack plus common pre-header HTTP
   error propagation for streaming endpoints. Common code appears once under
   `patches/common`; Qwen and GLM parser changes have explicit model directories;
   the external FlashInfer workspace fix is under `patches/dependencies`.
 - One final, explicitly Governor-owned hook step under `integrations/governor`,
-  copied byte-for-byte from Governor `5c34e89673b21a4c87fea6967a0afced51161b8f`
-  version 0.2.0 / ABI 4. Its SHA256 is
-  `ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15`.
+  copied byte-for-byte from tested Governor source
+  `74e981760572420329468eef663e5dfcf4ba8f6b`, version 0.2.1 / ABI 4. Its
+  SHA256 is
+  `52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea`.
   This is not a serving fix and does not bundle the external Governor component.
 
 The first 31 entries reproduce serving tree `b0b36fb1d0b46410a6bd8c721ddb163237cc1be9`;
@@ -42,11 +43,12 @@ The former Governor 0.1.1 export and its exact patch/manifest/verification bytes
 remain under [history/governor-v0.1.1](history/governor-v0.1.1).
 
 The [model maintenance coverage audit](docs/COVERAGE.md), with
-[110 source records](docs/COVERAGE.json), distinguishes fixes actually present
-in this frozen engine from upstream-covered changes, known residuals and pending
-semantic migration. A complete checkout does not mean every historical model
-fix is included. The next candidate is isolated and is not substituted for the
-engine commit or patch collection recorded above.
+[110 source records](docs/COVERAGE.json), remains explicitly anchored to the
+historical engine `4281309...`. The current source keeps that serving/model stack
+and changes the later Governor integration, so its common/model findings remain
+useful while its historical Governor ABI v1 boundary does not describe this ABI
+v4 export. A complete checkout does not mean every historical model fix is
+included.
 
 Regenerate using the small [export script](scripts/export.py), then verify:
 

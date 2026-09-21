@@ -5,7 +5,7 @@ The collection is generated from the frozen complete engine source;
 commit/parent and all 32 intermediate Git trees. A fresh temporary index starts
 at official upstream `94602c9`; `git apply --cached --check` and actual
 application are performed for each active entry. The final tree is
-`0dacab8ac525e59aa02875bfd83c1157637a4bc9`. The verifier does not modify the
+`2733a3bae11d56e4bf3f694fbb49f8e9e156086d`. The verifier does not modify the
 source working tree or index, and it permits selector-owned patch files outside
 the active series while requiring exactly one active Governor integration.
 
@@ -13,11 +13,11 @@ The ordered first 30 entries preserve the existing common/Qwen/GLM source
 history. Entry 31 is the common pre-header HTTP error propagation fix. Entry 32
 is the exact external Governor hook, retaining component ownership and patch
 bytes. Runtime Governor requires independently pinned component commit
-`5c34e89673b21a4c87fea6967a0afced51161b8f`, version 0.2.0, Rust ABI 4.
+`74e981760572420329468eef663e5dfcf4ba8f6b`, version 0.2.1, Rust ABI 4.
 
 ## Actual source tests
 
-Complete engine `4281309187007db579a2195f40adfd4baa538528` passed 18 CPU test groups
+Historical complete engine `4281309187007db579a2195f40adfd4baa538528` passed 18 CPU test groups
 on the existing isolated 805 fixed-C4 environment: nine pytest XML files contain
 177 cases (including subtests), with zero failures/errors/skips. These cover
 owner cleanup, native n>1, disconnect cleanup, queue timing, TOKEN/HTTP auth,
@@ -38,11 +38,13 @@ allows reuse of that source evidence for the unchanged first 30 entries.
 On September 21, 2026, entry 31 passed 10 native SGLang tests covering real
 pre-header 429 responses for chat/completions/responses, normal 200 SSE and the
 retained streaming 503 error-chunk behavior. The final Governor source passed 28
-Rust unit tests, a release build/check, the real ABI 4 component probe and 107
+Rust unit tests, a release build/check, the real ABI 4 component probe and 133
 Python/FFI/SGLang tests. Clean replay produced serving tree
 `b0b36fb1d0b46410a6bd8c721ddb163237cc1be9` and final tree
-`0dacab8ac525e59aa02875bfd83c1157637a4bc9`. The Governor repository records the
-exact Linux evidence in `docs/validation/governor-v4-linux-r1.json`.
+`2733a3bae11d56e4bf3f694fbb49f8e9e156086d`, committed as
+`354d47922eafa95ebc2d7bd63b7627d780a01c26` directly on the frozen serving
+parent. The Governor repository records the exact Linux evidence in
+`docs/validation/governor-v4-linux-r2.json`.
 No GPU tests were run for this source packaging step.
 
 ## Limits

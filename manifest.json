@@ -7,16 +7,16 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07",
-    "tree": "0dacab8ac525e59aa02875bfd83c1157637a4bc9"
+    "commit": "354d47922eafa95ebc2d7bd63b7627d780a01c26",
+    "tree": "2733a3bae11d56e4bf3f694fbb49f8e9e156086d"
   },
   "serving_result": {
     "commit": "5871a82cb0ef1221126b8c9712881e497041bd38",
     "tree": "b0b36fb1d0b46410a6bd8c721ddb163237cc1be9"
   },
   "governor": {
-    "commit": "5c34e89673b21a4c87fea6967a0afced51161b8f",
-    "version": "0.2.0",
+    "commit": "74e981760572420329468eef663e5dfcf4ba8f6b",
+    "version": "0.2.1",
     "abi_version": 4,
     "hooks_only": true,
     "component_installation_required": true
@@ -645,14 +645,14 @@
       "path": "integrations/governor/0032-integrate-governor-tps-first-admission-v4.patch",
       "owner": "governor",
       "scope": "explicit-component-integration",
-      "title": "Integrate Governor TPS-first admission v4",
-      "source_commit": "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07",
+      "title": "Integrate Governor admission lifecycle and policy limits",
+      "source_commit": "354d47922eafa95ebc2d7bd63b7627d780a01c26",
       "source_parent": "5871a82cb0ef1221126b8c9712881e497041bd38",
-      "result_tree": "0dacab8ac525e59aa02875bfd83c1157637a4bc9",
+      "result_tree": "2733a3bae11d56e4bf3f694fbb49f8e9e156086d",
       "apply_after": [
         "0031"
       ],
-      "sha256": "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15",
+      "sha256": "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea",
       "changed_files": [
         "python/sglang/srt/entrypoints/http_server.py",
         "python/sglang/srt/managers/io_struct.py",
@@ -660,9 +660,9 @@
       ],
       "component_source": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
-        "commit": "5c34e89673b21a4c87fea6967a0afced51161b8f",
+        "commit": "74e981760572420329468eef663e5dfcf4ba8f6b",
         "path": "patches/sglang/v0.5.20/0001-governor-hooks.patch",
-        "sha256": "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15"
+        "sha256": "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea"
       }
     }
   ]

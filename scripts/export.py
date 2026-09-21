@@ -11,11 +11,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
-ENGINE = "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07"
-TREE = "0dacab8ac525e59aa02875bfd83c1157637a4bc9"
-GOVERNOR = "5c34e89673b21a4c87fea6967a0afced51161b8f"
+ENGINE = "354d47922eafa95ebc2d7bd63b7627d780a01c26"
+TREE = "2733a3bae11d56e4bf3f694fbb49f8e9e156086d"
+GOVERNOR = "74e981760572420329468eef663e5dfcf4ba8f6b"
 HOOK = "patches/sglang/v0.5.20/0001-governor-hooks.patch"
-HOOK_SHA = "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15"
+HOOK_SHA = "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea"
 
 
 def git(repo, *args, env=None):
@@ -61,6 +61,11 @@ def export(source, governor):
                 scope, directory = "common-with-runtime-guards", "patches/common"
             data = git(source, "diff", "--binary", "--full-index", "--no-ext-diff", "--no-renames", parent, commit, "--")
         path = f"{directory}/{number:04d}-{slug}.patch"
+        if owner == "governor":
+            # Keep the public integration path stable when the complete-engine
+            # commit title is refined; source commit/tree and bytes remain the
+            # binding identities.
+            path = "integrations/governor/0032-integrate-governor-tps-first-admission-v4.patch"
         outputs[path] = data
         entry = {"id": f"{number:04d}", "path": path, "owner": owner, "scope": scope,
                  "title": title, "source_commit": commit, "source_parent": parent,
@@ -80,7 +85,7 @@ def export(source, governor):
         "serving_result": {"commit": entries[-2]["source_commit"], "tree": entries[-2]["result_tree"]},
         "governor": {
             "commit": GOVERNOR,
-            "version": "0.2.0",
+            "version": "0.2.1",
             "abi_version": 4,
             "hooks_only": True,
             "component_installation_required": True,
