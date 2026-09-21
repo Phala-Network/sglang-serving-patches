@@ -61,7 +61,7 @@
         {"id":"dsv41-0010","path":"patches/models/deepseek/dsv41-0010-vision-preprocessing.patch","sha256":"bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"},
         {"id":"dsv41-0011","path":"patches/models/deepseek/dsv41-0011-chat-encoding.patch","sha256":"947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85"},
         {"id":"dsv41-0012","path":"patches/models/deepseek/dsv41-0012-engram-history.patch","sha256":"49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c"},
-        {"id":"dsv41-0013","path":"patches/models/deepseek/dsv41-0013-compress-ratios.patch","sha256":"239280e1d901df1345245ce3b87bdc0881d467985f678ae969e86763653542a"},
+        {"id":"dsv41-0013","path":"patches/models/deepseek/dsv41-0013-compress-ratios.patch","sha256":"239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a"},
         {"id":"dsv41-0015","path":"patches/models/deepseek/dsv41-0015-native-integration.patch","sha256":"a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb"},
         {"id":"dsv41-0016","path":"patches/models/deepseek/dsv41-0016-dense-prefill.patch","sha256":"162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"},
         {"id":"dsv41-0017","path":"patches/models/deepseek/dsv41-0017-dense-prefill-tests.patch","sha256":"c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"},
