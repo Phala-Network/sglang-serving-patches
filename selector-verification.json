@@ -1,46 +1,157 @@
 {
-  "schema": "phala.sglang.selector-verification.v1",
-  "base": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
-  "reference_engine": "4281309187007db579a2195f40adfd4baa538528",
-  "tree_reference": "83dcb00885129cc2afefdce2e169ebba697a9a67",
-  "method": "clean detached worktree, git apply --ignore-whitespace --check and apply; Windows checkout line endings normalized by Git",
+  "schema": "phala.sglang.selector-verification.v2",
+  "as_of": "2026-09-21",
+  "source_repository": "https://github.com/Phala-Network/sglang",
+  "method": "Verify branch tip, immutable commit/tree, exported patch bytes and SHA256; exact selectors clean-apply in a temporary Git index to their target tree.",
   "results": {
+    "common-v0520-successor": {
+      "passed": true,
+      "fork_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+      "fork_tree": "530b9c4618f336340ca7370c742e43583c844655",
+      "fork_branch": "codex/common-serving-v0520-maintenance-20260921",
+      "resolved_branch_ref": "phala/codex/common-serving-v0520-maintenance-20260921",
+      "patch_count": 3,
+      "replay_mode": "exact",
+      "status": "pending_linux_cpu_validation",
+      "validation_boundary": "Exact source/tree replay passes; Linux imports and affected runtime tests remain pending",
+      "replay_tree": "530b9c4618f336340ca7370c742e43583c844655"
+    },
     "kimi-k3-v0520-candidate": {
       "passed": true,
-      "patch_count": 6,
-      "applied_tree": "candidate-only-diff-from-428",
-      "scope": "Source/tree replay only; Linux, runtime, model and Governor acceptance pending"
+      "fork_commit": "02558c2aaab1b1e91a15a8352659bba489dd5ff0",
+      "fork_tree": "12b9bdd3308e36d38d1aad10e767a6624e590f14",
+      "fork_branch": "codex/kimi-k3-v0520-maintenance-20260921",
+      "resolved_branch_ref": "phala/codex/kimi-k3-v0520-maintenance-20260921",
+      "patch_count": 9,
+      "replay_mode": "exact",
+      "status": "pending_linux_cpu_and_model_topology_validation",
+      "validation_boundary": "Local source-method DCP red/green and backup guards pass; Linux imports, Kimi runtime and Governor combination not accepted",
+      "replay_tree": "12b9bdd3308e36d38d1aad10e767a6624e590f14"
     },
     "muse-glimmer-v0520-candidate": {
       "passed": true,
-      "patch_count": 1,
-      "scope": "Source/tree replay only; Linux, runtime and model acceptance pending"
-    },
-    "glm-5.3-v0520-frozen": {
-      "passed": true,
-      "patch_count": 2,
-      "target": "engine428 tree83dcb00885129cc2afefdce2e169ebba697a9a67",
-      "scope": "Already included and tested as part of complete engine; no new GPU/Governor-on-GLM acceptance"
-    },
-    "qwen3-family-v0520": {
-      "passed": true,
-      "patch_count": 2,
-      "target": "engine428 tree83dcb00885129cc2afefdce2e169ebba697a9a67",
-      "scope": "Already included with model guards; no blanket GGUF or cross-model acceptance"
+      "fork_commit": "109089bac878e6a67224dad900a96d0c3556fb41",
+      "fork_tree": "7a76873eccad5b9942952e5ae25b609195a941de",
+      "fork_branch": "codex/muse-glimmer-v0520-maintenance-20260921",
+      "resolved_branch_ref": "phala/codex/muse-glimmer-v0520-maintenance-20260921",
+      "patch_count": 4,
+      "replay_mode": "exact",
+      "status": "pending_linux_cpu_validation",
+      "validation_boundary": "Native detector regression prepared; no Linux import or model acceptance",
+      "replay_tree": "7a76873eccad5b9942952e5ae25b609195a941de"
     },
     "deepseek-v4.1-v0520": {
       "passed": false,
+      "fork_commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
+      "fork_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
+      "fork_branch": "codex/dsv41-v0520-11-candidate-bitmap",
+      "resolved_branch_ref": "phala/codex/dsv41-v0520-11-candidate-bitmap",
+      "patch_count": 22,
+      "replay_mode": "expected_failure",
+      "status": "blocked_native_closure_recipe_and_abi_validation",
+      "validation_boundary": "sglang-mm, radix-tree C1/C2, candidate/indexer kernels, compression pools, routed-weight ABI and model/runtime integration",
       "applied_before_failure": 10,
-      "failed_patch": "dsv41-0011-chat-encoding.patch",
-      "reason": "The complete native/model closure does not cleanly apply to engine428; retain all real files but keep selector blocked until source-base/native recipe reconciliation",
-      "scope": "No bitmap-only or Python-only claim"
+      "failed_patch": "patches/models/deepseek/dsv41-0011-chat-encoding.patch"
     },
-    "nemotron-v0519-historical": {"passed": false, "status": "pending_v0520_semantic_migration"},
-    "gemma-v0519-historical": {"passed": false, "status": "no_replayable_v0520_model_only_patch"},
-    "qwen35-gguf-v0519-historical": {"passed": false, "status": "pending_v0520_semantic_migration", "authority": "Historical bytes retained; no v0.5.20 clean replay claimed"},
-    "qwen38-27b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"},
-    "qwen36-27b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"},
-    "qwen25-7b-v0519-historical": {"passed": false, "status": "pending_version_migration", "authority": "Five-CVM v0.5.19 handoff; no selected v0.5.20 patch"}
+    "nemotron-v0519-historical": {
+      "passed": true,
+      "fork_commit": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+      "fork_tree": "13b00c9d8ca5916d6506926783fcc743dbf43ee9",
+      "fork_branch": "codex/five-cvm-v0519-nemotron",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-nemotron",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_v0520_semantic_migration",
+      "validation_boundary": "Historical files are not selected against v0.5.20"
+    },
+    "muse-glimmer-v0519-historical": {
+      "passed": true,
+      "fork_commit": "a54a1d5bb9f4ee2034c281f99bab4391eb70c77c",
+      "fork_tree": "2e5ff571325982ad59c5840e5d838c442784b0f1",
+      "fork_branch": "codex/five-cvm-v0519-muse",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-muse",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_v0520_semantic_migration",
+      "validation_boundary": "Historical v0.5.19 branch is immutable-bound here; only the guarded native channel subset is selected in the v0.5.20 successor"
+    },
+    "gemma-v0519-historical": {
+      "passed": true,
+      "fork_commit": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+      "fork_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+      "fork_branch": "codex/five-cvm-v0519-qwen38-gemma4",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-qwen38-gemma4",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "no_replayable_gemma_only_patch",
+      "validation_boundary": "Historical profile retained; no model-specific v0.5.20 patch bytes"
+    },
+    "glm-5.3-v0520-frozen": {
+      "passed": true,
+      "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
+      "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "fork_branch": "codex/unified-serving-v0520",
+      "resolved_branch_ref": "phala/codex/unified-serving-v0520",
+      "patch_count": 2,
+      "replay_mode": "reference_only",
+      "status": "selected_in_complete_engine_428",
+      "validation_boundary": "GLM CPU/Gloo evidence exists; no new GPU/Governor-on-GLM acceptance"
+    },
+    "qwen3-family-v0520": {
+      "passed": true,
+      "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
+      "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+      "fork_branch": "codex/unified-serving-v0520",
+      "resolved_branch_ref": "phala/codex/unified-serving-v0520",
+      "patch_count": 2,
+      "replay_mode": "reference_only",
+      "status": "selected_in_complete_engine_428",
+      "validation_boundary": "Common/Qwen source evidence; architecture/load-format guards remain required"
+    },
+    "qwen35-gguf-v0519-historical": {
+      "passed": true,
+      "fork_commit": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+      "fork_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+      "fork_branch": "codex/five-cvm-v0519-qwen38-gemma4",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-qwen38-gemma4",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_v0520_semantic_migration",
+      "validation_boundary": "Legacy GGUF patches retained; not selected against v0.5.20"
+    },
+    "qwen38-27b-v0519-historical": {
+      "passed": true,
+      "fork_commit": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+      "fork_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+      "fork_branch": "codex/five-cvm-v0519-qwen38-gemma4",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-qwen38-gemma4",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_version_migration",
+      "validation_boundary": "Historical five-CVM lineage; no v0.5.20 selected model-only delta"
+    },
+    "qwen36-27b-v0519-historical": {
+      "passed": true,
+      "fork_commit": "711978779936d1918d038de8515e33f968cb5193",
+      "fork_tree": "d209baf0019b73d3126b85401154de8d0fa124fd",
+      "fork_branch": "codex/five-cvm-v0519-qwen36",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-qwen36",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_version_migration",
+      "validation_boundary": "Historical five-CVM lineage; common behavior requires current-version review"
+    },
+    "qwen25-7b-v0519-historical": {
+      "passed": true,
+      "fork_commit": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+      "fork_tree": "5da72f4fcacb3889d4bfa9a2e35a1debac903aa4",
+      "fork_branch": "codex/five-cvm-v0519-qwen38-gemma4",
+      "resolved_branch_ref": "phala/codex/five-cvm-v0519-qwen38-gemma4",
+      "patch_count": 0,
+      "replay_mode": "reference_only",
+      "status": "pending_version_migration",
+      "validation_boundary": "Do not infer Qwen3.5/GGUF applicability from shared image"
+    }
   },
-  "test_boundary": "No Linux/GPU/model-serving execution; failures retained as evidence"
+  "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates."
 }

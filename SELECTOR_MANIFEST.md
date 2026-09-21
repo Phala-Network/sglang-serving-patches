@@ -7,13 +7,20 @@ parent. `selected` patches are the only inputs for that
 consumer; historical files under a model directory with no selected ID remain
 pending source material.
 
-The Kimi selector contains six real v0.5.20 candidate patches and excludes the
+The shared v0.5.20 successor baseline contains three common increments exactly
+once. Kimi selects that baseline plus six Kimi-guarded patches and excludes the
 chat-close/completed-chunk implementations already represented by shared code.
-The Muse selector contains its native channel patch. Nemotron and Gemma
-directories preserve real historical source material while their selectors are
-pending or empty because their v0.5.19 objects are not replayable against the
-maintained v0.5.20 base. DeepSeek lists its complete model patch set; missing
-common/native dependencies and the Rust closure keep it blocked.
+Muse selects the same baseline plus its native channel patch. Both selectors
+reproduce exact immutable fork trees from engine 428. Nemotron, Gemma and the
+historical Qwen deployments bind extant v0.5.19 fork branch tips and trees, but
+remain pending migration rather than pretending to be v0.5.20 selections.
+DeepSeek lists its complete model patch set; the expected replay failure and
+missing native closure/ABI keep it blocked.
+
+Run `scripts/export_selectors.py --source /path/to/sglang --check` before using
+a selector. The check resolves the branch tip, verifies its immutable commit and
+tree, regenerates source-backed patch bytes, checks every SHA256, and cleanly
+replays exact selectors in a temporary Git index.
 
 No selector claims final-image, GPU, model-serving or production acceptance.
 

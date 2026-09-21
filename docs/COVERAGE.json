@@ -1,6 +1,6 @@
 {
   "schema": "phala.model-coverage-maintenance.v1",
-  "as_of": "2026-09-20",
+  "as_of": "2026-09-21",
   "frozen_engine": {
     "commit": "4281309187007db579a2195f40adfd4baa538528",
     "tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -5130,7 +5130,7 @@
       "validation": "Source freeze records 66 GLM unittest methods +22 SSD checks including real two-rank CPU Gloo; no combined GPU/Governor-on-GLM acceptance."
     }
   ],
-  "next_candidate_boundary": "Integration owner reports a separate successor with Kimi residuals and newly identified llguidance/usage repairs. Its implementation and validation are tracked separately; this coverage document remains anchored to immutable engine428.",
+  "next_candidate_boundary": "The 2026-09-21 common/Kimi/Muse successor branches now have immutable fork commits and trees plus clean selector replay evidence. They remain separate from engine428 and are not Linux, GPU, model-serving or Governor-combination accepted. DeepSeek remains blocked at its recorded native-closure replay failure; Nemotron, Gemma and historical Qwen selectors remain v0.5.19 migration boundaries.",
   "models": [
     {
       "model": "Qwen3.8-27B-Uncensored",

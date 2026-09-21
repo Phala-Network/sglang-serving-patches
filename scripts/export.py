@@ -82,10 +82,27 @@ def export(source, governor):
         "ordering": "apply_after records exact replay dependencies, not semantic dependence between unrelated fixes",
         "qualification": "See VALIDATION.md; source/tree reproduction does not imply model or final-image acceptance",
         "patches": entries,
+        "selector_manifest": {
+            "path": "selectors.json",
+            "documentation": "SELECTOR_MANIFEST.md",
+            "verification": "selector-verification.json",
+            "model_selection_is_optional": True,
+            "complete_engine_remains": "Phala-Network/sglang",
+            "source_of_truth": "Phala-Network/sglang immutable fork commit/tree",
+            "patches_are": "deterministic exports from fork commit ranges for audit/external consumers",
+            "rebase_rule": "Rebase the fork source first, then regenerate selectors/patches and re-verify target trees; never hand-edit a parallel implementation",
+        },
     }
     outputs["manifest.json"] = canonical(manifest)
-    outputs["series"] = ("# Apply in order from pinned upstream; final entry is explicitly Governor-owned.\n" +
-                         "\n".join(entry["path"] for entry in entries) + "\n").encode()
+    outputs["series"] = (
+        "# Apply in order from pinned upstream; final entry is explicitly Governor-owned.\n"
+        + "\n".join(entry["path"] for entry in entries)
+        + "\n\n# Optional model selectors (see selectors.json; do not apply these to every model)\n"
+        + "# kimi-k3-v0520-candidate: three shared common increments plus six Kimi-guarded patches\n"
+        + "# muse-glimmer-v0520-candidate: the same three common increments plus one Muse-guarded patch\n"
+        + "# deepseek-v4.1-v0520: blocked at dsv41-0011 until native closure recipe/ABI reconciliation\n"
+        + "# Nemotron/Gemma/Qwen v0.5.19 selectors bind historical fork commits but are not v0.5.20 replays\n"
+    ).encode()
     return outputs, manifest
 
 
@@ -105,7 +122,23 @@ def main():
             target.write_bytes(data)
     actual = {path.relative_to(ROOT).as_posix() for folder in ("patches", "integrations")
               for path in (ROOT / folder).rglob("*.patch")}
-    assert actual == {name for name in outputs if name.endswith(".patch")}, "unexpected or missing patch files"
+    selector_paths = {
+        patch["path"]
+        for selector in json.loads((ROOT / "selectors.json").read_text(encoding="utf-8"))["selectors"].values()
+        for patch in selector.get("patches", [])
+    }
+    expected = {name for name in outputs if name.endswith(".patch")} | selector_paths
+    missing = expected - actual
+    assert not missing, "missing base/selector patch files: " + ", ".join(sorted(missing))
+    historical_prefixes = tuple(
+        f"patches/models/{family}/" for family in ("gemma", "muse", "nemotron", "qwen")
+    )
+    unexpected = {
+        path
+        for path in actual - expected
+        if not path.startswith(historical_prefixes) and not path.startswith("patches/common/dsv41-")
+    }
+    assert not unexpected, "unexpected untracked patch files: " + ", ".join(sorted(unexpected))
     with tempfile.TemporaryDirectory(prefix="sglang-export-replay-") as temporary:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
         git(args.source, "read-tree", UPSTREAM, env=env)

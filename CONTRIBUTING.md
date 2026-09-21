@@ -35,3 +35,10 @@ unique evidence. Review archived fixes against current source before reuse.
 
 Documentation changes need diff, link and repository-state checks, not a new
 GPU benchmark or a separate CI framework.
+
+Run both deterministic gates before committing a selector update:
+
+```sh
+python scripts/export.py --source /path/to/sglang --governor /path/to/phala-inference-governor --check
+python scripts/export_selectors.py --source /path/to/sglang --check
+```

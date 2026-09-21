@@ -45,11 +45,28 @@ allows reuse of that source evidence. No new GPU tests were run for packaging.
   before/after file hashes. Applying the Git patch only adds this build overlay;
   the image installer must separately apply and validate it in FlashInfer.
 - Host async ACK stays opt-in with its original topology/storage guards.
-- The Kimi delayed-abort original-owner guard is not yet integrated; the current
-  delayed task checks RID existence and has a known RID-reuse window. Kimi DCP8
-  logical512/physical64 continuation is not proven by GLM page64 regressions.
+- The frozen engine 428 does not contain the Kimi delayed-abort original-owner
+  guard. The separate Kimi successor selector now contains it and reproduces
+  its fork tree, but Linux imports, Kimi runtime, DCP8 logical512/physical64 and
+  Governor combination remain unaccepted.
 - DeepSeek and legacy five-CVM migration increments were not incorporated.
   DS35b7 protocol4/7 is not acceptance; model guards and the distinct dense-indexer
   workspace issue remain. v0.5.19/XGrammar variants require semantic review.
 
 Historical failed attempts, PRs and all five archive tags remain retained.
+
+## Successor selector source gates
+
+The 2026-09-21 successor selectors are separate from frozen engine 428:
+
+- Shared common: commit `1db913dd7b389922243a76caf61bac1c344b3162`,
+  tree `530b9c4618f336340ca7370c742e43583c844655`.
+- Kimi-K3: commit `02558c2aaab1b1e91a15a8352659bba489dd5ff0`,
+  tree `12b9bdd3308e36d38d1aad10e767a6624e590f14`.
+- Muse-Glimmer: commit `109089bac878e6a67224dad900a96d0c3556fb41`,
+  tree `7a76873eccad5b9942952e5ae25b609195a941de`.
+
+`scripts/export_selectors.py --check` verifies the branch tips, commit/tree
+bindings, deterministic patch bytes and clean index replay. Windows collection
+of the focused pytest files is blocked by unavailable Linux-only `resource` and
+PyTorch dependencies; this is recorded as an environment boundary, not a pass.

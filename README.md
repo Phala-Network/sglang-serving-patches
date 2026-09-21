@@ -50,6 +50,8 @@ Regenerate using the small [export script](scripts/export.py), then verify:
 ```sh
 python scripts/export.py --source /path/to/sglang --governor /path/to/phala-inference-governor
 python scripts/export.py --source /path/to/sglang --governor /path/to/phala-inference-governor --check
+python scripts/export_selectors.py --source /path/to/sglang
+python scripts/export_selectors.py --source /path/to/sglang --check
 ```
 
 Both commands replay every patch into a fresh Git index from the official base
@@ -70,12 +72,16 @@ including real historical Nemotron/Muse files and the blocked DeepSeek native
 closure. A directory containing historical patches does not make them selected
 or replayable against v0.5.20.
 
-The current selector expansion is recorded in `selector-verification.json`:
-Kimi has six v0.5.20 candidate patches and Muse has one native v0.5.20 candidate
-that replay cleanly against the frozen 428 base after line-ending normalization.
+The current selector expansion is recorded in `selector-verification.json`.
+One shared successor baseline holds three common increments: llguidance callbacks
+and guarded host-mask pinning, typed reasoning usage, and opt-in checkpoint
+sampling defaults. Kimi selects those common increments plus six Kimi-guarded
+patches; Muse selects the same common increments plus one Muse-guarded native
+channel patch. Both clean-apply from frozen engine 428 to their exact fork trees.
 DeepSeek stores its real native/model patch closure but replay stops at
 `dsv41-0011-chat-encoding.patch`, so its selector is blocked. Nemotron and
-Gemma retain real historical material or an explicit empty boundary selector.
+Gemma, along with the historical Qwen deployments, bind exact v0.5.19 fork
+branch tips and trees without claiming a v0.5.20 replay.
 These states preserve actual bytes and failures without calling them accepted.
 
 The immutable Phala fork is the implementation source of truth. Each ready or

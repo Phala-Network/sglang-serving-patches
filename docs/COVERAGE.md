@@ -1,6 +1,6 @@
 # 全现役模型历史修复维护覆盖表
 
-审计日期：2026-09-20。本文是实际维护盘点，不是“所有模型已整合/接受”的声明。
+审计日期：2026-09-21。本文是实际维护盘点，不是“所有模型已整合/接受”的声明。
 
 唯一冻结比较对象为 `4281309187007db579a2195f40adfd4baa538528`，tree `83dcb00885129cc2afefdce2e169ebba697a9a67`，官方基线 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`（v0.5.20）。此源未被本审计修改。后继源的补丁整合与当前镜像构建是不同阶段；不得把后继候选的新增修复归到 428 或悄悄替换已冻结构建输入。
 
@@ -33,13 +33,13 @@
 1. Kimi chat-close 不重复叠到 common response helper；request-owner 原对象身份保护是 428 的真实缺口。DCP/physical page continuation、SSM checkpoint、storage quota/prefix 均保留模型/拓扑前提。
 2. GLM completed-chunk core 已在 `8efd135647f8`；Kimi/DS 的 backend/no-buffer/no-linker residual guards 需合一次。DS `5ad27e1d` reasoning cap 与 `1e645a80fb0e` 同行为；它扩大到所有 OSError 的 media client error 分类与 common `6a673233e9f7` 保留 OS faults 的原则冲突，不能照搬。
 3. DS `437b982abfdf` 的全局 Pydantic/protocol monkeypatch、stream usage、整数effort1–100 必须由模型 capability/config 选择。已有 native reasoning-exclude 不再包一层 wrapper。DS Rust multimodal + radix-tree native ABI、compress-ratio/mxfp4/routed weights 与 bitmap 支持是一条闭合依赖链，不单独 cherry-pick bitmap。原 native build pins/ABI材料见 source-profile inventory；无法从源存在推导最终镜像已合格。
-4. 当前 GuidanceBackend 缺 allocate/move/apply，而 ReasonerGrammarBackend._wrap_grammar 仍取三个 callback；host mask pinning 和 typed completion_tokens_details 也是确认缺口。整合者在**独立后继源**报告 `ac5458b15a` / `3c63b5c34e` 实现，尚未 Linux 验证，未计入 428 已覆盖。
+4. engine 428 的 GuidanceBackend 缺 allocate/move/apply，而 ReasonerGrammarBackend._wrap_grammar 仍取三个 callback；host mask pinning 和 typed completion_tokens_details 也是确认缺口。独立后继 common 源现固定为 commit `1db913dd7b389922243a76caf61bac1c344b3162`、tree `530b9c4618f336340ca7370c742e43583c844655`，包含三个共享增量；尚未 Linux 验证，未计入 428 已覆盖。
 5. Qwen GGUF loader/vision/Q8_0 只按 architecture/load-format/tensor-format 启用；Gemma/Qwen2.5 使用同旧镜像不能据此宣称需要或执行 Qwen GGUF 路径。Muse native parser/template 与 Nemotron literal/special-token、Marlin、BREAKABLE 条件独立保留。
 6. XGrammar 历史0.2.1源码 `5b4e9ce9e72524037ae24ecd831b9b6604d2eb48` 与0.2.6源码 `bc09a30ec10ba30a6c1ab0c79eaeba3ca518d11f` 不可同装为一个包；语义移植到最终一个固定版本并跑原回归，保留Apache-2.0归属。没有证据要求为此建立每模型整套发布管线。
 
 ## 证据来源与范围
 
-后继源增量补记（不计入428）：整合者确认 Muse detector 缺 JSON-channel/native required toolcall 恢复，独立候选 `d486b6fe7a` 已移植；checkpoint opt-in mode_sampling_defaults 缺口在 `83d8dc47ee` 插入并保留当前 reasoning budget/end-token 逻辑。两者均尚未 Linux 验证。DS后继依赖清单另见本次维护任务的 `DS_NEXT_CANDIDATE_DEPENDENCIES.md`；不能以当前 Python-only recipe 包装102文件/native closure 或把 bitmap 单项当全部支持。
+后继源增量补记（不计入428）：Kimi selector 固定 commit `02558c2aaab1b1e91a15a8352659bba489dd5ff0`、tree `12b9bdd3308e36d38d1aad10e767a6624e590f14`；Muse selector 固定 commit `109089bac878e6a67224dad900a96d0c3556fb41`、tree `7a76873eccad5b9942952e5ae25b609195a941de`。两者都从 428 选择同一组三个 common 增量，再分别叠加必要 model guard，并已通过 clean Git-index tree 复现；尚未 Linux/模型运行验收。DS后继依赖清单另见本次维护任务的 `DS_NEXT_CANDIDATE_DEPENDENCIES.md`；不能以当前 Python-only recipe 包装102文件/native closure 或把 bitmap 单项当全部支持。
 
 - Legacy完整导出：[patch commit083fe0f](https://github.com/Phala-Network/sglang-serving-patches/tree/083fe0f9728b05a68481ecace7681c2315031ab2)，67条source delta字节等价、六个历史selection全树重构；CI run35491444067、7 verifier和12 wheel检查。历史Compose来源 `2e16dfd8ab1b433e549fb1dc7cdd200dbd326bbd`。这仅是v0.5.19旧组合证据。
 - Kimi：[patch commit9964d2](https://github.com/Phala-Network/sglang-serving-patches/tree/9964d2ce342a248b655ffa884fca646be33eb1db)，原composed tree25a790a2、192 CPU、36 CUDA pass/22 skip、CI35491021046/35491018648。Governor未启用，不把其测试移植为新组合接受。

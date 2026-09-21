@@ -1,0 +1,137 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 10c52d3e81a2529fcf26a39bb5570ae608f559d5..b711da3cf5e1ada5c580a13b14c920cc057d1e6f 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -205,12 +205,20 @@ class PromptTokensDetails(BaseModel):
+         return data
+ 
+ 
++class CompletionTokensDetails(BaseModel):
++    """Details about completion tokens, following the OpenAI usage schema."""
++
++    reasoning_tokens: Optional[int] = None
++
++
+ class UsageInfo(BaseModel):
+     prompt_tokens: int = 0
+     total_tokens: int = 0
+     completion_tokens: Optional[int] = 0
+     # Used to return cached tokens info when --enable-cache-report is set
+     prompt_tokens_details: Optional[PromptTokensDetails] = None
++    completion_tokens_details: Optional[CompletionTokensDetails] = None
++    # Deprecated: kept for backward compatibility.
+     reasoning_tokens: Optional[int] = 0
+ 
+ 
+diff --git a/python/sglang/srt/entrypoints/openai/usage_processor.py b/python/sglang/srt/entrypoints/openai/usage_processor.py
+index 1c9ed62f3edf0929fafc780ddd0ac0081dfebd34..1f50fcbb12b7caf4ac59c046bdc42905a463d72e 100644
+--- a/python/sglang/srt/entrypoints/openai/usage_processor.py
++++ b/python/sglang/srt/entrypoints/openai/usage_processor.py
+@@ -2,7 +2,11 @@ from __future__ import annotations
+ 
+ from typing import Any, Dict, List, Mapping, Optional, final
+ 
+-from sglang.srt.entrypoints.openai.protocol import PromptTokensDetails, UsageInfo
++from sglang.srt.entrypoints.openai.protocol import (
++    CompletionTokensDetails,
++    PromptTokensDetails,
++    UsageInfo,
++)
+ 
+ 
+ @final
+@@ -117,10 +121,17 @@ class UsageProcessor:
+             if video_tokens:
+                 details.video_tokens = video_tokens
+ 
++        completion_details = (
++            CompletionTokensDetails(reasoning_tokens=reasoning_tokens)
++            if reasoning_tokens is not None and reasoning_tokens > 0
++            else None
++        )
++
+         return UsageInfo(
+             prompt_tokens=prompt_tokens,
+             completion_tokens=completion_tokens,
+             total_tokens=prompt_tokens + completion_tokens,
+             prompt_tokens_details=details,
++            completion_tokens_details=completion_details,
+             reasoning_tokens=reasoning_tokens,
+         )
+diff --git a/test/registered/unit/test_openai_usage_processor.py b/test/registered/unit/test_openai_usage_processor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6083b257f0fa396bc5a9b765226c600070183e4
+--- /dev/null
++++ b/test/registered/unit/test_openai_usage_processor.py
+@@ -0,0 +1,71 @@
++from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
++
++
++def test_reasoning_tokens_use_openai_completion_details_shape():
++    usage = UsageProcessor.calculate_token_usage(
++        prompt_tokens=10,
++        completion_tokens=30,
++        reasoning_tokens=17,
++    )
++
++    assert usage.reasoning_tokens == 17
++    assert usage.completion_tokens_details is not None
++    assert usage.completion_tokens_details.reasoning_tokens == 17
++    assert usage.model_dump()["completion_tokens_details"] == {
++        "reasoning_tokens": 17
++    }
++
++
++def test_zero_reasoning_tokens_keep_completion_details_absent():
++    usage = UsageProcessor.calculate_token_usage(
++        prompt_tokens=10,
++        completion_tokens=30,
++        reasoning_tokens=0,
++    )
++
++    assert usage.reasoning_tokens == 0
++    assert usage.completion_tokens_details is None
++
++
++def test_non_streaming_usage_aggregates_reasoning_tokens_in_both_shapes():
++    usage = UsageProcessor.calculate_response_usage(
++        responses=[
++            {
++                "meta_info": {
++                    "prompt_tokens": 10,
++                    "completion_tokens": 20,
++                    "reasoning_tokens": 7,
++                }
++            },
++            {
++                "meta_info": {
++                    "prompt_tokens": 10,
++                    "completion_tokens": 30,
++                    "reasoning_tokens": 11,
++                }
++            },
++        ],
++        n_choices=2,
++    )
++
++    assert usage.prompt_tokens == 10
++    assert usage.completion_tokens == 50
++    assert usage.reasoning_tokens == 18
++    assert usage.completion_tokens_details is not None
++    assert usage.completion_tokens_details.reasoning_tokens == 18
++
++
++def test_streaming_usage_aggregates_reasoning_tokens_in_both_shapes():
++    usage = UsageProcessor.calculate_streaming_usage(
++        prompt_tokens={0: 10, 1: 10},
++        reasoning_tokens={0: 7, 1: 11},
++        completion_tokens={0: 20, 1: 30},
++        cached_tokens={0: 0, 1: 0},
++        n_choices=2,
++    )
++
++    assert usage.prompt_tokens == 10
++    assert usage.completion_tokens == 50
++    assert usage.reasoning_tokens == 18
++    assert usage.completion_tokens_details is not None
++    assert usage.completion_tokens_details.reasoning_tokens == 18
