@@ -7,26 +7,17 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07",
-    "tree": "0dacab8ac525e59aa02875bfd83c1157637a4bc9"
+    "commit": "4281309187007db579a2195f40adfd4baa538528",
+    "tree": "83dcb00885129cc2afefdce2e169ebba697a9a67"
   },
   "serving_result": {
-    "commit": "5871a82cb0ef1221126b8c9712881e497041bd38",
-    "tree": "b0b36fb1d0b46410a6bd8c721ddb163237cc1be9"
+    "commit": "63a21f09fcc26892a6d30c76945b783aa0eb3149",
+    "tree": "0a1c456602e7dbadacc55449bc64625b2797c3bc"
   },
   "governor": {
-    "commit": "5c34e89673b21a4c87fea6967a0afced51161b8f",
-    "version": "0.2.0",
-    "abi_version": 4,
+    "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
     "hooks_only": true,
     "component_installation_required": true
-  },
-  "historical_governor": {
-    "archive": "history/governor-v0.1.1",
-    "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
-    "hook_sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6",
-    "engine_commit": "4281309187007db579a2195f40adfd4baa538528",
-    "engine_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67"
   },
   "ordering": "apply_after records exact replay dependencies, not semantic dependence between unrelated fixes",
   "qualification": "See VALIDATION.md; source/tree reproduction does not imply model or final-image acceptance",
@@ -622,37 +613,17 @@
     },
     {
       "id": "0031",
-      "path": "patches/common/0031-return-pre-admission-errors-before-sse-headers.patch",
-      "owner": "serving",
-      "scope": "common-with-runtime-guards",
-      "title": "Return pre-admission errors before SSE headers",
-      "source_commit": "5871a82cb0ef1221126b8c9712881e497041bd38",
+      "path": "integrations/governor/0031-integrate-frozen-governor-v0-1-1-hooks-into-complete-engine-source.patch",
+      "owner": "governor",
+      "scope": "explicit-component-integration",
+      "title": "Integrate frozen Governor v0.1.1 hooks into complete engine source",
+      "source_commit": "4281309187007db579a2195f40adfd4baa538528",
       "source_parent": "63a21f09fcc26892a6d30c76945b783aa0eb3149",
-      "result_tree": "b0b36fb1d0b46410a6bd8c721ddb163237cc1be9",
+      "result_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
       "apply_after": [
         "0030"
       ],
-      "sha256": "58dc570221617c2b56c6cd492ca9503e98b0819a57b4aba01551558c666de480",
-      "changed_files": [
-        "python/sglang/srt/entrypoints/openai/serving_base.py",
-        "python/sglang/srt/entrypoints/openai/serving_responses.py",
-        "python/sglang/srt/managers/tokenizer_manager.py",
-        "test/registered/unit/entrypoints/openai/test_streaming_pre_header_errors.py"
-      ]
-    },
-    {
-      "id": "0032",
-      "path": "integrations/governor/0032-integrate-governor-tps-first-admission-v4.patch",
-      "owner": "governor",
-      "scope": "explicit-component-integration",
-      "title": "Integrate Governor TPS-first admission v4",
-      "source_commit": "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07",
-      "source_parent": "5871a82cb0ef1221126b8c9712881e497041bd38",
-      "result_tree": "0dacab8ac525e59aa02875bfd83c1157637a4bc9",
-      "apply_after": [
-        "0031"
-      ],
-      "sha256": "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15",
+      "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6",
       "changed_files": [
         "python/sglang/srt/entrypoints/http_server.py",
         "python/sglang/srt/managers/io_struct.py",
@@ -660,10 +631,20 @@
       ],
       "component_source": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
-        "commit": "5c34e89673b21a4c87fea6967a0afced51161b8f",
+        "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
         "path": "patches/sglang/v0.5.20/0001-governor-hooks.patch",
-        "sha256": "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15"
+        "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6"
       }
     }
-  ]
+  ],
+  "selector_manifest": {
+    "path": "selectors.json",
+    "documentation": "SELECTOR_MANIFEST.md",
+    "verification": "selector-verification.json",
+    "model_selection_is_optional": true,
+    "complete_engine_remains": "Phala-Network/sglang",
+    "source_of_truth": "Phala-Network/sglang immutable fork commit/tree",
+    "patches_are": "deterministic exports from fork commit ranges for audit/external consumers",
+    "rebase_rule": "Rebase the fork source first, then regenerate selectors/patches and re-verify target trees; never hand-edit a parallel implementation"
+  }
 }

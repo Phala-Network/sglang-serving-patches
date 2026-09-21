@@ -11,11 +11,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
-ENGINE = "4281309187007db579a2195f40adfd4baa538528"
-TREE = "83dcb00885129cc2afefdce2e169ebba697a9a67"
-GOVERNOR = "631a53919c62e10c57e7b960bc4d443f39818276"
+ENGINE = "a43a9d30eb9879ec54c607d1d2edfdb5c536bb07"
+TREE = "0dacab8ac525e59aa02875bfd83c1157637a4bc9"
+GOVERNOR = "5c34e89673b21a4c87fea6967a0afced51161b8f"
 HOOK = "patches/sglang/v0.5.20/0001-governor-hooks.patch"
-HOOK_SHA = "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6"
+HOOK_SHA = "ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15"
 
 
 def git(repo, *args, env=None):
@@ -37,7 +37,7 @@ def canonical(value):
 def export(source, governor):
     assert git(source, "rev-parse", ENGINE + "^{tree}").decode().strip() == TREE
     rows = git(source, "log", "--reverse", "--format=%H %P", UPSTREAM + ".." + ENGINE).decode().splitlines()
-    assert len(rows) == 31, "unexpected frozen source history"
+    assert len(rows) == 32, "unexpected frozen source history"
     outputs, entries = {}, []
     previous = UPSTREAM
     for number, row in enumerate(rows, 1):
@@ -45,7 +45,7 @@ def export(source, governor):
         assert parent == previous, "source history must be linear"
         title = git(source, "show", "-s", "--format=%s", commit).decode().strip()
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-        if number == 31:
+        if number == 32:
             owner, scope, directory = "governor", "explicit-component-integration", "integrations/governor"
             data = git(governor, "show", GOVERNOR + ":" + HOOK)
             assert sha(data) == HOOK_SHA, "frozen Governor hook differs"
@@ -78,7 +78,20 @@ def export(source, governor):
         "upstream": {"repository": "https://github.com/sgl-project/sglang", "tag": "v0.5.20", "commit": UPSTREAM},
         "engine": {"repository": "https://github.com/Phala-Network/sglang", "commit": ENGINE, "tree": TREE},
         "serving_result": {"commit": entries[-2]["source_commit"], "tree": entries[-2]["result_tree"]},
-        "governor": {"commit": GOVERNOR, "hooks_only": True, "component_installation_required": True},
+        "governor": {
+            "commit": GOVERNOR,
+            "version": "0.2.0",
+            "abi_version": 4,
+            "hooks_only": True,
+            "component_installation_required": True,
+        },
+        "historical_governor": {
+            "archive": "history/governor-v0.1.1",
+            "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
+            "hook_sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6",
+            "engine_commit": "4281309187007db579a2195f40adfd4baa538528",
+            "engine_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+        },
         "ordering": "apply_after records exact replay dependencies, not semantic dependence between unrelated fixes",
         "qualification": "See VALIDATION.md; source/tree reproduction does not imply model or final-image acceptance",
         "patches": entries,
@@ -103,9 +116,22 @@ def main():
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-    actual = {path.relative_to(ROOT).as_posix() for folder in ("patches", "integrations")
-              for path in (ROOT / folder).rglob("*.patch")}
-    assert actual == {name for name in outputs if name.endswith(".patch")}, "unexpected or missing patch files"
+    # Model selectors and historical compatibility inputs may keep additional
+    # patch files outside the active complete-engine series. Governor has one
+    # active integration step, so reject stale or duplicate files there while
+    # allowing selector-owned patches to coexist under patches/.
+    actual_integrations = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "integrations").rglob("*.patch")
+    }
+    expected_integrations = {
+        name
+        for name in outputs
+        if name.startswith("integrations/") and name.endswith(".patch")
+    }
+    assert actual_integrations == expected_integrations, (
+        "unexpected or missing active Governor integration patch files"
+    )
     with tempfile.TemporaryDirectory(prefix="sglang-export-replay-") as temporary:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
         git(args.source, "read-tree", UPSTREAM, env=env)
@@ -117,7 +143,7 @@ def main():
             assert actual_tree == entry["result_tree"], "replay tree differs: " + entry["id"]
         assert actual_tree == TREE
     print(json.dumps({"passed": True, "patches": len(manifest["patches"]),
-                      "serving_patches": 30, "governor_hook_steps": 1,
+                      "serving_patches": 31, "governor_hook_steps": 1,
                       "verified_intermediate_trees": len(manifest["patches"]),
                       "engine_commit": ENGINE, "engine_tree": TREE,
                       "manifest_sha256": sha(outputs["manifest.json"]),

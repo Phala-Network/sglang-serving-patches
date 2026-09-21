@@ -1,0 +1,334 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 9169ebb192fad90456d4f78c9a6ce68288f44a34..93263c938b792d2ba684a0394e7b8c505e00a365 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -278,32 +278,42 @@ class OpenAIServingBase(ABC):
+         self, generator, adapted_request, raw_request
+     ):
+         try:
+-            first_chunk = await await_response_or_disconnect(
+-                generator.__anext__(),
++            content = await self._generator_after_first_item(
++                generator,
+                 raw_request,
+                 background=getattr(adapted_request, "background", False),
+             )
+         except ValueError as exc:
+-            await generator.aclose()
+             return self.create_error_response(str(exc))
++
++        return GenerationStreamingResponse(
++            content,
++            generation=generator,
++            media_type="text/event-stream",
++            background=self.tokenizer_manager.create_abort_task(adapted_request),
++        )
++
++    async def _generator_after_first_item(
++        self, generator, raw_request, *, background=False
++    ):
++        """Read one item before response headers, then replay the full stream."""
++        try:
++            first_item = await await_response_or_disconnect(
++                generator.__anext__(), raw_request, background=background
++            )
+         except BaseException:
+             await generator.aclose()
+             raise
+ 
+-        async def prepend_first_chunk():
++        async def prepend_first_item():
+             try:
+-                yield first_chunk
+-                async for chunk in generator:
+-                    yield chunk
++                yield first_item
++                async for item in generator:
++                    yield item
+             finally:
+                 await generator.aclose()
+ 
+-        return GenerationStreamingResponse(
+-            prepend_first_chunk(),
+-            generation=generator,
+-            media_type="text/event-stream",
+-            background=self.tokenizer_manager.create_abort_task(adapted_request),
+-        )
++        return prepend_first_item()
+ 
+     def extract_custom_labels(self, raw_request):
+         if (
+diff --git a/python/sglang/srt/entrypoints/openai/serving_responses.py b/python/sglang/srt/entrypoints/openai/serving_responses.py
+index 6db8d7b94c523a030885622b04a0ab1a7e275f39..870dc57efe2f13e8974c20edba6f6e7071378918 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_responses.py
++++ b/python/sglang/srt/entrypoints/openai/serving_responses.py
+@@ -628,6 +628,18 @@ class OpenAIServingResponses(OpenAIServingChat):
+                 return response
+ 
+             if request.stream:
++                try:
++                    result_generator = await self._generator_after_first_item(
++                        result_generator,
++                        raw_request,
++                        background=request.background,
++                    )
++                except HTTPException as exc:
++                    return self.create_error_response(
++                        exc.detail, status_code=exc.status_code
++                    )
++                except ValueError as exc:
++                    return self.create_error_response(str(exc))
+                 if self.use_harmony:
+                     events = self.responses_stream_generator(
+                         request,
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index ba2a0f12bacce647507fee66b1c6ba2bb3fc6639..4538b0113a2388fc61a631b39f4561732a361f9e 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1817,8 +1817,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         state: ReqState,
+         is_stream: bool,
+     ) -> Optional[dict]:
+-        """Returns the output dict to yield (stream abort), None for normal flow;
+-        raises ValueError/HTTPException for non-stream aborts."""
++        """Map aborts to a stream chunk or an exception before HTTP headers."""
+         finish_reason = out["meta_info"]["finish_reason"]
+ 
+         if (
+@@ -1829,9 +1828,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 raise ValueError(finish_reason["message"])
+             return out
+ 
+-        if finish_reason.get("type") == "abort" and finish_reason.get(
+-            "status_code"
+-        ) in (
++        status_code = finish_reason.get("status_code")
++        if finish_reason.get("type") == "abort" and status_code in (
++            HTTPStatus.TOO_MANY_REQUESTS,
+             HTTPStatus.SERVICE_UNAVAILABLE,
+             HTTPStatus.INTERNAL_SERVER_ERROR,
+         ):
+@@ -1843,9 +1842,12 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             # Mark ongoing LoRA request as finished.
+             if self.enable_lora and state.obj.lora_path:
+                 await self.lora_registry.release(state.obj.lora_id)
+-            if not is_stream:
++            # Admission rejection happens before the scheduler enqueues or emits
++            # any generation output. Raise for streaming requests as well so the
++            # serving layer can return the real HTTP status before SSE headers.
++            if not is_stream or status_code == HTTPStatus.TOO_MANY_REQUESTS:
+                 raise fastapi.HTTPException(
+-                    status_code=finish_reason["status_code"],
++                    status_code=status_code,
+                     detail=finish_reason["message"],
+                 )
+             return out
+diff --git a/test/registered/unit/entrypoints/openai/test_streaming_pre_header_errors.py b/test/registered/unit/entrypoints/openai/test_streaming_pre_header_errors.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..26b650b101b8a3ce16038f1939173be30f2af352
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_streaming_pre_header_errors.py
+@@ -0,0 +1,203 @@
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++import asyncio
++from http import HTTPStatus
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import orjson
++import pytest
++from fastapi import HTTPException
++from fastapi.responses import StreamingResponse
++
++from utils import engine_chunk, make_serving
++
++from sglang.srt.entrypoints.openai.protocol import ResponsesRequest
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++from sglang.srt.entrypoints.openai.serving_completions import OpenAIServingCompletion
++from sglang.srt.managers.tokenizer_manager import TokenizerManager
++from sglang.srt.runtime_context import reset_context
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=1, suite="base-a-test-cpu")
++
++
++def _openai_error(response, status, message):
++    assert response.status_code == status
++    assert orjson.loads(response.body) == {
++        "object": "error",
++        "message": message,
++        "type": str(status),
++        "param": None,
++        "code": status,
++    }
++
++
++@pytest.fixture(autouse=True)
++def isolated_runtime_context():
++    reset_context()
++    yield
++    reset_context()
++
++
++def _entrypoint_serving(serving_cls, generator_name, generator):
++    serving = object.__new__(serving_cls)
++    serving.tokenizer_manager = Mock()
++    serving.tokenizer_manager.request_logger = Mock(
++        log_requests=False, log_requests_level=0
++    )
++    serving.tokenizer_manager.create_abort_task.return_value = None
++    serving._validate_request = Mock(return_value=None)
++    adapted = SimpleNamespace(background=False)
++    request = SimpleNamespace(stream=True)
++    serving._convert_to_internal_request = Mock(return_value=(adapted, request))
++    setattr(serving, generator_name, generator)
++    return serving, request
++
++
++@pytest.mark.parametrize(
++    "serving_cls,generator_name",
++    [
++        (OpenAIServingChat, "_generate_chat_stream"),
++        (OpenAIServingCompletion, "_generate_completion_stream"),
++    ],
++    ids=["chat-completions", "completions"],
++)
++def test_first_stream_item_429_returns_openai_http_error(
++    serving_cls, generator_name
++):
++    async def reject(*args, **kwargs):
++        raise HTTPException(status_code=429, detail="server overloaded")
++        yield  # pragma: no cover
++
++    serving, request = _entrypoint_serving(serving_cls, generator_name, reject)
++    response = asyncio.run(serving.handle_request(request, raw_request=None))
++
++    _openai_error(response, HTTPStatus.TOO_MANY_REQUESTS, "server overloaded")
++    serving.tokenizer_manager.create_abort_task.assert_not_called()
++
++
++@pytest.mark.parametrize(
++    "serving_cls,generator_name",
++    [
++        (OpenAIServingChat, "_generate_chat_stream"),
++        (OpenAIServingCompletion, "_generate_completion_stream"),
++    ],
++    ids=["chat-completions", "completions"],
++)
++@pytest.mark.parametrize(
++    "chunks",
++    [
++        ["data: {\"id\":\"ok\"}\n\n", "data: [DONE]\n\n"],
++        [
++            'data: {"error":{"message":"worker unavailable","code":503}}\n\n',
++            "data: [DONE]\n\n",
++        ],
++    ],
++    ids=["normal", "503-error-chunk"],
++)
++def test_stream_still_starts_as_sse_and_replays_first_item(
++    serving_cls, generator_name, chunks
++):
++    async def generate(*args, **kwargs):
++        for chunk in chunks:
++            yield chunk
++
++    serving, request = _entrypoint_serving(serving_cls, generator_name, generate)
++
++    async def run():
++        response = await serving.handle_request(request, raw_request=None)
++        body = [chunk async for chunk in response.body_iterator]
++        return response, body
++
++    response, body = asyncio.run(run())
++    assert isinstance(response, StreamingResponse)
++    assert response.status_code == HTTPStatus.OK
++    assert response.media_type == "text/event-stream"
++    assert body == chunks
++    serving.tokenizer_manager.create_abort_task.assert_called_once()
++
++
++def _responses_serving(generator):
++    serving = make_serving()
++    serving.use_harmony = False
++    serving.default_chat_template_kwargs = {}
++    serving.template_manager.chat_template_name = None
++    serving.template_manager.jinja_template_content_format = "string"
++    serving.tokenizer_manager.tokenizer.apply_chat_template.return_value = [1, 2, 3]
++    serving.tokenizer_manager.generate_request = Mock(side_effect=generator)
++    serving.reasoning_parser = None
++    serving.tool_call_parser = None
++    return serving
++
++
++def test_responses_first_stream_item_429_returns_openai_http_error():
++    async def reject(*args, **kwargs):
++        raise HTTPException(status_code=429, detail="server overloaded")
++        yield  # pragma: no cover
++
++    serving = _responses_serving(reject)
++    response = asyncio.run(
++        serving.create_responses(
++            ResponsesRequest(model="x", input="hi", stream=True, store=False)
++        )
++    )
++
++    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
++    error = orjson.loads(response.body)["error"]
++    assert error["message"] == "server overloaded"
++    assert error["code"] == HTTPStatus.TOO_MANY_REQUESTS
++
++
++def test_responses_normal_stream_remains_200_sse():
++    async def generate(*args, **kwargs):
++        yield engine_chunk("ok", finish=True)
++
++    serving = _responses_serving(generate)
++
++    async def run():
++        response = await serving.create_responses(
++            ResponsesRequest(model="x", input="hi", stream=True, store=False)
++        )
++        body = [chunk async for chunk in response.body_iterator]
++        return response, body
++
++    response, body = asyncio.run(run())
++    assert response.status_code == HTTPStatus.OK
++    assert response.media_type == "text/event-stream"
++    assert any("response.completed" in chunk for chunk in body)
++
++
++@pytest.mark.parametrize(
++    "status,raises",
++    [(HTTPStatus.TOO_MANY_REQUESTS, True), (HTTPStatus.SERVICE_UNAVAILABLE, False)],
++    ids=["429-before-headers", "503-stream-chunk"],
++)
++def test_tokenizer_abort_mapping_for_streams(status, raises):
++    manager = object.__new__(TokenizerManager)
++    manager.rid_to_state = {"rid": Mock()}
++    manager.enable_lora = False
++    state = SimpleNamespace(obj=SimpleNamespace(rid="rid", lora_path=None))
++    output = {
++        "meta_info": {
++            "finish_reason": {
++                "type": "abort",
++                "status_code": status,
++                "message": "overloaded",
++            }
++        }
++    }
++
++    async def run():
++        return await manager._handle_abort_finish_reason(output, state, is_stream=True)
++
++    if raises:
++        with pytest.raises(HTTPException) as exc_info:
++            asyncio.run(run())
++        assert exc_info.value.status_code == status
++        assert exc_info.value.detail == "overloaded"
++    else:
++        assert asyncio.run(run()) is output
++    assert "rid" not in manager.rid_to_state

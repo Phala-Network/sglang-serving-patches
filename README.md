@@ -21,22 +21,25 @@ pinned versions of these projects.
 Apply [series](series) in order, using the exact inputs in [manifest.json](manifest.json):
 
 - Upstream SGLang v0.5.20: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
-- Complete engine: `4281309187007db579a2195f40adfd4baa538528`.
-- Complete tree: `83dcb00885129cc2afefdce2e169ebba697a9a67`.
-- 30 serving/source patches: the prior 20 changes plus nine GLM logical changes
-  and their recorded formatting correction. Common code appears once under
+- Complete engine: `a43a9d30eb9879ec54c607d1d2edfdb5c536bb07`.
+- Complete tree: `0dacab8ac525e59aa02875bfd83c1157637a4bc9`.
+- 31 serving/source patches: the prior 30-step stack plus common pre-header HTTP
+  error propagation for streaming endpoints. Common code appears once under
   `patches/common`; Qwen and GLM parser changes have explicit model directories;
   the external FlashInfer workspace fix is under `patches/dependencies`.
 - One final, explicitly Governor-owned hook step under `integrations/governor`,
-  copied byte-for-byte from Governor `631a53919c62e10c57e7b960bc4d443f39818276`.
-  Its SHA256 is `ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6`.
+  copied byte-for-byte from Governor `5c34e89673b21a4c87fea6967a0afced51161b8f`
+  version 0.2.0 / ABI 4. Its SHA256 is
+  `ad06b65add7441d7875ea78ab129830edab720c4b9ce7519236ae7aaefdede15`.
   This is not a serving fix and does not bundle the external Governor component.
 
-The first 30 entries reproduce serving tree `0a1c456602e7dbadacc55449bc64625b2797c3bc`;
+The first 31 entries reproduce serving tree `b0b36fb1d0b46410a6bd8c721ddb163237cc1be9`;
 the explicit final hook produces the complete engine tree above. The manifest
 records every original commit, parent, patch hash, replay predecessor and
 intermediate tree. Replay ordering is not a claim of semantic dependence between
 unrelated repairs. See [VALIDATION.md](VALIDATION.md) for scope and limitations.
+The former Governor 0.1.1 export and its exact patch/manifest/verification bytes
+remain under [history/governor-v0.1.1](history/governor-v0.1.1).
 
 The [model maintenance coverage audit](docs/COVERAGE.md), with
 [110 source records](docs/COVERAGE.json), distinguishes fixes actually present

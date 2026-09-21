@@ -29,5 +29,10 @@ patches/dependencies/flashinfer/0027-fix-release-flashinfer-workspace-retained-a
 patches/common/0028-fix-bound-chunk-continuation-by-physical-kv-capacity.patch
 patches/common/0029-preserve-guarded-host-only-async-ack-with-spawn-safe-regression.patch
 patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch
-patches/common/0031-return-pre-admission-errors-before-sse-headers.patch
-integrations/governor/0032-integrate-governor-tps-first-admission-v4.patch
+integrations/governor/0031-integrate-frozen-governor-v0-1-1-hooks-into-complete-engine-source.patch
+
+# Optional model selectors (see selectors.json; do not apply these to every model)
+# kimi-k3-v0520-candidate: patches/models/kimi/*.patch in manifest order
+# muse-glimmer-v0520-candidate: patches/models/muse/d486b6fe7a-*.patch
+# deepseek-v4.1-v0520: blocked until native closure recipe/ABI is available
+# nemotron-v0519-historical and gemma-v0519-historical: pending/empty selectors
