@@ -18,11 +18,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
-      "fork_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6",
+      "fork_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
+      "fork_tree": "0af2ff1dbe241285caacf8e8236c918a434b9889",
       "fork_branch": "codex/model-union-v0520-20260922",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..05a0fe7c11e8262c804b0816328378ddc13beb87",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
       "replay_mode": "exact",
       "patches": [
         {
@@ -390,12 +390,26 @@
           "source_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
           "source_parent": "962cccfd554752644e8c79a36bb6105148eea6c0",
           "sha256": "3df1c2c4ba63c9f70b42a98741256bbb6e8faa5d61c7c2ae2b8257e50f4abb15"
+        },
+        {
+          "id": "union-f172f7f6e2",
+          "path": "patches/common/f172f7f6e2-fix-restore-shared-malformed-weight-and-initial-stream-error-contracts.patch",
+          "source_commit": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+          "source_parent": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+          "sha256": "5aa7bbf420b0ff3ceead40bd9a341fa9da5cbae3b979c729e2befda4aedb69ee"
+        },
+        {
+          "id": "union-228f7d93dc",
+          "path": "patches/common/228f7d93dc-fix-reject-malformed-flattened-reconstruction-before-weight-mutation.patch",
+          "source_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
+          "source_parent": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+          "sha256": "394ebcb4240ecc8455e839ba95641e3121604601cb41460276a0ce685576c3b7"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
       "status": "source_replay_and_focused_cpu_verified_full_runtime_qualification_pending",
-      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes."
+      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. Historical fusion/Mamba source coverage confirmed by upstream ancestry and focused CPU controls; shared malformed-weight16 and initial-SSE-status7 now pass. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes."
     },
     "common-v0520-successor": {
       "model_family": "shared-serving",

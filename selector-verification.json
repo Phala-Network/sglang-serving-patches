@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
-      "fork_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6",
+      "fork_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
+      "fork_tree": "0af2ff1dbe241285caacf8e8236c918a434b9889",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 57,
+      "patch_count": 59,
       "replay_mode": "exact",
       "status": "source_replay_and_focused_cpu_verified_full_runtime_qualification_pending",
-      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes.",
-      "replay_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6"
+      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. Historical fusion/Mamba source coverage confirmed by upstream ancestry and focused CPU controls; shared malformed-weight16 and initial-SSE-status7 now pass. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes.",
+      "replay_tree": "0af2ff1dbe241285caacf8e8236c918a434b9889"
     },
     "common-v0520-successor": {
       "passed": true,

@@ -2,10 +2,13 @@
 
 This record does not update the frozen engine428 export, any Governor candidate,
 image, CVM or production acceptance. No image build or registry write is needed.
+The independently built PIG candidate has a separate immutable receipt in
+[PIG_PRIVATE_CANDIDATE_20260922.md](PIG_PRIVATE_CANDIDATE_20260922.md);
+its engine `e02dfa12...` is not the union source below.
 
 The implementation is Phala-Network/sglang commit
-`05a0fe7c11e8262c804b0816328378ddc13beb87`, tree
-`3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6`, on navigation branch
+`228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33`, tree
+`0af2ff1dbe241285caacf8e8236c918a434b9889`, on navigation branch
 `codex/model-union-v0520-20260922`. It combines the three common increments,
 six Kimi increments, one Muse increment and the guarded Nemotron literal-token
 migration, DS prerequisite/chat source, named-tool schema roots and Qwen complete-call
@@ -16,7 +19,7 @@ No common patch bytes were copied. The earlier commit
 `b6730c9fe47e14319bb92dc61b8463ae7dcfedfd`, equal to the earlier combined
 candidate `83d8dc47ee`. That historical equality is not claimed for the new tree.
 
-`unified-v0520-successor` records the full source range, 57 ordered patch
+`unified-v0520-successor` records the full source range, 59 ordered patch
 references, immutable commits and hashes. `export_selectors.py` independently
 replays the 31-entry frozen series from official v0.5.20
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` to tree
@@ -28,13 +31,17 @@ The source range is not a Governor v4 release input.
 The original 110 per-source records, source hashes, ownership and old evidence
 remain in [COVERAGE.json](COVERAGE.json). They describe frozen engine428 and
 must not be silently relabeled as successor acceptance.
+The separate [successor mapping](SUCCESSOR_COVERAGE_20260922.json) joins all
+110 IDs without changing that file: 104 source-covered and six upstream-covered.
+It preserves the fixed `05a0fe7` audit's original two residual findings and
+records their later implementation plus independent 23-test closeout.
 
 | Model or family | Present in this successor | Still not established |
 | --- | --- | --- |
-| Common | llguidance mask callbacks/pinning, typed usage, opt-in mode defaults, stable Marlin route order, NVFP4/MXFP4 FP32 non-atomic reduction and BREAKABLE-only hybrid gate | Linux full runtime imports, Triton/CUDA numerical/capture tests |
+| Common | llguidance mask callbacks/pinning, typed usage, opt-in mode defaults, stable Marlin route order, NVFP4/MXFP4 FP32 non-atomic reduction, BREAKABLE-only hybrid gate, malformed weight-update validation and initial SSE error HTTP status | Linux full runtime imports, Triton/CUDA numerical/capture tests |
 | Kimi K3 | Owner identity `1e62ad753c42`, absolute checkpoint grid `9bd58a168358`, prefill sequence cap `6329c4dddd08`, file ownership/prefix `cd0cca6903e8`, chunk guards `5a1799c43d72`, virtual page continuation `02558c2aaab1` | TP8/DCP1/DCP8 runtime and new Governor combination; old CPU/CUDA evidence is scoped to its original source |
 | Muse Glimmer | ATEM/JSON framing, required/named schemas, channel grammar, history/default/template propagation; rejection-safe wrapper and counter-based final rollback; 30 CPU tests | External template packaging/license, full model/runtime and cancellation qualification |
-| Nemotron 3.5 Lightning | Literal/control tokens with real tokenizer, truncated thought/force-content guards and termination propagation, structured final reserve with filter fail-closed, shared complete-call/XML const execution, native grammar adapter; 19 tokenizer plus 10 termination/budget tests | Unreviewed fusion/Mamba semantics and full model/GPU/runtime qualification |
+| Nemotron 3.5 Lightning | Literal/control tokens with real tokenizer, truncated thought/force-content guards and termination propagation, structured final reserve with filter fail-closed, shared complete-call/XML const execution, native grammar adapter; 19 tokenizer plus 10 termination/budget tests; historical fusion/Mamba source coverage reconciled | Full model/GPU/runtime qualification |
 | DeepSeek V4.1 Flash | DS0001–0026 source and native 19/20 protocol adaptation; connected Vision/Engram/Python C1/C2 consumers, guarded quantization/indexer/communication, DS-only async, media checks, integer effort and both tool-none carriers; 38 focused plus 10 chat CPU tests | Native extensions/ABI, weights, GPU/numerical behavior, real HiCache/Mooncake ACK/reload and model acceptance |
 | Gemma 4 26B A4B | Common source; historical fork `d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571` remains identifiable | Shared old image does not prove a Gemma-specific increment or qualify Qwen GGUF paths |
 | Qwen3.8 27B / Qwen3.5 GGUF | Complete-call atomic publication; guarded name/head/layout/BF16/shared-identity completeness and vision projector loading; Qwen-only BF16/Q8_0 CUDA prefill dispatch | Full model loading and CUDA numerical/performance tests; CPU fixtures do not qualify kernels or weights |
@@ -150,18 +157,44 @@ Run `python -m unittest discover -s tests -v` and
 The main frozen export remains independently checked by `scripts/export.py`.
 No additional per-model workflow or long-lived profile was added.
 
-## Remaining historical semantics
+### Common residual closeout
+
+Multi-path historical donors had two additional shared hunks not covered by
+their already-migrated model-specific behavior. Source `f172f7f6e2` restores
+the malformed-weight contract from `2224d5c89971` / extracted `c2d241b80ef0`,
+and the initial SSE error status from `5f9f960c28a1` / extracted `3c06073c3d0b`.
+The shared DS derived-cache and active weight-cache guards remain in place.
+Source `228f7d93dc` additionally catches real flattened-bucket reconstruction
+failures before any model mutation, rather than duplicating dtype/shape
+arithmetic. A valid entry followed by bad shape, dtype view or boolean shape
+is rejected as a controlled error with no loader call.
+
+Sixteen real-torch CPU/source-method weight tests and seven source-method
+tests with real FastAPI/Starlette/ORJSON ASGI responses passed. Negative
+controls remove validation/status promotion and reproduce the old uncaught
+pre-device failure/HTTP200 respectively. Valid tensor/direct/custom/flattened
+loaders, own-rank-only deserialization, later SSE errors and generator cleanup
+remain covered. The SSE suite joins shared CI; torch weight checks were local,
+not claimed as dependency-light CI. This is not CUDA IPC or live ingress proof.
+
+## Historical source reconciliation and runtime boundaries
 
 Muse's nine source contracts are now migrated or reuse current shared behavior;
 the source record maps each exact historical commit. Native grammar, image
 template binding/license and cancellation acceptance remain separate.
 Nemotron now includes native tools/order adapter checks, truncated-thought
 termination guards, shared complete streaming calls, structured final budget
-and XML const-type migration. This does not close unreviewed MoE fusion or
-Mamba/admission semantics. Marlin/FP32 and guarded BREAKABLE source
+and XML const-type migration. Historical MoE fusion and Mamba/admission source
+semantics are now closed by upstream ancestry, exact function comparisons and
+focused source-method CPU checks in `NEMOTRON_HISTORY_AUDIT_20260922.md`;
+this is not CUDA numerical/capture or live scheduling acceptance.
+Marlin/FP32 and guarded BREAKABLE source
 migration is integrated by `fa291d652a` (donor `6281c5dcdd`); it still lacks
 Triton/CUDA numerical and capture acceptance. Page alignment is integrated in
-the shared Kimi checkpoint path, not separately model-qualified.
+the shared Kimi checkpoint path, not separately model-qualified. The historical
+global sub-page early-break is not reintroduced: ordinary admission rejects a
+zero page-aligned chunk before host materialization, while the intentional
+exact-chunk-fill path can use the remainder with separate page-ceiled KV charges.
 Deferred metadata `12593d20ead3` retains its upstream-coverage
 proof rather than being duplicated. Old Goodput 0.714982 below 0.7338 was an
 override, not a pass.
