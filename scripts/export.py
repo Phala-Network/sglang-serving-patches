@@ -11,11 +11,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
-ENGINE = "354d47922eafa95ebc2d7bd63b7627d780a01c26"
-TREE = "2733a3bae11d56e4bf3f694fbb49f8e9e156086d"
-GOVERNOR = "675c5364bb103a6aacb12c26af406217cdd93622"
+ENGINE = "e02dfa1256c5d7d6e8b731d439229d5aca72cbe5"
+TREE = "ae0e7307e3dcf2314b7eb51e26a17207073e0f0a"
+GOVERNOR = "3ae4601ea8486eaae32b8aaa1be8d721cac09d88"
 HOOK = "patches/sglang/v0.5.20/0001-governor-hooks.patch"
-HOOK_SHA = "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea"
+HOOK_SHA = "74d967e31940f3ef5b2aa010999cd36329756970c8d3c073db8ed7b17723f1d2"
 
 
 def git(repo, *args, env=None):
@@ -85,7 +85,7 @@ def export(source, governor):
         "serving_result": {"commit": entries[-2]["source_commit"], "tree": entries[-2]["result_tree"]},
         "governor": {
             "commit": GOVERNOR,
-            "version": "0.2.2",
+            "version": "0.2.3",
             "abi_version": 4,
             "hooks_only": True,
             "component_installation_required": True,
