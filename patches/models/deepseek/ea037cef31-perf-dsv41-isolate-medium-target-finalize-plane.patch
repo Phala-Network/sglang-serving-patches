@@ -1,0 +1,1018 @@
+diff --git a/python/sglang/kernels/ops/communication/all_reduce_fusion.py b/python/sglang/kernels/ops/communication/all_reduce_fusion.py
+index 47eff6e12cc65248b7ad3e9c7fe22a63d17b4811..13e21d750b8d2381f1e1464fd981dc25324aa7b7 100644
+--- a/python/sglang/kernels/ops/communication/all_reduce_fusion.py
++++ b/python/sglang/kernels/ops/communication/all_reduce_fusion.py
+@@ -14,8 +14,19 @@ materializes; ``idx == -1`` slots (EP: non-local expert) contribute nothing.
+ Small-batch only: the whole ``[T, hidden]`` bf16 row view must fit one push
+ slot (checked C++-side; :func:`fits_push_slot` lets callers pre-check).
+ 
+-Needs :func:`register_comm` once per process (the CustomAllReduceV2
+-``Communicator``); the ops key on ``world_size`` alone.
++The un-normed result is what DeepSeek-V4.1 consumes (its consumer is the mHC
++post-split, not an RMSNorm), so ``norm_weight=None`` is the primary
++configuration; ``norm_weight`` + ``norm_eps`` give the K3-style fused norm.
++
++Geometry: one thread-block cluster per token row plus a bumper cluster that
++keeps the plane's phase counters uniform; ``cluster_size`` blocks share a
++row (``hidden / cluster_size`` dims each). :func:`default_cluster_size` holds
++the tuned default per hidden size and can be overridden per call.
++
++Needs :func:`register_comm` once per process and storage plane (the
++CustomAllReduceV2 ``Communicator``). The plane key is part of the custom-op
++signature so a larger medium-batch workspace cannot silently replace the
++existing small-batch/draft plane.
+ """
+ 
+ from __future__ import annotations
+@@ -42,25 +53,32 @@ if TYPE_CHECKING:
+ 
+ # Storage plane: the CustomAllReduceV2 Communicator (push plane only)
+ 
+-_COMM_MAP: dict[int, Communicator] = {}
++DEFAULT_COMM_KEY = "default"
++DSV41_MEDIUM_COMM_KEY = "dsv41_medium"
++_COMM_MAP: dict[tuple[int, str], Communicator] = {}
+ 
+ 
+-def register_comm(comm: Communicator) -> None:
++def register_comm(comm: Communicator, comm_key: str = DEFAULT_COMM_KEY) -> None:
+     """Register the CustomAllReduceV2 communicator whose push plane the fused
+-    kernel stages through. ``world_size`` is the whole key, so at most one
+-    communicator per size may be registered in a process.
++    kernel stages through.
++
++    At most one communicator may be registered for each ``(world_size,
++    comm_key)`` pair. Keeping the plane name explicit prevents a graph from
++    inheriting peer pointers for another same-size communicator.
+     """
+-    prev = _COMM_MAP.get(comm.world_size)
++    key = (comm.world_size, comm_key)
++    prev = _COMM_MAP.get(key)
+     assert prev is None or prev is comm, (
+-        f"a different communicator is already registered for world_size="
+-        f"{comm.world_size}; these ops key only on world_size, so two groups of "
+-        f"the same size cannot coexist in one process"
++        f"a different communicator is already registered for {key=}; "
++        "use a distinct comm_key for an independent storage plane"
+     )
+-    _COMM_MAP[comm.world_size] = comm
++    _COMM_MAP[key] = comm
+ 
+ 
+-def get_registered_comm(world_size: int) -> Optional[Communicator]:
+-    return _COMM_MAP.get(world_size)
++def get_registered_comm(
++    world_size: int, comm_key: str = DEFAULT_COMM_KEY
++) -> Optional[Communicator]:
++    return _COMM_MAP.get((world_size, comm_key))
+ 
+ 
+ # Geometry
+@@ -142,6 +160,7 @@ def _jit_module(
+ @register_custom_op(mutates_args=["out"])
+ def _moe_finalize_all_reduce_op(
+     world_size: int,
++    comm_key: str,
+     hidden_dim: int,
+     top_k: int,
+     cluster_size: int,
+@@ -154,10 +173,11 @@ def _moe_finalize_all_reduce_op(
+     norm_eps: float,
+     prefetch_metadata: bool,
+ ) -> None:
+-    comm = _COMM_MAP.get(world_size)
++    comm = _COMM_MAP.get((world_size, comm_key))
+     assert comm is not None, (
+-        f"no communicator registered for world_size={world_size}; call "
+-        "all_reduce_fusion.register_comm(comm.obj) first"
++        f"no communicator registered for world_size={world_size}, "
++        f"comm_key={comm_key!r}; call "
++        "all_reduce_fusion.register_comm(comm.obj, comm_key=...) first"
+     )
+     _jit_module(world_size, hidden_dim, top_k, cluster_size, expert_weights.dtype).run(
+         comm,
+@@ -183,6 +203,7 @@ def moe_finalize_all_reduce(
+     *,
+     world_size: int,
+     hidden_dim: int,
++    comm_key: str = DEFAULT_COMM_KEY,
+     cluster_size: Optional[int] = None,
+     prefetch_metadata: bool = False,
+ ) -> torch.Tensor:
+@@ -195,12 +216,19 @@ def moe_finalize_all_reduce(
+     :param shared_output: optional ``[T, hidden_dim]`` bf16 added before the reduce.
+     :param norm_weight: optional ``[hidden_dim]`` bf16 RMSNorm weight; with
+                         ``norm_eps`` it turns on the fused norm epilogue.
+-    :param prefetch_metadata: read the plane's phase counter and the routing
+-                              metadata before the PDL wait; valid only when the
+-                              preceding kernel is not an all-reduce on the same
+-                              plane and the producers of
+-                              ``expanded_idx_to_permuted_idx`` /
+-                              ``expert_weights`` are complete. Defaults to False.
++    :param comm_key: registered push-plane namespace. The default preserves the
++                     original small-batch and draft path.
++    :param prefetch_metadata: let the kernel read the plane's phase counter and
++                              the routing metadata before its PDL wait. Under
++                              PDL the kernel may start as soon as the preceding
++                              kernel *triggers*, and nothing earlier in the
++                              stream is guaranteed complete until the wait: so
++                              this is only valid when the preceding kernel is
++                              not an all-reduce on the same plane AND the
++                              producers of ``expanded_idx_to_permuted_idx`` /
++                              ``expert_weights`` are known complete (a chain of
++                              early-triggering kernels such as the TRT-LLM MoE
++                              GEMMs is not). Defaults to False (wait first).
+     :returns: a new ``[T, hidden_dim]`` bf16 tensor (not in place).
+     """
+     num_tokens = expert_weights.shape[0]
+@@ -216,6 +244,7 @@ def moe_finalize_all_reduce(
+         return out
+     _moe_finalize_all_reduce_op(
+         world_size,
++        comm_key,
+         hidden_dim,
+         top_k,
+         cluster_size or default_cluster_size(hidden_dim),
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index b235d2a89f5ae3a3dfd27f534d30eb247eeb9309..38950e0bf40136f6ae691fd0bc7498afdc7bc31b 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -556,6 +556,10 @@ class Envs:
+     SGLANG_DSPARK_NVLINK_VOCAB_GATHER = EnvBool(True)
+     SGLANG_DSPARK_ENABLE_MULTI_STREAM = EnvBool(True)
+     SGLANG_DSPARK_CONFIDENCE_RELAY_LAG_STEPS = EnvInt(2)
++    # Opt-in DSV4.1 target-verify path for 97-384 deferred MXFP4 rows. The
++    # small/draft plane remains unchanged and the medium plane is separately
++    # allocated before CUDA graph capture.
++    SGLANG_DSV41_MEDIUM_FUSED_FINALIZE_ALL_REDUCE = EnvBool(False)
+ 
+     # ===================================================================
+     # Memory pools and KV-cache sizing
+diff --git a/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py b/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
+index 3c8a83031ee7b7897777323edd7455af37ab5e36..ba4a19f95a5e42ed041ec75a79f2489f4fb16b26 100644
+--- a/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
++++ b/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py
+@@ -412,7 +412,10 @@ class Mxfp4FlashinferTrtllmMoEMethod:
+         # triple instead of the finalized [T, hidden] tensor.
+         defer_finalize = is_deferred_finalize_enabled()
+         symm_output = None
+-        if not defer_finalize:
++        # Keep the ordinary output shape in FlashInfer's autotuner key for the
++        # medium deferred path. The deferred ABI ignores this allocation and
++        # returns the expanded GEMM output to the fused epilogue.
++        if not defer_finalize or 96 < num_tokens <= 384:
+             with use_symmetric_memory(
+                 get_tp_group(), disabled=not is_allocation_symmetric()
+             ):
+@@ -513,34 +516,88 @@ def maybe_fuse_routed_scale_and_shared_add(
+ 
+ 
+ # Fused finalize + shared add + TP all-reduce
+-_fused_finalize_all_reduce_world_size: Optional[int] = None
+-_fused_finalize_all_reduce_probed = False
++_fused_finalize_all_reduce_comms = {}
++_fused_finalize_all_reduce_probed: set[str] = set()
++_fused_finalize_all_reduce_selected: set[str] = set()
+ 
+ 
+-def _fused_finalize_all_reduce_comm_world_size() -> Optional[int]:
+-    global _fused_finalize_all_reduce_world_size, _fused_finalize_all_reduce_probed
+-    if not _fused_finalize_all_reduce_probed:
+-        _fused_finalize_all_reduce_probed = True
+-        from sglang.kernels.ops.communication import all_reduce_fusion
++def _fused_finalize_all_reduce_comm_world_size(comm_key: str) -> Optional[int]:
++    """Register one named CustomAllReduceV2 push plane before graph capture."""
++    from sglang.kernels.ops.communication import all_reduce_fusion
++
++    if comm_key not in (
++        all_reduce_fusion.DEFAULT_COMM_KEY,
++        all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++    ):
++        raise ValueError(f"unknown fused finalize communicator key: {comm_key!r}")
++
++    if comm_key not in _fused_finalize_all_reduce_probed:
++        # Creating a symmetric-memory communicator during capture would leave
++        # graph ownership and peer rendezvous ambiguous. Eager warmup must
++        # initialize the medium plane first; otherwise this graph falls back.
++        if (
++            comm_key == all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++            and torch.cuda.is_current_stream_capturing()
++        ):
++            return None
++        _fused_finalize_all_reduce_probed.add(comm_key)
+         from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
+             CustomAllReduceV2,
+         )
+ 
+         ca_comm = get_tp_group().ca_comm
+-        if isinstance(ca_comm, CustomAllReduceV2) and not ca_comm.disabled:
+-            all_reduce_fusion.register_comm(ca_comm.obj)
+-            _fused_finalize_all_reduce_world_size = ca_comm.world_size
+-        else:
++        if not isinstance(ca_comm, CustomAllReduceV2) or ca_comm.disabled:
+             log_info_on_rank0(
+                 logger,
+                 "Fused MoE finalize: TP group has no "
+                 "CustomAllReduceV2 push plane; keeping the unfused finalize path",
+             )
+-    return _fused_finalize_all_reduce_world_size
++            return None
++
++        fused_comm = ca_comm
++        if comm_key == all_reduce_fusion.DSV41_MEDIUM_COMM_KEY:
++            if ca_comm.world_size != 4:
++                log_info_on_rank0(
++                    logger,
++                    "DSV4.1 medium fused finalize requires TP4; keeping the "
++                    f"unfused finalize path for TP{ca_comm.world_size}",
++                )
++                return None
++            from sglang.kernels.ops.communication.mp import register_comm_cleanup
++
++            fused_comm = CustomAllReduceV2(
++                ca_comm.group,
++                ca_comm.device,
++                max_pull_size=0,
++                max_pull_blocks=0,
++                max_push_size=4 * 1024 * 1024,
++                max_push_blocks=512,
++            )
++            register_comm_cleanup(fused_comm)
++
++        if fused_comm.disabled:
++            return None
++        _fused_finalize_all_reduce_comms[comm_key] = fused_comm
++        all_reduce_fusion.register_comm(fused_comm.obj, comm_key=comm_key)
++        log_info_on_rank0(
++            logger,
++            f"Fused MoE finalize initialized comm_key={comm_key} "
++            f"world_size={fused_comm.world_size} "
++            f"push_slot_bytes={fused_comm.max_push_size} "
++            f"push_counters={fused_comm.config.num_push_blocks}",
++        )
++
++    comm = _fused_finalize_all_reduce_comms.get(comm_key)
++    return None if comm is None else comm.world_size
++
++
++def initialize_fused_finalize_all_reduce_comm(comm_key: str) -> bool:
++    """Eagerly initialize a named plane before any CUDA graph capture."""
++    return _fused_finalize_all_reduce_comm_world_size(comm_key) is not None
+ 
+ 
+ def should_use_fuse_finalize_all_reduce(
+-    experts, num_tokens: int, hidden_dim: int
++    experts, num_tokens: int, hidden_dim: int, *, comm_key: str
+ ) -> bool:
+     """Capability only; the batch-size policy cap lives at the call site. The
+     kernel never rescales, so the expert weights must carry the routed scaling."""
+@@ -550,18 +607,34 @@ def should_use_fuse_finalize_all_reduce(
+         return False
+     if not experts.should_fuse_routed_scaling_factor_in_topk:
+         return False
+-    if num_tokens <= 0:
+-        return False
+     from sglang.kernels.ops.communication import all_reduce_fusion
+ 
++    if comm_key == all_reduce_fusion.DSV41_MEDIUM_COMM_KEY:
++        if not 96 < num_tokens <= 384:
++            return False
++        from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
++
++        if is_batch_invariant_mode_enabled():
++            return False
++    elif comm_key != all_reduce_fusion.DEFAULT_COMM_KEY:
++        return False
++    if num_tokens <= 0:
++        return False
+     if not all_reduce_fusion.valid_cluster_sizes(hidden_dim):
+         return False
+     tp_group = get_tp_group()
+-    if _fused_finalize_all_reduce_comm_world_size() != tp_group.world_size:
++    if _fused_finalize_all_reduce_comm_world_size(comm_key) != tp_group.world_size:
+         return False
+-    # one push phase counter per row (the plane has num_sm of them)
+-    if num_tokens > tp_group.ca_comm.config.num_push_blocks:
++    comm = _fused_finalize_all_reduce_comms[comm_key]
++    # One push phase counter per token row.
++    if num_tokens > comm.config.num_push_blocks:
+         return False
+-    return all_reduce_fusion.fits_push_slot(
+-        tp_group.ca_comm.max_push_size, num_tokens, hidden_dim
+-    )
++    fits = all_reduce_fusion.fits_push_slot(comm.max_push_size, num_tokens, hidden_dim)
++    if fits and comm_key not in _fused_finalize_all_reduce_selected:
++        _fused_finalize_all_reduce_selected.add(comm_key)
++        log_info_on_rank0(
++            logger,
++            f"Fused MoE finalize selected comm_key={comm_key} "
++            f"rows={num_tokens} hidden_dim={hidden_dim}",
++        )
++    return fits
+diff --git a/python/sglang/srt/models/deepseek_v2.py b/python/sglang/srt/models/deepseek_v2.py
+index ccd3b697a2526341449e45084c1dfcc9e8822f11..a9bb21deb1d10b5837fadfc09976a6069efd08a5 100644
+--- a/python/sglang/srt/models/deepseek_v2.py
++++ b/python/sglang/srt/models/deepseek_v2.py
+@@ -128,6 +128,7 @@ from sglang.srt.layers.quantization.fp8_utils import (
+ from sglang.srt.layers.quantization.mxfp4_flashinfer_trtllm_moe import (
+     Mxfp4FlashinferTrtllmMoEMethod,
+     Mxfp8RoutedInputPreQuant,
++    initialize_fused_finalize_all_reduce_comm,
+     maybe_fuse_routed_scale_and_shared_add,
+     routed_hidden_size,
+     should_use_fuse_finalize_all_reduce,
+@@ -555,9 +556,35 @@ class MoEGate(nn.Module):
+         return logits
+ 
+ 
+-# 96 rows of 5120 bf16 fit the 1 MiB CustomAllReduceV2 push slot the whole
+-# [T, hidden] view is staged through.
++# Fused finalize + shared add + TP all-reduce. The existing 1 MiB push slot
++# holds 96 rows of 5120 bf16; an opt-in, separately named 4 MiB plane covers
++# target-verify batches through 384 rows.
+ _FUSED_FINALIZE_ALL_REDUCE_MAX_TOKENS = 96
++_FUSED_FINALIZE_ALL_REDUCE_MEDIUM_MAX_TOKENS = 384
++
++
++def _select_fused_finalize_comm_key(
++    num_tokens: int,
++    *,
++    is_nextn: bool,
++    is_target_verify: bool,
++    medium_enabled: bool,
++) -> Optional[str]:
++    """Choose the original small plane or the opt-in target-only medium plane."""
++    from sglang.kernels.ops.communication import all_reduce_fusion
++
++    if 0 < num_tokens <= _FUSED_FINALIZE_ALL_REDUCE_MAX_TOKENS:
++        return all_reduce_fusion.DEFAULT_COMM_KEY
++    if (
++        medium_enabled
++        and not is_nextn
++        and is_target_verify
++        and _FUSED_FINALIZE_ALL_REDUCE_MAX_TOKENS
++        < num_tokens
++        <= _FUSED_FINALIZE_ALL_REDUCE_MEDIUM_MAX_TOKENS
++    ):
++        return all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    return None
+ 
+ 
+ class DeepseekV2MoE(nn.Module):
+@@ -617,6 +644,16 @@ class DeepseekV2MoE(nn.Module):
+             and get_platform().is_blackwell
+             and self.tp_size == 4
+         )
++        if (
++            self._fuse_finalize_all_reduce
++            and not self.is_nextn
++            and envs.SGLANG_DSV41_MEDIUM_FUSED_FINALIZE_ALL_REDUCE.get()
++        ):
++            from sglang.kernels.ops.communication import all_reduce_fusion
++
++            initialize_fused_finalize_all_reduce_comm(
++                all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++            )
+ 
+         n_hash_layers = getattr(config, "num_hash_layers", 0)
+         self.is_hash = layer_id < n_hash_layers and not (is_deepseek_v4 and is_nextn)
+@@ -950,6 +987,12 @@ class DeepseekV2MoE(nn.Module):
+                     input_ids,
+                     input_ids_global=input_ids_global,
+                     num_token_non_padded=num_token_non_padded,
++                    allow_medium_fused_finalize=(
++                        envs.SGLANG_DSV41_MEDIUM_FUSED_FINALIZE_ALL_REDUCE.get()
++                        and not self.is_nextn
++                        and forward_batch is not None
++                        and forward_batch.forward_mode.is_target_verify()
++                    ),
+                 )
+             else:
+                 return self.forward_normal(
+@@ -972,6 +1015,7 @@ class DeepseekV2MoE(nn.Module):
+         input_ids: Optional[torch.Tensor] = None,
+         input_ids_global: Optional[torch.Tensor] = None,
+         num_token_non_padded: Optional[torch.Tensor] = None,
++        allow_medium_fused_finalize: bool = False,
+     ) -> torch.Tensor:
+         # Note(kpham-sgl): issue order satisfies 3 constraints:
+         # - no stream explosion: main (routed) issued before alt block -> capture reuses 1 alt stream;
+@@ -1042,6 +1086,12 @@ class DeepseekV2MoE(nn.Module):
+                 )
+                 ready = self.routed_quant_stream.record_event()
+             routed_pre_quant_input = Mxfp8RoutedInputPreQuant(x_q, x_sf, ready)
++        fused_finalize_comm_key = _select_fused_finalize_comm_key(
++            hidden_states.shape[0],
++            is_nextn=self.is_nextn,
++            is_target_verify=allow_medium_fused_finalize,
++            medium_enabled=allow_medium_fused_finalize,
++        )
+         # The mHC post-split consumes the reduced row without an RMSNorm.
+         use_fused_finalize_all_reduce = (
+             self._fuse_finalize_all_reduce
+@@ -1049,10 +1099,13 @@ class DeepseekV2MoE(nn.Module):
+             and hidden_states.shape[-1] == 5120
+             and not self._shared_expert_tp1
+             and self.tp_size > 1
+-            and hidden_states.shape[0] <= _FUSED_FINALIZE_ALL_REDUCE_MAX_TOKENS
++            and fused_finalize_comm_key is not None
+             and not should_skip_post_experts_all_reduce(is_tp_path=True)
+             and should_use_fuse_finalize_all_reduce(
+-                self.experts, hidden_states.shape[0], hidden_states.shape[-1]
++                self.experts,
++                hidden_states.shape[0],
++                hidden_states.shape[-1],
++                comm_key=fused_finalize_comm_key,
+             )
+         )
+         deferred_finalize = use_fused_finalize_all_reduce or (
+@@ -1112,7 +1165,7 @@ class DeepseekV2MoE(nn.Module):
+                 )
+ 
+                 mhc = current_mhc_post_fusion()
+-                if mhc is not None:
++                if mhc is not None and fused_finalize_comm_key == "default":
+                     from sglang.kernels.ops.communication.all_reduce_mhc import (
+                         moe_finalize_all_reduce_mhc,
+                     )
+@@ -1159,6 +1212,7 @@ class DeepseekV2MoE(nn.Module):
+                         shared_output,
+                         world_size=self.tp_size,
+                         hidden_dim=hidden_states.shape[-1],
++                        comm_key=fused_finalize_comm_key,
+                         # Routing metadata must be ready before it is consumed.
+                         prefetch_metadata=False,
+                     )
+diff --git a/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py b/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d97d9fa937338a2735c2fecc3bd3035ecdee3beb
+--- /dev/null
++++ b/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+@@ -0,0 +1,326 @@
++"""TP4 parity and graph replay for the DSV4.1 medium finalize plane."""
++
++from __future__ import annotations
++
++import atexit
++import logging
++import os
++
++import pytest
++import torch
++import torch.distributed as dist
++
++import sglang.srt.distributed.parallel_state as ps
++from sglang.kernels.jit.utils import cache_once
++from sglang.kernels.ops.communication.all_reduce import AllReduceAlgo
++from sglang.kernels.ops.communication import all_reduce_fusion
++from sglang.kernels.ops.communication.mp import register_comm_cleanup
++from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
++    CustomAllReduceV2,
++)
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.kernels.utils import multigpu_pytest_main
++
++register_cuda_ci(est_time=240, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++HIDDEN = 5120
++TOP_K = 6
++MB = 1024 * 1024
++
++
++def _precompile(num_gpus):
++    for world_size in num_gpus:
++        all_reduce_fusion._jit_module(
++            world_size,
++            HIDDEN,
++            TOP_K,
++            all_reduce_fusion.default_cluster_size(HIDDEN),
++            torch.bfloat16,
++        )
++
++
++@cache_once
++def _init_world() -> dist.ProcessGroup:
++    local_rank = int(os.environ["LOCAL_RANK"])
++    world_size = int(os.environ["WORLD_SIZE"])
++    torch.cuda.set_device(local_rank)
++    dist.init_process_group(backend="gloo")
++    ps._WORLD = coord = ps.init_world_group(
++        ranks=list(range(world_size)),
++        local_rank=local_rank,
++        backend="nccl",
++    )
++    atexit.register(dist.destroy_process_group)
++    logging.disable(logging.INFO)
++    torch.cuda.set_stream(torch.cuda.Stream())
++    return coord.cpu_group
++
++
++def _device() -> torch.device:
++    return torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
++
++
++@cache_once
++def _init_comms() -> tuple[CustomAllReduceV2, CustomAllReduceV2]:
++    cpu_group = _init_world()
++    small = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=1 * MB,
++        max_push_blocks=96,
++    )
++    medium = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=4 * MB,
++        max_push_blocks=512,
++    )
++    assert not small.disabled and not medium.disabled
++    small.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    medium.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    register_comm_cleanup(small)
++    register_comm_cleanup(medium)
++    all_reduce_fusion.register_comm(
++        small.obj, comm_key=all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++    all_reduce_fusion.register_comm(
++        medium.obj, comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++    return small, medium
++
++
++def _make_inputs(num_tokens: int, seed: int):
++    rank = dist.get_rank()
++    generator = torch.Generator().manual_seed(seed * 7919 + rank)
++    num_slots = num_tokens * TOP_K
++    gemm2 = torch.randint(-2, 3, (num_slots + 8, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    weights = (
++        torch.randint(0, 3, (num_tokens, TOP_K), generator=generator)
++        .to(torch.bfloat16)
++        .mul_(0.5)
++    )
++    shared = torch.randint(-2, 3, (num_tokens, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    indices = torch.arange(num_slots, dtype=torch.int32)
++    indices[::11] = -1
++    indices[:TOP_K] = -1
++    device = _device()
++    return (
++        gemm2.to(device),
++        indices.to(device),
++        weights.to(device),
++        shared.to(device),
++    )
++
++
++def _refresh_inputs(gemm2, indices, weights, shared, seed):
++    rank = dist.get_rank()
++    torch.manual_seed(seed * 7919 + rank)
++    gemm2.copy_(torch.randint(-2, 3, gemm2.shape, device=_device()))
++    weights.copy_(
++        torch.randint(0, 3, weights.shape, device=_device()).to(torch.bfloat16)
++    ).mul_(0.5)
++    shared.copy_(torch.randint(-2, 3, shared.shape, device=_device()))
++    indices.copy_(torch.arange(indices.numel(), dtype=torch.int32, device=_device()))
++    indices[(seed + rank) % 13 :: 13] = -1
++    indices[:TOP_K] = -1
++
++
++@pytest.mark.parametrize("num_tokens", [96, 97, 288, 336, 384])
++@torch.inference_mode()
++def test_finalize_shared_rank_sum_graph_replay(num_tokens):
++    small, medium = _init_comms()
++    if num_tokens <= 96:
++        comm = small
++        comm_key = all_reduce_fusion.DEFAULT_COMM_KEY
++    else:
++        comm = medium
++        comm_key = all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++
++    gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=17)
++
++    def small_plane_reference():
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        return torch.cat(chunks)
++
++    def chain():
++        expected = small_plane_reference()
++        # The reference collectives have completed on every rank. Delaying
++        # rank 0 here specifically exercises the medium plane's peer wait.
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        return expected, actual
++
++    chain()
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with small.capture(), medium.capture(), torch.cuda.graph(graph):
++        expected, actual = chain()
++
++    for replay in range(3):
++        _refresh_inputs(gemm2, indices, weights, shared, seed=31 + replay)
++        graph.replay()
++        torch.cuda.synchronize()
++        error = None
++        try:
++            assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
++            torch.testing.assert_close(
++                actual.view(torch.int16),
++                expected.view(torch.int16),
++                rtol=0,
++                atol=0,
++            )
++        except AssertionError as exc:
++            error = f"rank={dist.get_rank()}, M={num_tokens}, replay={replay}: {exc}"
++        errors = [None] * dist.get_world_size()
++        dist.all_gather_object(errors, error)
++        assert not any(errors), "\n".join(item for item in errors if item)
++
++
++@torch.inference_mode()
++def test_routed_rounds_before_shared_add():
++    """Catch helpers that incorrectly round only after adding shared output."""
++    _, medium = _init_comms()
++    num_tokens = 97
++    gemm2 = torch.zeros(
++        num_tokens * TOP_K,
++        HIDDEN,
++        dtype=torch.bfloat16,
++        device=_device(),
++    )
++    weights = torch.zeros(num_tokens, TOP_K, dtype=torch.bfloat16, device=_device())
++    indices = torch.arange(num_tokens * TOP_K, dtype=torch.int32, device=_device())
++    shared = torch.zeros(num_tokens, HIDDEN, dtype=torch.bfloat16, device=_device())
++    # FP32 routed accumulation is 1 + 1/256. BF16 round-to-even produces 1,
++    # then adding -1 must produce zero. Adding shared before the routed BF16
++    # rounding would incorrectly retain 1/256.
++    gemm2[0, 0] = 1
++    gemm2[1, 0] = 1
++    weights[0, 0] = 1
++    weights[0, 1] = 1 / 256
++    shared[0, 0] = -1
++    indices[TOP_K:] = -1
++
++    out = all_reduce_fusion.moe_finalize_all_reduce(
++        gemm2,
++        indices,
++        weights,
++        TOP_K,
++        shared,
++        world_size=4,
++        hidden_dim=HIDDEN,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++        prefetch_metadata=False,
++    )
++    torch.cuda.synchronize()
++    assert torch.count_nonzero(out) == 0
++
++
++@torch.inference_mode()
++def test_default_medium_and_generic_push_interleave():
++    small, medium = _init_comms()
++    sequence = [
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (97, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (384, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (288, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (336, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++    ]
++
++    for step, (num_tokens, comm_key) in enumerate(sequence):
++        gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=101 + step)
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        expected = torch.cat(chunks)
++
++        probe = torch.full(
++            (1024,),
++            dist.get_rank() + 1,
++            dtype=torch.bfloat16,
++            device=_device(),
++        )
++        ordinary = small.custom_all_reduce(probe)
++        torch.testing.assert_close(
++            ordinary,
++            torch.full_like(ordinary, 10),
++            rtol=0,
++            atol=0,
++        )
++
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        torch.cuda.synchronize()
++        torch.testing.assert_close(
++            actual.view(torch.int16),
++            expected.view(torch.int16),
++            rtol=0,
++            atol=0,
++        )
++
++
++if __name__ == "__main__":
++    multigpu_pytest_main(
++        __name__,
++        __file__,
++        num_gpus=(4,),
++        pre_launch_fn=_precompile,
++    )
+diff --git a/test/registered/unit/models/test_dsv41_medium_finalize_selection.py b/test/registered/unit/models/test_dsv41_medium_finalize_selection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f9c2cd12ec413118642f999172833d6a020ff2a
+--- /dev/null
++++ b/test/registered/unit/models/test_dsv41_medium_finalize_selection.py
+@@ -0,0 +1,235 @@
++from types import SimpleNamespace
++
++import pytest
++
++from sglang.kernels.ops.communication import all_reduce_fusion
++from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe as mxfp4_moe
++from sglang.srt.models.deepseek_v2 import _select_fused_finalize_comm_key
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++@pytest.mark.parametrize("num_tokens", [1, 48, 96])
++def test_small_batches_keep_default_plane(num_tokens):
++    assert (
++        _select_fused_finalize_comm_key(
++            num_tokens,
++            is_nextn=True,
++            is_target_verify=False,
++            medium_enabled=False,
++        )
++        == all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++
++
++@pytest.mark.parametrize("num_tokens", [97, 288, 336, 384])
++def test_medium_target_batches_use_separate_plane(num_tokens):
++    assert (
++        _select_fused_finalize_comm_key(
++            num_tokens,
++            is_nextn=False,
++            is_target_verify=True,
++            medium_enabled=True,
++        )
++        == all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++
++
++@pytest.mark.parametrize("num_tokens", [97, 288, 336, 384])
++@pytest.mark.parametrize(
++    "is_nextn,is_target_verify,medium_enabled",
++    [
++        (False, True, False),
++        (False, False, True),
++        (True, True, True),
++    ],
++)
++def test_medium_path_is_target_only_and_opt_in(
++    num_tokens, is_nextn, is_target_verify, medium_enabled
++):
++    assert (
++        _select_fused_finalize_comm_key(
++            num_tokens,
++            is_nextn=is_nextn,
++            is_target_verify=is_target_verify,
++            medium_enabled=medium_enabled,
++        )
++        is None
++    )
++
++
++@pytest.mark.parametrize("num_tokens", [0, 385, 512])
++def test_out_of_policy_batches_fall_back(num_tokens):
++    assert (
++        _select_fused_finalize_comm_key(
++            num_tokens,
++            is_nextn=False,
++            is_target_verify=True,
++            medium_enabled=True,
++        )
++        is None
++    )
++
++
++def test_communicator_registry_is_namespaced(monkeypatch):
++    monkeypatch.setattr(all_reduce_fusion, "_COMM_MAP", {})
++    small = SimpleNamespace(world_size=4)
++    medium = SimpleNamespace(world_size=4)
++
++    all_reduce_fusion.register_comm(small, comm_key=all_reduce_fusion.DEFAULT_COMM_KEY)
++    all_reduce_fusion.register_comm(
++        medium, comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++
++    assert all_reduce_fusion.get_registered_comm(4) is small
++    assert (
++        all_reduce_fusion.get_registered_comm(
++            4, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++        )
++        is medium
++    )
++    with pytest.raises(AssertionError):
++        all_reduce_fusion.register_comm(
++            SimpleNamespace(world_size=4),
++            comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++        )
++
++
++def test_medium_comm_initialization_and_selection_are_observable(monkeypatch):
++    logs = []
++    created = []
++
++    class FakeComm:
++        def __init__(self, group=None, device=None, **kwargs):
++            created.append(dict(kwargs))
++            self.group = group
++            self.device = device
++            self.world_size = 4
++            self.disabled = False
++            self.max_push_size = kwargs.get("max_push_size", 1024 * 1024)
++            self.config = SimpleNamespace(
++                num_push_blocks=kwargs.get("max_push_blocks", 96)
++            )
++            self.obj = SimpleNamespace(world_size=4)
++
++    default_comm = FakeComm(group=object(), device=object())
++    tp_group = SimpleNamespace(ca_comm=default_comm, world_size=4)
++
++    monkeypatch.setattr(mxfp4_moe, "_fused_finalize_all_reduce_comms", {})
++    monkeypatch.setattr(mxfp4_moe, "_fused_finalize_all_reduce_probed", set())
++    monkeypatch.setattr(mxfp4_moe, "_fused_finalize_all_reduce_selected", set())
++    monkeypatch.setattr(mxfp4_moe, "get_tp_group", lambda: tp_group)
++    monkeypatch.setattr(
++        mxfp4_moe, "log_info_on_rank0", lambda logger, msg: logs.append(msg)
++    )
++    monkeypatch.setattr(
++        "sglang.srt.distributed.device_communicators.custom_all_reduce_v2.CustomAllReduceV2",
++        FakeComm,
++    )
++    monkeypatch.setattr(
++        "sglang.kernels.ops.communication.mp.register_comm_cleanup", lambda comm: None
++    )
++    monkeypatch.setattr(all_reduce_fusion, "_COMM_MAP", {})
++    monkeypatch.setattr("torch.cuda.is_current_stream_capturing", lambda: False)
++    monkeypatch.setattr(
++        "sglang.srt.batch_invariant_ops.is_batch_invariant_mode_enabled",
++        lambda: False,
++    )
++
++    created_before_init = len(created)
++    assert mxfp4_moe.initialize_fused_finalize_all_reduce_comm(
++        all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++    assert mxfp4_moe.initialize_fused_finalize_all_reduce_comm(
++        all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++    assert mxfp4_moe.initialize_fused_finalize_all_reduce_comm(
++        all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++    assert mxfp4_moe.initialize_fused_finalize_all_reduce_comm(
++        all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++    assert len(created) == created_before_init + 1
++
++    class FakeQuantMethod:
++        flashinfer_mxfp4_moe_precision = "default"
++
++    monkeypatch.setattr(mxfp4_moe, "Mxfp4FlashinferTrtllmMoEMethod", FakeQuantMethod)
++    experts = SimpleNamespace(
++        quant_method=FakeQuantMethod(),
++        should_fuse_routed_scaling_factor_in_topk=True,
++    )
++    assert mxfp4_moe.should_use_fuse_finalize_all_reduce(
++        experts,
++        96,
++        5120,
++        comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++    )
++    assert mxfp4_moe.should_use_fuse_finalize_all_reduce(
++        experts,
++        288,
++        5120,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++    )
++    assert not mxfp4_moe.should_use_fuse_finalize_all_reduce(
++        experts,
++        385,
++        5120,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++    )
++    medium = mxfp4_moe._fused_finalize_all_reduce_comms[
++        all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    ]
++    medium.max_push_size = 2 * 1024 * 1024
++    assert not mxfp4_moe.should_use_fuse_finalize_all_reduce(
++        experts,
++        288,
++        5120,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++    )
++    assert any("initialized comm_key=default" in item for item in logs)
++    assert any("initialized comm_key=dsv41_medium" in item for item in logs)
++    assert any("selected comm_key=dsv41_medium rows=288" in item for item in logs)
++
++
++def test_capture_first_medium_probe_can_retry_eagerly(monkeypatch):
++    class FakeComm:
++        def __init__(self, group=None, device=None, **kwargs):
++            self.group = group
++            self.device = device
++            self.world_size = 4
++            self.disabled = False
++            self.max_push_size = kwargs.get("max_push_size", 1024 * 1024)
++            self.config = SimpleNamespace(
++                num_push_blocks=kwargs.get("max_push_blocks", 96)
++            )
++            self.obj = SimpleNamespace(world_size=4)
++
++    default_comm = FakeComm(group=object(), device=object())
++    tp_group = SimpleNamespace(ca_comm=default_comm, world_size=4)
++    capture = {"active": True}
++
++    monkeypatch.setattr(mxfp4_moe, "_fused_finalize_all_reduce_comms", {})
++    monkeypatch.setattr(mxfp4_moe, "_fused_finalize_all_reduce_probed", set())
++    monkeypatch.setattr(mxfp4_moe, "get_tp_group", lambda: tp_group)
++    monkeypatch.setattr(mxfp4_moe, "log_info_on_rank0", lambda logger, msg: None)
++    monkeypatch.setattr(
++        "sglang.srt.distributed.device_communicators.custom_all_reduce_v2.CustomAllReduceV2",
++        FakeComm,
++    )
++    monkeypatch.setattr(
++        "sglang.kernels.ops.communication.mp.register_comm_cleanup", lambda comm: None
++    )
++    monkeypatch.setattr(all_reduce_fusion, "_COMM_MAP", {})
++    monkeypatch.setattr(
++        "torch.cuda.is_current_stream_capturing", lambda: capture["active"]
++    )
++
++    key = all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    assert not mxfp4_moe.initialize_fused_finalize_all_reduce_comm(key)
++    assert key not in mxfp4_moe._fused_finalize_all_reduce_probed
++
++    capture["active"] = False
++    assert mxfp4_moe.initialize_fused_finalize_all_reduce_comm(key)
++    assert key in mxfp4_moe._fused_finalize_all_reduce_probed

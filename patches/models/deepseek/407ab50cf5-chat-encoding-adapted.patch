@@ -1,0 +1,1582 @@
+diff --git a/docs/docs/references/environment_variables.mdx b/docs/docs/references/environment_variables.mdx
+index cf8c9fd8cc7c40649e5304c13a8e6102abbac6d0..c00648b870953c0ab864794351d6cf8ba1f565a4 100644
+--- a/docs/docs/references/environment_variables.mdx
++++ b/docs/docs/references/environment_variables.mdx
+@@ -755,6 +755,11 @@ SGLang supports various environment variables that can be used to configure its
+       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Default <code>reasoning_effort</code> for the DeepSeek V4 chat encoder when a request does not set it. The preview profile accepts <code>high</code> and <code>max</code>; the official profile accepts <code>low</code>, <code>high</code>, and <code>max</code>. The profile is detected from the bundled encoder. Override it with <code>--json-model-override-args '&#123;"dsv4_reasoning_effort_profile":"official"&#125;'</code>.</td>
+       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>""</code></td>
+     </tr>
++    <tr>
++      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DSV41_REASONING_EFFORT</code></td>
++      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Default <code>reasoning_effort</code> for the DeepSeek-V4.1 chat encoder when a request does not set it: one of <code>low</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>, or an integer budget in [1, 100]. Unset means the encoder default <code>high</code>.</td>
++      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>""</code></td>
++    </tr>
+     <tr>
+       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DSV4_USE_BF16_KV_QUANT_SOURCE</code></td>
+       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>For DeepSeek V4, quantize the SWA FP8 KV cache from BF16-rounded values instead of FP32 registers. This matches trainer-side QAT and the DSA prefill-CP path, at the cost of an extra BF16 KV materialization and separate cache-store kernels.</td>
+diff --git a/python/sglang/srt/entrypoints/openai/chat_encoding.py b/python/sglang/srt/entrypoints/openai/chat_encoding.py
+index 68749449d7463f47b828b113fdf98c2d0f63aec8..1346b16e1bf080885643da330a104713f567bfb5 100644
+--- a/python/sglang/srt/entrypoints/openai/chat_encoding.py
++++ b/python/sglang/srt/entrypoints/openai/chat_encoding.py
+@@ -10,9 +10,9 @@ from __future__ import annotations
+ import ast
+ import logging
+ from pathlib import Path
+-from typing import Any, Dict, List, Optional
++from typing import Any, Dict, List, Optional, Union
+ 
+-from sglang.srt.entrypoints.openai import encoding_dsv4
++from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv41
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -105,6 +105,13 @@ def resolve_dsv4_reasoning_effort_profile(
+     )
+ 
+ 
++def is_deepseek_v41_arch(*, arch: str, model_type: str) -> bool:
++    """Check model_type before matching the DeepseekV4 architecture substring;
++    V4.1 configs can also use the V4 architecture name.
++    """
++    return model_type == "deepseek_v41" or "DeepseekV41" in arch
++
++
+ def resolve_chat_encoding_spec(
+     *,
+     hf_config: Any,
+@@ -116,6 +123,8 @@ def resolve_chat_encoding_spec(
+     None means the default path (HF chat template); any non-None spec also owns
+     reasoning-history rendering (:func:`spec_owns_reasoning_history`).
+     """
++    if tool_call_parser == "deepseekv41":
++        return "dsv41"
+     if tool_call_parser == "deepseekv4":
+         return "dsv4"
+     if tool_call_parser == "deepseekv32":
+@@ -126,6 +135,10 @@ def resolve_chat_encoding_spec(
+     architectures = hf_config.architectures
+     arch = architectures[0] if architectures else ""
+ 
++    if is_deepseek_v41_arch(
++        arch=arch, model_type=getattr(hf_config, "model_type", "")
++    ):
++        return "dsv41"
+     if "DeepseekV4" in arch:
+         return "dsv4"
+     if "KimiK3" in arch:
+@@ -143,6 +156,60 @@ def resolve_chat_encoding_spec(
+     return None
+ 
+ 
++def parse_dsv41_reasoning_effort(value: Any) -> Union[str, int, None]:
++    """Map an API ``reasoning_effort`` onto what the V4.1 encoder accepts.
++
++    An int budget only reaches here through ``chat_template_kwargs``; None
++    means unsupported, and the caller applies its default.
++    """
++    if isinstance(value, bool):
++        return None
++    if isinstance(value, int):
++        return value if 1 <= value <= 100 else None
++    if isinstance(value, float):
++        return max(1, round(value * 100)) if 0.0 <= value <= 0.99 else None
++    if isinstance(value, str) and value in encoding_dsv41.REASONING_EFFORT_MAPPINGS:
++        return value
++    return None
++
++
++_OPENAI_FUNCTION_FIELD_ORDER = ("name", "description", "parameters")
++
++
++def dsv41_tool_payload(tool: Any) -> Dict[str, Any]:
++    """The tool dict the V4.1 encoder renders verbatim into the prompt.
++
++    Only fields the client sent, in the OpenAI field order; pydantic would
++    otherwise add defaults (strict=false) and reorder keys by declaration.
++    """
++    payload = (
++        dict(tool)
++        if isinstance(tool, dict)
++        else tool.model_dump(exclude_unset=True, exclude_none=True)
++    )
++    function = dict(payload.get("function") or {})
++    ordered = {
++        k: function.pop(k) for k in _OPENAI_FUNCTION_FIELD_ORDER if k in function
++    }
++    ordered.update(function)
++    payload["function"] = ordered
++    return payload
++
++
++def default_dsv41_reasoning_effort_from_env(raw: Optional[str]) -> Union[str, int]:
++    """Parse ``SGLANG_DSV41_REASONING_EFFORT``; raises so a bad value fails at boot."""
++    if raw is None or not raw.strip():
++        return encoding_dsv41.DEFAULT_REASONING_EFFORT
++    value: Any = int(raw) if raw.strip().isdigit() else raw.strip()
++    effort = parse_dsv41_reasoning_effort(value)
++    if effort is None:
++        raise ValueError(
++            f"Invalid SGLANG_DSV41_REASONING_EFFORT={raw!r}; expected one of "
++            f"{list(encoding_dsv41.REASONING_EFFORT_MAPPINGS)} or an integer in [1, 100]"
++        )
++    return effort
++
++
+ def spec_owns_reasoning_history(spec: Optional[str]) -> bool:
+     """Whether the encoder for ``spec`` renders assistant reasoning history itself.
+ 
+@@ -163,7 +230,7 @@ def spec_renders_prompt_ids(spec: Optional[str]) -> bool:
+     Token-first encoders leave the text prompt empty; the MM processor
+     expands their single placeholder ids rather than re-tokenizing text.
+     """
+-    return spec in ("inkling", "kimi_k3")
++    return spec in ("inkling", "kimi_k3", "dsv41")
+ 
+ 
+ def encode_simple_chat(
+@@ -177,11 +244,9 @@ def encode_simple_chat(
+ 
+     Minimal encode for offline tools: no tools, no multimodal content, no
+     continue_final_message; the serving path keeps its full request-level
+-    pipeline in ``serving_chat``. Like
+-    ``serving_chat``, an empty system message is prepended when the
+-    conversation does not start with one (for the dsv4/dsv32 encoders this
+-    currently renders to zero tokens, but keeping the insertion explicit ties
+-    this helper to the serving semantics rather than to that coincidence).
++    pipeline in ``serving_chat``. System-message handling matches
++    ``serving_chat``: dsv4/dsv32 get an empty one prepended, dsv41 does not
++    (it renders a system token even for empty content).
+     """
+     if spec == "inkling":
+         from sglang.srt.parser.inkling_renderer import render_inkling_messages
+@@ -193,8 +258,8 @@ def encode_simple_chat(
+             add_generation_prompt=False,
+         )
+ 
+-    if spec in ("dsv4", "dsv32"):
+-        if messages and messages[0]["role"] != "system":
++    if spec in ("dsv4", "dsv32", "dsv41"):
++        if spec != "dsv41" and messages and messages[0]["role"] != "system":
+             messages = [{"role": "system", "content": ""}] + list(messages)
+         if spec == "dsv4":
+             from sglang.srt.entrypoints.openai import encoding_dsv4
+@@ -202,6 +267,10 @@ def encode_simple_chat(
+             real_input = encoding_dsv4.encode_messages(
+                 messages, thinking_mode=thinking_mode
+             )
++        elif spec == "dsv41":
++            real_input = encoding_dsv41.encode_messages(
++                messages, thinking_mode=thinking_mode
++            )
+         else:
+             from sglang.srt.entrypoints.openai import encoding_dsv32
+ 
+diff --git a/python/sglang/srt/entrypoints/openai/encoding_dsv41.py b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..86b1dd68dc3aafc1b179e2069bd64d66c92e3922
+--- /dev/null
++++ b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+@@ -0,0 +1,705 @@
++# Adapted from the DeepSeek-V4.1 release reference implementation.
++"""Encode DeepSeek-V4.1 chat messages.
++
++Mid-conversation system messages trigger the assistant generation header.
++"""
++
++import copy
++import json
++from typing import Any, Dict, List, Optional, Tuple, Union
++
++# ============================================================
++# Special Tokens
++# ============================================================
++
++bos_token: str = "<｜begin▁of▁sentence｜>"
++eos_token: str = "<｜end▁of▁sentence｜>"
++thinking_start_token: str = "<think>"
++thinking_end_token: str = "</think>"
++dsml_token: str = "｜DSML｜"
++
++USER_SP_TOKEN = "<｜User｜>"
++ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
++SYSTEM_SP_TOKEN = "<｜System｜>"
++LATEST_REMINDER_SP_TOKEN = "<｜latest_reminder｜>"
++
++IMAGE_PLACEHOLDER = "<｜deepseek_image｜>"
++
++# Task special tokens for internal classification tasks
++DS_TASK_SP_TOKENS = {
++    "action": "<｜action｜>",
++    "query": "<｜query｜>",
++    "authority": "<｜authority｜>",
++    "domain": "<｜domain｜>",
++    "title": "<｜title｜>",
++    "read_url": "<｜read_url｜>",
++}
++VALID_TASKS = set(DS_TASK_SP_TOKENS.keys())
++
++# ============================================================
++# Templates
++# ============================================================
++
++system_msg_template: str = "{content}"
++user_msg_template: str = "{content}"
++latest_reminder_msg_template: str = "{content}"
++assistant_msg_template: str = "{reasoning}{content}{tool_calls}" + eos_token
++assistant_msg_wo_eos_template: str = "{reasoning}{content}{tool_calls}"
++thinking_template: str = "{reasoning_content}"
++
++response_format_template: str = "## Response Format:\n\nYou MUST strictly adhere to the following schema to reply:\n{schema}"
++
++tool_calls_block_name: str = " calls"
++tool_call_tag_name: str = " invoke"
++tool_parameter_tag_name: str = " parameter"
++
++tool_call_template: str = '<{dsml_token}{tool_call_tag_name} name="{name}">\n{arguments}\n</{dsml_token}{tool_call_tag_name}>'
++tool_calls_template = (
++    "<{dsml_token}{tc_block_name}>\n{tool_calls}\n</{dsml_token}{tc_block_name}>"
++)
++
++tool_output_template: str = "<tool_result>{content}</tool_result>"
++
++REASONING_EFFORT_TEMPLATE = (
++    "Reasoning Effort: {budget} "
++    "(range 1-100, the higher the value, the more thorough the reasoning)\n\n"
++)
++
++REASONING_EFFORT_MAPPINGS: Dict[str, int] = {
++    "low": 25,
++    "high": 50,
++    "xhigh": 75,
++    "max": 100,
++}
++DEFAULT_REASONING_EFFORT = "high"
++
++TOOLS_TEMPLATE = """## Tools
++
++You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<{dsml_token}{tc_block_name}>" block like the following:
++
++<{dsml_token}{tc_block_name}>
++<{dsml_token}{tool_call_tag_name} name="$TOOL_NAME">
++<{dsml_token}{tool_parameter_tag_name} name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</{dsml_token}{tool_parameter_tag_name}>
++...
++</{dsml_token}{tool_call_tag_name}>
++<{dsml_token}{tool_call_tag_name} name="$TOOL_NAME2">
++...
++</{dsml_token}{tool_call_tag_name}>
++</{dsml_token}{tc_block_name}>
++
++String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.
++
++If thinking_mode is enabled (triggered by {thinking_start_token}), you MUST output your complete reasoning inside {thinking_start_token}...{thinking_end_token} BEFORE any tool calls or final response.
++
++Otherwise, output directly after {thinking_end_token} with tool calls or final response.
++
++### Available Tool Schemas
++
++{tool_schemas}
++
++You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
++"""
++
++# ============================================================
++# Utility Functions
++# ============================================================
++
++
++def to_json(value: Any) -> str:
++    try:
++        return json.dumps(value, ensure_ascii=False)
++    except:
++        return json.dumps(value, ensure_ascii=True)
++
++
++def tools_from_openai_format(tools):
++    return [tool["function"] for tool in tools]
++
++
++def tool_calls_from_openai_format(tool_calls):
++    return [
++        {
++            "name": tool_call["function"]["name"],
++            "arguments": tool_call["function"]["arguments"],
++        }
++        for tool_call in tool_calls
++    ]
++
++
++def encode_arguments_to_dsml(tool_call: Dict[str, Any]) -> str:
++    p_dsml_template = (
++        '<{dsml_token}{tool_parameter_tag_name} name="{key}" string="{is_str}">'
++        "{value}</{dsml_token}{tool_parameter_tag_name}>"
++    )
++    P_dsml_strs = []
++
++    raw_arguments = tool_call["arguments"]
++    arguments = (
++        json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
++    )
++    if not isinstance(arguments, dict):
++        raise ValueError(
++            "Assistant tool call function.arguments must be a JSON object."
++        )
++
++    for k, v in arguments.items():
++        P_dsml_strs.append(
++            p_dsml_template.format(
++                dsml_token=dsml_token,
++                tool_parameter_tag_name=tool_parameter_tag_name,
++                key=k,
++                is_str="true" if isinstance(v, str) else "false",
++                value=v if isinstance(v, str) else to_json(v),
++            )
++        )
++
++    return "\n".join(P_dsml_strs)
++
++
++def render_tools(tools: List[Dict[str, Union[str, Dict[str, Any]]]]) -> str:
++    tools_json = [to_json(t) for t in tools]
++
++    return TOOLS_TEMPLATE.format(
++        tool_schemas="\n".join(tools_json),
++        dsml_token=dsml_token,
++        tc_block_name=tool_calls_block_name,
++        tool_call_tag_name=tool_call_tag_name,
++        tool_parameter_tag_name=tool_parameter_tag_name,
++        thinking_start_token=thinking_start_token,
++        thinking_end_token=thinking_end_token,
++    )
++
++
++def render_reasoning_effort(
++    index: int,
++    thinking_mode: str,
++    effort: Union[str, int, None],
++) -> str:
++    """Render the numeric reasoning effort prefix (thinking mode, index 0 only)."""
++    if effort is None:
++        effort = DEFAULT_REASONING_EFFORT
++    if not (
++        (type(effort) is int and 1 <= effort <= 100)
++        or effort in REASONING_EFFORT_MAPPINGS
++    ):
++        raise ValueError(
++            f"Invalid reasoning effort for deepseek_v41: {effort!r}, should be "
++            f"int within [1,100] or {list(REASONING_EFFORT_MAPPINGS)}"
++        )
++    if type(effort) is str:
++        effort = REASONING_EFFORT_MAPPINGS[effort]
++    if index == 0 and thinking_mode == "thinking":
++        return REASONING_EFFORT_TEMPLATE.format(budget=effort)
++    return ""
++
++
++def find_last_user_index(messages: List[Dict[str, Any]]) -> int:
++    """Mid-conversation system messages also count as user messages here;
++    they trigger the assistant generation header.
++    """
++    last_user_index = -1
++    for idx in range(len(messages) - 1, -1, -1):
++        role = messages[idx].get("role")
++        if role in ["user", "developer"] or (role == "system" and idx > 0):
++            last_user_index = idx
++            break
++    return last_user_index
++
++
++def attach_task_to_last_user_message(messages: List[Dict[str, Any]], task: str) -> None:
++    """Set `task` on the most recent user/developer message; raise if none exists."""
++    idx = find_last_user_index(messages)
++    if idx == -1:
++        raise ValueError(
++            "`task` requires at least one message with role='user' or 'developer'."
++        )
++    messages[idx]["task"] = task
++
++
++# ============================================================
++# Message Rendering
++# ============================================================
++
++
++def render_message(
++    index: int,
++    messages: List[Dict[str, Any]],
++    thinking_mode: str,
++    drop_thinking: bool = True,
++    reasoning_effort: Union[str, int, None] = None,
++) -> str:
++    assert 0 <= index < len(messages)
++    assert thinking_mode in [
++        "chat",
++        "thinking",
++    ], f"Invalid thinking_mode `{thinking_mode}`"
++
++    msg = messages[index]
++    last_user_idx = find_last_user_index(messages)
++
++    role = msg.get("role")
++    content = msg.get("content")
++    tools = msg.get("tools")
++    response_format = msg.get("response_format")
++    tool_calls = msg.get("tool_calls")
++    reasoning_content = msg.get("reasoning_content")
++    wo_eos = msg.get("wo_eos", False)
++
++    if tools:
++        tools = tools_from_openai_format(tools)
++    if tool_calls:
++        tool_calls = tool_calls_from_openai_format(tool_calls)
++
++    reasoning_effort_prompt = render_reasoning_effort(
++        index, thinking_mode, reasoning_effort
++    )
++    # Index 0 also emits the system token for the effort prompt, even before a user.
++    prompt = (
++        SYSTEM_SP_TOKEN
++        if index == 0 and (reasoning_effort_prompt or role == "system")
++        else ""
++    )
++    prompt += reasoning_effort_prompt
++
++    if role == "system":
++        if index > 0:
++            prompt += SYSTEM_SP_TOKEN
++        prompt += system_msg_template.format(content=content or "")
++        if tools:
++            prompt += "\n\n" + render_tools(tools)
++        if response_format:
++            prompt += "\n\n" + response_format_template.format(
++                schema=to_json(response_format)
++            )
++
++    elif role == "developer":
++        assert content, f"Invalid message for role `{role}`: {msg}"
++
++        content_developer = USER_SP_TOKEN
++        content_developer += content
++
++        if tools:
++            content_developer += "\n\n" + render_tools(tools)
++        if response_format:
++            content_developer += "\n\n" + response_format_template.format(
++                schema=to_json(response_format)
++            )
++
++        prompt += user_msg_template.format(content=content_developer)
++
++    elif role == "user":
++        prompt += USER_SP_TOKEN
++
++        # Handle content blocks (tool results mixed with text)
++        content_blocks = msg.get("content_blocks")
++        if content_blocks:
++            parts = []
++            for block in content_blocks:
++                block_type = block.get("type")
++                if block_type == "text":
++                    parts.append(block.get("text", ""))
++                elif block_type == "tool_result":
++                    tool_content = block.get("content", "")
++                    if isinstance(tool_content, list):
++                        text_parts = []
++                        for b in tool_content:
++                            if b.get("type") == "text":
++                                text_parts.append(b.get("text", ""))
++                            else:
++                                text_parts.append(f"[Unsupported {b.get('type')}]")
++                        tool_content = "\n\n".join(text_parts)
++                    parts.append(tool_output_template.format(content=tool_content))
++                else:
++                    parts.append(f"[Unsupported {block_type}]")
++            prompt += "\n\n".join(parts)
++        else:
++            prompt += content or ""
++
++    elif role == "latest_reminder":
++        prompt += LATEST_REMINDER_SP_TOKEN + latest_reminder_msg_template.format(
++            content=content
++        )
++
++    elif role == "tool":
++        raise NotImplementedError(
++            "deepseek_v41 merges tool messages into user; please preprocess with merge_tool_messages()"
++        )
++
++    elif role == "assistant":
++        thinking_part = ""
++        tc_content = ""
++
++        if tool_calls:
++            tc_list = [
++                tool_call_template.format(
++                    dsml_token=dsml_token,
++                    tool_call_tag_name=tool_call_tag_name,
++                    name=tc.get("name"),
++                    arguments=encode_arguments_to_dsml(tc),
++                )
++                for tc in tool_calls
++            ]
++            tc_content += "\n\n" + tool_calls_template.format(
++                dsml_token=dsml_token,
++                tool_calls="\n".join(tc_list),
++                tc_block_name=tool_calls_block_name,
++            )
++
++        summary_content = content or ""
++        rc = reasoning_content or ""
++
++        # Check if previous message has a task - if so, this is a task output (no thinking)
++        prev_has_task = index - 1 >= 0 and messages[index - 1].get("task") is not None
++
++        if thinking_mode == "thinking" and not prev_has_task:
++            if not drop_thinking or index > last_user_idx:
++                thinking_part = (
++                    thinking_template.format(reasoning_content=rc) + thinking_end_token
++                )
++            else:
++                thinking_part = ""
++
++        if wo_eos:
++            prompt += assistant_msg_wo_eos_template.format(
++                reasoning=thinking_part,
++                content=summary_content,
++                tool_calls=tc_content,
++            )
++        else:
++            prompt += assistant_msg_template.format(
++                reasoning=thinking_part,
++                content=summary_content,
++                tool_calls=tc_content,
++            )
++    else:
++        raise NotImplementedError(f"Unknown role: {role}")
++
++    # Append transition tokens based on what follows
++    if index + 1 < len(messages) and messages[index + 1].get("role") not in [
++        "assistant",
++        "latest_reminder",
++    ]:
++        return prompt
++
++    task = messages[index].get("task")
++    if task is not None:
++        # Task special token for internal classification tasks
++        assert task in VALID_TASKS, (
++            f"Invalid task: '{task}'. Valid tasks are: {list(VALID_TASKS)}"
++        )
++        task_sp_token = DS_TASK_SP_TOKENS[task]
++
++        if task != "action":
++            # Non-action tasks: append task sp token directly after the message
++            prompt += task_sp_token
++        else:
++            # Action task: append Assistant + thinking token + action sp token
++            prompt += ASSISTANT_SP_TOKEN
++            prompt += (
++                thinking_end_token
++                if thinking_mode != "thinking"
++                else thinking_start_token
++            )
++            prompt += task_sp_token
++
++    elif messages[index].get("role") in ["user", "developer"] or (
++        messages[index].get("role") == "system" and index > 0
++    ):
++        # Normal generation: append Assistant + thinking token
++        prompt += ASSISTANT_SP_TOKEN
++        if not drop_thinking and thinking_mode == "thinking":
++            prompt += thinking_start_token
++        elif drop_thinking and thinking_mode == "thinking" and index >= last_user_idx:
++            prompt += thinking_start_token
++        else:
++            prompt += thinking_end_token
++
++    return prompt
++
++
++# ============================================================
++# Preprocessing
++# ============================================================
++
++
++def merge_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """Tool results are encoded within user messages;
++    DeepSeek-V4.1 has no standalone tool role.
++    """
++    merged: List[Dict[str, Any]] = []
++
++    for msg in messages:
++        msg = copy.deepcopy(msg)
++        role = msg.get("role")
++
++        if role == "tool":
++            # Convert tool message to a user message with tool_result block
++            tool_block = {
++                "type": "tool_result",
++                "tool_use_id": msg.get("tool_call_id", ""),
++                "content": msg.get("content", ""),
++            }
++            # Merge into previous message if it's already a user (merged tool)
++            if (
++                merged
++                and merged[-1].get("role") == "user"
++                and "content_blocks" in merged[-1]
++            ):
++                merged[-1]["content_blocks"].append(tool_block)
++            else:
++                merged.append(
++                    {
++                        "role": "user",
++                        "content_blocks": [tool_block],
++                    }
++                )
++        elif role == "user":
++            content_blocks = msg.get("content_blocks")
++            if content_blocks is None:
++                content_blocks = [{"type": "text", "text": msg.get("content", "")}]
++            if (
++                merged
++                and merged[-1].get("role") == "user"
++                and "content_blocks" in merged[-1]
++                and merged[-1].get("task") is None
++            ):
++                merged[-1]["content_blocks"].extend(content_blocks)
++            else:
++                # Keeps structured content and every message-level field.
++                new_msg = msg
++                new_msg["content_blocks"] = content_blocks
++                merged.append(new_msg)
++        else:
++            merged.append(msg)
++
++    return merged
++
++
++def sort_tool_results_by_call_order(
++    messages: List[Dict[str, Any]],
++) -> List[Dict[str, Any]]:
++    last_tool_call_order: Dict[str, int] = {}
++
++    for msg in messages:
++        role = msg.get("role")
++        if role == "assistant" and msg.get("tool_calls"):
++            last_tool_call_order = {}
++            for idx, tc in enumerate(msg["tool_calls"]):
++                tc_id = tc.get("id") or tc.get("function", {}).get("id", "")
++                if tc_id:
++                    last_tool_call_order[tc_id] = idx
++
++        elif role == "user" and msg.get("content_blocks"):
++            tool_blocks = [
++                b for b in msg["content_blocks"] if b.get("type") == "tool_result"
++            ]
++            if len(tool_blocks) > 1 and last_tool_call_order:
++                sorted_blocks = sorted(
++                    tool_blocks,
++                    key=lambda b: last_tool_call_order.get(b.get("tool_use_id", ""), 0),
++                )
++                sorted_idx = 0
++                new_blocks = []
++                for block in msg["content_blocks"]:
++                    if block.get("type") == "tool_result":
++                        new_blocks.append(sorted_blocks[sorted_idx])
++                        sorted_idx += 1
++                    else:
++                        new_blocks.append(block)
++                msg["content_blocks"] = new_blocks
++
++    return messages
++
++
++# ============================================================
++# Vision Message Preprocessing
++# ============================================================
++
++
++def _is_image_block(block: Dict[str, Any]) -> bool:
++    return isinstance(block, dict) and block.get("type") == "image_url"
++
++
++def _extract_image(block: Dict[str, Any]) -> Dict[str, Any]:
++    image_url = block.get("image_url")
++    url = image_url if isinstance(image_url, str) else (image_url or {}).get("url", "")
++    if not url:
++        raise ValueError("Image block does not contain a valid source")
++    return {"url": url}
++
++
++def _process_image_blocks(
++    blocks: List[Any], image_placeholder: str = IMAGE_PLACEHOLDER
++) -> Tuple[List[Any], List[Dict[str, Any]]]:
++    new_blocks: List[Any] = []
++    images: List[Dict[str, Any]] = []
++    for block in blocks:
++        if not isinstance(block, dict):
++            new_blocks.append(block)
++            continue
++        if _is_image_block(block):
++            new_blocks.append({"type": "text", "text": image_placeholder})
++            images.append(_extract_image(block))
++        elif block.get("type") == "tool_result" and isinstance(
++            block.get("content"), list
++        ):
++            block = copy.copy(block)
++            block["content"], nested_images = _process_image_blocks(
++                block["content"], image_placeholder
++            )
++            new_blocks.append(block)
++            images.extend(nested_images)
++        elif block.get("type") == "text":
++            text = block.get("text") or ""
++            if IMAGE_PLACEHOLDER in text:
++                raise ValueError(
++                    f"Text block contains image placeholder '{IMAGE_PLACEHOLDER}': "
++                    f"'{text[:100]}'. Images should be separate content blocks."
++                )
++            new_blocks.append(block)
++        else:
++            new_blocks.append(block)
++    return new_blocks, images
++
++
++def _validate_no_image_sp_tokens(msg: Dict[str, Any]) -> None:
++    content = msg.get("content")
++    if isinstance(content, str) and IMAGE_PLACEHOLDER in content:
++        raise ValueError(
++            f"Message content contains image special token '{IMAGE_PLACEHOLDER}'. "
++            "Images should be provided as image content blocks."
++        )
++    reasoning_content = msg.get("reasoning_content")
++    if isinstance(reasoning_content, str) and IMAGE_PLACEHOLDER in reasoning_content:
++        raise ValueError(
++            f"reasoning_content contains image special token '{IMAGE_PLACEHOLDER}'"
++        )
++
++
++def process_image_messages(
++    messages: List[Dict[str, Any]],
++) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
++    processed: List[Dict[str, Any]] = []
++    images: List[Dict[str, Any]] = []
++    for msg in messages:
++        msg = copy.deepcopy(msg)
++        _validate_no_image_sp_tokens(msg)
++
++        if isinstance(msg.get("content"), list) and "content_blocks" not in msg:
++            msg["content_blocks"] = msg.pop("content")
++
++        if msg.get("content_blocks"):
++            msg["content_blocks"], message_images = _process_image_blocks(
++                msg["content_blocks"]
++            )
++            images.extend(message_images)
++            if not isinstance(msg.get("content"), str):
++                texts = [
++                    block.get("text", "")
++                    for block in msg["content_blocks"]
++                    if isinstance(block, dict) and block.get("type") == "text"
++                ]
++                msg["content"] = "\n\n".join(texts)
++
++        processed.append(msg)
++    return processed, images
++
++
++# ============================================================
++# Main Encoding Function
++# ============================================================
++
++
++def _drop_thinking_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    last_user_idx = find_last_user_index(messages)
++    result = []
++    keep_roles = {"user", "system", "tool", "latest_reminder", "direct_search_results"}
++
++    for idx, msg in enumerate(messages):
++        role = msg.get("role")
++        if role in keep_roles or idx >= last_user_idx:
++            result.append(msg)
++        elif role == "assistant":
++            msg = copy.copy(msg)
++            msg.pop("reasoning_content", None)
++            result.append(msg)
++        # developer and other roles before last_user_idx are dropped
++
++    return result
++
++
++def _encode_messages_text(
++    messages: List[Dict[str, Any]],
++    thinking_mode: str,
++    context: Optional[List[Dict[str, Any]]] = None,
++    drop_thinking: bool = True,
++    add_default_bos_token: bool = True,
++    reasoning_effort: Union[str, int, None] = None,
++) -> str:
++    """Encode preprocessed (text-only) messages into the V4.1 prompt format."""
++    context = context if context else []
++
++    # Preprocess: merge tool messages and sort tool results
++    messages = merge_tool_messages(messages)
++    messages = sort_tool_results_by_call_order(context + messages)[len(context) :]
++    if context:
++        context = merge_tool_messages(context)
++        context = sort_tool_results_by_call_order(context)
++
++    full_messages = context + messages
++
++    prompt = bos_token if add_default_bos_token and len(context) == 0 else ""
++
++    # Resolve drop_thinking: if any message has tools defined, don't drop thinking
++    effective_drop_thinking = drop_thinking
++    if any(m.get("tools") for m in full_messages):
++        effective_drop_thinking = False
++
++    if thinking_mode == "thinking" and effective_drop_thinking:
++        full_messages = _drop_thinking_messages(full_messages)
++        num_to_render = len(full_messages) - len(_drop_thinking_messages(context))
++        context_len = len(full_messages) - num_to_render
++    else:
++        num_to_render = len(messages)
++        context_len = len(context)
++
++    for idx in range(num_to_render):
++        prompt += render_message(
++            idx + context_len,
++            full_messages,
++            thinking_mode=thinking_mode,
++            drop_thinking=effective_drop_thinking,
++            reasoning_effort=reasoning_effort,
++        )
++
++    return prompt
++
++
++def encode_messages(
++    messages: List[Dict[str, Any]],
++    thinking_mode: str,
++    context: Optional[List[Dict[str, Any]]] = None,
++    drop_thinking: bool = True,
++    add_default_bos_token: bool = True,
++    reasoning_effort: Union[str, int, None] = None,
++    return_multi_modal_data: bool = False,
++) -> Any:
++    """Encode a list of messages into the DeepSeek-V4.1 prompt format.
++
++    Returns the prompt string, or ``(prompt, {"images": [...]})`` when
++    ``return_multi_modal_data`` is set; the image records are in prompt order.
++    """
++    context = context or []
++    processed_context, _ = process_image_messages(context) if context else ([], [])
++    processed_messages, images = process_image_messages(messages)
++    prompt = _encode_messages_text(
++        processed_messages,
++        thinking_mode=thinking_mode,
++        context=processed_context if processed_context else None,
++        drop_thinking=drop_thinking,
++        add_default_bos_token=add_default_bos_token,
++        reasoning_effort=reasoning_effort,
++    )
++    if return_multi_modal_data:
++        return prompt, {"images": images}
++    return prompt
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index b711da3cf5e1ada5c580a13b14c920cc057d1e6f..07426527a109575a382d7a607d30a5493b1ad031 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -975,7 +975,7 @@ class ChatCompletionRequest(BaseModel):
+         description="DeepSeek-V4 quick instruction task. When set, the last "
+         "user/developer message is treated as a single-shot classification prompt "
+         "and the corresponding task special token (e.g. `<｜domain｜>`) is appended "
+-        "before generation. Only honored by the dsv4 chat encoder; ignored otherwise.",
++        "before generation. Only honored by the dsv4/dsv41 chat encoders; ignored otherwise.",
+     )
+ 
+     # Extra parameters for SRT backend only and will be ignored by OpenAI models.
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 7b7e81b1a01de54e93231b9fdf33362821dc8977..bcd14899ab0dffb2b1d19f651b92e3c2743f0378 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -42,7 +42,12 @@ from jsonschema import Draft202012Validator, SchemaError
+ from sglang.srt.constrained.xgrammar_schema import (
+     has_xgrammar_unsupported_json_features,
+ )
+-from sglang.srt.entrypoints.openai import chat_encoding, encoding_dsv4, encoding_dsv32
++from sglang.srt.entrypoints.openai import (
++    chat_encoding,
++    encoding_dsv4,
++    encoding_dsv32,
++    encoding_dsv41,
++)
+ from sglang.srt.entrypoints.openai.nemotron_literal_tokens import (
+     encode_nemotron_message_literals,
+ )
+@@ -111,6 +116,7 @@ from sglang.srt.parser.reasoning_parser import ReasoningParser
+ from sglang.srt.sampling.sampling_params import (
+     set_request_reasoning_end_token_ids,
+ )
++from sglang.srt.utils import ImageData
+ from sglang.srt.utils.weight_versions import build_endpoint_weight_version_metadata
+ 
+ if TYPE_CHECKING:
+@@ -401,6 +407,13 @@ class OpenAIServingChat(OpenAIServingBase):
+             if self.chat_encoding_spec == "inkling"
+             else None
+         )
++        self._dsv41_default_reasoning_effort: Optional[Union[str, int]] = (
++            chat_encoding.default_dsv41_reasoning_effort_from_env(
++                envs.SGLANG_DSV41_REASONING_EFFORT.get()
++            )
++            if self.chat_encoding_spec == "dsv41"
++            else None
++        )
+ 
+         # Per-request response parser for custom decoding (set by _encode_messages)
+         self._response_parser: Optional[ResponseParserProtocol] = None
+@@ -529,6 +542,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         request: ChatCompletionRequest,
+         *,
+         exclude_unset: bool = False,
++        exclude_none: bool = False,
+     ) -> List[Dict[str, Any]]:
+         tools = list(request.tools or [])
+         if isinstance(request.tool_choice, ToolChoice):
+@@ -542,7 +556,9 @@ class OpenAIServingChat(OpenAIServingBase):
+             if allowed_names is not None:
+                 tools = [tool for tool in tools if tool.function.name in allowed_names]
+         return [
+-            tool.model_dump(exclude_unset=exclude_unset, by_alias=True)
++            tool.model_dump(
++                exclude_unset=exclude_unset, exclude_none=exclude_none, by_alias=True
++            )
+             for tool in tools
+         ]
+ 
+@@ -1007,6 +1023,21 @@ class OpenAIServingChat(OpenAIServingBase):
+             raise ValueError("Inkling reasoning_effort must be in [0.0, 0.99]")
+         return parsed
+ 
++    def _resolve_dsv41_reasoning_effort(self, value: Any) -> Union[str, int]:
++        """Request effort for the V4.1 encoder; unsupported values warn and fall back."""
++        effort = chat_encoding.parse_dsv41_reasoning_effort(value)
++        if effort is not None:
++            return effort
++        if value is not None and value != "none":
++            logger.warning(
++                "DeepSeek-V4.1 does not support reasoning_effort=%r; using the "
++                "default %r (low/high/xhigh/max, a float in [0, 0.99], or an "
++                "integer budget in [1, 100] via chat_template_kwargs are accepted).",
++                value,
++                self._dsv41_default_reasoning_effort,
++            )
++        return self._dsv41_default_reasoning_effort
++
+     @staticmethod
+     def _get_inkling_default_reasoning_effort() -> float:
+         """Read the default Inkling reasoning effort from the environment."""
+@@ -1786,43 +1817,54 @@ class OpenAIServingChat(OpenAIServingBase):
+                         modalities,
+                     )
+         elif self.chat_encoding_spec is not None:
+-            # dsv4/dsv32 encoding path
++            # dsv4/dsv41/dsv32 encoding path
+             messages = copy.deepcopy(messages)
+-
+-            # dsv4/dsv32 are text-only and consume string content; flatten
+-            # OpenAI parts-list content here so the encoder sees a plain string.
+-            for i, msg in enumerate(messages):
+-                if isinstance(msg.get("content"), list):
+-                    messages[i] = process_content_for_template_format(
+-                        msg, "string", [], [], [], []
+-                    )
+-
++            is_dsv41 = self.chat_encoding_spec == "dsv41"
+             for msg in messages:
+                 if msg.get("content") is None:
+                     msg["content"] = ""
+-                processed_msg = process_content_for_template_format(
+-                    msg,
+-                    template_content_format,
+-                    image_data,
+-                    video_data,
+-                    audio_data,
+-                    modalities,
+-                    use_dpsk_v32_encoding=self.chat_encoding_spec == "dsv32",
+-                )
+-                msg.update(processed_msg)
++
++            # The V4.1 encoder consumes OpenAI parts lists itself; dsv4/dsv32
++            # are text-only, so their parts-list content is flattened first.
++            if not is_dsv41:
++                for i, msg in enumerate(messages):
++                    if isinstance(msg.get("content"), list):
++                        messages[i] = process_content_for_template_format(
++                            msg, "string", [], [], [], []
++                        )
++
++                for msg in messages:
++                    processed_msg = process_content_for_template_format(
++                        msg,
++                        template_content_format,
++                        image_data,
++                        video_data,
++                        audio_data,
++                        modalities,
++                        use_dpsk_v32_encoding=self.chat_encoding_spec == "dsv32",
++                    )
++                    msg.update(processed_msg)
+ 
+             # Handle continue_final_message: separate final assistant message
+             messages, assistant_prefix = self._handle_last_assistant_message(
+                 messages, request
+             )
+ 
+-            if messages[0]["role"] != "system":
+-                # insert an empty system prompt to help render tool system prompt
++            # An empty system message hosts the request tools; dsv41 renders a
++            # system token for it, so it only gets one when tools need the host.
++            if messages[0]["role"] != "system" and (request.tools or not is_dsv41):
+                 messages.insert(0, {"role": "system", "content": ""})
+             if request.tools:
+-                messages[0]["tools"] = self._request_tools_for_prompt(request)
++                prompt_tools = self._request_tools_for_prompt(
++                    request, exclude_unset=is_dsv41, exclude_none=is_dsv41
++                )
++                messages[0]["tools"] = (
++                    [chat_encoding.dsv41_tool_payload(tool) for tool in prompt_tools]
++                    if is_dsv41
++                    else prompt_tools
++                )
+ 
+-            # Default encoding (dsv4/dsv32)
++            # Default encoding (dsv4/dsv41/dsv32)
+             if self.chat_encoding_spec == "dsv4":
+                 effort_source = request.reasoning_effort
+                 if effort_source is None:
+@@ -1848,6 +1890,33 @@ class OpenAIServingChat(OpenAIServingBase):
+                     reasoning_effort_profile=reasoning_effort_profile,
+                 )
+                 prompt_ids = self.tokenizer_manager.tokenizer.encode(real_input)
++            elif is_dsv41:
++                if request.task is not None:
++                    encoding_dsv41.attach_task_to_last_user_message(
++                        messages, request.task
++                    )
++                real_input, media = encoding_dsv41.encode_messages(
++                    messages,
++                    thinking_mode=thinking_mode,
++                    reasoning_effort=self._resolve_dsv41_reasoning_effort(
++                        request.reasoning_effort
++                    ),
++                    return_multi_modal_data=True,
++                )
++                if media["images"]:
++                    if not is_multimodal:
++                        raise ValueError("image input is not supported for this model")
++                    image_data.extend(
++                        ImageData(url=image["url"]) for image in media["images"]
++                    )
++                    tokenizer = self.tokenizer_manager.tokenizer
++                    real_input = real_input.replace(
++                        encoding_dsv41.IMAGE_PLACEHOLDER,
++                        tokenizer.convert_ids_to_tokens(
++                            self.tokenizer_manager.image_token_id
++                        ),
++                    )
++                prompt_ids = self.tokenizer_manager.tokenizer.encode(real_input)
+             else:
+                 real_input = encoding_dsv32.encode_messages(
+                     messages, thinking_mode=thinking_mode
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index eebfc29a9050ea06ec12937aca0085f874c02c33..4c4a08a82a4e6e80d0e356012e8df22760f9a951 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -1458,6 +1458,9 @@ class Envs:
+     SGLANG_DSV4_FP4_DEQUANT = EnvBool(False)
+     # Flash-0731 also accepts "low"; the active profile is checkpoint-resolved.
+     SGLANG_DSV4_REASONING_EFFORT = EnvStr("")
++    # DeepSeek-V4.1 default when a request carries no reasoning_effort: one of
++    # low/high/xhigh/max or an integer budget in [1, 100]; unset -> the encoder default.
++    SGLANG_DSV41_REASONING_EFFORT = EnvStr(None)
+     # Quantize the SWA fp8 KV cache from bf16-rounded values (matches
+     # trainer-side QAT and the DSA-CP path) instead of fp32 registers.
+     SGLANG_DSV4_USE_BF16_KV_QUANT_SOURCE = EnvBool(False)
+diff --git a/python/sglang/srt/function_call/deepseekv32_detector.py b/python/sglang/srt/function_call/deepseekv32_detector.py
+index 4a84a4e33f94760c37953927f4b1d636cd8a64c1..0619cfb59df29e0d0e8e944325bc649e0c9da681 100644
+--- a/python/sglang/srt/function_call/deepseekv32_detector.py
++++ b/python/sglang/srt/function_call/deepseekv32_detector.py
+@@ -70,33 +70,54 @@ class DeepSeekV32Detector(BaseFormatDetector):
+     Reference: DeepSeek V3.2 format specification
+     """
+ 
++    # Tag names after the DSML marker; subclasses override for newer formats.
++    dsml_token = "｜DSML｜"
++    tool_calls_block_name = "function_calls"
++    invoke_tag_name = "invoke"
++    parameter_tag_name = "parameter"
++
+     def __init__(self):
+         super().__init__()
+-        self.bot_token = "<｜DSML｜function_calls>"
+-        self.eot_token = "</｜DSML｜function_calls>"
+-        self.invoke_end_token = "</｜DSML｜invoke>"
+-        self.parameter_regex = r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*?)</｜DSML｜parameter>'
+-        self.partial_parameter_regex = (
+-            r'<｜DSML｜parameter\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*)$'
++        block = f"{self.dsml_token}{self.tool_calls_block_name}"
++        invoke = f"{self.dsml_token}{self.invoke_tag_name}"
++        parameter = f"{self.dsml_token}{self.parameter_tag_name}"
++        self.bot_token = f"<{block}>"
++        self.eot_token = f"</{block}>"
++        self.invoke_start_token = f"<{invoke}"
++        self.invoke_end_token = f"</{invoke}>"
++        self.parameter_regex = (
++            rf'<{parameter}\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*?)</{parameter}>'
+         )
+-        self.function_calls_regex = (
+-            r"<｜DSML｜function_calls>(.*?)</｜DSML｜function_calls>"
++        self.partial_parameter_regex = (
++            rf'<{parameter}\s+name="([^"]+)"\s+string="([^"]+)"\s*>(.*)$'
+         )
++        self.function_calls_regex = rf"<{block}>(.*?)</{block}>"
+         # Long-form `<｜DSML｜invoke name="x">...</｜DSML｜invoke>` and the
+         # self-closing `<｜DSML｜invoke name="x"/>` shape V4 emits for zero-arg
+         # tools. The `end` group is empty when the closer hasn't streamed in.
+         self.invoke_regex = (
+-            r'<｜DSML｜invoke\s+name="(?P<name>[^"]+)"\s*'
++            rf'<{invoke}\s+name="(?P<name>[^"]+)"\s*'
+             r"(?:(?P<self_close>/>)"
+-            r"|>(?P<body>.*?)(?P<end>(?:</｜DSML｜invoke>|$)))"
++            rf"|>(?P<body>.*?)(?P<end>(?:</{invoke}>|$)))"
+         )
+-        self.prefix_parameter_end_call = ["</", "｜DSML｜", "parameter"]
+-        self.prefix_invoke_end_call = ["</", "｜DSML｜", "inv", "oke"]
++        # Consumed right-to-left by rstrip (a character set, not a suffix), so the
++        # invoke name is split to limit how much of a partial value gets eaten.
++        self.prefix_parameter_end_call = [
++            "</",
++            self.dsml_token,
++            self.parameter_tag_name,
++        ]
++        self.prefix_invoke_end_call = [
++            "</",
++            self.dsml_token,
++            self.invoke_tag_name[:-3],
++            self.invoke_tag_name[-3:],
++        ]
+         self.current_tool_id = -1
+ 
+     def has_tool_call(self, text: str) -> bool:
+         """Check if the text contains a deepseek v32 format tool call."""
+-        return self.bot_token in text or "<｜DSML｜invoke" in text
++        return self.bot_token in text or self.invoke_start_token in text
+ 
+     @staticmethod
+     def _unpack_invoke_match(m: "re.Match[str]") -> tuple[str, str, bool]:
+@@ -379,9 +400,9 @@ class DeepSeekV32Detector(BaseFormatDetector):
+ 
+     def structure_info(self) -> _GetInfoFunc:
+         return lambda name: StructureInfo(
+-            begin=f'<｜DSML｜invoke name="{name}">',
+-            end="</｜DSML｜invoke>",
+-            trigger="<｜DSML｜invoke",
++            begin=f'{self.invoke_start_token} name="{name}">',
++            end=self.invoke_end_token,
++            trigger=self.invoke_start_token,
+         )
+ 
+     def get_structural_tag_name(self) -> str:
+diff --git a/python/sglang/srt/function_call/deepseekv41_detector.py b/python/sglang/srt/function_call/deepseekv41_detector.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1dc48af324a0fd392833afebafd2a81c1c3ce46
+--- /dev/null
++++ b/python/sglang/srt/function_call/deepseekv41_detector.py
+@@ -0,0 +1,103 @@
++from typing import List, Literal, Optional, Union
++
++from xgrammar.structural_tag import (
++    AnyTextFormat,
++    ConstStringFormat,
++    JSONSchemaFormat,
++    OrFormat,
++    SequenceFormat,
++    TagFormat,
++    TagsWithSeparatorFormat,
++    TriggeredTagsFormat,
++)
++
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.base_format_detector import StructuralTag
++from sglang.srt.function_call.deepseekv32_detector import DeepSeekV32Detector
++
++
++class DeepSeekV41Detector(DeepSeekV32Detector):
++    """DeepSeek V4.1 DSML detector.
++
++    The leading space in each tag name below is intentional, not a typo.
++    """
++
++    tool_calls_block_name = " calls"
++    invoke_tag_name = " invoke"
++    parameter_tag_name = " parameter"
++
++    # The encoder joins an assistant turn's content and its calls block with a
++    # blank line, and renders it even when there is no content.
++    tool_calls_prefix = "\n\n"
++    think_end_token = "</think>"
++
++    def get_structural_tag_name(self) -> Optional[str]:
++        # xgrammar's builtin "deepseek_v4" tag hardcodes the unspaced names,
++        # so the V4.1 tag is assembled in get_structural_tag instead.
++        return None
++
++    def get_structural_tag(
++        self,
++        tools: Union[List[Tool], None] = None,
++        tool_choice: Union[ToolChoice, Literal["auto", "required"]] = "auto",
++        thinking_mode: bool = False,
++        parallel_tool_calls: bool = True,
++    ) -> Optional[StructuralTag]:
++        """The builtin "deepseek_v4" shape with the spaced tag names.
++
++        Bodies are JSON: xgrammar's "deepseek_xml" body style also hardcodes
++        the unspaced "parameter" name, and the V3.2-lineage parser accepts a
++        JSON body inside an invoke.
++        """
++        tools = list(tools or [])
++        if isinstance(tool_choice, ToolChoice):
++            tools = [
++                tool
++                for tool in tools
++                if tool.function.name == tool_choice.function.name
++            ]
++            if len(tools) != 1:
++                return None
++        if not tools:
++            return None
++
++        def invoke_tag(tool: Tool) -> TagFormat:
++            function = tool.function
++            schema = function.parameters if function.strict else True
++            if schema is None:
++                schema = True
++            return TagFormat(
++                begin=f'{self.invoke_start_token} name="{function.name}">',
++                content=JSONSchemaFormat(json_schema=schema),
++                end=f"{self.invoke_end_token}\n",
++            )
++
++        tags = [invoke_tag(tool) for tool in tools]
++        if isinstance(tool_choice, ToolChoice):
++            calls = tags[0]
++        elif parallel_tool_calls:
++            calls = TagsWithSeparatorFormat(tags=tags, separator="", at_least_one=True)
++        else:
++            calls = OrFormat(elements=tags)
++        block_begin = f"{self.bot_token}\n"
++
++        if tool_choice == "auto":
++            body = TriggeredTagsFormat(
++                triggers=[self.bot_token],
++                tags=[TagFormat(begin=block_begin, content=calls, end=self.eot_token)],
++                excludes=["<think>", self.think_end_token],
++            )
++        else:
++            body = SequenceFormat(
++                elements=[
++                    ConstStringFormat(value=self.tool_calls_prefix + block_begin),
++                    calls,
++                    ConstStringFormat(value=self.eot_token),
++                ]
++            )
++        if not thinking_mode:
++            return StructuralTag(format=body)
++        reasoning = TagFormat(
++            begin="", content=AnyTextFormat(), end=self.think_end_token
++        )
++        return StructuralTag(format=SequenceFormat(elements=[reasoning, body]))
+diff --git a/python/sglang/srt/function_call/deepseekv4_detector.py b/python/sglang/srt/function_call/deepseekv4_detector.py
+index 10d4d559f314046586e88008af10c4f4946dca8b..ca50ecc78cb7f8509bc5bcc49709f0a6257606a0 100644
+--- a/python/sglang/srt/function_call/deepseekv4_detector.py
++++ b/python/sglang/srt/function_call/deepseekv4_detector.py
+@@ -57,11 +57,7 @@ class DeepSeekV4Detector(DeepSeekV32Detector):
+     Reference: DeepSeek V4 format specification
+     """
+ 
+-    def __init__(self):
+-        super().__init__()
+-        self.bot_token = "<｜DSML｜tool_calls>"
+-        self.eot_token = "</｜DSML｜tool_calls>"
+-        self.function_calls_regex = r"<｜DSML｜tool_calls>(.*?)</｜DSML｜tool_calls>"
++    tool_calls_block_name = "tool_calls"
+ 
+     def get_structural_tag_name(self) -> str:
+         return "deepseek_v4"
+diff --git a/python/sglang/srt/function_call/function_call_parser.py b/python/sglang/srt/function_call/function_call_parser.py
+index 2bf5dad8411d094b6c875dfc51ebe309d4cc4889..0bb26b9185822bbd43a4f5cc6ee891842b5a72a1 100644
+--- a/python/sglang/srt/function_call/function_call_parser.py
++++ b/python/sglang/srt/function_call/function_call_parser.py
+@@ -19,6 +19,7 @@ from sglang.srt.function_call.deepseekv3_detector import DeepSeekV3Detector
+ from sglang.srt.function_call.deepseekv4_detector import DeepSeekV4Detector
+ from sglang.srt.function_call.deepseekv31_detector import DeepSeekV31Detector
+ from sglang.srt.function_call.deepseekv32_detector import DeepSeekV32Detector
++from sglang.srt.function_call.deepseekv41_detector import DeepSeekV41Detector
+ from sglang.srt.function_call.dots_detector import DotsToolDetector
+ from sglang.srt.function_call.gemma4_detector import Gemma4Detector
+ from sglang.srt.function_call.gigachat3_detector import GigaChat3Detector
+@@ -76,6 +77,7 @@ class FunctionCallParser:
+         "deepseekv31": DeepSeekV31Detector,
+         "deepseekv32": DeepSeekV32Detector,
+         "deepseekv4": DeepSeekV4Detector,
++        "deepseekv41": DeepSeekV41Detector,
+         "dots": DotsToolDetector,
+         "glm": Glm4MoeDetector,
+         "glm45": Glm4MoeDetector,
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index c3df5bb82d7081c594334ae0d53da7d62fc90204..5b4a47fb4930abe193976a687dbfd376ee56b622 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -2223,6 +2223,7 @@ class ReasoningParser:
+         "deepseek-r1": DeepSeekR1Detector,
+         "deepseek-v3": _DeepSeekV3Detector,
+         "deepseek-v4": DeepSeekV4Detector,
++        "deepseek-v41": DeepSeekV4Detector,
+         "dots": Qwen3Detector,
+         "glm45": Glm45Detector,
+         "ling3": Ling3Detector,
+diff --git a/python/sglang/srt/parser/template_detection.py b/python/sglang/srt/parser/template_detection.py
+index a662492f0561bc59959152b5c8d63b02659127a0..23cacaf640f57e086ab37fc9fa20f3ff2dcfd8af 100644
+--- a/python/sglang/srt/parser/template_detection.py
++++ b/python/sglang/srt/parser/template_detection.py
+@@ -400,6 +400,10 @@ def _is_deepseek_v4(ctx):
+     return ctx.has_text("<｜DSML｜tool_calls>")
+ 
+ 
++def _is_deepseek_v41(ctx):
++    return ctx.has_text("<｜DSML｜ calls>")
++
++
+ def _is_hunyuan(ctx):
+     # The shipping Hy3 tokenizer appends a shared suffix to each special token
+     # (e.g. ``<tool_calls:opensource>``), so match the bare or suffixed form.
+@@ -536,6 +540,9 @@ REASONING_PARSER_RULES = (
+     DetectionRule(name="step3p5", value="step3p5", predicate=_is_step3p5),
+     DetectionRule(name="step3", value="step3", predicate=_is_step3),
+     DetectionRule(name="qwen3", value="qwen3", predicate=_is_qwen3),
++    DetectionRule(
++        name="deepseek_v41", value="deepseek-v41", predicate=_is_deepseek_v41
++    ),
+     DetectionRule(name="deepseek_v4", value="deepseek-v4", predicate=_is_deepseek_v4),
+     DetectionRule(name="deepseek_v3", value="deepseek-v3", predicate=_is_deepseek_v3),
+     DetectionRule(
+@@ -562,6 +569,7 @@ TOOL_CALL_PARSER_RULES = (
+     DetectionRule(name="minimax", value="minimax-m2", predicate=_is_minimax),
+     DetectionRule(name="interns1", value="interns1", predicate=_is_interns1),
+     DetectionRule(name="mistral", value="mistral", predicate=_is_mistral),
++    DetectionRule(name="deepseek_v41", value="deepseekv41", predicate=_is_deepseek_v41),
+     DetectionRule(name="deepseek_v4", value="deepseekv4", predicate=_is_deepseek_v4),
+     DetectionRule(name="deepseek_v32", value="deepseekv32", predicate=_is_deepseek_v32),
+     DetectionRule(name="deepseek_v31", value="deepseekv31", predicate=_is_deepseek_v31),
+@@ -753,6 +761,7 @@ def _log_undetected_parser(attr: str, label: str) -> None:
+ 
+ def _architecture_auto_parsers(server_args, needs: Tuple[str, ...]) -> Dict[str, str]:
+     """The parsers the model architecture implies, for the fields still on auto."""
++    from sglang.srt.entrypoints.openai.chat_encoding import is_deepseek_v41_arch
+     from sglang.srt.utils.hf_transformers_utils import get_config
+ 
+     cfg = resolving_view(server_args)
+@@ -768,6 +777,8 @@ def _architecture_auto_parsers(server_args, needs: Tuple[str, ...]) -> Dict[str,
+ 
+     if "KimiK3" in arch or model_type == "kimi_k3":
+         reasoning_parser, tool_call_parser = "kimi_k3", "kimi_k3"
++    elif is_deepseek_v41_arch(arch=arch, model_type=model_type):
++        reasoning_parser, tool_call_parser = "deepseek-v41", "deepseekv41"
+     elif "DeepseekV4" in arch:
+         reasoning_parser, tool_call_parser = "deepseek-v4", "deepseekv4"
+     elif "DeepseekV3" in arch:
+diff --git a/test/manual/phala/test_dsv41_chat_migration_cpu.py b/test/manual/phala/test_dsv41_chat_migration_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..19ce2bd0236a12a6f6fe87804cd6ee3232a8c99b
+--- /dev/null
++++ b/test/manual/phala/test_dsv41_chat_migration_cpu.py
+@@ -0,0 +1,165 @@
++"""Source-method CPU checks for the v0.5.20 DeepSeek V4.1 chat migration."""
++import ast
++import copy
++import importlib.util
++import json
++import logging
++from pathlib import Path
++from types import SimpleNamespace
++import typing
++import unittest
++
++
++SRT = Path(__file__).resolve().parents[3] / "python/sglang/srt"
++
++
++def load_module(name, path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++class NamedChoice:
++    def __init__(self, name):
++        self.function = SimpleNamespace(name=name)
++
++
++class AllowedChoice:
++    def __init__(self, names):
++        self.allowed_tools = SimpleNamespace(
++            mode="auto", tools=[SimpleNamespace(function=SimpleNamespace(name=n)) for n in names])
++
++
++class Tool:
++    def __init__(self, name):
++        self.function = SimpleNamespace(name=name)
++
++    def model_dump(self, exclude_unset=False, exclude_none=False, **kwargs):
++        function = {"parameters": {"type": "object"}, "description": "description",
++                    "name": self.function.name}
++        if not exclude_unset:
++            function["strict"] = False
++        if not exclude_none:
++            function["optional"] = None
++        return {"type": "function", "function": function}
++
++
++class ChatMigrationTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.encoder = load_module("encoding_dsv41", SRT / "entrypoints/openai/encoding_dsv41.py")
++        cls.namespace = dict(vars(typing), encoding_dsv41=cls.encoder,
++                             encoding_dsv4=SimpleNamespace(), logging=logging,
++                             Path=Path, ast=ast)
++        parsed = ast.parse((SRT / "entrypoints/openai/chat_encoding.py").read_text(encoding="utf-8"))
++        nodes = [n for n in parsed.body if not isinstance(n, (ast.Import, ast.ImportFrom))]
++        exec(compile(ast.Module(nodes, type_ignores=[]), "<actual-chat-encoding>", "exec"),
++             cls.namespace)
++        parsed = ast.parse((SRT / "entrypoints/openai/serving_chat.py").read_text(encoding="utf-8"))
++        owner = next(n for n in parsed.body if isinstance(n, ast.ClassDef) and n.name == "OpenAIServingChat")
++        methods = [n for n in owner.body if isinstance(n, ast.FunctionDef)
++                   and n.name in ("_allowed_tool_names", "_request_tools_for_prompt")]
++        cls.namespace.update(ChatCompletionRequest=object, ToolChoice=NamedChoice,
++                             AllowedToolsChoice=AllowedChoice)
++        wrapper = ast.ClassDef(name="Serving", bases=[], keywords=[], body=methods, decorator_list=[])
++        exec(compile(ast.fix_missing_locations(ast.Module([wrapper], type_ignores=[])),
++                     "<actual-serving-methods>", "exec"), cls.namespace)
++
++    def test_model_type_precedes_ambiguous_v4_architecture(self):
++        resolve = self.namespace["resolve_chat_encoding_spec"]
++        self.assertEqual(resolve(hf_config=SimpleNamespace(
++            architectures=["DeepseekV4ForCausalLM"], model_type="deepseek_v41"),
++            tokenizer=None), "dsv41")
++        self.assertEqual(resolve(hf_config=SimpleNamespace(
++            architectures=["DeepseekV4ForCausalLM"], model_type="deepseek_v4"),
++            tokenizer=None), "dsv4")
++        for name in ("Qwen3ForCausalLM", "Gemma4ForConditionalGeneration", "NemotronHForCausalLM"):
++            self.assertIsNone(resolve(hf_config=SimpleNamespace(architectures=[name]), tokenizer=None))
++
++    def test_explicit_parser_routing_is_retained(self):
++        for name, spec in (("deepseekv41", "dsv41"), ("deepseekv4", "dsv4"),
++                           ("deepseekv32", "dsv32"), ("kimi_k3", "kimi_k3")):
++            self.assertEqual(self.namespace["resolve_chat_encoding_spec"](
++                hf_config=None, tokenizer=None, tool_call_parser=name), spec)
++
++    def test_budget_validation_is_model_local_and_rejects_invalid_types(self):
++        parse = self.namespace["parse_dsv41_reasoning_effort"]
++        for value in (None, True, False, 0, 101, -1, 1.0, {}, [], "medium", "invalid"):
++            self.assertIsNone(parse(value), value)
++        for value in (1, 50, 100, "low", "high", "xhigh", "max"):
++            self.assertEqual(parse(value), value)
++        self.assertEqual(parse(0.5), 50)
++        self.assertEqual(parse(0.0), 1)
++
++    def test_environment_invalid_budget_fails_at_startup(self):
++        default = self.namespace["default_dsv41_reasoning_effort_from_env"]
++        self.assertEqual(default(""), "high")
++        self.assertEqual(default(" 75 "), 75)
++        for value in ("0", "101", "nan", "medium"):
++            with self.assertRaises(ValueError):
++                default(value)
++
++    def test_allowed_and_named_tools_remain_filtered_before_ds_serialization(self):
++        serving = self.namespace["Serving"]()
++        for choice, expected in ((AllowedChoice(["b"]), ["b"]), (NamedChoice("a"), ["a"]),
++                                 ("auto", ["a", "b"])):
++            request = SimpleNamespace(tools=[Tool("a"), Tool("b")], tool_choice=choice)
++            tools = serving._request_tools_for_prompt(request, exclude_unset=True, exclude_none=True)
++            result = [self.namespace["dsv41_tool_payload"](tool) for tool in tools]
++            self.assertEqual([t["function"]["name"] for t in result], expected)
++            for tool in result:
++                self.assertEqual(list(tool["function"]), ["name", "description", "parameters"])
++                self.assertNotIn("strict", tool["function"])
++                self.assertNotIn("optional", tool["function"])
++
++    def test_non_ds_prompt_default_fields_remain_unchanged(self):
++        request = SimpleNamespace(tools=[Tool("a")], tool_choice="auto")
++        output = self.namespace["Serving"]()._request_tools_for_prompt(request)
++        self.assertFalse(output[0]["function"]["strict"])
++        self.assertIsNone(output[0]["function"]["optional"])
++
++    def test_ds_payload_order_does_not_mutate_input(self):
++        payload = Tool("a").model_dump(exclude_unset=True, exclude_none=True)
++        original = copy.deepcopy(payload)
++        self.namespace["dsv41_tool_payload"](payload)
++        self.assertEqual(payload, original)
++
++    def test_encoder_does_not_invent_empty_system_message(self):
++        messages = [{"role": "user", "content": "hello"}]
++        original = copy.deepcopy(messages)
++        text = self.encoder.encode_messages(messages, thinking_mode="chat")
++        self.assertNotIn(self.encoder.SYSTEM_SP_TOKEN, text)
++        self.assertIn(self.encoder.USER_SP_TOKEN, text)
++        self.assertEqual(messages, original)
++
++    def test_encoder_retains_image_order_and_placeholder(self):
++        messages = [{"role": "user", "content": [
++            {"type": "text", "text": "inspect"},
++            {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
++            {"type": "image_url", "image_url": {"url": "https://example.invalid/b.png"}},
++        ]}]
++        text, media = self.encoder.encode_messages(
++            messages, thinking_mode="chat", return_multi_modal_data=True)
++        self.assertEqual(text.count(self.encoder.IMAGE_PLACEHOLDER), 2)
++        self.assertEqual([image["url"] for image in media["images"]],
++                         ["https://example.invalid/a.png", "https://example.invalid/b.png"])
++
++    def test_encoder_spaced_dsml_and_reasoning_history(self):
++        messages = [
++            {"role": "user", "content": "hello"},
++            {"role": "assistant", "content": "", "reasoning_content": "plan",
++             "tool_calls": [{"type": "function", "id": "x",
++                             "function": {"name": "lookup", "arguments": '{"city":"Paris"}'}}]},
++            {"role": "tool", "content": "done", "tool_call_id": "x"},
++            {"role": "user", "content": "continue"},
++        ]
++        text = self.encoder.encode_messages(messages, thinking_mode="thinking", drop_thinking=False)
++        self.assertIn("<\uff5cDSML\uff5c calls>", text)
++        self.assertIn('<\uff5cDSML\uff5c invoke name="lookup">', text)
++        self.assertIn("plan", text)
++        self.assertIn("<tool_result>done</tool_result>", text)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 453700300f67c69460832d628e120c0e61ae51a4..2d955a3d06de60133fc8b2394e4a9db1170be12b 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -54,7 +54,7 @@ from sglang.test.ci.ci_register import register_cpu_ci
+ register_cpu_ci(est_time=13, suite="base-a-test-cpu")
+ 
+ # Every spec resolve_chat_encoding_spec can return; pinned by the guard below.
+-_ALL_CHAT_ENCODING_SPECS = ("dsv4", "dsv32", "inkling", "kimi_k3")
++_ALL_CHAT_ENCODING_SPECS = ("dsv41", "dsv4", "dsv32", "inkling", "kimi_k3")
+ 
+ 
+ def _spec_result(index):

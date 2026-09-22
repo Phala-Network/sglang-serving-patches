@@ -1,0 +1,765 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 31d7f060007cf770020c7e40efd3e3f0dbdc622a..2809693bd007f9143a5032f04af81be13e9c8812 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -26,6 +26,7 @@ jobs:
+         run: >-
+           python -m pip install pre-commit==4.5.1
+           jsonschema==4.26.0 pydantic==2.13.5 Jinja2==3.1.6 openai==3.17.0
++          fastapi==0.135.1 starlette==1.6.0 orjson==3.11.7
+       - uses: actions/cache@v4
+         with:
+           path: ~/.cache/pre-commit
+@@ -50,6 +51,7 @@ jobs:
+           python test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py
+           python test/manual/phala/test_dsv41_chat_migration_cpu.py
+           python test/manual/phala/test_dsv41_shared_protocol_cpu.py
++          python test/manual/phala/test_initial_stream_error_cpu.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+           python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+diff --git a/UNION_SOURCE_VALIDATION_20260922.md b/UNION_SOURCE_VALIDATION_20260922.md
+index bacaa67894132a3b8d6d01ed56e80027780b0137..c79ff6e3584ece2cdc787b3dd08b98f5f47602ae 100644
+--- a/UNION_SOURCE_VALIDATION_20260922.md
++++ b/UNION_SOURCE_VALIDATION_20260922.md
+@@ -88,5 +88,43 @@ this is CPU bookkeeping evidence, not measured serving throughput.
+ Source integration does not prove loaded weights, native extension compilation,
+ device transfers, Mooncake ACK/reload, model generation, new image acceptance
+ or any Governor combination. Muse template packaging/license remains a
+-separate gate. See the historical semantic reconciliation before claiming
+-unreviewed Nemotron fusion/Mamba behaviors are complete.
++separate gate.
++
++## Historical residual closeout
++
++Nemotron fusion `65a1b3f10fd0`, Mamba flat SSM indexing `752cbf71d2fc`,
++saved admission debit `72d09f13ce3e`, and deferred initialization
++`12593d20ead3` are covered by exact official-baseline ancestors. Seven
++function ASTs remain identical to historical extracted sources; the GEMM
++dispatcher is identical after two explicit splitK identifier renames.
++Four existing Mamba index tests, saved-reserve admission with a failing
++late-recompute negative control, page-alignment/exact-fill controls and
++speculative-decode metadata clearing passed as source-method CPU checks.
++The patch repository's `docs/NEMOTRON_HISTORY_AUDIT_20260922.md` records
++identities and call chains. No duplicate engine patch was needed.
++
++The multi-path Muse donor `2224d5c899711426210957da0f3ba341f6b6c110`
++(extracted source `c2d241b80ef0e4e0e3aaf517567287368ac56fe3`) had one real
++common residual: malformed online weight-update validation. Only its worker
++deserialization and updater validation/unwrap handling are now adapted.
++The existing DS derived-cache rejection and weight-cache guards retain their
++ordering; tensor/default/direct/custom/flattened paths remain available.
++Fifteen focused real-torch CPU/source-method tests pass, covering malformed
++collections, names, local serialization/TP rank, load formats, metadata
++bounds, successful loader dispatch, and both existing cache guards.
++An ablation removing the payload validator loses controlled pre-device
++rejection; restoring the shared helper preserves it without another wrapper.
++CPU pickle fixtures do not qualify CUDA IPC, distributed updates, full runtime
++imports or production acceptance. No unrelated donor hunks were imported.
++
++Historical Nemotron donor `5f9f960c28a16bfaef3f20800c30eeee125753aa`
++(extracted `3c06073c3d0b3ada4ed413d25d543350386c3f72`) also had one common
++residual: an encoded first SSE error was still sent with HTTP 200. The shared
++pre-header response method now promotes only an initial 4xx/5xx error and
++closes its generator before returning; later errors remain in the stream.
++Seven source-method tests with real FastAPI/Starlette/ORJSON responses pass:
++five status codes, missing-code default, invalid/nonerror passthrough,
++midstream error ASGI bodies, ValueError, header-send failure cleanup and an
++ablation that restores the erroneous initial HTTP 200. This suite joins the
++existing shared source CI; no per-model workflow is added. Full server
++generation/ingress acceptance remains separate.
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 6d6aff2e936020d055caa06ad062c0d0ba4a9a18..7c22bc37fc6b1160dd0eaf52c18032ca6f26c5c5 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -299,6 +299,28 @@ class OpenAIServingBase(ABC):
+             await generator.aclose()
+             raise
+ 
++        # An async grammar failure may already be encoded as SSE, rather than
++        # raised. Promote only an initial error before committing HTTP headers;
++        # errors after output begins must retain normal streaming semantics.
++        if isinstance(first_chunk, str) and first_chunk.startswith("data:"):
++            try:
++                first_event = json.loads(first_chunk[5:].strip())
++            except (TypeError, ValueError):
++                first_event = None
++            if isinstance(first_event, dict) and isinstance(
++                first_event.get("error"), dict
++            ):
++                error = first_event["error"]
++                status = error.get("code", 400)
++                if isinstance(status, int) and 400 <= status <= 599:
++                    await generator.aclose()
++                    return self.create_error_response(
++                        message=error.get("message", "Request failed before output"),
++                        err_type=error.get("type", "BadRequestError"),
++                        status_code=status,
++                        param=error.get("param"),
++                    )
++
+         async def prepend_first_chunk():
+             try:
+                 yield first_chunk
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 2db19c68f68eef7faf0593ea5064a199c8ed261f..06682a03f99c009c28a1ee94476243f98495fb56 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -220,8 +220,20 @@ class BaseTpWorker(ABC):
+         )
+ 
+     def update_weights_from_tensor(self, recv_req: UpdateWeightsFromTensorReqInput):
++        try:
++            named_tensors = self._deserialize_own_rank(
++                recv_req.serialized_named_tensors
++            )
++        except Exception as exc:
++            message = (
++                "Invalid update_weights_from_tensor serialized payload: "
++                f"{type(exc).__name__}: {exc}"
++            )
++            logger.error(message)
++            return False, message
++
+         success, message = self.model_runner.weight_updater.update_weights_from_tensor(
+-            named_tensors=self._deserialize_own_rank(recv_req.serialized_named_tensors),
++            named_tensors=named_tensors,
+             load_format=recv_req.load_format,
+         )
+         return success, message
+diff --git a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+index 4e13f1c57eaa83fed478aead76787195b0c07302..b3ff23d92df8cb1a3042bb974f840b18a9db1c15 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
++++ b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+@@ -342,6 +342,27 @@ class WeightUpdater:
+ 
+         monkey_patch_torch_reductions()
+         self._assert_weight_cache_inactive("update_weights_from_tensor")
++        validation_error = _validate_update_weights_from_tensor_payload(
++            named_tensors, load_format, tp_rank=self.tp_rank
++        )
++        if validation_error is not None:
++            logger.error(validation_error)
++            return False, validation_error
++        if load_format not in (None, "direct", "flattened_bucket"):
++            if not isinstance(load_format, str):
++                message = (
++                    "Invalid update_weights_from_tensor payload: "
++                    "load_format must be a string or null"
++                )
++                logger.error(message)
++                return False, message
++            if load_format not in self.custom_weight_loaders:
++                message = (
++                    "Invalid update_weights_from_tensor payload: "
++                    f"unknown load_format={load_format}"
++                )
++                logger.error(message)
++                return False, message
+         if load_format == "flattened_bucket":
+             # Handle flattened bucket format
+             return self._update_weights_from_flattened_bucket(
+@@ -352,10 +373,21 @@ class WeightUpdater:
+         device_module = torch.get_device_module(self.device)
+         infered_device = device_module.current_device()
+ 
+-        named_tensors = [
+-            (name, _unwrap_tensor(tensor, tp_rank=self.tp_rank, device=infered_device))
+-            for name, tensor in named_tensors
+-        ]
++        try:
++            named_tensors = [
++                (
++                    name,
++                    _unwrap_tensor(tensor, tp_rank=self.tp_rank, device=infered_device),
++                )
++                for name, tensor in named_tensors
++            ]
++        except Exception as exc:
++            message = (
++                "Invalid update_weights_from_tensor payload: failed to unwrap "
++                f"tensor: {type(exc).__name__}: {exc}"
++            )
++            logger.error(message)
++            return False, message
+         if load_format == "direct":
+             _model_load_weights_direct(self.get_model(), named_tensors)
+         elif load_format in self.custom_weight_loaders:
+@@ -443,3 +475,80 @@ class LocalSerializedTensor:
+ 
+     def get(self, rank: int):
+         return MultiprocessingSerializer.deserialize(self.values[rank])
++
++
++def _validate_update_weights_from_tensor_payload(
++    named_tensors, load_format, tp_rank=None
++):
++    """Reject malformed payloads before any model parameter can be modified."""
++    error_prefix = "Invalid update_weights_from_tensor payload"
++    if load_format == "flattened_bucket":
++        if not isinstance(named_tensors, dict):
++            return f"{error_prefix}: flattened_bucket payload must be a mapping"
++        if not {"flattened_tensor", "metadata"}.issubset(named_tensors):
++            return (
++                f"{error_prefix}: flattened_bucket payload requires "
++                "flattened_tensor and metadata"
++            )
++        if not isinstance(named_tensors["flattened_tensor"], torch.Tensor):
++            return f"{error_prefix}: flattened_tensor must be a torch.Tensor"
++        if not isinstance(named_tensors["metadata"], (list, tuple)):
++            return f"{error_prefix}: metadata must be a list or tuple"
++        flattened_numel = named_tensors["flattened_tensor"].numel()
++        for index, metadata in enumerate(named_tensors["metadata"]):
++            if not isinstance(metadata, FlattenedTensorMetadata):
++                return (
++                    f"{error_prefix}: metadata entry {index} must be a "
++                    "FlattenedTensorMetadata"
++                )
++            if not isinstance(metadata.name, str) or not metadata.name:
++                return f"{error_prefix}: metadata entry {index} has an invalid name"
++            if not isinstance(metadata.shape, (list, tuple, torch.Size)) or any(
++                not isinstance(dimension, int) or dimension < 0
++                for dimension in metadata.shape
++            ):
++                return f"{error_prefix}: metadata entry {index} has an invalid shape"
++            if not isinstance(metadata.dtype, torch.dtype):
++                return f"{error_prefix}: metadata entry {index} has an invalid dtype"
++            offsets = (metadata.start_idx, metadata.end_idx, metadata.numel)
++            if any(not isinstance(value, int) or value < 0 for value in offsets):
++                return f"{error_prefix}: metadata entry {index} has invalid offsets"
++            if (
++                metadata.end_idx < metadata.start_idx
++                or metadata.end_idx > flattened_numel
++                or metadata.end_idx - metadata.start_idx != metadata.numel
++            ):
++                return (
++                    f"{error_prefix}: metadata entry {index} is outside the "
++                    "flattened tensor"
++                )
++        return None
++
++    if not isinstance(named_tensors, (list, tuple)):
++        return f"{error_prefix}: named_tensors must be a list or tuple"
++    for index, item in enumerate(named_tensors):
++        if not isinstance(item, (list, tuple)) or len(item) != 2:
++            return f"{error_prefix}: entry {index} must be a (name, tensor) pair"
++        name, tensor = item
++        if not isinstance(name, str) or not name:
++            return f"{error_prefix}: entry {index} has an invalid tensor name"
++        if not isinstance(tensor, (torch.Tensor, LocalSerializedTensor)):
++            return f"{error_prefix}: entry {index} has an invalid tensor value"
++        if isinstance(tensor, LocalSerializedTensor):
++            if not isinstance(tensor.values, (list, tuple)) or not tensor.values:
++                return f"{error_prefix}: entry {index} has invalid serialized tensor values"
++            if any(
++                not isinstance(value, (bytes, bytearray, memoryview))
++                for value in tensor.values
++            ):
++                return f"{error_prefix}: entry {index} has a non-bytes serialized tensor value"
++            if tp_rank is not None and (
++                not isinstance(tp_rank, int)
++                or tp_rank < 0
++                or tp_rank >= len(tensor.values)
++            ):
++                return (
++                    f"{error_prefix}: entry {index} has no serialized tensor "
++                    f"for TP rank {tp_rank}"
++                )
++    return None
+diff --git a/test/manual/phala/test_initial_stream_error_cpu.py b/test/manual/phala/test_initial_stream_error_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cc903159fc7bf6521222aa310e092d85f42304f3
+--- /dev/null
++++ b/test/manual/phala/test_initial_stream_error_cpu.py
+@@ -0,0 +1,211 @@
++"""Pre-header status and ownership using real ASGI responses, no engine import."""
++
++import ast
++import asyncio
++import json
++import unittest
++from contextlib import AsyncExitStack
++from pathlib import Path
++from types import SimpleNamespace
++from typing import Literal, Optional
++from unittest.mock import Mock
++
++import anyio
++from fastapi.responses import ORJSONResponse, StreamingResponse
++from pydantic import BaseModel
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def execute(path, names, ns, owner=None):
++    body = ast.parse(path.read_text(encoding="utf-8")).body
++    if owner:
++        body = next(
++            n for n in body if isinstance(n, ast.ClassDef) and n.name == owner
++        ).body
++    nodes = [n for n in body if getattr(n, "name", None) in names]
++    assert {n.name for n in nodes} == names
++    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), ns)
++
++
++class TestInitialStreamError(unittest.IsolatedAsyncioTestCase):
++    def setUp(self):
++        self.ns = dict(
++            asyncio=asyncio,
++            json=json,
++            anyio=anyio,
++            AsyncExitStack=AsyncExitStack,
++            StreamingResponse=StreamingResponse,
++            ORJSONResponse=ORJSONResponse,
++            Optional=Optional,
++            Literal=Literal,
++            BaseModel=BaseModel,
++        )
++        execute(SRT / "entrypoints/openai/protocol.py", {"ErrorResponse"}, self.ns)
++        execute(
++            SRT / "entrypoints/request_disconnect.py",
++            {"response_disconnect_watched", "await_response_or_disconnect"},
++            self.ns,
++        )
++        path = SRT / "entrypoints/openai/serving_base.py"
++        execute(path, {"GenerationStreamingResponse"}, self.ns)
++        execute(
++            path,
++            {"create_error_response", "_streaming_response_before_headers"},
++            self.ns,
++            "OpenAIServingBase",
++        )
++        self.abort = Mock(return_value=None)
++        self.serving = SimpleNamespace(
++            tokenizer_manager=SimpleNamespace(create_abort_task=self.abort)
++        )
++        self.serving.create_error_response = lambda **kw: self.ns[
++            "create_error_response"
++        ](self.serving, **kw)
++        self.closed = []
++
++    def generator(self, chunks, fail_after=False):
++        async def generate():
++            try:
++                for chunk in chunks:
++                    yield chunk
++                if fail_after:
++                    raise AssertionError(
++                        "must close instead of requesting another event"
++                    )
++            finally:
++                await asyncio.sleep(0)
++                self.closed.append(True)
++
++        return generate()
++
++    async def response(self, generator, request=None):
++        return await self.ns["_streaming_response_before_headers"](
++            self.serving, generator, None, request
++        )
++
++    async def test_initial_status_and_generator_close(self):
++        for status in [400, 422, 429, 500, 503]:
++            with self.subTest(status=status):
++                event = (
++                    "data: "
++                    + json.dumps(
++                        {
++                            "error": {
++                                "message": "bad schema",
++                                "type": "SchemaError",
++                                "param": "schema",
++                                "code": status,
++                            }
++                        }
++                    )
++                    + "\n\n"
++                )
++                response = await self.response(self.generator([event], fail_after=True))
++                self.assertIsInstance(response, ORJSONResponse)
++                self.assertEqual(response.status_code, status)
++                body = json.loads(response.body)
++                self.assertEqual(
++                    (body["message"], body["type"], body["param"]),
++                    ("bad schema", "SchemaError", "schema"),
++                )
++        self.assertEqual(len(self.closed), 5)
++        self.abort.assert_not_called()
++
++    async def test_missing_code_defaults_to_400(self):
++        response = await self.response(self.generator(['data: {"error":{}}\n\n']))
++        self.assertEqual(response.status_code, 400)
++        self.assertEqual(self.closed, [True])
++
++    async def test_later_error_preserved_on_real_asgi(self):
++        role = 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
++        error = 'data: {"error":{"message":"late","code":500}}\n\n'
++        response = await self.response(self.generator([role, error]))
++        sent = []
++
++        async def send(message):
++            sent.append(message)
++
++        async def receive():
++            await asyncio.Event().wait()
++
++        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
++        self.assertEqual(sent[0]["status"], 200)
++        self.assertEqual(
++            b"".join(m.get("body", b"") for m in sent), (role + error).encode()
++        )
++        self.assertEqual(self.closed, [True])
++        self.abort.assert_called_once()
++
++    async def test_nonerror_invalid_json_and_invalid_status_remain_streams(self):
++        for chunk in [
++            "data: [DONE]\n\n",
++            "data: []\n\n",
++            'data: {"error":"text"}\n\n',
++            'data: {"error":{"code":200}}\n\n',
++            'data: {"error":{"code":"500"}}\n\n',
++            'data: {"error":{"code":600}}\n\n',
++            b"data: bytes\n\n",
++        ]:
++            response = await self.response(self.generator([chunk]))
++            self.assertIsInstance(response, StreamingResponse)
++            self.assertEqual([part async for part in response.body_iterator], [chunk])
++
++    async def test_raised_value_error_closes_generator(self):
++        async def generate():
++            try:
++                raise ValueError("invalid grammar")
++                yield
++            finally:
++                self.closed.append(True)
++
++        # Production ValueError path passes the message positionally.
++        self.serving.create_error_response = lambda *a, **kw: self.ns[
++            "create_error_response"
++        ](self.serving, *a, **kw)
++        response = await self.response(generate())
++        self.assertEqual(response.status_code, 400)
++        self.assertEqual(self.closed, [True])
++
++    async def test_send_failure_keeps_owned_generator_cleanup(self):
++        response = await self.response(self.generator(["first", "second"]))
++
++        async def send(_):
++            raise OSError("socket closed")
++
++        async def receive():
++            await asyncio.Event().wait()
++
++        with self.assertRaises(Exception):
++            await response(
++                {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send
++            )
++        self.assertEqual(self.closed, [True])
++
++    async def test_ablation_without_initial_error_promotion_returns_200(self):
++        path = SRT / "entrypoints/openai/serving_base.py"
++        tree = ast.parse(path.read_text(encoding="utf-8"))
++        method = next(
++            n
++            for n in ast.walk(tree)
++            if isinstance(n, ast.AsyncFunctionDef)
++            and n.name == "_streaming_response_before_headers"
++        )
++        method.body = [
++            n
++            for n in method.body
++            if not (isinstance(n, ast.If) and "first_chunk" in ast.unparse(n.test))
++        ]
++        ns = dict(self.ns)
++        exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), ns)
++        event = 'data: {"error":{"code":503}}\n\n'
++        response = await ns["_streaming_response_before_headers"](
++            self.serving, self.generator([event]), None, None
++        )
++        self.assertEqual(response.status_code, 200)
++        self.assertEqual([part async for part in response.body_iterator], [event])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/manual/phala/test_malformed_weight_update_cpu.py b/test/manual/phala/test_malformed_weight_update_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab6d80d197c5118e96877b4a052b07b1fbe0dc90
+--- /dev/null
++++ b/test/manual/phala/test_malformed_weight_update_cpu.py
+@@ -0,0 +1,274 @@
++"""Historical malformed-weight regressions on actual source methods and CPU torch.
++
++No full SGLang import, CUDA IPC or distributed update acceptance is implied.
++"""
++
++import ast
++import dataclasses
++import logging
++import pickle
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import torch
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def load_nodes(path, names, namespace, owner=None):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    body = tree.body
++    if owner:
++        body = next(
++            n for n in body if isinstance(n, ast.ClassDef) and n.name == owner
++        ).body
++    nodes = [n for n in body if getattr(n, "name", None) in names]
++    assert {n.name for n in nodes} == set(names)
++    module = ast.Module(
++        body=[
++            ast.ImportFrom(
++                module="__future__", names=[ast.alias(name="annotations")], level=0
++            ),
++            *nodes,
++        ],
++        type_ignores=[],
++    )
++    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
++
++
++class TestMalformedWeightUpdate(unittest.TestCase):
++    def setUp(self):
++        self.ns = {
++            "torch": torch,
++            "dataclass": dataclasses.dataclass,
++            "logger": logging.getLogger("malformed-weight-cpu"),
++            # Pickle is a CPU serialization fixture, not CUDA IPC acceptance.
++            "MultiprocessingSerializer": SimpleNamespace(deserialize=pickle.loads),
++            "monkey_patch_torch_reductions": Mock(),
++            "_unsupported_derived_weight_cache_error": Mock(return_value=None),
++            "dynamic_import": Mock(return_value=Mock()),
++            "default_weight_loader": Mock(),
++        }
++        load_nodes(
++            SRT / "weight_sync/tensor_bucket.py",
++            {"FlattenedTensorMetadata", "FlattenedTensorBucket"},
++            self.ns,
++        )
++        path = SRT / "model_executor/model_runner_components/weight_updater.py"
++        load_nodes(
++            path,
++            {
++                "LocalSerializedTensor",
++                "_unwrap_tensor",
++                "_model_load_weights_direct",
++                "_validate_update_weights_from_tensor_payload",
++            },
++            self.ns,
++        )
++        load_nodes(
++            path,
++            {"update_weights_from_tensor", "_update_weights_from_flattened_bucket"},
++            self.ns,
++            "WeightUpdater",
++        )
++        self.model = Mock()
++        self.model.named_parameters.return_value = [("weight", torch.zeros(1))]
++        self.updater = SimpleNamespace(
++            get_model=lambda: self.model,
++            _assert_weight_cache_inactive=Mock(),
++            tp_rank=0,
++            device="cpu",
++            custom_weight_loaders={},
++        )
++        self.updater._update_weights_from_flattened_bucket = lambda **kw: self.ns[
++            "_update_weights_from_flattened_bucket"
++        ](self.updater, **kw)
++        self.validate = self.ns["_validate_update_weights_from_tensor_payload"]
++
++    def update(self, payload, fmt=None):
++        return self.ns["update_weights_from_tensor"](self.updater, payload, fmt)
++
++    def assert_rejects(self, payload, fmt=None, contains="Invalid"):
++        success, message = self.update(payload, fmt)
++        self.assertFalse(success)
++        self.assertIn(contains, message)
++        self.model.load_weights.assert_not_called()
++
++    def test_non_collection_rejected_before_device_lookup(self):
++        del self.updater.device
++        self.assert_rejects(7, contains="named_tensors must be")
++
++    def test_ablation_without_validation_loses_controlled_rejection(self):
++        self.ns["_validate_update_weights_from_tensor_payload"] = lambda *a, **kw: None
++        del self.updater.device
++        with self.assertRaises(AttributeError):
++            self.update(7)
++        self.model.load_weights.assert_not_called()
++
++    def test_bad_entries_and_names(self):
++        for payload in [
++            [7],
++            [("name",)],
++            [(7, torch.zeros(1))],
++            [("", torch.zeros(1))],
++            [("name", 7)],
++        ]:
++            with self.subTest(payload=payload):
++                self.assert_rejects(payload)
++
++    def test_local_serialized_envelope_and_rank(self):
++        cls = self.ns["LocalSerializedTensor"]
++        for values in [None, [], [7]]:
++            self.assert_rejects([("weight", cls(values=values))])
++        for rank in [-1, 1, "0"]:
++            self.updater.tp_rank = rank
++            self.assert_rejects(
++                [("weight", cls(values=[b"payload"]))], contains="TP rank"
++            )
++
++    def test_corrupt_local_serialization_is_controlled(self):
++        cls = self.ns["LocalSerializedTensor"]
++        for value in [b"not-a-pickle", pickle.dumps(7)]:
++            self.assert_rejects(
++                [("weight", cls(values=[value]))], contains="failed to unwrap"
++            )
++
++    def test_valid_local_tensor(self):
++        cls = self.ns["LocalSerializedTensor"]
++        success, _ = self.update(
++            [("weight", cls(values=[pickle.dumps(torch.ones(1))]))]
++        )
++        self.assertTrue(success)
++        torch.testing.assert_close(
++            self.model.load_weights.call_args.args[0][0][1], torch.ones(1)
++        )
++
++    def test_unknown_and_nonstring_format_before_device(self):
++        del self.updater.device
++        for fmt in ["unknown", 7, [], {}]:
++            self.assert_rejects([("weight", torch.zeros(1))], fmt, "load_format")
++
++    def test_default_direct_and_custom_dispatch(self):
++        tensor = torch.ones(1)
++        self.assertTrue(self.update([("weight", tensor)])[0])
++        self.model.load_weights.assert_called_once()
++        self.model.load_weights.reset_mock()
++        self.assertTrue(self.update([("weight", tensor)], "direct")[0])
++        self.ns["default_weight_loader"].assert_called_once()
++        self.model.load_weights.assert_not_called()
++        self.updater.custom_weight_loaders = {"custom.loader": True}
++        self.assertTrue(self.update([("weight", tensor)], "custom.loader")[0])
++        self.ns["dynamic_import"].assert_called_once_with("custom.loader")
++        self.ns["dynamic_import"].return_value.assert_called_once()
++
++    def bucket(self, **changes):
++        meta = self.ns["FlattenedTensorMetadata"](
++            name="weight",
++            shape=torch.Size([1]),
++            dtype=torch.float32,
++            start_idx=0,
++            end_idx=4,
++            numel=4,
++        )
++        for key, value in changes.items():
++            setattr(meta, key, value)
++        return {"flattened_tensor": torch.ones(1).view(torch.uint8), "metadata": [meta]}
++
++    def test_flattened_valid_round_trip(self):
++        self.assertTrue(self.update(self.bucket(), "flattened_bucket")[0])
++        torch.testing.assert_close(
++            self.model.load_weights.call_args.args[0][0][1], torch.ones(1)
++        )
++
++    def test_flattened_bad_envelopes(self):
++        for payload in [
++            7,
++            {},
++            {"flattened_tensor": 7, "metadata": []},
++            {"flattened_tensor": torch.zeros(1), "metadata": 7},
++            {"flattened_tensor": torch.zeros(1), "metadata": [7]},
++        ]:
++            self.assert_rejects(payload, "flattened_bucket")
++
++    def test_flattened_metadata_validation(self):
++        for change in [
++            dict(name=""),
++            dict(shape=[-1]),
++            dict(shape="1"),
++            dict(dtype="float32"),
++            dict(start_idx=-1),
++            dict(end_idx=5),
++            dict(end_idx=0, start_idx=1),
++            dict(numel=3),
++            dict(numel="4"),
++        ]:
++            with self.subTest(change=change):
++                self.assert_rejects(self.bucket(**change), "flattened_bucket")
++
++    def test_ds_derived_cache_guard_still_precedes_updates(self):
++        guard = self.ns["_unsupported_derived_weight_cache_error"]
++        guard.return_value = "derived-cache-blocked"
++        self.assert_rejects(
++            [("weight", torch.zeros(1))], contains="derived-cache-blocked"
++        )
++        guard.assert_called_once_with(self.model)
++        self.updater._assert_weight_cache_inactive.assert_not_called()
++        self.ns["monkey_patch_torch_reductions"].assert_not_called()
++
++    def test_weight_cache_guard_still_enforced(self):
++        self.updater._assert_weight_cache_inactive.side_effect = RuntimeError(
++            "cache-active"
++        )
++        with self.assertRaisesRegex(RuntimeError, "cache-active"):
++            self.update([("weight", torch.zeros(1))])
++        self.model.load_weights.assert_not_called()
++
++    def worker(self, rank=0):
++        ns = dict(self.ns)
++        load_nodes(
++            SRT / "managers/tp_worker.py",
++            {"_deserialize_own_rank", "update_weights_from_tensor"},
++            ns,
++            "BaseTpWorker",
++        )
++        downstream = Mock(return_value=(True, "forwarded"))
++        worker = SimpleNamespace(
++            ps=SimpleNamespace(tp_rank=rank),
++            model_runner=SimpleNamespace(
++                weight_updater=SimpleNamespace(update_weights_from_tensor=downstream)
++            ),
++        )
++        worker._deserialize_own_rank = lambda payload: ns["_deserialize_own_rank"](
++            worker, payload
++        )
++        return ns["update_weights_from_tensor"], worker, downstream
++
++    def test_worker_corrupt_payload_controlled(self):
++        method, worker, downstream = self.worker()
++        for payload in [[b"not-a-pickle"], [], 7]:
++            result = method(
++                worker,
++                SimpleNamespace(serialized_named_tensors=payload, load_format=None),
++            )
++            self.assertFalse(result[0])
++            self.assertIn("serialized payload", result[1])
++        downstream.assert_not_called()
++
++    def test_worker_deserializes_only_own_rank(self):
++        method, worker, downstream = self.worker(rank=1)
++        result = method(
++            worker,
++            SimpleNamespace(
++                serialized_named_tensors=[b"corrupt-other-rank", pickle.dumps(7)],
++                load_format=None,
++            ),
++        )
++        self.assertEqual(result, (True, "forwarded"))
++        downstream.assert_called_once_with(named_tensors=7, load_format=None)
++
++
++if __name__ == "__main__":
++    unittest.main()

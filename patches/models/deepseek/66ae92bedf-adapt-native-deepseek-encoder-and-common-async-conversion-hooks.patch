@@ -1,0 +1,378 @@
+diff --git a/python/sglang/srt/entrypoints/openai/encoding_dsv41.py b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+index 86b1dd68dc3aafc1b179e2069bd64d66c92e3922..20f7a70e283d9d809e2b28d8725a502f9a4f5e7d 100644
+--- a/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
++++ b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+@@ -6,6 +6,7 @@ Mid-conversation system messages trigger the assistant generation header.
+ 
+ import copy
+ import json
++import os
+ from typing import Any, Dict, List, Optional, Tuple, Union
+ 
+ # ============================================================
+@@ -66,9 +67,11 @@ REASONING_EFFORT_TEMPLATE = (
+ )
+ 
+ REASONING_EFFORT_MAPPINGS: Dict[str, int] = {
+-    "low": 25,
+-    "high": 50,
+-    "xhigh": 75,
++    "minimal": 25,
++    "low": 50,
++    "medium": 62,
++    "high": 75,
++    "xhigh": 90,
+     "max": 100,
+ }
+ DEFAULT_REASONING_EFFORT = "high"
+@@ -675,6 +678,31 @@ def _encode_messages_text(
+     return prompt
+ 
+ 
++def _prepare_messages(messages):
++    """Normalize developer roles without removing a standalone generation point."""
++    if not isinstance(messages, list) or not messages:
++        return messages
++    out = messages
++    for index, message in enumerate(messages):
++        if (
++            isinstance(message, dict)
++            and message.get("role") == "developer"
++            and len(messages) > 1
++        ):
++            if out is messages:
++                out = list(messages)
++            out[index] = dict(message, role="system")
++    if (
++        os.environ.get("DSV41_SYSTEM_ONLY_USER_TURN", "").strip().lower()
++        in {"1", "true", "yes", "on"}
++        and len(out) == 1
++        and isinstance(out[0], dict)
++        and out[0].get("role") == "system"
++    ):
++        out = list(out) + [{"role": "user", "content": ""}]
++    return out
++
++
+ def encode_messages(
+     messages: List[Dict[str, Any]],
+     thinking_mode: str,
+@@ -689,6 +717,7 @@ def encode_messages(
+     Returns the prompt string, or ``(prompt, {"images": [...]})`` when
+     ``return_multi_modal_data`` is set; the image records are in prompt order.
+     """
++    messages = _prepare_messages(messages)
+     context = context or []
+     processed_context, _ = process_image_messages(context) if context else ([], [])
+     processed_messages, images = process_image_messages(messages)
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 9169ebb192fad90456d4f78c9a6ce68288f44a34..6d6aff2e936020d055caa06ad062c0d0ba4a9a18 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -124,9 +124,10 @@ class OpenAIServingBase(ABC):
+                 request_logger.log_openai_received_request(request, request=raw_request)
+ 
+             # Convert to internal format
+-            adapted_request, processed_request = self._convert_to_internal_request(
+-                request, raw_request
+-            )
++            (
++                adapted_request,
++                processed_request,
++            ) = await self._convert_to_internal_request_async(request, raw_request)
+ 
+             if isinstance(adapted_request, (GenerateReqInput, EmbeddingReqInput)):
+                 # Only set timing fields if adapted_request supports them
+@@ -182,6 +183,14 @@ class OpenAIServingBase(ABC):
+ 
+         return f"{self._request_id_prefix()}{uuid.uuid4().hex}"
+ 
++    async def _convert_to_internal_request_async(
++        self,
++        request: OpenAIServingRequest,
++        raw_request: Request = None,
++    ) -> tuple[GenerateReqInput, OpenAIServingRequest]:
++        """Keep conversion synchronous unless an endpoint opts into its worker."""
++        return self._convert_to_internal_request(request, raw_request)
++
+     @abstractmethod
+     def _convert_to_internal_request(
+         self,
+diff --git a/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py b/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
+index 2a115c0e11ad955e9c458bbc2996801d882c5f30..05e791a83e44eb331d8855312eacfd23cf8120c4 100644
+--- a/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
++++ b/python/sglang/srt/managers/async_dynamic_batch_tokenizer.py
+@@ -6,10 +6,11 @@ to reduce tokenization overhead when multiple requests arrive concurrently.
+ """
+ 
+ import asyncio
++import contextvars
+ import logging
+ from concurrent.futures import ThreadPoolExecutor
+ from functools import partial
+-from typing import Any, Dict, List, Optional
++from typing import Any, Callable, Dict, List, Optional
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -62,6 +63,14 @@ class AsyncDynamicbatchTokenizer:
+         await self._queue.put((prompt, kwargs, result_future))
+         return await result_future
+ 
++    async def run_sync(self, function: Callable[..., Any], *args, **kwargs) -> Any:
++        """Serialize blocking conversion with tokenization and retain ContextVars."""
++        context = contextvars.copy_context()
++        operation = partial(function, *args, **kwargs)
++        return await asyncio.get_running_loop().run_in_executor(
++            self._executor, context.run, operation
++        )
++
+     async def _dynamic_batch_loop(self):
+         """Dynamically batch incoming encode requests for efficiency."""
+         while True:
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index bc262f9db3b5debdef5a623bb09d060b0f58a32c..0a00234d7c7ac61b956c08d320ad6b34e673b969 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -1699,7 +1699,9 @@ def get_mm_http_session() -> requests.Session:
+ # decoded. ValueError is in the set because invalid base64 raises binascii.Error.
+ CLIENT_MEDIA_EXCEPTIONS = (
+     ValueError,
++    OSError,
+     UnidentifiedImageError,
++    Image.DecompressionBombError,
+     requests.exceptions.RequestException,
+ )
+ 
+diff --git a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+index cd15c410da17c7be9f461f816aa22bffda53e382..1e6356a5f2882815d338fef15fbf4a0294768442 100644
+--- a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++++ b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+@@ -1,126 +1,136 @@
+-"""Finite CPU protocol/usage checks without importing the GPU runtime."""
++"""Native DS encoder/async contracts; no historical monkey-patch package."""
+ 
+ import ast
++import asyncio
++import contextvars
+ import importlib.util
+ import os
+-from pathlib import Path
+-from types import SimpleNamespace
++import threading
+ import unittest
++from pathlib import Path
+ from unittest.mock import patch
+ 
+ ROOT = Path(__file__).resolve().parents[2]
+ 
+ 
+-def load(name):
+-    path = ROOT / "python/sglang/srt/phala_compat" / (name + ".py")
+-    spec = importlib.util.spec_from_file_location(name, path)
++def load(name, relative):
++    spec = importlib.util.spec_from_file_location(name, ROOT / "python" / relative)
+     module = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(module)
+     return module
+ 
+ 
+-roles = load("dsv41_message_roles")
+-protocol = load("dsv41_protocol_compat")
+-tools = load("dsv41_tool_choice_none")
++encoding = load("encoding_dsv41", "sglang/srt/entrypoints/openai/encoding_dsv41.py")
++batcher_module = load(
++    "async_batcher", "sglang/srt/managers/async_dynamic_batch_tokenizer.py"
++)
+ 
+ 
+ class ProtocolContracts(unittest.TestCase):
++    def test_current_effort_parser_boundaries(self):
++        path = ROOT / "python/sglang/srt/entrypoints/openai/chat_encoding.py"
++        parsed = ast.parse(path.read_text(encoding="utf-8"))
++        fn = next(
++            n
++            for n in parsed.body
++            if getattr(n, "name", None) == "parse_dsv41_reasoning_effort"
++        )
++        module = ast.Module(
++            body=[
++                ast.ImportFrom(
++                    module="__future__", names=[ast.alias("annotations")], level=0
++                ),
++                fn,
++            ],
++            type_ignores=[],
++        )
++        ns = {"encoding_dsv41": encoding}
++        exec(compile(ast.fix_missing_locations(module), str(path), "exec"), ns)
++        parse = ns[fn.name]
++        self.assertEqual([parse(x) for x in (1, 50, 100)], [1, 50, 100])
++        self.assertEqual([parse(x) for x in (0.0, 0.5, 0.99)], [1, 50, 99])
++        self.assertEqual([parse(x) for x in (True, 0, 101, -0.1, 1.0)], [None] * 5)
++
+     def test_developer_preserves_caller_and_standalone_generation_role(self):
+         solo = [{"role": "developer", "content": "one"}]
+-        self.assertIs(roles._prepare_messages(solo), solo)
++        self.assertIs(encoding._prepare_messages(solo), solo)
+         original = solo + [{"role": "user", "content": "two"}]
+-        actual = roles._prepare_messages(original)
++        actual = encoding._prepare_messages(original)
+         self.assertEqual(actual[0]["role"], "system")
+         self.assertEqual(original[0]["role"], "developer")
+ 
++    def test_standalone_developer_retains_generation_header(self):
++        prompt = encoding.encode_messages(
++            [{"role": "developer", "content": "one"}], thinking_mode="thinking"
++        )
++        self.assertIn("<｜Assistant｜><think>", prompt)
++
+     def test_system_only_user_turn_is_opt_in(self):
+         original = [{"role": "system", "content": "one"}]
+         with patch.dict(os.environ, {"DSV41_SYSTEM_ONLY_USER_TURN": "0"}):
+-            self.assertIs(roles._prepare_messages(original), original)
++            self.assertIs(encoding._prepare_messages(original), original)
+         with patch.dict(os.environ, {"DSV41_SYSTEM_ONLY_USER_TURN": "1"}):
+             self.assertEqual(
+-                roles._prepare_messages(original)[-1], {"role": "user", "content": ""}
++                encoding._prepare_messages(original)[-1],
++                {"role": "user", "content": ""},
++            )
++            self.assertIn(
++                "<｜Assistant｜>",
++                encoding.encode_messages(original, thinking_mode="thinking"),
+             )
+         self.assertEqual(len(original), 1)
+ 
+-    def test_reasoning_off_does_not_override_explicit_flat_effort(self):
+-        self.assertEqual(
+-            protocol._normalize({"reasoning": {"enabled": False}})["reasoning_effort"],
+-            "none",
+-        )
+-        self.assertEqual(
+-            protocol._normalize(
+-                {"reasoning_effort": "high", "reasoning": {"enabled": False}}
+-            )["reasoning_effort"],
+-            "high",
+-        )
+-
+-    def test_integer_budget_and_fractional_effort_are_distinct(self):
+-        out = protocol._normalize({"reasoning_effort": 75})
+-        self.assertEqual(out["chat_template_kwargs"]["reasoning_effort"], 75)
+-        self.assertTrue(out["chat_template_kwargs"]["thinking"])
+-        original = {"reasoning_effort": 0.75}
+-        self.assertIs(protocol._normalize(original), original)
+-        for bad in (-1, 101):
+-            with self.assertRaises(ValueError):
+-                protocol._normalize({"reasoning_effort": bad})
+-
+-    def test_exclude_is_output_setting_and_does_not_disable_generation(self):
+-        out = protocol._normalize({"reasoning": {"effort": "high", "exclude": True}})
+-        self.assertTrue(out["reasoning_exclude"])
+-        self.assertNotIn("reasoning_effort", out)
+-        self.assertEqual(out["reasoning"]["effort"], "high")
+-
+-    def test_stream_usage_is_continuous_without_mutating_caller(self):
+-        original = {"stream": True, "stream_options": {"include_usage": False}}
+-        out = protocol._normalize(original)
+-        self.assertEqual(
+-            out["stream_options"],
+-            {"include_usage": True, "continuous_usage_stats": True},
+-        )
+-        self.assertFalse(original["stream_options"]["include_usage"])
+-
+-    def test_none_removes_both_tool_definition_carriers(self):
+-        request = SimpleNamespace(
+-            tool_choice="none",
+-            tools=[{"name": "a"}],
+-            messages=[SimpleNamespace(tools=[{"name": "b"}])],
+-        )
+-        self.assertTrue(tools.drop_tool_definitions(request))
+-        self.assertIsNone(request.tools)
+-        self.assertIsNone(request.messages[0].tools)
+-        request.tool_choice = "required"
+-        request.tools = [{"name": "a"}]
+-        self.assertFalse(tools.drop_tool_definitions(request))
+-        self.assertEqual(len(request.tools), 1)
+-
+-
+-class UsageCapContracts(unittest.TestCase):
+-    def test_actual_req_method_caps_only_the_emitted_finishing_prefix(self):
+-        path = ROOT / "python/sglang/srt/managers/schedule_batch.py"
+-        parsed = ast.parse(path.read_text(encoding="utf-8"))
+-        req = next(
+-            n for n in parsed.body if isinstance(n, ast.ClassDef) and n.name == "Req"
+-        )
+-        fn = next(
+-            n
+-            for n in req.body
+-            if isinstance(n, ast.FunctionDef)
+-            and n.name == "_cap_reasoning_tokens_at_finished_len"
+-        )
+-        module = ast.Module(body=[fn], type_ignores=[])
+-        namespace = {}
+-        exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
+-        for finish, counted, expected in (
+-            (8, 11, 8),
+-            (8, 5, 5),
+-            (None, 11, 11),
+-            (0, 3, 0),
+-        ):
+-            with self.subTest(finish=finish, counted=counted):
+-                value = SimpleNamespace(finished_len=finish, reasoning_tokens=counted)
+-                namespace[fn.name](value)
+-                self.assertEqual(value.reasoning_tokens, expected)
++    def test_historical_effort_mapping_is_native(self):
++        expected = dict(minimal=25, low=50, medium=62, high=75, xhigh=90, max=100)
++        self.assertEqual(encoding.REASONING_EFFORT_MAPPINGS, expected)
++        for effort, budget in expected.items():
++            with self.subTest(effort=effort):
++                self.assertIn(
++                    str(budget), encoding.render_reasoning_effort(0, "thinking", effort)
++                )
++        self.assertEqual(encoding.render_reasoning_effort(1, "thinking", 75), "")
++        self.assertEqual(encoding.render_reasoning_effort(0, "chat", 75), "")
++
++    def test_invalid_effort_rejected(self):
++        for effort in (-1, 0, 101, 0.75, True):
++            with self.subTest(effort=effort), self.assertRaises(ValueError):
++                encoding.render_reasoning_effort(0, "thinking", effort)
++
++
++class AsyncContracts(unittest.IsolatedAsyncioTestCase):
++    async def test_worker_preserves_context_and_is_serial(self):
++        batcher = batcher_module.AsyncDynamicbatchTokenizer(None)
++        request_id = contextvars.ContextVar("ds_cpu_request_id")
++        request_id.set("request")
++        main_thread = threading.get_ident()
++        try:
++            results = await asyncio.gather(
++                *[
++                    batcher.run_sync(
++                        lambda i=i: (i, request_id.get(), threading.get_ident())
++                    )
++                    for i in range(12)
++                ]
++            )
++            self.assertEqual([r[0] for r in results], list(range(12)))
++            self.assertEqual({r[1] for r in results}, {"request"})
++            self.assertEqual(len({r[2] for r in results}), 1)
++            self.assertNotEqual(results[0][2], main_thread)
++        finally:
++            batcher._executor.shutdown()
++
++    async def test_worker_exception_does_not_poison_next_operation(self):
++        batcher = batcher_module.AsyncDynamicbatchTokenizer(None)
++        try:
++
++            def fail():
++                raise ValueError("fixture")
++
++            with self.assertRaisesRegex(ValueError, "fixture"):
++                await batcher.run_sync(fail)
++            self.assertEqual(await batcher.run_sync(lambda: 42), 42)
++        finally:
++            batcher._executor.shutdown()
+ 
+ 
+ if __name__ == "__main__":

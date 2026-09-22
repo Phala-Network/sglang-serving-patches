@@ -1,0 +1,77 @@
+diff --git a/UNION_SOURCE_VALIDATION_20260922.md b/UNION_SOURCE_VALIDATION_20260922.md
+index c79ff6e3584ece2cdc787b3dd08b98f5f47602ae..a13f30b7174849082d1e75a87c21fe25f4976210 100644
+--- a/UNION_SOURCE_VALIDATION_20260922.md
++++ b/UNION_SOURCE_VALIDATION_20260922.md
+@@ -109,13 +109,19 @@ common residual: malformed online weight-update validation. Only its worker
+ deserialization and updater validation/unwrap handling are now adapted.
+ The existing DS derived-cache rejection and weight-cache guards retain their
+ ordering; tensor/default/direct/custom/flattened paths remain available.
+-Fifteen focused real-torch CPU/source-method tests pass, covering malformed
++Sixteen focused real-torch CPU/source-method tests pass, covering malformed
+ collections, names, local serialization/TP rank, load formats, metadata
+ bounds, successful loader dispatch, and both existing cache guards.
+ An ablation removing the payload validator loses controlled pre-device
+ rejection; restoring the shared helper preserves it without another wrapper.
+ CPU pickle fixtures do not qualify CUDA IPC, distributed updates, full runtime
+ imports or production acceptance. No unrelated donor hunks were imported.
++The historical bounds validator alone does not establish dtype-view/reshape
++compatibility. Reconstruction now finishes all entries inside a controlled
++error boundary before any model loader call. A valid first entry followed by
++shape mismatch, incompatible dtype view or boolean shape is rejected without
++model mutation. This reuses the real consumer instead of adding duplicate
++shape/byte arithmetic or restricting otherwise compatible tensor layouts.
+ 
+ Historical Nemotron donor `5f9f960c28a16bfaef3f20800c30eeee125753aa`
+ (extracted `3c06073c3d0b3ada4ed413d25d543350386c3f72`) also had one common
+diff --git a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+index b3ff23d92df8cb1a3042bb974f840b18a9db1c15..9f635554a6b31b00a961a930f3709fcc1c577dd0 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
++++ b/python/sglang/srt/model_executor/model_runner_components/weight_updater.py
+@@ -420,11 +420,20 @@ class WeightUpdater:
+             )
+             converted_metadata.append(converted_meta)
+ 
+-        # Create bucket and reconstruct tensors
+-        bucket = FlattenedTensorBucket(
+-            flattened_tensor=flattened_tensor, metadata=converted_metadata
+-        )
+-        reconstructed_tensors = bucket.reconstruct_tensors()
++        # Reconstruction validates the actual dtype-view/shape contract. Finish
++        # every entry before allowing the loader to modify any model parameter.
++        try:
++            bucket = FlattenedTensorBucket(
++                flattened_tensor=flattened_tensor, metadata=converted_metadata
++            )
++            reconstructed_tensors = bucket.reconstruct_tensors()
++        except Exception as exc:
++            message = (
++                "Invalid update_weights_from_tensor payload: failed to reconstruct "
++                f"flattened bucket: {type(exc).__name__}: {exc}"
++            )
++            logger.error(message)
++            return False, message
+ 
+         # Load the reconstructed tensors using the standard method
+         self.get_model().load_weights(reconstructed_tensors)
+diff --git a/test/manual/phala/test_malformed_weight_update_cpu.py b/test/manual/phala/test_malformed_weight_update_cpu.py
+index ab6d80d197c5118e96877b4a052b07b1fbe0dc90..5850c7b2142663bbad8a0bcaf294380c20efe84d 100644
+--- a/test/manual/phala/test_malformed_weight_update_cpu.py
++++ b/test/manual/phala/test_malformed_weight_update_cpu.py
+@@ -183,6 +183,17 @@ class TestMalformedWeightUpdate(unittest.TestCase):
+             self.model.load_weights.call_args.args[0][0][1], torch.ones(1)
+         )
+ 
++    def test_flattened_consumer_shape_dtype_failures_before_model_mutation(self):
++        # Bounds alone do not prove that dtype view + reshape can consume bytes.
++        for change in [dict(shape=[2]), dict(dtype=torch.float64), dict(shape=[True])]:
++            with self.subTest(change=change):
++                payload = self.bucket(**change)
++                # A valid first entry must not be loaded before a bad later one.
++                payload["metadata"].insert(0, self.bucket()["metadata"][0])
++                self.assert_rejects(
++                    payload, "flattened_bucket", "failed to reconstruct"
++                )
++
+     def test_flattened_bad_envelopes(self):
+         for payload in [
+             7,

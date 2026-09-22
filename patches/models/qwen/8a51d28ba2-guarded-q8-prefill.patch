@@ -1,0 +1,420 @@
+diff --git a/python/sglang/srt/layers/quantization/gguf.py b/python/sglang/srt/layers/quantization/gguf.py
+index 1d8b4ba3b8226a506cea8b4d31c0639fe2e8fba6..cde0dd177a07a6cb937c72bf30785186ca36b203 100644
+--- a/python/sglang/srt/layers/quantization/gguf.py
++++ b/python/sglang/srt/layers/quantization/gguf.py
+@@ -90,6 +90,8 @@ class GGUFConfig(QuantizationConfig):
+         if _is_hip:
+             warnings.warn(f"Only CUDA and MUSA support GGUF quantization currently.")
+         self.modules_to_not_convert = modules_to_not_convert or []
++        # Set only by the supported Qwen GGUF loader, not by other model paths.
++        self._qwen_bf16_q8_prefill = False
+ 
+     def __repr__(self) -> str:
+         return "GGUFConfig()"
+@@ -189,8 +191,23 @@ def dequantize_gguf_weight(
+     return ggml_dequantize(qweight, qweight_type, *shape, dtype)
+ 
+ 
++def _use_bf16_gguf_prefill(x: torch.Tensor, qweight_type: int) -> bool:
++    # Historical Qwen path c4afa982824346428c8b6b90b7d241cec487da9d.
++    # Preserve decode/small-batch kernels and all other dtype/device/quant paths.
++    return (
++        x.device.type == "cuda"
++        and x.dtype == torch.bfloat16
++        and qweight_type == WeightType.Q8_0
++        and x.shape[0] >= 128
++    )
++
++
+ def fused_mul_mat_gguf(
+-    x: torch.Tensor, qweight: torch.Tensor, qweight_type: int
++    x: torch.Tensor,
++    qweight: torch.Tensor,
++    qweight_type: int,
++    *,
++    qwen_bf16_q8_prefill: bool = False,
+ ) -> torch.Tensor:
+     if qweight_type in IMATRIX_QUANT_TYPES:
+         mmvq_safe = 8 if qweight.shape[0] > 5120 else 16
+@@ -203,6 +220,8 @@ def fused_mul_mat_gguf(
+     # there is no need to call any kernel for fp16/bf16
+     if qweight_type in UNQUANTIZED_TYPES:
+         return x @ qweight.T
++    if qwen_bf16_q8_prefill and _use_bf16_gguf_prefill(x, qweight_type):
++        return x @ dequantize_gguf_weight(qweight, qweight_type, x.dtype).T
+     # enable MMVQ in contiguous batching with batch_size=1
+     if x.shape[0] <= mmvq_safe and qweight_type in MMVQ_QUANT_TYPES:
+         y = ggml_mul_mat_vec_a8(qweight, x, qweight_type, qweight.shape[0])
+@@ -459,6 +478,9 @@ class GGUFLinearMethod(LinearMethodBase):
+         bias: torch.Tensor | None = None,
+     ) -> torch.Tensor:
+         shard_id = layer.qweight.shard_id
++        qwen_bf16_q8_prefill = getattr(
++            self.quant_config, "_qwen_bf16_q8_prefill", False
++        )
+ 
+         if shard_id:
+             # dequantize shard weights respectively
+@@ -470,14 +492,19 @@ class GGUFLinearMethod(LinearMethodBase):
+                 qweight_type = layer.qweight_type.shard_weight_type[idx]
+                 result.append(
+                     fused_mul_mat_gguf(
+-                        x, qweight[start:end, :offset].contiguous(), qweight_type
++                        x,
++                        qweight[start:end, :offset].contiguous(),
++                        qweight_type,
++                        qwen_bf16_q8_prefill=qwen_bf16_q8_prefill,
+                     )
+                 )
+             out = torch.cat(result, axis=1)
+         else:
+             qweight = layer.qweight
+             qweight_type = layer.qweight_type.weight_type
+-            out = fused_mul_mat_gguf(x, qweight, qweight_type)
++            out = fused_mul_mat_gguf(
++                x, qweight, qweight_type, qwen_bf16_q8_prefill=qwen_bf16_q8_prefill
++            )
+         if bias is not None:
+             out.add_(bias)
+         return out
+diff --git a/python/sglang/srt/model_loader/loader.py b/python/sglang/srt/model_loader/loader.py
+index 410f5bfb78c081ed14a75d55b734343c866f768f..7ce1fe11e32bb078d9cfe37baaa788f665733dca 100644
+--- a/python/sglang/srt/model_loader/loader.py
++++ b/python/sglang/srt/model_loader/loader.py
+@@ -3309,6 +3309,8 @@ class GGUFModelLoader(BaseModelLoader):
+             quant_config is None or quant_config.get_name() != "gguf"
+         ):
+             raise ValueError("Qwen GGUF loading requires GGUF quantization")
++        if model_config.hf_config.model_type in ("qwen3_5", "qwen3_5_text"):
++            quant_config._qwen_bf16_q8_prefill = True
+         with set_default_torch_dtype(model_config.dtype):
+             with target_device:
+                 model = _initialize_model(model_config, self.load_config, quant_config)
+diff --git a/test/registered/unit/test_qwen_gguf_prefill_dispatch_cpu.py b/test/registered/unit/test_qwen_gguf_prefill_dispatch_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0e2aea586bd549ea908b8060dd49f78d7a4e03c0
+--- /dev/null
++++ b/test/registered/unit/test_qwen_gguf_prefill_dispatch_cpu.py
+@@ -0,0 +1,322 @@
++"""CPU source-call dispatch tests, not CUDA kernel accuracy/performance evidence.
++
++CUDA device metadata is simulated. Actual CPU torch multiplication verifies
++operand routing only; ggml kernel calls are spies, never GPU executions.
++"""
++
++import ast
++from pathlib import Path
++from types import SimpleNamespace
++import unittest
++from unittest.mock import Mock
++
++import gguf
++import torch
++from gguf import GGMLQuantizationType as WeightType
++
++from test_qwen_gguf_migration_cpu import execute, source_nodes
++
++
++SOURCE = (
++    Path(__file__).resolve().parents[3]
++    / "python/sglang/srt/layers/quantization/gguf.py"
++)
++
++
++def load_dispatch():
++    namespace = dict(torch=torch, gguf=gguf, WeightType=WeightType)
++    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
++    names = {
++        "UNQUANTIZED_TYPES",
++        "STANDARD_QUANT_TYPES",
++        "KQUANT_TYPES",
++        "IMATRIX_QUANT_TYPES",
++        "DEQUANT_TYPES",
++        "MMVQ_QUANT_TYPES",
++        "MMQ_QUANT_TYPES",
++    }
++    nodes = [
++        node
++        for node in tree.body
++        if isinstance(node, ast.Assign)
++        and any(
++            isinstance(target, ast.Name) and target.id in names
++            for target in node.targets
++        )
++    ]
++    nodes += [
++        node
++        for node in tree.body
++        if isinstance(node, ast.FunctionDef)
++        and node.name
++        in {
++            "_use_bf16_gguf_prefill",
++            "dequantize_gguf_weight",
++            "fused_mul_mat_gguf",
++            "_ordered_gguf_shard_ids",
++        }
++    ]
++    execute(nodes, namespace)
++    execute(
++        source_nodes("layers/quantization/gguf.py", {"apply"}, "GGUFLinearMethod"),
++        namespace,
++    )
++    return namespace
++
++
++class CudaMetadataCPUActivation:
++    """Only the device tag is simulated; matrix operands stay on the CPU."""
++
++    def __init__(self, rows=128, dtype=torch.bfloat16, device="cuda", columns=32):
++        self.data = torch.ones(rows, columns, dtype=dtype)
++        self.shape, self.dtype = self.data.shape, self.data.dtype
++        self.device = SimpleNamespace(type=device)
++
++    def __matmul__(self, other):
++        return self.data @ other
++
++
++class TestQwenGGUFPrefillDispatch(unittest.TestCase):
++    def setUp(self):
++        self.ns = load_dispatch()
++        self.guard = self.ns["_use_bf16_gguf_prefill"]
++        self.dispatch = self.ns["fused_mul_mat_gguf"]
++        self.packed = torch.zeros(3, 34, dtype=torch.uint8)
++        self.dequant = self.ns["ggml_dequantize"] = Mock(
++            return_value=torch.ones(3, 32, dtype=torch.bfloat16)
++        )
++        self.mmq = self.ns["ggml_mul_mat_a8"] = Mock(return_value="mmq")
++        self.mmvq = self.ns["ggml_mul_mat_vec_a8"] = Mock(return_value="mmvq")
++
++    def test_exact_row_dtype_device_and_tensor_type_guards(self):
++        for rows, expected in (
++            (0, False),
++            (1, False),
++            (20, False),
++            (127, False),
++            (128, True),
++            (16384, True),
++        ):
++            with self.subTest(rows=rows):
++                self.assertEqual(
++                    self.guard(CudaMetadataCPUActivation(rows), WeightType.Q8_0),
++                    expected,
++                )
++        for dtype, device, quant in (
++            (torch.float16, "cuda", WeightType.Q8_0),
++            (torch.float32, "cuda", WeightType.Q8_0),
++            (torch.bfloat16, "cpu", WeightType.Q8_0),
++            (torch.bfloat16, "musa", WeightType.Q8_0),
++            (torch.bfloat16, "cuda", WeightType.Q4_K),
++            (torch.bfloat16, "cuda", WeightType.Q8_1),
++            (torch.bfloat16, "cuda", WeightType.IQ4_NL),
++        ):
++            with self.subTest(dtype=dtype, device=device, quant=quant):
++                self.assertFalse(
++                    self.guard(
++                        CudaMetadataCPUActivation(dtype=dtype, device=device), quant
++                    )
++                )
++
++    def test_qualified_path_calls_real_dequant_shape_and_matmul(self):
++        activation = CudaMetadataCPUActivation()
++        actual = self.dispatch(
++            activation, self.packed, WeightType.Q8_0, qwen_bf16_q8_prefill=True
++        )
++        self.dequant.assert_called_once_with(
++            self.packed, WeightType.Q8_0, 3, 32, torch.bfloat16
++        )
++        torch.testing.assert_close(
++            actual, torch.full((128, 3), 32, dtype=torch.bfloat16)
++        )
++        self.mmq.assert_not_called()
++        self.mmvq.assert_not_called()
++
++    def test_default_does_not_enable_qwen_path_for_other_models(self):
++        result = self.dispatch(
++            CudaMetadataCPUActivation(), self.packed, WeightType.Q8_0
++        )
++        self.assertEqual(result, "mmq")
++        self.dequant.assert_not_called()
++
++    def test_decode_small_batch_and_nonmatching_paths_keep_original_kernels(self):
++        for rows, dtype, device, quant, expected in (
++            (1, torch.bfloat16, "cuda", WeightType.Q8_0, "mmvq"),
++            (20, torch.bfloat16, "cuda", WeightType.Q8_0, "mmq"),
++            (127, torch.bfloat16, "cuda", WeightType.Q8_0, "mmq"),
++            (128, torch.float16, "cuda", WeightType.Q8_0, "mmq"),
++            (128, torch.bfloat16, "cpu", WeightType.Q8_0, "mmq"),
++            (128, torch.bfloat16, "cuda", WeightType.Q4_K, "mmq"),
++            (128, torch.bfloat16, "cuda", WeightType.Q8_1, "mmq"),
++        ):
++            with self.subTest(rows=rows, dtype=dtype, device=device, quant=quant):
++                self.assertEqual(
++                    self.dispatch(
++                        CudaMetadataCPUActivation(rows, dtype, device),
++                        self.packed,
++                        quant,
++                        qwen_bf16_q8_prefill=True,
++                    ),
++                    expected,
++                )
++        self.dequant.assert_not_called()
++
++    def test_empty_and_unquantized_short_circuit_remain_unchanged(self):
++        empty = self.dispatch(
++            torch.zeros(0, 32), self.packed, WeightType.Q8_0, qwen_bf16_q8_prefill=True
++        )
++        self.assertEqual(tuple(empty.shape), (0, 3))
++        actual = self.dispatch(
++            torch.ones(2, 3),
++            torch.ones(4, 3),
++            WeightType.BF16,
++            qwen_bf16_q8_prefill=True,
++        )
++        torch.testing.assert_close(actual, torch.full((2, 4), 3.0))
++        self.dequant.assert_not_called()
++        self.mmq.assert_not_called()
++        self.mmvq.assert_not_called()
++
++    def test_imatrix_keeps_existing_dequant_fallback(self):
++        # Existing I-matrix fallback still dequantizes; it is not the new path.
++        actual = self.dispatch(
++            CudaMetadataCPUActivation(),
++            self.packed,
++            WeightType.IQ4_NL,
++            qwen_bf16_q8_prefill=True,
++        )
++        self.dequant.assert_called_once()
++        self.assertEqual(self.dequant.call_args.args[1], WeightType.IQ4_NL)
++        self.assertEqual(tuple(actual.shape), (128, 3))
++
++    def test_linear_apply_propagates_scope_flag_without_changing_bias(self):
++        self.packed.shard_id = []
++        layer = SimpleNamespace(
++            qweight=self.packed,
++            qweight_type=SimpleNamespace(weight_type=WeightType.Q8_0),
++        )
++        method = SimpleNamespace(
++            quant_config=SimpleNamespace(_qwen_bf16_q8_prefill=True)
++        )
++        result = self.ns["apply"](
++            method,
++            layer,
++            CudaMetadataCPUActivation(),
++            torch.ones(3, dtype=torch.bfloat16),
++        )
++        torch.testing.assert_close(
++            result, torch.full((128, 3), 33, dtype=torch.bfloat16)
++        )
++        method.quant_config = SimpleNamespace()
++        self.assertEqual(
++            self.ns["apply"](method, layer, CudaMetadataCPUActivation()), "mmq"
++        )
++
++    def test_merged_shards_use_actual_per_shard_types(self):
++        packed = torch.zeros(5, 34, dtype=torch.uint8)
++        packed.shard_id = [1, 0]
++        packed.shard_offset_map = {0: (0, 2, 34), 1: (2, 5, 34)}
++        layer = SimpleNamespace(
++            qweight=packed,
++            qweight_type=SimpleNamespace(
++                shard_weight_type={0: WeightType.Q8_0, 1: WeightType.Q4_K}
++            ),
++        )
++        trace = []
++        self.ns["fused_mul_mat_gguf"] = lambda x, w, t, **kw: (
++            trace.append((tuple(w.shape), t, kw)) or torch.full((2, w.shape[0]), int(t))
++        )
++        result = self.ns["apply"](
++            SimpleNamespace(quant_config=SimpleNamespace(_qwen_bf16_q8_prefill=True)),
++            layer,
++            torch.zeros(2, 32),
++        )
++        self.assertEqual(
++            trace,
++            [
++                ((2, 34), WeightType.Q8_0, {"qwen_bf16_q8_prefill": True}),
++                ((3, 34), WeightType.Q4_K, {"qwen_bf16_q8_prefill": True}),
++            ],
++        )
++        self.assertEqual(tuple(result.shape), (2, 5))
++        self.assertEqual(result[0].tolist(), [8, 8, 12, 12, 12])
++
++    def test_loader_only_enables_supported_qwen_gguf(self):
++        method = source_nodes(
++            "model_loader/loader.py", {"load_model"}, "GGUFModelLoader"
++        )[0]
++        enable = next(
++            node
++            for node in ast.walk(method)
++            if isinstance(node, ast.If)
++            and any(
++                isinstance(child, ast.Assign)
++                and "_qwen_bf16_q8_prefill" in ast.unparse(child)
++                for child in node.body
++            )
++        )
++        for architecture, expected in (
++            ("qwen3_5", True),
++            ("qwen3_5_text", True),
++            ("gemma4", False),
++            ("muse_glimmer", False),
++            ("qwen2", False),
++            ("qwen3_next", False),
++        ):
++            quant = SimpleNamespace(_qwen_bf16_q8_prefill=False)
++            execute(
++                [enable],
++                {
++                    "model_config": SimpleNamespace(
++                        hf_config=SimpleNamespace(model_type=architecture)
++                    ),
++                    "quant_config": quant,
++                },
++            )
++            self.assertEqual(quant._qwen_bf16_q8_prefill, expected)
++
++    def test_quant_config_defaults_to_original_dispatch(self):
++        nodes = source_nodes("layers/quantization/gguf.py", {"__init__"}, "GGUFConfig")
++        cls = ast.ClassDef(
++            name="GGUFConfig",
++            bases=[ast.Name(id="QuantizationConfig", ctx=ast.Load())],
++            keywords=[],
++            body=nodes,
++            decorator_list=[],
++        )
++        namespace = {
++            "QuantizationConfig": type("QuantizationConfig", (), {}),
++            "_is_hip": False,
++        }
++        execute([cls], namespace)
++        self.assertFalse(namespace["GGUFConfig"]()._qwen_bf16_q8_prefill)
++
++    def test_current_native_wrapper_call_signature(self):
++        native_call = Mock(return_value="native-result")
++        namespace = {
++            "torch": SimpleNamespace(
++                ops=SimpleNamespace(
++                    sgl_kernel=SimpleNamespace(
++                        ggml_dequantize=SimpleNamespace(default=native_call)
++                    )
++                )
++            )
++        }
++        execute(
++            source_nodes(
++                "../kernels/aot/python/sgl_kernel/quantization/gguf.py",
++                {"ggml_dequantize"},
++            ),
++            namespace,
++        )
++        actual = namespace["ggml_dequantize"](
++            self.packed, WeightType.Q8_0, 3, 32, torch.bfloat16
++        )
++        self.assertEqual(actual, "native-result")
++        native_call.assert_called_once_with(
++            self.packed, WeightType.Q8_0, 3, 32, torch.bfloat16
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()

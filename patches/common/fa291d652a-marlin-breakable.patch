@@ -1,0 +1,654 @@
+diff --git a/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py b/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
+index 7f76b2616efc73ebbd8ba7369351c145eebaab6e..f701bbe42e44b14898995c16365a311dbdc7f85f 100644
+--- a/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
++++ b/python/sglang/srt/layers/moe/fused_moe_triton/fused_marlin_moe.py
+@@ -260,7 +260,7 @@ def fused_marlin_moe(
+         )
+     else:
+         sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
+-            topk_ids, block_size_m, global_num_experts
++            topk_ids, block_size_m, global_num_experts, deterministic=True
+         )
+ 
+     if workspace is None:
+@@ -300,7 +300,10 @@ def fused_marlin_moe(
+     use_atomic_add = (
+         hidden_states.dtype == torch.half
+         or torch.cuda.get_device_capability(hidden_states.device)[0] >= 9
+-    ) and (not is_mxfp4_marlin)
++    ) and not (is_mxfp4_marlin or is_nvfp4_marlin)
++    # FP4 reductions need the FP32 scratch path selected below. Cross-CTA
++    # atomic addition rounds partial sums in the activation dtype and varies
++    # with CTA scheduling, even when route packing is deterministic.
+ 
+     intermediate_cache1 = moe_wna16_marlin_gemm(
+         hidden_states,
+diff --git a/python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py b/python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py
+index 9c611a46820ec4cd9b4e113ddeaa7ad5870821ab..0958fd7ebc245aa35a76978a8826bc6ff842591d 100644
+--- a/python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py
++++ b/python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py
+@@ -4,6 +4,7 @@ from typing import Tuple
+ 
+ import torch
+ import triton
++import triton.language as tl
+ 
+ from sglang.srt.environ import envs
+ from sglang.srt.utils import is_cuda, is_hip, is_musa, is_xpu
+@@ -29,11 +30,181 @@ if _is_cuda:
+ _CUDA_SMALL_BATCH_MAX_BUCKETS = 64
+ 
+ 
++@triton.jit
++def _deterministic_align_count(
++    topk_ids_ptr,
++    chunk_counts_ptr,
++    num_entries: tl.constexpr,
++    num_buckets: tl.constexpr,
++    entries_per_chunk: tl.constexpr,
++    ignore_invalid_expert: tl.constexpr,
++):
++    chunk_id = tl.program_id(0)
++    chunk_start = chunk_id * entries_per_chunk
++    row_offset = (chunk_id + 1) * num_buckets
++
++    for bucket in range(num_buckets):
++        tl.store(chunk_counts_ptr + row_offset + bucket, 0)
++
++    for local_offset in range(entries_per_chunk):
++        route_index = chunk_start + local_offset
++        if route_index < num_entries:
++            route = tl.load(topk_ids_ptr + route_index)
++            valid = True
++            if ignore_invalid_expert:
++                valid = route >= 0
++            if valid:
++                bucket = route + 1
++                count_offset = row_offset + bucket
++                count = tl.load(chunk_counts_ptr + count_offset)
++                tl.store(chunk_counts_ptr + count_offset, count + 1)
++
++
++@triton.jit
++def _deterministic_align_chunk_prefix(
++    chunk_counts_ptr,
++    num_buckets: tl.constexpr,
++):
++    bucket = tl.program_id(0)
++    prefix = 0
++    for chunk in range(1, num_buckets + 1):
++        offset = chunk * num_buckets + bucket
++        prefix += tl.load(chunk_counts_ptr + offset)
++        tl.store(chunk_counts_ptr + offset, prefix)
++
++
++@triton.jit
++def _deterministic_align_expert_prefix(
++    chunk_counts_ptr,
++    expert_offsets_ptr,
++    num_tokens_post_pad_ptr,
++    num_buckets: tl.constexpr,
++    block_size: tl.constexpr,
++):
++    offset = 0
++    tl.store(expert_offsets_ptr, 0)
++    totals_offset = num_buckets * num_buckets
++    for bucket in range(num_buckets):
++        count = tl.load(chunk_counts_ptr + totals_offset + bucket)
++        offset += tl.cdiv(count, block_size) * block_size
++        tl.store(expert_offsets_ptr + bucket + 1, offset)
++    tl.store(num_tokens_post_pad_ptr, offset)
++
++
++@triton.jit
++def _deterministic_align_scatter(
++    topk_ids_ptr,
++    sorted_token_ids_ptr,
++    expert_ids_ptr,
++    chunk_counts_ptr,
++    expert_offsets_ptr,
++    num_entries: tl.constexpr,
++    num_buckets: tl.constexpr,
++    block_size: tl.constexpr,
++    entries_per_chunk: tl.constexpr,
++    ignore_invalid_expert: tl.constexpr,
++):
++    chunk_id = tl.program_id(0)
++    bucket = chunk_id
++
++    expert_start = tl.load(expert_offsets_ptr + bucket)
++    expert_end = tl.load(expert_offsets_ptr + bucket + 1)
++    for block_start in range(expert_start, expert_end, block_size):
++        tl.store(expert_ids_ptr + block_start // block_size, bucket - 1)
++
++    chunk_start = chunk_id * entries_per_chunk
++    row_offset = chunk_id * num_buckets
++    for local_offset in range(entries_per_chunk):
++        route_index = chunk_start + local_offset
++        if route_index < num_entries:
++            route = tl.load(topk_ids_ptr + route_index)
++            route_bucket = route + 1
++            valid = True
++            if ignore_invalid_expert:
++                valid = route >= 0
++            if valid:
++                count_offset = row_offset + route_bucket
++                route_rank = tl.load(chunk_counts_ptr + count_offset)
++                output_offset = route_rank + tl.load(expert_offsets_ptr + route_bucket)
++                tl.store(sorted_token_ids_ptr + output_offset, route_index)
++                tl.store(chunk_counts_ptr + count_offset, route_rank + 1)
++
++
++def _moe_align_block_size_deterministic(
++    topk_ids: torch.Tensor,
++    block_size: int,
++    num_experts: int,
++    ignore_invalid_expert: bool,
++) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    num_entries = topk_ids.numel()
++    num_buckets = num_experts + 1
++    max_num_tokens_padded = num_entries + num_buckets * (block_size - 1)
++    if num_entries < num_buckets:
++        max_num_tokens_padded = num_entries * block_size
++
++    sorted_ids = torch.full(
++        (max_num_tokens_padded,),
++        num_entries,
++        dtype=torch.int32,
++        device=topk_ids.device,
++    )
++    expert_ids = torch.full(
++        (triton.cdiv(max_num_tokens_padded, block_size),),
++        -1,
++        dtype=torch.int32,
++        device=topk_ids.device,
++    )
++    num_tokens_post_pad = torch.empty((1,), dtype=torch.int32, device=topk_ids.device)
++    chunk_counts = torch.zeros(
++        (num_buckets + 1, num_buckets),
++        dtype=torch.int32,
++        device=topk_ids.device,
++    )
++    expert_offsets = torch.zeros(
++        (num_buckets + 1,), dtype=torch.int32, device=topk_ids.device
++    )
++    entries_per_chunk = triton.cdiv(num_entries, num_buckets)
++
++    _deterministic_align_count[(num_buckets,)](
++        topk_ids,
++        chunk_counts,
++        num_entries,
++        num_buckets,
++        entries_per_chunk,
++        ignore_invalid_expert,
++    )
++    _deterministic_align_chunk_prefix[(num_buckets,)](
++        chunk_counts,
++        num_buckets,
++    )
++    _deterministic_align_expert_prefix[(1,)](
++        chunk_counts,
++        expert_offsets,
++        num_tokens_post_pad,
++        num_buckets,
++        block_size,
++    )
++    _deterministic_align_scatter[(num_buckets,)](
++        topk_ids,
++        sorted_ids,
++        expert_ids,
++        chunk_counts,
++        expert_offsets,
++        num_entries,
++        num_buckets,
++        block_size,
++        entries_per_chunk,
++        ignore_invalid_expert,
++    )
++    return sorted_ids, expert_ids, num_tokens_post_pad
++
++
+ def moe_align_block_size(
+     topk_ids: torch.Tensor,
+     block_size: int,
+     num_experts: int,
+     ignore_invalid_expert: bool = False,
++    deterministic: bool = False,
+ ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+     """
+     Aligns the token distribution across experts to be compatible with block
+@@ -44,6 +215,7 @@ def moe_align_block_size(
+         top-k expert indices for each token.
+     - block_size: The block size used in block matrix multiplication.
+     - num_experts: The total number of experts.
++    - deterministic: Whether to preserve a stable within-expert route order.
+ 
+     Returns:
+     - sorted_token_ids: A tensor containing the sorted token indices according
+@@ -72,6 +244,22 @@ def moe_align_block_size(
+     - The padding ensures that the total number of tokens is now divisible
+         by block_size for proper block matrix operations.
+     """
++    # The existing tiny CUDA path has a fixed within-expert rank and needs
++    # only one launch. Keep it for decode and short speculative verification.
++    deterministic_tiny_cuda = (
++        _is_cuda
++        and topk_ids.numel() <= SMALL_NUMEL_LIMIT
++        and num_experts + 1 > _CUDA_SMALL_BATCH_MAX_BUCKETS
++        and not ignore_invalid_expert
++    )
++    if deterministic and not deterministic_tiny_cuda:
++        return _moe_align_block_size_deterministic(
++            topk_ids,
++            block_size,
++            num_experts,
++            ignore_invalid_expert,
++        )
++
+     # ===== TO BE REFACTORED ====
+     if _SGLANG_EXPERIMENTAL_LORA_OPTI:
+         from sglang.srt.lora.trtllm_lora_temp.environ import lora_envs
+diff --git a/python/sglang/srt/layers/quantization/marlin_utils_fp4.py b/python/sglang/srt/layers/quantization/marlin_utils_fp4.py
+index 0032824524275c986993cdd40c09efa04e65d4dc..89e2a7e87050d93fb3356bb61ec53c512c822f75 100644
+--- a/python/sglang/srt/layers/quantization/marlin_utils_fp4.py
++++ b/python/sglang/srt/layers/quantization/marlin_utils_fp4.py
+@@ -100,7 +100,10 @@ def apply_fp4_marlin_linear(
+     if padded_size_k != size_k:
+         reshaped_x = torch.nn.functional.pad(reshaped_x, (0, padded_size_k - size_k))
+ 
+-    use_atomic_add = should_use_atomic_add_reduce(
++    # Atomic addition accumulates directly in FP16/BF16 and bypasses the
++    # FP32 scratch reduction, even when use_fp32_reduce is requested. Honor
++    # that precision contract for NVFP4 shared experts and dense projections.
++    use_atomic_add = not use_fp32_reduce and should_use_atomic_add_reduce(
+         m=reshaped_x.size(0),
+         n=padded_size_n,
+         k=padded_size_k,
+diff --git a/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py b/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py
+index d59182854e0c9f4faa87b266d47a19aff3ca2a44..e0d5ca1eb2fe3468d8b4b8003c617ed34af9ad80 100644
+--- a/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py
++++ b/python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py
+@@ -90,6 +90,29 @@ def has_standard_gqa_for_all_local_layers(
+     return attention_layer_count >= end_layer - start_layer
+ 
+ 
++def should_disable_prefill_graph_for_nonstandard_gqa(
++    *,
++    prefill_backend: str,
++    attention_layer_count: int,
++    start_layer: int,
++    end_layer: int,
++) -> bool:
++    """Keep the all-attention-layer gate for backends without eager breaks.
++
++    Breakable graphs can leave hybrid Mamba/linear-attention layers outside the
++    captured segments through their ``eager_on_graph`` boundaries. Counting
++    those layers as missing Standard-GQA attention must not disable the target
++    prefill graph. Full and tc-piecewise graphs retain the conservative gate.
++    """
++    return prefill_backend != Backend.BREAKABLE and not (
++        has_standard_gqa_for_all_local_layers(
++            attention_layer_count=attention_layer_count,
++            start_layer=start_layer,
++            end_layer=end_layer,
++        )
++    )
++
++
+ def index_attention_layers_by_global_id(
+     attention_layers: list[Any],
+     mha_companion_layers: list[Any],
+@@ -475,7 +498,8 @@ def capture_prefill_graph(
+         layer_model,
+     )
+ 
+-    if not has_standard_gqa_for_all_local_layers(
++    if should_disable_prefill_graph_for_nonstandard_gqa(
++        prefill_backend=prefill_backend,
+         attention_layer_count=sum(
+             layer is not None for layer in model_runner.attention_layers
+         ),
+diff --git a/test/registered/unit/model_executor/model_runner_components/test_cuda_graph_setup.py b/test/registered/unit/model_executor/model_runner_components/test_cuda_graph_setup.py
+index b886ef3fbfca15a2e225d24812b82a102ad9cc3a..a2f63ccc0290149ff11c43e11cce1c72ee5bcdaf 100644
+--- a/test/registered/unit/model_executor/model_runner_components/test_cuda_graph_setup.py
++++ b/test/registered/unit/model_executor/model_runner_components/test_cuda_graph_setup.py
+@@ -3,12 +3,14 @@ from types import SimpleNamespace
+ 
+ import pytest
+ 
++from sglang.srt.model_executor.cuda_graph_config import Backend
+ from sglang.srt.model_executor.model_runner_components import cuda_graph_setup
+ from sglang.srt.model_executor.model_runner_components.cuda_graph_setup import (
+     _align_pipeline_layers,
+     capture_decode_graph,
+     has_standard_gqa_for_all_local_layers,
+     index_attention_layers_by_global_id,
++    should_disable_prefill_graph_for_nonstandard_gqa,
+ )
+ from sglang.test.ci.ci_register import register_cpu_ci
+ 
+@@ -31,6 +33,27 @@ def test_standard_gqa_gate_is_unchanged_without_pipeline_parallelism():
+     )
+ 
+ 
++@pytest.mark.parametrize(
++    "backend", [Backend.FULL, Backend.TC_PIECEWISE, Backend.BREAKABLE]
++)
++@pytest.mark.parametrize("start_layer,end_layer", [(0, 46), (23, 46)])
++def test_only_breakable_prefill_graph_accepts_hybrid_layers(
++    backend, start_layer, end_layer
++):
++    assert should_disable_prefill_graph_for_nonstandard_gqa(
++        prefill_backend=backend,
++        attention_layer_count=(end_layer - start_layer) // 2,
++        start_layer=start_layer,
++        end_layer=end_layer,
++    ) == (backend != Backend.BREAKABLE)
++    assert not should_disable_prefill_graph_for_nonstandard_gqa(
++        prefill_backend=backend,
++        attention_layer_count=end_layer - start_layer,
++        start_layer=start_layer,
++        end_layer=end_layer,
++    )
++
++
+ def test_pipeline_attention_metadata_is_indexed_by_global_layer_id():
+     layer23 = SimpleNamespace(layer_id=23)
+     layer24 = SimpleNamespace(layer_id=24)
+diff --git a/test/registered/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py b/test/registered/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a34ce3ca12338ece2374e5c81a8c1d42f2123d99
+--- /dev/null
++++ b/test/registered/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+@@ -0,0 +1,291 @@
++"""Dependency-free CPU/source checks, not CUDA numerical/capture acceptance.
++
++Run directly with Python. Execute selected production AST with scalar pointer
++fixtures; Triton compilation, GPU concurrency and performance remain untested.
++"""
++
++import ast
++import math
++import random
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++ROOT = Path(__file__).resolve().parents[5]
++SRT = ROOT / "python/sglang/srt"
++ALIGN = SRT / "layers/moe/moe_runner/triton_utils/moe_align_block_size.py"
++FUSED = SRT / "layers/moe/fused_moe_triton/fused_marlin_moe.py"
++DENSE = SRT / "layers/quantization/marlin_utils_fp4.py"
++GRAPH = SRT / "model_executor/model_runner_components/cuda_graph_setup.py"
++
++
++def tree(path):
++    return ast.parse(path.read_text(encoding="utf-8"))
++
++
++def load_functions(path, names, namespace):
++    nodes = [
++        node
++        for node in tree(path).body
++        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
++    ]
++    assert {node.name for node in nodes} == set(names)
++    for node in nodes:
++        node.decorator_list = []
++    module = ast.Module(
++        body=[
++            ast.ImportFrom(
++                module="__future__", names=[ast.alias(name="annotations")], level=0
++            ),
++            *nodes,
++        ],
++        type_ignores=[],
++    )
++    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
++
++
++class Pointer:
++    def __init__(self, data, offset=0):
++        self.data = data
++        self.offset = offset
++        self.device = "cpu"
++
++    def __add__(self, offset):
++        return Pointer(self.data, self.offset + offset)
++
++    def numel(self):
++        return len(self.data)
++
++
++def allocate(shape, value=0, **kwargs):
++    return Pointer([value] * (shape if isinstance(shape, int) else math.prod(shape)))
++
++
++class ScalarTL:
++    program = 0
++    cdiv = staticmethod(lambda x, y: (x + y - 1) // y)
++
++    def program_id(self, axis):
++        return self.program
++
++    @staticmethod
++    def load(ptr):
++        assert 0 <= ptr.offset < len(ptr.data)
++        return ptr.data[ptr.offset]
++
++    @staticmethod
++    def store(ptr, value):
++        assert 0 <= ptr.offset < len(ptr.data)
++        ptr.data[ptr.offset] = value
++
++
++class Kernel:
++    def __init__(self, function, tl):
++        self.function = function
++        self.tl = tl
++
++    def __getitem__(self, grid):
++        def launch(*args):
++            # Reverse launch order also exercises exclusive chunk-prefix ranks.
++            for program in reversed(range(grid[0])):
++                self.tl.program = program
++                self.function(*args)
++
++        return launch
++
++
++def alignment_namespace():
++    tl = ScalarTL()
++    namespace = {
++        "torch": SimpleNamespace(
++            full=allocate, zeros=allocate, empty=allocate, int32="int32"
++        ),
++        "triton": SimpleNamespace(cdiv=tl.cdiv),
++        "tl": tl,
++        "_is_cuda": True,
++        "SMALL_NUMEL_LIMIT": 64,
++        "_CUDA_SMALL_BATCH_MAX_BUCKETS": 64,
++        "_SGLANG_EXPERIMENTAL_LORA_OPTI": False,
++        "sgl_moe_align_block_size": Mock(),
++        "moe_align_small_numel": Mock(),
++    }
++    kernels = [
++        "_deterministic_align_count",
++        "_deterministic_align_chunk_prefix",
++        "_deterministic_align_expert_prefix",
++        "_deterministic_align_scatter",
++    ]
++    load_functions(
++        ALIGN,
++        [*kernels, "_moe_align_block_size_deterministic", "moe_align_block_size"],
++        namespace,
++    )
++    for name in kernels:
++        namespace[name] = Kernel(namespace[name], tl)
++    return namespace
++
++
++def assignment_expression(path, name):
++    return next(
++        node.value
++        for node in ast.walk(tree(path))
++        if isinstance(node, ast.Assign)
++        and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
++    )
++
++
++class MarlinBreakableSourceContract(unittest.TestCase):
++    def test_scalar_alignment_matches_stable_reference(self):
++        namespace = alignment_namespace()
++        rng = random.Random(42)
++        for experts, entries, block in [
++            (128, 0, 8),
++            (128, 6, 8),
++            (128, 486, 8),
++            (128, 2022, 32),
++            (32, 256, 64),
++            (128, 49152, 64),
++        ]:
++            routes = [rng.randrange(-1, experts) for _ in range(entries)]
++            for ignore in (False, True):
++                with self.subTest(experts=experts, entries=entries, ignore=ignore):
++                    actual = namespace["_moe_align_block_size_deterministic"](
++                        Pointer(routes), block, experts, ignore
++                    )
++                    expected_ids, expected_experts = [], []
++                    for expert in range(0 if ignore else -1, experts):
++                        ids = [i for i, route in enumerate(routes) if route == expert]
++                        padded = ScalarTL.cdiv(len(ids), block) * block
++                        expected_ids.extend(ids + [entries] * (padded - len(ids)))
++                        expected_experts.extend([expert] * (padded // block))
++                    count = actual[2].data[0]
++                    self.assertEqual(count, len(expected_ids))
++                    self.assertEqual(actual[0].data[:count], expected_ids)
++                    self.assertEqual(
++                        actual[1].data[: count // block], expected_experts
++                    )
++
++    def test_dispatch_defaults_and_stable_tiny_path(self):
++        for cuda, entries, experts, ignore, deterministic, expected in [
++            (True, 65, 128, False, False, "generic"),
++            (True, 64, 128, False, False, "tiny"),
++            (True, 64, 128, False, True, "tiny"),
++            (True, 65, 128, False, True, "stable"),
++            (True, 64, 63, False, True, "stable"),
++            (True, 64, 64, False, True, "tiny"),
++            (True, 64, 128, True, True, "stable"),
++            (False, 64, 128, False, True, "stable"),
++            (False, 64, 128, False, False, "generic"),
++        ]:
++            with self.subTest(case=(cuda, entries, experts, ignore, deterministic)):
++                ns = alignment_namespace()
++                ns["_is_cuda"] = cuda
++                stable = ns["_moe_align_block_size_deterministic"] = Mock()
++                kwargs = {"deterministic": True} if deterministic else {}
++                ns["moe_align_block_size"](
++                    Pointer([0] * entries), 8, experts, ignore, **kwargs
++                )
++                self.assertEqual(stable.called, expected == "stable")
++                self.assertEqual(
++                    ns["moe_align_small_numel"].called, expected == "tiny"
++                )
++                self.assertEqual(
++                    ns["sgl_moe_align_block_size"].called, expected == "generic"
++                )
++
++    def test_marlin_requests_stable_alignment_and_fp32_both_gemms(self):
++        calls = [node for node in ast.walk(tree(FUSED)) if isinstance(node, ast.Call)]
++        align = [
++            node for node in calls
++            if isinstance(node.func, ast.Name) and node.func.id == "moe_align_block_size"
++        ]
++        self.assertEqual(len(align), 1)
++        self.assertTrue(
++            any(k.arg == "deterministic" and ast.literal_eval(k.value)
++                for k in align[0].keywords)
++        )
++        gemms = [
++            node for node in calls
++            if isinstance(node.func, ast.Name) and node.func.id == "moe_wna16_marlin_gemm"
++        ]
++        self.assertEqual(len(gemms), 2)
++        for gemm in gemms:
++            kwargs = {k.arg: k.value for k in gemm.keywords}
++            self.assertTrue(ast.literal_eval(kwargs["use_fp32_reduce"]))
++            self.assertEqual(kwargs["use_atomic_add"].id, "use_atomic_add")
++
++    def test_fp4_atomic_gate_preserves_other_marlin_defaults(self):
++        expr = compile(ast.Expression(assignment_expression(FUSED, "use_atomic_add")),
++                       str(FUSED), "eval")
++        for dtype in ("half", "bfloat16"):
++            for sm in (8, 9, 12):
++                for mxfp4, nvfp4 in ((False, False), (True, False), (False, True)):
++                    ns = {
++                        "hidden_states": SimpleNamespace(dtype=dtype, device="cuda"),
++                        "torch": SimpleNamespace(
++                            half="half",
++                            cuda=SimpleNamespace(get_device_capability=lambda _: (sm, 0)),
++                        ),
++                        "is_mxfp4_marlin": mxfp4,
++                        "is_nvfp4_marlin": nvfp4,
++                    }
++                    self.assertEqual(
++                        eval(expr, ns),
++                        (dtype == "half" or sm >= 9) and not (mxfp4 or nvfp4),
++                    )
++
++    def test_dense_fp32_disables_atomic_without_changing_opt_out(self):
++        expr = compile(ast.Expression(assignment_expression(DENSE, "use_atomic_add")),
++                       str(DENSE), "eval")
++        for fp32 in (False, True):
++            for heuristic in (False, True):
++                chooser = Mock(return_value=heuristic)
++                self.assertEqual(
++                    eval(expr, {
++                        "use_fp32_reduce": fp32,
++                        "should_use_atomic_add_reduce": chooser,
++                        "reshaped_x": SimpleNamespace(size=lambda _: 6),
++                        "padded_size_n": 1856,
++                        "padded_size_k": 2688,
++                        "input": SimpleNamespace(device="cuda", dtype="bfloat16"),
++                    }),
++                    not fp32 and heuristic,
++                )
++                self.assertEqual(chooser.called, not fp32)
++
++    def test_only_breakable_bypasses_gqa_gate_and_capture_uses_gate(self):
++        ns = {}
++        load_functions(SRT / "model_executor/cuda_graph_config.py", ["Backend"], ns)
++        load_functions(GRAPH, [
++            "has_standard_gqa_for_all_local_layers",
++            "should_disable_prefill_graph_for_nonstandard_gqa",
++        ], ns)
++        for backend in ns["Backend"].ALL:
++            for start, end in ((0, 46), (23, 46), (23, 23)):
++                for count in (0, end - start, end - start + 1):
++                    self.assertEqual(
++                        ns["should_disable_prefill_graph_for_nonstandard_gqa"](
++                            prefill_backend=backend, attention_layer_count=count,
++                            start_layer=start, end_layer=end,
++                        ),
++                        backend != ns["Backend"].BREAKABLE and count < end - start,
++                    )
++        capture = next(
++            n for n in tree(GRAPH).body
++            if isinstance(n, ast.FunctionDef) and n.name == "capture_prefill_graph"
++        )
++        guards = [
++            n for n in ast.walk(capture)
++            if isinstance(n, ast.If) and isinstance(n.test, ast.Call)
++            and isinstance(n.test.func, ast.Name)
++            and n.test.func.id == "should_disable_prefill_graph_for_nonstandard_gqa"
++        ]
++        self.assertEqual(len(guards), 1)
++        kwargs = {k.arg: k.value for k in guards[0].test.keywords}
++        self.assertEqual(kwargs["prefill_backend"].id, "prefill_backend")
++        self.assertTrue(any(isinstance(n, ast.Return) for n in guards[0].body))
++
++
++if __name__ == "__main__":
++    unittest.main()

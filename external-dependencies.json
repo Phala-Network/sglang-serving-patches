@@ -1,0 +1,36 @@
+{
+  "schema": "phala.external-source.v1",
+  "xgrammar": {
+    "version": "0.2.6+phala.union1",
+    "upstream_repository": "https://github.com/mlc-ai/xgrammar",
+    "upstream_commit": "bc09a30ec10ba30a6c1ab0c79eaeba3ca518d11f",
+    "candidate_commit": "8830951a797886cb09568dd0ae2f9b77b9aab552",
+    "candidate_tree": "b8dcb87b50b99cc61dbab46e7dcfbd34f78a2f45",
+    "candidate_commit_scope": "Local provenance, not a publicly fetchable Phala XGrammar ref. Reproduce the complete tree from public upstream plus the deterministic delta.",
+    "patch": "patches/dependencies/xgrammar/union1.patch",
+    "patch_sha256": "c6a4defdfe0967056e144351ff2027132c3fa4cb79026c862bff0306e946e26b",
+    "license": "Apache-2.0",
+    "license_file": "LICENSE",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "submodules": {
+      "3rdparty/dlpack": {
+        "repository": "https://github.com/dmlc/dlpack.git",
+        "commit": "bbd2f4d32427e548797929af08cfe2a9cbb3cf12"
+      }
+    },
+    "built_source_commit": "8b5d3b860de06a8f8016ec1c7b131c58e2055229",
+    "built_source_tree": "09c66b3c55428319d18d832f3487ee3cae397a57",
+    "test_only_successor": "8830951 adds the 13 supplemental tests only; runtime/build inputs match the built source.",
+    "tested_wheel_sha256": "d62d888568626676837ff64709cd4a3dccae4bbf43401bf7d9c0e4422dcafe2e",
+    "tested_native_library_sha256": "778e9ac15a67a2bf731057de0834e71874e490f9fa777a627f0b4527f76ee7c4",
+    "wheel_status": "Local builder artifact only; not published to a registry or public package index. Build from the exact source tree before installing the engine's local-version requirement.",
+    "native_tests": {
+      "passed": 655,
+      "focused": 113,
+      "existing_schema": 529,
+      "supplemental": 13,
+      "ablation": "Stock identical-base build has 22 semantic failures and 21 passes; no import/collection errors. Unbounded-prefix and multichar probes pass both, so their necessity/performance benefit is not independently established."
+    },
+    "boundary": "Installed CPU-native grammar/mask tests only, not GPU, performance, engine full-import or final-image acceptance."
+  }
+}

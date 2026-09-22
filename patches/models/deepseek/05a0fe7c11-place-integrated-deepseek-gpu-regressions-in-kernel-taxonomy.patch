@@ -1,0 +1,1616 @@
+diff --git a/test/registered/kernel/attention/test_dense_prefill_indexer.py b/test/registered/kernel/attention/test_dense_prefill_indexer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a3a4bf6e63b79a6b5bd12219b5a711d715a8de7
+--- /dev/null
++++ b/test/registered/kernel/attention/test_dense_prefill_indexer.py
+@@ -0,0 +1,281 @@
++import unittest
++from unittest.mock import patch
++
++import torch
++
++from sglang.kernels.ops.attention.dsv4.fp4_indexer import quantize_fp4_indexer_tensor
++from sglang.srt.layers.attention.dsv4 import dense_prefill_indexer
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=120, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++
++def make_inputs(request_lengths, ratio=1, zero_queries=False, seed=17):
++    torch.manual_seed(seed)
++    rows = sum(q for q, _ in request_lengths)
++    q = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device="cuda")
++    if zero_queries:
++        q.zero_()
++    packed, scales = quantize_fp4_indexer_tensor(q.flatten(0, 1), rne=True)
++    kv = quantize_fp4_indexer_tensor(
++        torch.randn(
++            (sum(n for _, n in request_lengths), 128),
++            dtype=torch.bfloat16,
++            device="cuda",
++        ),
++        rne=True,
++    )
++    starts, lengths = [], []
++    start = 0
++    for queries, context in request_lengths:
++        starts.extend([start] * queries)
++        lengths.extend(
++            (position + 1) // ratio
++            for position in range(context * ratio - queries, context * ratio)
++        )
++        start += context
++    return dict(
++        q=(packed.view(rows, 32, 64), scales.view(rows, 32)),
++        kv=kv,
++        weights=torch.rand((rows, 32), dtype=torch.float32, device="cuda"),
++        starts=torch.tensor(starts, dtype=torch.int32, device="cuda"),
++        lengths=torch.tensor(lengths, dtype=torch.int32, device="cuda"),
++        request_lengths=request_lengths,
++        topk=512,
++        candidate_topk_blocks=2,
++        candidate_block_size=8,
++    )
++
++
++def dense_scores(inputs):
++    from deep_gemm import fp8_fp4_mqa_logits
++
++    width = (max(n for _, n in inputs["request_lengths"]) + 3) // 4 * 4
++    scores = fp8_fp4_mqa_logits(
++        inputs["q"],
++        inputs["kv"],
++        inputs["weights"],
++        inputs["starts"],
++        inputs["starts"] + inputs["lengths"],
++        False,
++        width,
++    )
++    return scores.masked_fill_(
++        torch.arange(width, device="cuda")[None, :] >= inputs["lengths"][:, None],
++        -torch.inf,
++    )
++
++
++@unittest.skipUnless(
++    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
++    "requires SM100",
++)
++class TestDensePrefillIndexer(CustomTestCase):
++    def assert_topk(self, inputs, selected, scores):
++        columns = (selected - inputs["starts"][:, None]).long()
++        valid = selected >= 0
++        expected_count = torch.isfinite(scores).sum(-1).clamp_max(inputs["topk"])
++        torch.testing.assert_close(valid.sum(-1), expected_count)
++        self.assertTrue(
++            (~valid | ((columns >= 0) & (columns < inputs["lengths"][:, None]))).all()
++        )
++        actual = scores.gather(1, columns.clamp(0, scores.shape[1] - 1)).masked_fill(
++            ~valid, -torch.inf
++        )
++        expected = scores.topk(min(inputs["topk"], scores.shape[1]), dim=-1).values
++        expected = torch.nn.functional.pad(
++            expected, (0, inputs["topk"] - expected.shape[1]), value=-torch.inf
++        )
++        torch.testing.assert_close(
++            actual.sort(descending=True).values, expected, rtol=1e-5, atol=1e-5
++        )
++        ordered = (
++            columns.masked_fill(~valid, torch.iinfo(torch.int64).max).sort().values
++        )
++        self.assertTrue(
++            (
++                (ordered[:, 1:] != ordered[:, :-1])
++                | (ordered[:, 1:] == torch.iinfo(torch.int64).max)
++            ).all()
++        )
++
++    def test_ragged_source_consumer_and_replay(self):
++        for ratio in (1, 2):
++            for zero_queries in (False, True):
++                with self.subTest(ratio=ratio, zero_queries=zero_queries):
++                    inputs = make_inputs(
++                        [(0, 0), (1, 1), (33, 511), (257, 4097)],
++                        ratio=ratio,
++                        zero_queries=zero_queries,
++                    )
++                    inputs["candidate_topk_blocks"] = 128
++                    scores = dense_scores(inputs)
++                    consumer_inputs = make_inputs(
++                        inputs["request_lengths"],
++                        ratio=ratio,
++                        zero_queries=zero_queries,
++                        seed=29,
++                    )
++                    consumer_inputs["kv"] = inputs["kv"]
++                    consumer_inputs["candidate_topk_blocks"] = 128
++                    consumer_scores = dense_scores(consumer_inputs)
++                    with patch.object(
++                        dense_prefill_indexer, "_SCORE_BUDGET_BYTES", 128 << 10
++                    ):
++                        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                            **inputs, publish_candidates=True, candidates=None
++                        )
++                        self.assert_topk(inputs, selected, scores)
++                        row = 0
++                        for (queries, context), blocks in zip(
++                            inputs["request_lengths"], candidates.request_blocks
++                        ):
++                            local = scores[row : row + queries, :context]
++                            if queries and context:
++                                padded = torch.nn.functional.pad(
++                                    local, (0, -context % 8), value=-torch.inf
++                                )
++                                block_scores = padded.unflatten(-1, (-1, 8)).amax(-1)
++                                last = (inputs["lengths"][row : row + queries] - 1) // 8
++                                block_scores.masked_fill_(
++                                    torch.arange(block_scores.shape[1], device="cuda")[
++                                        None, :
++                                    ]
++                                    == last[:, None],
++                                    torch.inf,
++                                )
++                                chosen_scores = block_scores.gather(
++                                    1, blocks.long().clamp_min(0)
++                                ).masked_fill(blocks < 0, -torch.inf)
++                                torch.testing.assert_close(
++                                    chosen_scores.sort(descending=True).values,
++                                    block_scores.topk(blocks.shape[1]).values,
++                                    rtol=1e-5,
++                                    atol=1e-5,
++                                )
++                                columns = torch.arange(context, device="cuda")
++                                member = (
++                                    columns[None, :, None] // 8 == blocks[:, None, :]
++                                ).any(-1)
++                                consumer_scores[
++                                    row : row + queries, :context
++                                ].masked_fill_(
++                                    ~member,
++                                    -torch.inf,
++                                )
++                            row += queries
++                        self.assertGreater(
++                            torch.isfinite(consumer_scores[-1]).sum().item(),
++                            inputs["topk"],
++                        )
++                        self.assertLess(
++                            torch.isfinite(consumer_scores[-1]).sum().item(),
++                            inputs["lengths"][-1].item(),
++                        )
++                        selected, published = dense_prefill_indexer.dense_prefill_topk(
++                            **consumer_inputs,
++                            publish_candidates=False,
++                            candidates=candidates,
++                        )
++                        self.assertIsNone(published)
++                        self.assert_topk(consumer_inputs, selected, consumer_scores)
++                        tail_lengths = [0, 0, 7, 31]
++                        rows, row = [], 0
++                        for (queries, _), tail in zip(
++                            inputs["request_lengths"], tail_lengths
++                        ):
++                            rows.extend(range(row + queries - tail, row + queries))
++                            row += queries
++                        rows = torch.tensor(rows, dtype=torch.int64, device="cuda")
++                        tail_inputs = dict(
++                            consumer_inputs,
++                            q=tuple(t[rows] for t in consumer_inputs["q"]),
++                            weights=consumer_inputs["weights"][rows],
++                            starts=inputs["starts"][rows],
++                            lengths=inputs["lengths"][rows],
++                            request_lengths=list(
++                                zip(
++                                    tail_lengths,
++                                    [n for _, n in inputs["request_lengths"]],
++                                )
++                            ),
++                        )
++                        selected, _ = dense_prefill_indexer.dense_prefill_topk(
++                            **tail_inputs,
++                            publish_candidates=False,
++                            candidates=candidates.tail(tail_lengths),
++                        )
++                        self.assert_topk(tail_inputs, selected, consumer_scores[rows])
++
++    def test_unfiltered_and_zero_length_requests(self):
++        for request_lengths in ([(257, 8192)], [(1, 0), (1, 1), (0, 7)]):
++            for publish in (False, True):
++                with self.subTest(request_lengths=request_lengths, publish=publish):
++                    inputs = make_inputs(request_lengths)
++                    selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                        **inputs, publish_candidates=publish, candidates=None
++                    )
++                    self.assert_topk(inputs, selected, dense_scores(inputs))
++                    if publish:
++                        self.assertEqual(
++                            [b.shape[0] for b in candidates.request_blocks],
++                            [q for q, _ in request_lengths],
++                        )
++
++    def test_empty_queries(self):
++        inputs = make_inputs([(0, 0), (0, 17)])
++        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++            **inputs, publish_candidates=True, candidates=None
++        )
++        self.assertEqual(tuple(selected.shape), (0, 512))
++        self.assertEqual(
++            [tuple(b.shape) for b in candidates.request_blocks], [(0, 0), (0, 2)]
++        )
++
++    def test_score_memory_is_bounded(self):
++        for context, limit_gib in ((65536, 3), (65535, 5)):
++            with self.subTest(context=context):
++                inputs = make_inputs([(16384, context)])
++                inputs["candidate_topk_blocks"] = 2048
++                torch.cuda.synchronize()
++                torch.cuda.reset_peak_memory_stats()
++                baseline = torch.cuda.memory_allocated()
++                selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                    **inputs, publish_candidates=True, candidates=None
++                )
++                torch.cuda.synchronize()
++                self.assertLess(
++                    torch.cuda.max_memory_allocated() - baseline, limit_gib << 30
++                )
++                self.assertEqual(tuple(selected.shape), (16384, 512))
++                self.assertEqual(
++                    tuple(candidates.request_blocks[0].shape), (16384, 2048)
++                )
++                del selected
++                selected, published = dense_prefill_indexer.dense_prefill_topk(
++                    **inputs, publish_candidates=False, candidates=candidates
++                )
++                self.assertIsNone(published)
++                del selected
++                torch.cuda.synchronize()
++                baseline = torch.cuda.memory_allocated()
++                for _ in range(3):
++                    torch.cuda.reset_peak_memory_stats()
++                    selected, published = dense_prefill_indexer.dense_prefill_topk(
++                        **inputs, publish_candidates=False, candidates=candidates
++                    )
++                    torch.cuda.synchronize()
++                    self.assertIsNone(published)
++                    self.assertLess(
++                        torch.cuda.max_memory_allocated() - baseline, 4 << 30
++                    )
++                    self.assertEqual(tuple(selected.shape), (16384, 512))
++                    del selected
++                    torch.cuda.synchronize()
++                    self.assertEqual(torch.cuda.memory_allocated(), baseline)
++                del inputs, candidates
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernel/ops/communication/test_dsv41_medium_finalize_all_reduce.py b/test/registered/kernel/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2258c89e669aaaa69a3dc3517d638b5c3e3d54c5
+--- /dev/null
++++ b/test/registered/kernel/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+@@ -0,0 +1,334 @@
++"""TP4 parity and graph replay for the DSV4.1 medium finalize plane."""
++
++from __future__ import annotations
++
++import atexit
++import logging
++import os
++
++import pytest
++import torch
++import torch.distributed as dist
++
++import sglang.srt.distributed.parallel_state as ps
++from sglang.kernels.jit.utils import cache_once
++from sglang.kernels.ops.communication import all_reduce_fusion
++from sglang.kernels.ops.communication.all_reduce import AllReduceAlgo
++from sglang.kernels.ops.communication.mp import register_comm_cleanup
++from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
++    CustomAllReduceV2,
++)
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.kernels.utils import multigpu_pytest_main
++
++register_cuda_ci(est_time=240, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++HIDDEN = 5120
++TOP_K = 6
++MB = 1024 * 1024
++
++
++def _precompile(num_gpus):
++    for world_size in num_gpus:
++        for dtype in (torch.bfloat16, torch.float32):
++            all_reduce_fusion._jit_module(
++                world_size,
++                HIDDEN,
++                TOP_K,
++                all_reduce_fusion.default_cluster_size(HIDDEN),
++                dtype,
++            )
++
++
++@cache_once
++def _init_world() -> dist.ProcessGroup:
++    local_rank = int(os.environ["LOCAL_RANK"])
++    world_size = int(os.environ["WORLD_SIZE"])
++    torch.cuda.set_device(local_rank)
++    dist.init_process_group(backend="gloo")
++    ps._WORLD = coord = ps.init_world_group(
++        ranks=list(range(world_size)),
++        local_rank=local_rank,
++        backend="nccl",
++    )
++    atexit.register(dist.destroy_process_group)
++    logging.disable(logging.INFO)
++    torch.cuda.set_stream(torch.cuda.Stream())
++    return coord.cpu_group
++
++
++def _device() -> torch.device:
++    return torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
++
++
++@cache_once
++def _init_comms() -> tuple[CustomAllReduceV2, CustomAllReduceV2]:
++    cpu_group = _init_world()
++    small = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=1 * MB,
++        max_push_blocks=96,
++    )
++    medium = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=4 * MB,
++        max_push_blocks=512,
++    )
++    assert not small.disabled and not medium.disabled
++    small.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    medium.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    register_comm_cleanup(small)
++    register_comm_cleanup(medium)
++    all_reduce_fusion.register_comm(
++        small.obj, comm_key=all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++    all_reduce_fusion.register_comm(
++        medium.obj, comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++    return small, medium
++
++
++def _make_inputs(num_tokens: int, seed: int, weight_dtype=torch.bfloat16):
++    rank = dist.get_rank()
++    generator = torch.Generator().manual_seed(seed * 7919 + rank)
++    num_slots = num_tokens * TOP_K
++    gemm2 = torch.randint(-2, 3, (num_slots + 8, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    weights = (
++        torch.randint(0, 3, (num_tokens, TOP_K), generator=generator)
++        .to(weight_dtype)
++        .mul_(0.5)
++    )
++    if weight_dtype == torch.float32:
++        weights.add_(1 / 32768)
++    shared = torch.randint(-2, 3, (num_tokens, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    indices = torch.arange(num_slots, dtype=torch.int32)
++    indices[::11] = -1
++    indices[:TOP_K] = -1
++    device = _device()
++    return (
++        gemm2.to(device),
++        indices.to(device),
++        weights.to(device),
++        shared.to(device),
++    )
++
++
++def _refresh_inputs(gemm2, indices, weights, shared, seed):
++    rank = dist.get_rank()
++    torch.manual_seed(seed * 7919 + rank)
++    gemm2.copy_(torch.randint(-2, 3, gemm2.shape, device=_device()))
++    weights.copy_(
++        torch.randint(0, 3, weights.shape, device=_device()).to(weights.dtype)
++    ).mul_(0.5)
++    if weights.dtype == torch.float32:
++        weights.add_(1 / 32768)
++    shared.copy_(torch.randint(-2, 3, shared.shape, device=_device()))
++    indices.copy_(torch.arange(indices.numel(), dtype=torch.int32, device=_device()))
++    indices[(seed + rank) % 13 :: 13] = -1
++    indices[:TOP_K] = -1
++
++
++@pytest.mark.parametrize("num_tokens", [96, 97, 288, 336, 384])
++@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
++@torch.inference_mode()
++def test_finalize_shared_rank_sum_graph_replay(num_tokens, weight_dtype):
++    small, medium = _init_comms()
++    if num_tokens <= 96:
++        comm = small
++        comm_key = all_reduce_fusion.DEFAULT_COMM_KEY
++    else:
++        comm = medium
++        comm_key = all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++
++    gemm2, indices, weights, shared = _make_inputs(
++        num_tokens, seed=17, weight_dtype=weight_dtype
++    )
++
++    def small_plane_reference():
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        return torch.cat(chunks)
++
++    def chain():
++        expected = small_plane_reference()
++        # The reference collectives have completed on every rank. Delaying
++        # rank 0 here specifically exercises the medium plane's peer wait.
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        return expected, actual
++
++    chain()
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with small.capture(), medium.capture(), torch.cuda.graph(graph):
++        expected, actual = chain()
++
++    for replay in range(3):
++        _refresh_inputs(gemm2, indices, weights, shared, seed=31 + replay)
++        graph.replay()
++        torch.cuda.synchronize()
++        error = None
++        try:
++            assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
++            torch.testing.assert_close(
++                actual.view(torch.int16),
++                expected.view(torch.int16),
++                rtol=0,
++                atol=0,
++            )
++        except AssertionError as exc:
++            error = f"rank={dist.get_rank()}, M={num_tokens}, replay={replay}: {exc}"
++        errors = [None] * dist.get_world_size()
++        dist.all_gather_object(errors, error)
++        assert not any(errors), "\n".join(item for item in errors if item)
++
++
++@torch.inference_mode()
++def test_routed_rounds_before_shared_add():
++    """Catch helpers that incorrectly round only after adding shared output."""
++    _, medium = _init_comms()
++    num_tokens = 97
++    gemm2 = torch.zeros(
++        num_tokens * TOP_K,
++        HIDDEN,
++        dtype=torch.bfloat16,
++        device=_device(),
++    )
++    weights = torch.zeros(num_tokens, TOP_K, dtype=torch.bfloat16, device=_device())
++    indices = torch.arange(num_tokens * TOP_K, dtype=torch.int32, device=_device())
++    shared = torch.zeros(num_tokens, HIDDEN, dtype=torch.bfloat16, device=_device())
++    # FP32 routed accumulation is 1 + 1/256. BF16 round-to-even produces 1,
++    # then adding -1 must produce zero. Adding shared before the routed BF16
++    # rounding would incorrectly retain 1/256.
++    gemm2[0, 0] = 1
++    gemm2[1, 0] = 1
++    weights[0, 0] = 1
++    weights[0, 1] = 1 / 256
++    shared[0, 0] = -1
++    indices[TOP_K:] = -1
++
++    out = all_reduce_fusion.moe_finalize_all_reduce(
++        gemm2,
++        indices,
++        weights,
++        TOP_K,
++        shared,
++        world_size=4,
++        hidden_dim=HIDDEN,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++        prefetch_metadata=False,
++    )
++    torch.cuda.synchronize()
++    assert torch.count_nonzero(out) == 0
++
++
++@torch.inference_mode()
++def test_default_medium_and_generic_push_interleave():
++    small, medium = _init_comms()
++    sequence = [
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (97, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (384, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (288, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (336, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++    ]
++
++    for step, (num_tokens, comm_key) in enumerate(sequence):
++        gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=101 + step)
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        expected = torch.cat(chunks)
++
++        probe = torch.full(
++            (1024,),
++            dist.get_rank() + 1,
++            dtype=torch.bfloat16,
++            device=_device(),
++        )
++        ordinary = small.custom_all_reduce(probe)
++        torch.testing.assert_close(
++            ordinary,
++            torch.full_like(ordinary, 10),
++            rtol=0,
++            atol=0,
++        )
++
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        torch.cuda.synchronize()
++        torch.testing.assert_close(
++            actual.view(torch.int16),
++            expected.view(torch.int16),
++            rtol=0,
++            atol=0,
++        )
++
++
++if __name__ == "__main__":
++    multigpu_pytest_main(
++        __name__,
++        __file__,
++        num_gpus=(4,),
++        pre_launch_fn=_precompile,
++    )
+diff --git a/test/registered/kernel/quantization/test_mxfp4_trtllm_padding.py b/test/registered/kernel/quantization/test_mxfp4_trtllm_padding.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6dbd6ba782fb9cc3ab59770ae3954151fa237aab
+--- /dev/null
++++ b/test/registered/kernel/quantization/test_mxfp4_trtllm_padding.py
+@@ -0,0 +1,175 @@
++"""A TP-sharded MXFP4 trtllm-gen MoE whose per-rank intermediate size needs
++padding must sum to the unsharded experts' output."""
++
++import unittest
++from contextlib import nullcontext
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
++
++import torch
++
++from sglang.srt.layers.moe.token_dispatcher import StandardDispatchOutput
++from sglang.srt.layers.moe.topk import StandardTopKOutput
++from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe as mxfp4
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=60, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++
++def make_layer(weights):
++    layer = torch.nn.Module()
++    names = (
++        "w13_weight",
++        "w2_weight",
++        "w13_weight_scale_inv",
++        "w2_weight_scale_inv",
++    )
++    for name, tensor in zip(names, weights):
++        layer.register_parameter(name, torch.nn.Parameter(tensor, requires_grad=False))
++    layer.num_experts = weights[0].shape[0]
++    layer.num_local_experts = layer.num_experts
++    layer.moe_ep_rank = 0
++    return layer
++
++
++def make_weights(intermediate, hidden=256, device="cpu"):
++    experts = 8
++
++    def fp4_packed(*shape):
++        return torch.randint(-128, 128, shape, dtype=torch.int8, device=device)
++
++    def e8m0_scales(*shape):
++        return torch.randint(-6, -3, shape, device=device).float().exp2()
++
++    return (
++        fp4_packed(experts, 2 * intermediate, hidden // 2),
++        fp4_packed(experts, hidden, intermediate // 2),
++        e8m0_scales(experts, 2 * intermediate, hidden // 32),
++        e8m0_scales(experts, hidden, intermediate // 32),
++    )
++
++
++class TestMxfp4TrtllmPadding(CustomTestCase):
++    def test_cpu_weight_load_pads_before_reorder(self):
++        """Exercise the real caller and padding helper, stopping before GPU shuffle."""
++        weights = make_weights(576)
++        layer = make_layer([tensor.clone() for tensor in weights])
++        layer.intermediate_size_per_partition = 576
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++
++        class ReorderReached(Exception):
++            pass
++
++        def check_reorder(weight, scales):
++            self.assertEqual(layer.intermediate_size_per_partition, 640)
++            self.assertEqual(weight.shape, (8, 1280, 128))
++            self.assertEqual(scales.shape, (8, 1280, 8))
++            self.assertEqual(layer.w2_weight.shape, (8, 256, 320))
++            self.assertEqual(layer.w2_weight_scale_inv.shape, (8, 256, 20))
++            torch.testing.assert_close(weight[:, :576], weights[0][:, :576])
++            torch.testing.assert_close(weight[:, 640:1216], weights[0][:, 576:])
++            torch.testing.assert_close(scales[:, :576], weights[2][:, :576])
++            torch.testing.assert_close(scales[:, 640:1216], weights[2][:, 576:])
++            self.assertEqual(torch.count_nonzero(weight[:, 576:640]).item(), 0)
++            self.assertEqual(torch.count_nonzero(weight[:, 1216:]).item(), 0)
++            self.assertTrue(torch.all(scales[:, 576:640] == 1).item())
++            self.assertTrue(torch.all(scales[:, 1216:] == 1).item())
++            torch.testing.assert_close(layer.w2_weight[..., :288], weights[1])
++            torch.testing.assert_close(layer.w2_weight_scale_inv[..., :18], weights[3])
++            self.assertEqual(torch.count_nonzero(layer.w2_weight[..., 288:]).item(), 0)
++            self.assertTrue(torch.all(layer.w2_weight_scale_inv[..., 18:] == 1).item())
++            raise ReorderReached
++
++        with (
++            patch(
++                "sglang.srt.layers.quantization.utils.reorder_w1w3_to_w3w1",
++                side_effect=check_reorder,
++            ),
++            patch.object(mxfp4, "print_warning_once"),
++            self.assertRaises(ReorderReached),
++        ):
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++
++    def test_cpu_aligned_padding_is_identity(self):
++        layer = make_layer(make_weights(640))
++        layer.intermediate_size_per_partition = 640
++        before = {name: value.data_ptr() for name, value in layer.named_parameters()}
++        mxfp4._pad_intermediate_size(layer)
++        self.assertEqual(
++            before, {name: value.data_ptr() for name, value in layer.named_parameters()}
++        )
++        self.assertEqual(layer.intermediate_size_per_partition, 640)
++
++    def test_cpu_mega_moe_does_not_enter_padding(self):
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++        layer = SimpleNamespace(_mega_moe_weights_built=True)
++        with patch.object(mxfp4, "_pad_intermediate_size") as pad:
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++        pad.assert_not_called()
++
++    @unittest.skipUnless(
++        torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
++        "Requires Blackwell",
++    )
++    def test_tp4_matches_unsharded_experts(self):
++        torch.manual_seed(42)
++        weights = make_weights(2304, hidden=5120, device="cuda")
++
++        def prepare(tensors):
++            layer = make_layer(tensors)
++            method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++            method._fp8 = Mock()
++            method.prefix = "test.experts"
++            method.flashinfer_mxfp4_moe_precision = "default"
++            method.process_weights_after_loading(layer)
++            method.create_moe_runner(layer, SimpleNamespace(swiglu_limit=10.0))
++            return method, layer
++
++        full = prepare([tensor.clone() for tensor in weights])
++        shards = []
++        for rank in range(4):
++            start = rank * 576
++            end = start + 576
++            w13, w2, s13, s2 = weights
++            shard = (
++                torch.cat(
++                    (w13[:, start:end], w13[:, 2304 + start : 2304 + end]), dim=1
++                ),
++                w2[..., start // 2 : end // 2].contiguous(),
++                torch.cat(
++                    (s13[:, start:end], s13[:, 2304 + start : 2304 + end]), dim=1
++                ),
++                s2[..., start // 32 : end // 32].contiguous(),
++            )
++            shards.append(prepare(shard))
++
++        with (
++            patch.object(mxfp4, "get_tp_group", return_value=None),
++            patch.object(mxfp4, "is_allocation_symmetric", return_value=False),
++            patch.object(mxfp4, "use_symmetric_memory", return_value=nullcontext()),
++        ):
++            for tokens in (1, 64):
++                with self.subTest(tokens=tokens):
++                    x = torch.randn(tokens, 5120, dtype=torch.bfloat16, device="cuda")
++                    logits = torch.randn(tokens, 8, device="cuda")
++                    scores, ids = logits.softmax(-1).topk(6, dim=-1)
++                    topk = StandardTopKOutput(scores, ids.to(torch.int32), logits)
++                    dispatch = StandardDispatchOutput(x, None, topk)
++                    reference = full[0].apply(full[1], dispatch).hidden_states.float()
++                    actual = sum(
++                        method.apply(layer, dispatch).hidden_states.float()
++                        for method, layer in shards
++                    )
++                    rmse = torch.linalg.norm(actual - reference) / torch.linalg.norm(
++                        reference
++                    )
++                    self.assertLess(rmse.item(), 0.01)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py b/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py
+deleted file mode 100644
+index 9a3a4bf6e63b79a6b5bd12219b5a711d715a8de7..0000000000000000000000000000000000000000
+--- a/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py
++++ /dev/null
+@@ -1,281 +0,0 @@
+-import unittest
+-from unittest.mock import patch
+-
+-import torch
+-
+-from sglang.kernels.ops.attention.dsv4.fp4_indexer import quantize_fp4_indexer_tensor
+-from sglang.srt.layers.attention.dsv4 import dense_prefill_indexer
+-from sglang.test.ci.ci_register import register_cuda_ci
+-from sglang.test.test_utils import CustomTestCase
+-
+-register_cuda_ci(est_time=120, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
+-
+-
+-def make_inputs(request_lengths, ratio=1, zero_queries=False, seed=17):
+-    torch.manual_seed(seed)
+-    rows = sum(q for q, _ in request_lengths)
+-    q = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device="cuda")
+-    if zero_queries:
+-        q.zero_()
+-    packed, scales = quantize_fp4_indexer_tensor(q.flatten(0, 1), rne=True)
+-    kv = quantize_fp4_indexer_tensor(
+-        torch.randn(
+-            (sum(n for _, n in request_lengths), 128),
+-            dtype=torch.bfloat16,
+-            device="cuda",
+-        ),
+-        rne=True,
+-    )
+-    starts, lengths = [], []
+-    start = 0
+-    for queries, context in request_lengths:
+-        starts.extend([start] * queries)
+-        lengths.extend(
+-            (position + 1) // ratio
+-            for position in range(context * ratio - queries, context * ratio)
+-        )
+-        start += context
+-    return dict(
+-        q=(packed.view(rows, 32, 64), scales.view(rows, 32)),
+-        kv=kv,
+-        weights=torch.rand((rows, 32), dtype=torch.float32, device="cuda"),
+-        starts=torch.tensor(starts, dtype=torch.int32, device="cuda"),
+-        lengths=torch.tensor(lengths, dtype=torch.int32, device="cuda"),
+-        request_lengths=request_lengths,
+-        topk=512,
+-        candidate_topk_blocks=2,
+-        candidate_block_size=8,
+-    )
+-
+-
+-def dense_scores(inputs):
+-    from deep_gemm import fp8_fp4_mqa_logits
+-
+-    width = (max(n for _, n in inputs["request_lengths"]) + 3) // 4 * 4
+-    scores = fp8_fp4_mqa_logits(
+-        inputs["q"],
+-        inputs["kv"],
+-        inputs["weights"],
+-        inputs["starts"],
+-        inputs["starts"] + inputs["lengths"],
+-        False,
+-        width,
+-    )
+-    return scores.masked_fill_(
+-        torch.arange(width, device="cuda")[None, :] >= inputs["lengths"][:, None],
+-        -torch.inf,
+-    )
+-
+-
+-@unittest.skipUnless(
+-    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
+-    "requires SM100",
+-)
+-class TestDensePrefillIndexer(CustomTestCase):
+-    def assert_topk(self, inputs, selected, scores):
+-        columns = (selected - inputs["starts"][:, None]).long()
+-        valid = selected >= 0
+-        expected_count = torch.isfinite(scores).sum(-1).clamp_max(inputs["topk"])
+-        torch.testing.assert_close(valid.sum(-1), expected_count)
+-        self.assertTrue(
+-            (~valid | ((columns >= 0) & (columns < inputs["lengths"][:, None]))).all()
+-        )
+-        actual = scores.gather(1, columns.clamp(0, scores.shape[1] - 1)).masked_fill(
+-            ~valid, -torch.inf
+-        )
+-        expected = scores.topk(min(inputs["topk"], scores.shape[1]), dim=-1).values
+-        expected = torch.nn.functional.pad(
+-            expected, (0, inputs["topk"] - expected.shape[1]), value=-torch.inf
+-        )
+-        torch.testing.assert_close(
+-            actual.sort(descending=True).values, expected, rtol=1e-5, atol=1e-5
+-        )
+-        ordered = (
+-            columns.masked_fill(~valid, torch.iinfo(torch.int64).max).sort().values
+-        )
+-        self.assertTrue(
+-            (
+-                (ordered[:, 1:] != ordered[:, :-1])
+-                | (ordered[:, 1:] == torch.iinfo(torch.int64).max)
+-            ).all()
+-        )
+-
+-    def test_ragged_source_consumer_and_replay(self):
+-        for ratio in (1, 2):
+-            for zero_queries in (False, True):
+-                with self.subTest(ratio=ratio, zero_queries=zero_queries):
+-                    inputs = make_inputs(
+-                        [(0, 0), (1, 1), (33, 511), (257, 4097)],
+-                        ratio=ratio,
+-                        zero_queries=zero_queries,
+-                    )
+-                    inputs["candidate_topk_blocks"] = 128
+-                    scores = dense_scores(inputs)
+-                    consumer_inputs = make_inputs(
+-                        inputs["request_lengths"],
+-                        ratio=ratio,
+-                        zero_queries=zero_queries,
+-                        seed=29,
+-                    )
+-                    consumer_inputs["kv"] = inputs["kv"]
+-                    consumer_inputs["candidate_topk_blocks"] = 128
+-                    consumer_scores = dense_scores(consumer_inputs)
+-                    with patch.object(
+-                        dense_prefill_indexer, "_SCORE_BUDGET_BYTES", 128 << 10
+-                    ):
+-                        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
+-                            **inputs, publish_candidates=True, candidates=None
+-                        )
+-                        self.assert_topk(inputs, selected, scores)
+-                        row = 0
+-                        for (queries, context), blocks in zip(
+-                            inputs["request_lengths"], candidates.request_blocks
+-                        ):
+-                            local = scores[row : row + queries, :context]
+-                            if queries and context:
+-                                padded = torch.nn.functional.pad(
+-                                    local, (0, -context % 8), value=-torch.inf
+-                                )
+-                                block_scores = padded.unflatten(-1, (-1, 8)).amax(-1)
+-                                last = (inputs["lengths"][row : row + queries] - 1) // 8
+-                                block_scores.masked_fill_(
+-                                    torch.arange(block_scores.shape[1], device="cuda")[
+-                                        None, :
+-                                    ]
+-                                    == last[:, None],
+-                                    torch.inf,
+-                                )
+-                                chosen_scores = block_scores.gather(
+-                                    1, blocks.long().clamp_min(0)
+-                                ).masked_fill(blocks < 0, -torch.inf)
+-                                torch.testing.assert_close(
+-                                    chosen_scores.sort(descending=True).values,
+-                                    block_scores.topk(blocks.shape[1]).values,
+-                                    rtol=1e-5,
+-                                    atol=1e-5,
+-                                )
+-                                columns = torch.arange(context, device="cuda")
+-                                member = (
+-                                    columns[None, :, None] // 8 == blocks[:, None, :]
+-                                ).any(-1)
+-                                consumer_scores[
+-                                    row : row + queries, :context
+-                                ].masked_fill_(
+-                                    ~member,
+-                                    -torch.inf,
+-                                )
+-                            row += queries
+-                        self.assertGreater(
+-                            torch.isfinite(consumer_scores[-1]).sum().item(),
+-                            inputs["topk"],
+-                        )
+-                        self.assertLess(
+-                            torch.isfinite(consumer_scores[-1]).sum().item(),
+-                            inputs["lengths"][-1].item(),
+-                        )
+-                        selected, published = dense_prefill_indexer.dense_prefill_topk(
+-                            **consumer_inputs,
+-                            publish_candidates=False,
+-                            candidates=candidates,
+-                        )
+-                        self.assertIsNone(published)
+-                        self.assert_topk(consumer_inputs, selected, consumer_scores)
+-                        tail_lengths = [0, 0, 7, 31]
+-                        rows, row = [], 0
+-                        for (queries, _), tail in zip(
+-                            inputs["request_lengths"], tail_lengths
+-                        ):
+-                            rows.extend(range(row + queries - tail, row + queries))
+-                            row += queries
+-                        rows = torch.tensor(rows, dtype=torch.int64, device="cuda")
+-                        tail_inputs = dict(
+-                            consumer_inputs,
+-                            q=tuple(t[rows] for t in consumer_inputs["q"]),
+-                            weights=consumer_inputs["weights"][rows],
+-                            starts=inputs["starts"][rows],
+-                            lengths=inputs["lengths"][rows],
+-                            request_lengths=list(
+-                                zip(
+-                                    tail_lengths,
+-                                    [n for _, n in inputs["request_lengths"]],
+-                                )
+-                            ),
+-                        )
+-                        selected, _ = dense_prefill_indexer.dense_prefill_topk(
+-                            **tail_inputs,
+-                            publish_candidates=False,
+-                            candidates=candidates.tail(tail_lengths),
+-                        )
+-                        self.assert_topk(tail_inputs, selected, consumer_scores[rows])
+-
+-    def test_unfiltered_and_zero_length_requests(self):
+-        for request_lengths in ([(257, 8192)], [(1, 0), (1, 1), (0, 7)]):
+-            for publish in (False, True):
+-                with self.subTest(request_lengths=request_lengths, publish=publish):
+-                    inputs = make_inputs(request_lengths)
+-                    selected, candidates = dense_prefill_indexer.dense_prefill_topk(
+-                        **inputs, publish_candidates=publish, candidates=None
+-                    )
+-                    self.assert_topk(inputs, selected, dense_scores(inputs))
+-                    if publish:
+-                        self.assertEqual(
+-                            [b.shape[0] for b in candidates.request_blocks],
+-                            [q for q, _ in request_lengths],
+-                        )
+-
+-    def test_empty_queries(self):
+-        inputs = make_inputs([(0, 0), (0, 17)])
+-        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
+-            **inputs, publish_candidates=True, candidates=None
+-        )
+-        self.assertEqual(tuple(selected.shape), (0, 512))
+-        self.assertEqual(
+-            [tuple(b.shape) for b in candidates.request_blocks], [(0, 0), (0, 2)]
+-        )
+-
+-    def test_score_memory_is_bounded(self):
+-        for context, limit_gib in ((65536, 3), (65535, 5)):
+-            with self.subTest(context=context):
+-                inputs = make_inputs([(16384, context)])
+-                inputs["candidate_topk_blocks"] = 2048
+-                torch.cuda.synchronize()
+-                torch.cuda.reset_peak_memory_stats()
+-                baseline = torch.cuda.memory_allocated()
+-                selected, candidates = dense_prefill_indexer.dense_prefill_topk(
+-                    **inputs, publish_candidates=True, candidates=None
+-                )
+-                torch.cuda.synchronize()
+-                self.assertLess(
+-                    torch.cuda.max_memory_allocated() - baseline, limit_gib << 30
+-                )
+-                self.assertEqual(tuple(selected.shape), (16384, 512))
+-                self.assertEqual(
+-                    tuple(candidates.request_blocks[0].shape), (16384, 2048)
+-                )
+-                del selected
+-                selected, published = dense_prefill_indexer.dense_prefill_topk(
+-                    **inputs, publish_candidates=False, candidates=candidates
+-                )
+-                self.assertIsNone(published)
+-                del selected
+-                torch.cuda.synchronize()
+-                baseline = torch.cuda.memory_allocated()
+-                for _ in range(3):
+-                    torch.cuda.reset_peak_memory_stats()
+-                    selected, published = dense_prefill_indexer.dense_prefill_topk(
+-                        **inputs, publish_candidates=False, candidates=candidates
+-                    )
+-                    torch.cuda.synchronize()
+-                    self.assertIsNone(published)
+-                    self.assertLess(
+-                        torch.cuda.max_memory_allocated() - baseline, 4 << 30
+-                    )
+-                    self.assertEqual(tuple(selected.shape), (16384, 512))
+-                    del selected
+-                    torch.cuda.synchronize()
+-                    self.assertEqual(torch.cuda.memory_allocated(), baseline)
+-                del inputs, candidates
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py b/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+deleted file mode 100644
+index 2258c89e669aaaa69a3dc3517d638b5c3e3d54c5..0000000000000000000000000000000000000000
+--- a/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
++++ /dev/null
+@@ -1,334 +0,0 @@
+-"""TP4 parity and graph replay for the DSV4.1 medium finalize plane."""
+-
+-from __future__ import annotations
+-
+-import atexit
+-import logging
+-import os
+-
+-import pytest
+-import torch
+-import torch.distributed as dist
+-
+-import sglang.srt.distributed.parallel_state as ps
+-from sglang.kernels.jit.utils import cache_once
+-from sglang.kernels.ops.communication import all_reduce_fusion
+-from sglang.kernels.ops.communication.all_reduce import AllReduceAlgo
+-from sglang.kernels.ops.communication.mp import register_comm_cleanup
+-from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
+-    CustomAllReduceV2,
+-)
+-from sglang.test.ci.ci_register import register_cuda_ci
+-from sglang.test.kernels.utils import multigpu_pytest_main
+-
+-register_cuda_ci(est_time=240, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
+-
+-HIDDEN = 5120
+-TOP_K = 6
+-MB = 1024 * 1024
+-
+-
+-def _precompile(num_gpus):
+-    for world_size in num_gpus:
+-        for dtype in (torch.bfloat16, torch.float32):
+-            all_reduce_fusion._jit_module(
+-                world_size,
+-                HIDDEN,
+-                TOP_K,
+-                all_reduce_fusion.default_cluster_size(HIDDEN),
+-                dtype,
+-            )
+-
+-
+-@cache_once
+-def _init_world() -> dist.ProcessGroup:
+-    local_rank = int(os.environ["LOCAL_RANK"])
+-    world_size = int(os.environ["WORLD_SIZE"])
+-    torch.cuda.set_device(local_rank)
+-    dist.init_process_group(backend="gloo")
+-    ps._WORLD = coord = ps.init_world_group(
+-        ranks=list(range(world_size)),
+-        local_rank=local_rank,
+-        backend="nccl",
+-    )
+-    atexit.register(dist.destroy_process_group)
+-    logging.disable(logging.INFO)
+-    torch.cuda.set_stream(torch.cuda.Stream())
+-    return coord.cpu_group
+-
+-
+-def _device() -> torch.device:
+-    return torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
+-
+-
+-@cache_once
+-def _init_comms() -> tuple[CustomAllReduceV2, CustomAllReduceV2]:
+-    cpu_group = _init_world()
+-    small = CustomAllReduceV2(
+-        cpu_group,
+-        _device(),
+-        max_pull_size=0,
+-        max_pull_blocks=0,
+-        max_push_size=1 * MB,
+-        max_push_blocks=96,
+-    )
+-    medium = CustomAllReduceV2(
+-        cpu_group,
+-        _device(),
+-        max_pull_size=0,
+-        max_pull_blocks=0,
+-        max_push_size=4 * MB,
+-        max_push_blocks=512,
+-    )
+-    assert not small.disabled and not medium.disabled
+-    small.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
+-    medium.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
+-    register_comm_cleanup(small)
+-    register_comm_cleanup(medium)
+-    all_reduce_fusion.register_comm(
+-        small.obj, comm_key=all_reduce_fusion.DEFAULT_COMM_KEY
+-    )
+-    all_reduce_fusion.register_comm(
+-        medium.obj, comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
+-    )
+-    return small, medium
+-
+-
+-def _make_inputs(num_tokens: int, seed: int, weight_dtype=torch.bfloat16):
+-    rank = dist.get_rank()
+-    generator = torch.Generator().manual_seed(seed * 7919 + rank)
+-    num_slots = num_tokens * TOP_K
+-    gemm2 = torch.randint(-2, 3, (num_slots + 8, HIDDEN), generator=generator).to(
+-        torch.bfloat16
+-    )
+-    weights = (
+-        torch.randint(0, 3, (num_tokens, TOP_K), generator=generator)
+-        .to(weight_dtype)
+-        .mul_(0.5)
+-    )
+-    if weight_dtype == torch.float32:
+-        weights.add_(1 / 32768)
+-    shared = torch.randint(-2, 3, (num_tokens, HIDDEN), generator=generator).to(
+-        torch.bfloat16
+-    )
+-    indices = torch.arange(num_slots, dtype=torch.int32)
+-    indices[::11] = -1
+-    indices[:TOP_K] = -1
+-    device = _device()
+-    return (
+-        gemm2.to(device),
+-        indices.to(device),
+-        weights.to(device),
+-        shared.to(device),
+-    )
+-
+-
+-def _refresh_inputs(gemm2, indices, weights, shared, seed):
+-    rank = dist.get_rank()
+-    torch.manual_seed(seed * 7919 + rank)
+-    gemm2.copy_(torch.randint(-2, 3, gemm2.shape, device=_device()))
+-    weights.copy_(
+-        torch.randint(0, 3, weights.shape, device=_device()).to(weights.dtype)
+-    ).mul_(0.5)
+-    if weights.dtype == torch.float32:
+-        weights.add_(1 / 32768)
+-    shared.copy_(torch.randint(-2, 3, shared.shape, device=_device()))
+-    indices.copy_(torch.arange(indices.numel(), dtype=torch.int32, device=_device()))
+-    indices[(seed + rank) % 13 :: 13] = -1
+-    indices[:TOP_K] = -1
+-
+-
+-@pytest.mark.parametrize("num_tokens", [96, 97, 288, 336, 384])
+-@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+-@torch.inference_mode()
+-def test_finalize_shared_rank_sum_graph_replay(num_tokens, weight_dtype):
+-    small, medium = _init_comms()
+-    if num_tokens <= 96:
+-        comm = small
+-        comm_key = all_reduce_fusion.DEFAULT_COMM_KEY
+-    else:
+-        comm = medium
+-        comm_key = all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
+-
+-    gemm2, indices, weights, shared = _make_inputs(
+-        num_tokens, seed=17, weight_dtype=weight_dtype
+-    )
+-
+-    def small_plane_reference():
+-        chunks = []
+-        for start in range(0, num_tokens, 96):
+-            end = min(start + 96, num_tokens)
+-            chunks.append(
+-                all_reduce_fusion.moe_finalize_all_reduce(
+-                    gemm2,
+-                    indices[start * TOP_K : end * TOP_K],
+-                    weights[start:end],
+-                    TOP_K,
+-                    shared[start:end],
+-                    world_size=4,
+-                    hidden_dim=HIDDEN,
+-                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
+-                    prefetch_metadata=False,
+-                )
+-            )
+-        return torch.cat(chunks)
+-
+-    def chain():
+-        expected = small_plane_reference()
+-        # The reference collectives have completed on every rank. Delaying
+-        # rank 0 here specifically exercises the medium plane's peer wait.
+-        if dist.get_rank() == 0:
+-            torch.cuda._sleep(100000)
+-        actual = all_reduce_fusion.moe_finalize_all_reduce(
+-            gemm2,
+-            indices,
+-            weights,
+-            TOP_K,
+-            shared,
+-            world_size=4,
+-            hidden_dim=HIDDEN,
+-            comm_key=comm_key,
+-            prefetch_metadata=False,
+-        )
+-        return expected, actual
+-
+-    chain()
+-    torch.cuda.synchronize()
+-    graph = torch.cuda.CUDAGraph()
+-    with small.capture(), medium.capture(), torch.cuda.graph(graph):
+-        expected, actual = chain()
+-
+-    for replay in range(3):
+-        _refresh_inputs(gemm2, indices, weights, shared, seed=31 + replay)
+-        graph.replay()
+-        torch.cuda.synchronize()
+-        error = None
+-        try:
+-            assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
+-            torch.testing.assert_close(
+-                actual.view(torch.int16),
+-                expected.view(torch.int16),
+-                rtol=0,
+-                atol=0,
+-            )
+-        except AssertionError as exc:
+-            error = f"rank={dist.get_rank()}, M={num_tokens}, replay={replay}: {exc}"
+-        errors = [None] * dist.get_world_size()
+-        dist.all_gather_object(errors, error)
+-        assert not any(errors), "\n".join(item for item in errors if item)
+-
+-
+-@torch.inference_mode()
+-def test_routed_rounds_before_shared_add():
+-    """Catch helpers that incorrectly round only after adding shared output."""
+-    _, medium = _init_comms()
+-    num_tokens = 97
+-    gemm2 = torch.zeros(
+-        num_tokens * TOP_K,
+-        HIDDEN,
+-        dtype=torch.bfloat16,
+-        device=_device(),
+-    )
+-    weights = torch.zeros(num_tokens, TOP_K, dtype=torch.bfloat16, device=_device())
+-    indices = torch.arange(num_tokens * TOP_K, dtype=torch.int32, device=_device())
+-    shared = torch.zeros(num_tokens, HIDDEN, dtype=torch.bfloat16, device=_device())
+-    # FP32 routed accumulation is 1 + 1/256. BF16 round-to-even produces 1,
+-    # then adding -1 must produce zero. Adding shared before the routed BF16
+-    # rounding would incorrectly retain 1/256.
+-    gemm2[0, 0] = 1
+-    gemm2[1, 0] = 1
+-    weights[0, 0] = 1
+-    weights[0, 1] = 1 / 256
+-    shared[0, 0] = -1
+-    indices[TOP_K:] = -1
+-
+-    out = all_reduce_fusion.moe_finalize_all_reduce(
+-        gemm2,
+-        indices,
+-        weights,
+-        TOP_K,
+-        shared,
+-        world_size=4,
+-        hidden_dim=HIDDEN,
+-        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
+-        prefetch_metadata=False,
+-    )
+-    torch.cuda.synchronize()
+-    assert torch.count_nonzero(out) == 0
+-
+-
+-@torch.inference_mode()
+-def test_default_medium_and_generic_push_interleave():
+-    small, medium = _init_comms()
+-    sequence = [
+-        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
+-        (97, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
+-        (384, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
+-        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
+-        (288, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
+-        (336, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
+-    ]
+-
+-    for step, (num_tokens, comm_key) in enumerate(sequence):
+-        gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=101 + step)
+-        chunks = []
+-        for start in range(0, num_tokens, 96):
+-            end = min(start + 96, num_tokens)
+-            chunks.append(
+-                all_reduce_fusion.moe_finalize_all_reduce(
+-                    gemm2,
+-                    indices[start * TOP_K : end * TOP_K],
+-                    weights[start:end],
+-                    TOP_K,
+-                    shared[start:end],
+-                    world_size=4,
+-                    hidden_dim=HIDDEN,
+-                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
+-                    prefetch_metadata=False,
+-                )
+-            )
+-        expected = torch.cat(chunks)
+-
+-        probe = torch.full(
+-            (1024,),
+-            dist.get_rank() + 1,
+-            dtype=torch.bfloat16,
+-            device=_device(),
+-        )
+-        ordinary = small.custom_all_reduce(probe)
+-        torch.testing.assert_close(
+-            ordinary,
+-            torch.full_like(ordinary, 10),
+-            rtol=0,
+-            atol=0,
+-        )
+-
+-        if dist.get_rank() == 0:
+-            torch.cuda._sleep(100000)
+-        actual = all_reduce_fusion.moe_finalize_all_reduce(
+-            gemm2,
+-            indices,
+-            weights,
+-            TOP_K,
+-            shared,
+-            world_size=4,
+-            hidden_dim=HIDDEN,
+-            comm_key=comm_key,
+-            prefetch_metadata=False,
+-        )
+-        torch.cuda.synchronize()
+-        torch.testing.assert_close(
+-            actual.view(torch.int16),
+-            expected.view(torch.int16),
+-            rtol=0,
+-            atol=0,
+-        )
+-
+-
+-if __name__ == "__main__":
+-    multigpu_pytest_main(
+-        __name__,
+-        __file__,
+-        num_gpus=(4,),
+-        pre_launch_fn=_precompile,
+-    )
+diff --git a/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py b/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
+deleted file mode 100644
+index 6dbd6ba782fb9cc3ab59770ae3954151fa237aab..0000000000000000000000000000000000000000
+--- a/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
++++ /dev/null
+@@ -1,175 +0,0 @@
+-"""A TP-sharded MXFP4 trtllm-gen MoE whose per-rank intermediate size needs
+-padding must sum to the unsharded experts' output."""
+-
+-import unittest
+-from contextlib import nullcontext
+-from types import SimpleNamespace
+-from unittest.mock import Mock, patch
+-
+-import torch
+-
+-from sglang.srt.layers.moe.token_dispatcher import StandardDispatchOutput
+-from sglang.srt.layers.moe.topk import StandardTopKOutput
+-from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe as mxfp4
+-from sglang.test.ci.ci_register import register_cuda_ci
+-from sglang.test.test_utils import CustomTestCase
+-
+-register_cuda_ci(est_time=60, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
+-
+-
+-def make_layer(weights):
+-    layer = torch.nn.Module()
+-    names = (
+-        "w13_weight",
+-        "w2_weight",
+-        "w13_weight_scale_inv",
+-        "w2_weight_scale_inv",
+-    )
+-    for name, tensor in zip(names, weights):
+-        layer.register_parameter(name, torch.nn.Parameter(tensor, requires_grad=False))
+-    layer.num_experts = weights[0].shape[0]
+-    layer.num_local_experts = layer.num_experts
+-    layer.moe_ep_rank = 0
+-    return layer
+-
+-
+-def make_weights(intermediate, hidden=256, device="cpu"):
+-    experts = 8
+-
+-    def fp4_packed(*shape):
+-        return torch.randint(-128, 128, shape, dtype=torch.int8, device=device)
+-
+-    def e8m0_scales(*shape):
+-        return torch.randint(-6, -3, shape, device=device).float().exp2()
+-
+-    return (
+-        fp4_packed(experts, 2 * intermediate, hidden // 2),
+-        fp4_packed(experts, hidden, intermediate // 2),
+-        e8m0_scales(experts, 2 * intermediate, hidden // 32),
+-        e8m0_scales(experts, hidden, intermediate // 32),
+-    )
+-
+-
+-class TestMxfp4TrtllmPadding(CustomTestCase):
+-    def test_cpu_weight_load_pads_before_reorder(self):
+-        """Exercise the real caller and padding helper, stopping before GPU shuffle."""
+-        weights = make_weights(576)
+-        layer = make_layer([tensor.clone() for tensor in weights])
+-        layer.intermediate_size_per_partition = 576
+-        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
+-        method._fp8 = Mock()
+-
+-        class ReorderReached(Exception):
+-            pass
+-
+-        def check_reorder(weight, scales):
+-            self.assertEqual(layer.intermediate_size_per_partition, 640)
+-            self.assertEqual(weight.shape, (8, 1280, 128))
+-            self.assertEqual(scales.shape, (8, 1280, 8))
+-            self.assertEqual(layer.w2_weight.shape, (8, 256, 320))
+-            self.assertEqual(layer.w2_weight_scale_inv.shape, (8, 256, 20))
+-            torch.testing.assert_close(weight[:, :576], weights[0][:, :576])
+-            torch.testing.assert_close(weight[:, 640:1216], weights[0][:, 576:])
+-            torch.testing.assert_close(scales[:, :576], weights[2][:, :576])
+-            torch.testing.assert_close(scales[:, 640:1216], weights[2][:, 576:])
+-            self.assertEqual(torch.count_nonzero(weight[:, 576:640]).item(), 0)
+-            self.assertEqual(torch.count_nonzero(weight[:, 1216:]).item(), 0)
+-            self.assertTrue(torch.all(scales[:, 576:640] == 1).item())
+-            self.assertTrue(torch.all(scales[:, 1216:] == 1).item())
+-            torch.testing.assert_close(layer.w2_weight[..., :288], weights[1])
+-            torch.testing.assert_close(layer.w2_weight_scale_inv[..., :18], weights[3])
+-            self.assertEqual(torch.count_nonzero(layer.w2_weight[..., 288:]).item(), 0)
+-            self.assertTrue(torch.all(layer.w2_weight_scale_inv[..., 18:] == 1).item())
+-            raise ReorderReached
+-
+-        with (
+-            patch(
+-                "sglang.srt.layers.quantization.utils.reorder_w1w3_to_w3w1",
+-                side_effect=check_reorder,
+-            ),
+-            patch.object(mxfp4, "print_warning_once"),
+-            self.assertRaises(ReorderReached),
+-        ):
+-            method.process_weights_after_loading(layer)
+-        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
+-
+-    def test_cpu_aligned_padding_is_identity(self):
+-        layer = make_layer(make_weights(640))
+-        layer.intermediate_size_per_partition = 640
+-        before = {name: value.data_ptr() for name, value in layer.named_parameters()}
+-        mxfp4._pad_intermediate_size(layer)
+-        self.assertEqual(
+-            before, {name: value.data_ptr() for name, value in layer.named_parameters()}
+-        )
+-        self.assertEqual(layer.intermediate_size_per_partition, 640)
+-
+-    def test_cpu_mega_moe_does_not_enter_padding(self):
+-        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
+-        method._fp8 = Mock()
+-        layer = SimpleNamespace(_mega_moe_weights_built=True)
+-        with patch.object(mxfp4, "_pad_intermediate_size") as pad:
+-            method.process_weights_after_loading(layer)
+-        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
+-        pad.assert_not_called()
+-
+-    @unittest.skipUnless(
+-        torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
+-        "Requires Blackwell",
+-    )
+-    def test_tp4_matches_unsharded_experts(self):
+-        torch.manual_seed(42)
+-        weights = make_weights(2304, hidden=5120, device="cuda")
+-
+-        def prepare(tensors):
+-            layer = make_layer(tensors)
+-            method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
+-            method._fp8 = Mock()
+-            method.prefix = "test.experts"
+-            method.flashinfer_mxfp4_moe_precision = "default"
+-            method.process_weights_after_loading(layer)
+-            method.create_moe_runner(layer, SimpleNamespace(swiglu_limit=10.0))
+-            return method, layer
+-
+-        full = prepare([tensor.clone() for tensor in weights])
+-        shards = []
+-        for rank in range(4):
+-            start = rank * 576
+-            end = start + 576
+-            w13, w2, s13, s2 = weights
+-            shard = (
+-                torch.cat(
+-                    (w13[:, start:end], w13[:, 2304 + start : 2304 + end]), dim=1
+-                ),
+-                w2[..., start // 2 : end // 2].contiguous(),
+-                torch.cat(
+-                    (s13[:, start:end], s13[:, 2304 + start : 2304 + end]), dim=1
+-                ),
+-                s2[..., start // 32 : end // 32].contiguous(),
+-            )
+-            shards.append(prepare(shard))
+-
+-        with (
+-            patch.object(mxfp4, "get_tp_group", return_value=None),
+-            patch.object(mxfp4, "is_allocation_symmetric", return_value=False),
+-            patch.object(mxfp4, "use_symmetric_memory", return_value=nullcontext()),
+-        ):
+-            for tokens in (1, 64):
+-                with self.subTest(tokens=tokens):
+-                    x = torch.randn(tokens, 5120, dtype=torch.bfloat16, device="cuda")
+-                    logits = torch.randn(tokens, 8, device="cuda")
+-                    scores, ids = logits.softmax(-1).topk(6, dim=-1)
+-                    topk = StandardTopKOutput(scores, ids.to(torch.int32), logits)
+-                    dispatch = StandardDispatchOutput(x, None, topk)
+-                    reference = full[0].apply(full[1], dispatch).hidden_states.float()
+-                    actual = sum(
+-                        method.apply(layer, dispatch).hidden_states.float()
+-                        for method, layer in shards
+-                    )
+-                    rmse = torch.linalg.norm(actual - reference) / torch.linalg.norm(
+-                        reference
+-                    )
+-                    self.assertLess(rmse.item(), 0.01)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()

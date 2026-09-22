@@ -1,0 +1,1044 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 2aca1e7b2633208f507d8c3ee9452404968d5b03..391bff1d63a40c11e8ad2a94a39c2fd2b58b4827 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -43,6 +43,7 @@ jobs:
+         run: |
+           set -euo pipefail
+           python test/manual/phala/test_muse_migration_cpu.py
++          python test/manual/phala/test_xgrammar_adapter_cpu.py
+           python test/manual/phala/test_nemotron_token_context_cpu.py
+           python test/manual/phala/test_dsv41_chat_migration_cpu.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+diff --git a/docker/phala-xgrammar/README.md b/docker/phala-xgrammar/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e22829ca233531f9cb939b4e395133dc7acfdcec
+--- /dev/null
++++ b/docker/phala-xgrammar/README.md
+@@ -0,0 +1,35 @@
++# Single native XGrammar dependency
++
++This engine requires `xgrammar==0.2.6+phala.union1`, not stock 0.2.1/0.2.6.
++There is no claimed public wheel or publicly fetchable Phala native Git commit.
++Use the `external-dependencies.json` and deterministic dependency delta from
++the same pinned `sglang-serving-patches` checkout as the engine export.
++
++In an existing Linux CPU build environment with the native build dependencies:
++
++```bash
++python docker/phala-xgrammar/build.py \
++  --patch-repository /path/to/pinned-serving-patches \
++  --source /path/to/new-xgrammar-source \
++  --wheel-dir /path/to/wheels
++python -m pip install --no-index --no-deps \
++  /path/to/wheels/xgrammar-0.2.6+phala.union1-*.whl
++```
++
++The recipe fetches the immutable public upstream, applies the generated delta,
++checks the complete source tree and license hash, and checks the DLPack submodule
++identity before building. `--verify-only` stops before submodules/wheel build.
++It does not assume that installing the local-version pin from public PyPI works.
++No SGLang image is built or published by this recipe.
++
++The dependency record binds source commit `8830951a`/tree `b8dcb87b`, and the
++tested wheel built from `8b5d3b86`/tree `09c66b3c`. The successor only adds tests,
++not runtime/build bytes. Native CPU evidence is 655 passing tests and a stock
++same-base semantic ablation; it is not engine/GPU/final-image qualification.
++
++`--constrained-json-max-whitespace-cnt` restores the historical direct-JSON
++setting. Unset preserves existing behavior. It does not change structural-tag
++per-format limits or limit whitespace inside JSON strings. Invalid bounds,
++non-XGrammar backends, compact conflicts and unsupported tokenizers fail closed.
++The shared schema-position validator rejects constraints the native backend
++would ignore in direct JSON, legacy tags and nested JSON/XML formats.
+diff --git a/docker/phala-xgrammar/build.py b/docker/phala-xgrammar/build.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca589da26ec99f33348f135a73d885883effa97d
+--- /dev/null
++++ b/docker/phala-xgrammar/build.py
+@@ -0,0 +1,94 @@
++#!/usr/bin/env python3
++"""Materialize the single exact native dependency from its deterministic export.
++
++No published Phala wheel or native Git remote is assumed. The source delta and
++manifest come from the pinned serving-patches checkout used for this engine.
++The destination must not exist. --verify-only performs no wheel build.
++"""
++
++import argparse
++import hashlib
++import json
++import subprocess
++import sys
++from pathlib import Path
++
++
++def git(root, *args):
++    return (
++        subprocess.check_output(
++            ["git", "-c", "core.autocrlf=false", "-C", str(root), *args]
++        )
++        .decode()
++        .strip()
++    )
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--patch-repository", required=True, type=Path)
++    parser.add_argument("--source", required=True, type=Path)
++    parser.add_argument("--wheel-dir", type=Path)
++    parser.add_argument("--verify-only", action="store_true")
++    args = parser.parse_args()
++    manifest = json.loads(
++        (args.patch_repository / "external-dependencies.json").read_text()
++    )["xgrammar"]
++    if manifest["version"] != "0.2.6+phala.union1":
++        raise ValueError(
++            "external manifest does not match this engine's dependency pin"
++        )
++    if manifest["upstream_repository"] != "https://github.com/mlc-ai/xgrammar":
++        raise ValueError("unexpected external upstream")
++    patch = args.patch_repository / manifest["patch"]
++    if hashlib.sha256(patch.read_bytes()).hexdigest() != manifest["patch_sha256"]:
++        raise ValueError("external source delta hash mismatch")
++    if not args.verify_only and args.wheel_dir is None:
++        parser.error("--wheel-dir is required for a native wheel build")
++    args.source.mkdir(parents=True, exist_ok=False)
++    git(args.source, "init", "--quiet")
++    git(
++        args.source,
++        "fetch",
++        "--no-tags",
++        "--depth=1",
++        manifest["upstream_repository"],
++        manifest["upstream_commit"],
++    )
++    git(args.source, "checkout", "--detach", manifest["upstream_commit"])
++    git(args.source, "apply", "--index", str(patch.resolve()))
++    tree = git(args.source, "write-tree")
++    if tree != manifest["candidate_tree"]:
++        raise ValueError(f"external clean replay mismatch: {tree}")
++    license_hash = hashlib.sha256(
++        (args.source / manifest["license_file"]).read_bytes()
++    ).hexdigest()
++    if license_hash != manifest["license_sha256"]:
++        raise ValueError("external license hash mismatch")
++    print(f"Verified native source tree {tree}")
++    if args.verify_only:
++        return
++    for path, dependency in manifest["submodules"].items():
++        git(args.source, "submodule", "update", "--init", "--", path)
++        if git(args.source / path, "rev-parse", "HEAD") != dependency["commit"]:
++            raise ValueError(f"native submodule identity differs: {path}")
++    args.wheel_dir.mkdir(parents=True, exist_ok=True)
++    subprocess.run(
++        [
++            sys.executable,
++            "-m",
++            "pip",
++            "wheel",
++            str(args.source.resolve()),
++            "--no-index",
++            "--no-deps",
++            "--no-build-isolation",
++            "--wheel-dir",
++            str(args.wheel_dir.resolve()),
++        ],
++        check=True,
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/python/pyproject.toml b/python/pyproject.toml
+index 171994664b4996093f6cef01004f34533742bb58..699c039e1c2f399c0fc0aab6976d9ba41dd0f7c1 100755
+--- a/python/pyproject.toml
++++ b/python/pyproject.toml
+@@ -96,7 +96,7 @@ dependencies = [
+   "uvicorn",
+   "uvloop",
+   "watchfiles",
+-  "xgrammar==0.2.1",
++  "xgrammar==0.2.6+phala.union1",
+   "xxhash",
+   "zstandard",
+ ]
+diff --git a/python/sglang/srt/arg_groups/field_order.py b/python/sglang/srt/arg_groups/field_order.py
+index 992a91b1728aee0f41d00cc336e166b19e8d973a..cad78c2c4e56dac56b8ed8dd1592e295bdb603b9 100644
+--- a/python/sglang/srt/arg_groups/field_order.py
++++ b/python/sglang/srt/arg_groups/field_order.py
+@@ -204,6 +204,7 @@ POSITIONAL_FIELD_ORDER = (
+     "stat_loggers",
+     "constrained_json_whitespace_pattern",
+     "constrained_json_disable_any_whitespace",
++    "constrained_json_max_whitespace_cnt",
+     "attention_backend",
+     "decode_attention_backend",
+     "enable_lean_attention",
+diff --git a/python/sglang/srt/arg_groups/fields/serving.py b/python/sglang/srt/arg_groups/fields/serving.py
+index c1e2c8e71569563c53a729a113602e5f4dcad7ae..c00c6125ae5d6f256912c63ba81a2ed261ddc992 100644
+--- a/python/sglang/srt/arg_groups/fields/serving.py
++++ b/python/sglang/srt/arg_groups/fields/serving.py
+@@ -287,6 +287,12 @@ class Serving(msgspec.Struct):
+         bool,
+         "(xgrammar and llguidance backends only) Enforce compact representation in JSON constrained output.",
+     ] = False
++    constrained_json_max_whitespace_cnt: A[
++        Optional[int],
++        "(xgrammar only) Maximum consecutive syntactic whitespace characters in "
++        "direct JSON schema/JSON object output. Must be positive; incompatible "
++        "with compact JSON. Structural-tag formats retain their own limits.",
++    ] = None
+ 
+     # -------------------------------------------------------------------------
+     # Dynamic batch tokenizer
+diff --git a/python/sglang/srt/arg_groups/serving_hook.py b/python/sglang/srt/arg_groups/serving_hook.py
+index 2015ebf0e14b4a9781a19f97c91d3e6b34ce4596..ed396d5114d9ae612f3c71a33083d60cd8d9c631 100644
+--- a/python/sglang/srt/arg_groups/serving_hook.py
++++ b/python/sglang/srt/arg_groups/serving_hook.py
+@@ -216,7 +216,16 @@ def handle_load_balance_method(server_args: Any):
+ 
+ 
+ def handle_grammar_backend(server_args: Any):
++    from sglang.srt.constrained.xgrammar_schema import (
++        validate_xgrammar_whitespace_limit,
++    )
++
+     cfg = resolving_view(server_args)
++    validate_xgrammar_whitespace_limit(
++        cfg.constrained_json_max_whitespace_cnt,
++        any_whitespace=not cfg.constrained_json_disable_any_whitespace,
++        backend=cfg.grammar_backend or "xgrammar",
++    )
+     if cfg.grammar_backend is None:
+         declare_resolution(
+             server_args, "_handle_grammar_backend", grammar_backend="xgrammar"
+diff --git a/python/sglang/srt/constrained/base_grammar_backend.py b/python/sglang/srt/constrained/base_grammar_backend.py
+index 9f990755dad2eb5411446608d21bf43841cad3e3..1a5aa0c8d965d48958dbe9ed0034f9c3c967d0af 100644
+--- a/python/sglang/srt/constrained/base_grammar_backend.py
++++ b/python/sglang/srt/constrained/base_grammar_backend.py
+@@ -355,6 +355,16 @@ def create_grammar_backend(
+     think_end_ids: Optional[List[int]] = None,
+ ) -> Optional[BaseGrammarBackend]:
+     name = get_exec().kernel.grammar_backend
++    from sglang.srt.constrained.xgrammar_schema import (
++        validate_xgrammar_whitespace_limit,
++    )
++
++    whitespace_limit = get_serving().constrained_json_max_whitespace_cnt
++    validate_xgrammar_whitespace_limit(
++        whitespace_limit,
++        any_whitespace=not get_serving().constrained_json_disable_any_whitespace,
++        backend=name,
++    )
+ 
+     # Custom grammar backend has the highest priority
+     if name in GRAMMAR_BACKEND_REGISTRY:
+@@ -385,8 +395,14 @@ def create_grammar_backend(
+                 vocab_size=vocab_size,
+                 model_eos_token_ids=eos_list,
+                 any_whitespace=not get_serving().constrained_json_disable_any_whitespace,
++                max_whitespace_cnt=whitespace_limit,
+             )
+         except TokenizerNotSupportedError as e:
++            if whitespace_limit is not None:
++                raise ValueError(
++                    "Explicit constrained JSON whitespace limit cannot fall back "
++                    "to an unsupported tokenizer or grammar_backend='none'"
++                ) from e
+             if get_serving().enable_strict_thinking:
+                 raise ValueError(
+                     f"--enable-strict-thinking requires a grammar backend with "
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index 75678254b6ad33f792d6c66dc9308f77b706f099..a8a58e42ac3de9e6394d25db2119fcdcdb6a1338 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -87,7 +87,6 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         self._saw_channel_reasoning_header = False
+         self._thinking_match_history: List[int] = []
+         self._state_history = []
+-        self._grammar_accept_history: List[bool] = []
+ 
+     def maybe_init_reasoning(self, reasoning: bool):
+         self._matched_think_end_tokens = 0
+@@ -98,7 +97,6 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         self._saw_channel_reasoning_header = False
+         self._thinking_match_history.clear()
+         self._state_history.clear()
+-        self._grammar_accept_history.clear()
+         if reasoning:
+             self.tokens_in_think = 0
+             self.tokens_after_end = -1
+@@ -187,7 +185,7 @@ class ReasonerGrammarObject(BaseGrammarObject):
+     def transfer_state(self, token: int) -> None:
+         # Only channel-aware models need full transition snapshots. Keep the
+         # existing compact reasoning-match history for every other model.
+-        if self._channel_header_end_matcher is not None:
++        if self._channel_header_end_matcher is not None and not self._is_generation():
+             self._state_history.append(self._snapshot_state())
+         if self._is_thinking():
+             previous_match = self._matched_think_end_tokens
+@@ -254,7 +252,9 @@ class ReasonerGrammarObject(BaseGrammarObject):
+                 elif self.tokens_after_end > 0:
+                     self.tokens_after_end -= 1
+             return
+-        if self._state_history:
++        if self._is_generation() and self.tokens_after_end > 0:
++            self.tokens_after_end -= 1
++        elif self._state_history:
+             self._restore_state(self._state_history.pop())
+ 
+     def accept_token(self, token: int):
+@@ -265,12 +265,12 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         # a ReasonerGrammarObject's current_token stays None forever (the inner
+         # grammar's is updated, not the wrapper's), so the guard never fires and
+         # the token is accepted twice -> "Tokens not accepted" -> FINISH_ABORT.
+-        self.current_token = token
+         accepted_by_grammar = self._is_generation() and self.grammar is not None
+-        if self._channel_header_end_matcher is not None:
+-            self._grammar_accept_history.append(accepted_by_grammar)
+         if accepted_by_grammar:
+             self.grammar.accept_token(token)
++        # Rejected inner tokens abort their request upstream; do not advance
++        # wrapper histories/state/current_token before acceptance succeeds.
++        self.current_token = token
+         self.transfer_state(token)
+ 
+     def is_terminated(self):
+@@ -280,16 +280,12 @@ class ReasonerGrammarObject(BaseGrammarObject):
+ 
+     def rollback(self, k):
+         if self.grammar is not None:
+-            steps_after = (
+-                (sum(self._grammar_accept_history[-k:]) if k > 0 else 0)
+-                if self._channel_header_end_matcher is not None
+-                else min(k, max(0, self.tokens_after_end))
+-            )
++            # Once final generation starts, forward decoding cannot re-enter
++            # a channel header. Count final tokens instead of snapshotting them.
++            steps_after = min(k, max(0, self.tokens_after_end))
+             if steps_after > 0:
+                 self.grammar.rollback(steps_after)
+         for _ in range(k):
+-            if self._grammar_accept_history:
+-                self._grammar_accept_history.pop()
+             self.rollback_state()
+ 
+     def _can_think_more(self):
+@@ -385,7 +381,6 @@ class ReasonerGrammarObject(BaseGrammarObject):
+         new_obj._restore_state(self._snapshot_state())
+         new_obj._thinking_match_history = list(self._thinking_match_history)
+         new_obj._state_history = list(self._state_history)
+-        new_obj._grammar_accept_history = list(self._grammar_accept_history)
+         new_obj._finished = self._finished
+         new_obj.current_token = self.current_token
+         return new_obj
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 04e1da818d927da20ad15c1aeeaee6075af83fe1..bf6b67c58557a5c5d4bcb293d76952c4f390276b 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -38,7 +38,8 @@ from sglang.srt.constrained.base_grammar_backend import (
+ )
+ from sglang.srt.constrained.utils import is_legacy_structural_tag
+ from sglang.srt.constrained.xgrammar_schema import (
+-    has_xgrammar_unsupported_json_features,
++    validate_xgrammar_schema,
++    validate_xgrammar_whitespace_limit,
+ )
+ from sglang.srt.utils import is_hip
+ from sglang.srt.utils.common import is_pin_memory_available
+@@ -214,8 +215,12 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         vocab_size: int,
+         model_eos_token_ids: Optional[List[int]] = None,
+         any_whitespace: bool = True,
++        max_whitespace_cnt: Optional[int] = None,
+     ):
+         super().__init__()
++        validate_xgrammar_whitespace_limit(
++            max_whitespace_cnt, any_whitespace=any_whitespace
++        )
+ 
+         if hasattr(tokenizer, "init_xgrammar"):
+             # For special tokenizer
+@@ -243,6 +248,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         self.vocab_size = vocab_size
+         self.override_stop_tokens = override_stop_tokens
+         self.any_whitespace = any_whitespace
++        self.max_whitespace_cnt = max_whitespace_cnt
+ 
+     @property
+     def is_support_token_filter(self):
+@@ -293,7 +299,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+ 
+     @staticmethod
+     def _sanitize_structural_format(structural_format):
+-        """Recursively replace missing json_schema fields with an empty schema."""
++        """Normalize/validate only schema-bearing positions, never schema data."""
+         if not isinstance(structural_format, dict):
+             return
+ 
+@@ -301,8 +307,13 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         if fmt_type in {"json_schema", "qwen_xml_parameter"}:
+             if structural_format.get("json_schema") is None:
+                 structural_format["json_schema"] = {}
++            validate_xgrammar_schema(structural_format["json_schema"])
++            if fmt_type == "json_schema":
++                validate_xgrammar_whitespace_limit(
++                    structural_format.get("max_whitespace_cnt")
++                )
+ 
+-        if fmt_type == "tag":
++        if fmt_type in {"tag", "optional", "plus", "star", "repeat"}:
+             XGrammarGrammarBackend._sanitize_structural_format(
+                 structural_format.get("content")
+             )
+@@ -312,12 +323,16 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         elif fmt_type in {"triggered_tags", "tags_with_separator"}:
+             for tag in structural_format.get("tags", []):
+                 XGrammarGrammarBackend._sanitize_structural_format(tag)
++        elif fmt_type in {"dispatch", "token_dispatch"}:
++            for _, content in structural_format.get("rules", []):
++                XGrammarGrammarBackend._sanitize_structural_format(content)
+ 
+     @staticmethod
+     def _sanitize_structural_tag_structures(structural_tag: Dict) -> None:
+         for structure in structural_tag.get("structures", []):
+             if structure.get("schema") is None:
+                 structure["schema"] = {}
++            validate_xgrammar_schema(structure["schema"])
+ 
+     def _from_context(
+         self, ctx: CompiledGrammar, key_string: str, grammar_stats: GrammarStats
+@@ -338,20 +353,16 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+ 
+     def dispatch_json(self, key_string: str) -> BaseGrammarObject:
+         try:
+-            if key_string == "$$ANY$$":
++            if key_string == "$$ANY$$" and self.max_whitespace_cnt is None:
+                 # Note: This builtin JSON grammar includes *all* valid JSON (including, for example, arrays at the root)
+                 ctx = self.grammar_compiler.compile_builtin_json_grammar()
+             else:
+-                schema = json.loads(key_string)
+-                if isinstance(schema, dict) and has_xgrammar_unsupported_json_features(
+-                    schema
+-                ):
+-                    raise RuntimeError(
+-                        "JSON schema uses features unsupported by xgrammar; "
+-                        "the constraint would otherwise be silently ignored"
+-                    )
++                schema = {} if key_string == "$$ANY$$" else json.loads(key_string)
++                validate_xgrammar_schema(schema)
+                 ctx = self.grammar_compiler.compile_json_schema(
+-                    schema=key_string, any_whitespace=self.any_whitespace
++                    schema=schema,
++                    any_whitespace=self.any_whitespace,
++                    max_whitespace_cnt=self.max_whitespace_cnt,
+                 )
+ 
+         except (RuntimeError, json.decoder.JSONDecodeError, UnicodeDecodeError) as e:
+@@ -401,7 +412,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                     structural_tag["format"] = format_dict
+                     key_string = json.dumps(structural_tag)
+                 ctx = self.grammar_compiler.compile_structural_tag(key_string)
+-        except (RuntimeError, json.decoder.JSONDecodeError) as e:
++        except (RuntimeError, ValueError, TypeError) as e:
+             logger.error(f"Hit invalid structural_tag: {key_string=}, {e=}")
+             return InvalidGrammarObject(str(e))
+         return self._from_context(
+diff --git a/python/sglang/srt/constrained/xgrammar_schema.py b/python/sglang/srt/constrained/xgrammar_schema.py
+index fd4ca0131b7a0d91e85db89c004d9ae8d1f18743..f89073ac6472df544c4114b448de257f4db6f9fc 100644
+--- a/python/sglang/srt/constrained/xgrammar_schema.py
++++ b/python/sglang/srt/constrained/xgrammar_schema.py
+@@ -1,6 +1,22 @@
+ """Fail-closed checks for JSON Schema features XGrammar cannot enforce."""
+ 
+ 
++def validate_xgrammar_whitespace_limit(
++    limit, *, any_whitespace: bool = True, backend: str = "xgrammar"
++) -> None:
++    """An explicit bound must never silently fall back to unbounded decoding."""
++    if limit is None:
++        return
++    if type(limit) is not int or not 0 < limit <= 2_147_483_647:
++        raise ValueError("constrained JSON whitespace limit must be a positive int32")
++    if backend != "xgrammar":
++        raise ValueError("constrained JSON whitespace limit requires xgrammar")
++    if not any_whitespace:
++        raise ValueError(
++            "constrained JSON whitespace limit conflicts with compact JSON"
++        )
++
++
+ def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
+     """Return whether XGrammar would silently ignore a schema constraint."""
+ 
+@@ -34,6 +50,10 @@ def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
+ 
+         if any(key in obj for key in unsupported_keywords):
+             return True
++        # Native XGrammar returns the pattern grammar before applying lengths;
++        # it does not intersect the constraints, including in patched union1.
++        if "pattern" in obj and ("minLength" in obj or "maxLength" in obj):
++            return True
+ 
+         for key in schema_keywords:
+             if check_schema(obj.get(key)):
+@@ -54,3 +74,11 @@ def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
+         return False
+ 
+     return check_schema(schema)
++
++
++def validate_xgrammar_schema(schema) -> None:
++    if has_xgrammar_unsupported_json_features(schema):
++        raise RuntimeError(
++            "JSON schema uses features unsupported by xgrammar; "
++            "the constraint would otherwise be silently ignored"
++        )
+diff --git a/test/manual/phala/test_muse_migration_cpu.py b/test/manual/phala/test_muse_migration_cpu.py
+index 82d53c6ec36f3f4c504c84206abef96d4e713240..f984911f003693ada0002e230acc4eab498a0e27 100644
+--- a/test/manual/phala/test_muse_migration_cpu.py
++++ b/test/manual/phala/test_muse_migration_cpu.py
+@@ -337,6 +337,41 @@ class MuseGrammarTests(unittest.TestCase):
+         self.assertIsNot(clone._state_history, obj._state_history)
+         grammar.copy.assert_called_once()
+ 
++    def test_rejected_inner_token_does_not_advance_wrapper(self):
++        obj, grammar = self.make()
++        self.feed(obj, [99, 7, 8, 50, 12, 13])
++        before = (obj._snapshot_state(), list(obj._state_history), obj.current_token)
++        grammar.accept_token.side_effect = ValueError("native rejection")
++        with self.assertRaisesRegex(ValueError, "native rejection"):
++            obj.accept_token(100)
++        self.assertEqual(
++            (obj._snapshot_state(), obj._state_history, obj.current_token), before
++        )
++        grammar.accept_token.side_effect = None
++        obj.accept_token(101)
++        obj.rollback(1)
++        self.assertEqual(obj._snapshot_state(), before[0])
++        grammar.rollback.assert_called_once_with(1)
++
++    def test_long_final_output_keeps_only_header_snapshots(self):
++        obj, _ = self.make()
++        self.feed(obj, [99, 7, 8, 50, 12, 13])
++        prefix = len(obj._state_history)
++        # No inner grammar double: this measures the actual wrapper bookkeeping.
++        obj.grammar = None
++        for _ in range(100_000):
++            obj.accept_token(100)
++        self.assertEqual(obj.tokens_after_end, 100_000)
++        self.assertEqual(len(obj._state_history), prefix)
++        for _ in range(100):
++            clone = obj.copy()
++            self.assertEqual(len(clone._state_history), prefix)
++            clone.rollback(200)
++            self.assertEqual(clone.tokens_after_end, 99_800)
++        obj.rollback(100_001)
++        self.assertTrue(obj._waiting_for_channel_header)
++        self.assertEqual(len(obj._state_history), prefix - 1)
++
+     def test_bounded_header_timeout_and_unlimited_setting(self):
+         obj, grammar = self.make(max_channel_header_tokens=2)
+         self.feed(obj, [7, 8, 50, 51, 100])
+diff --git a/test/manual/phala/test_xgrammar_adapter_cpu.py b/test/manual/phala/test_xgrammar_adapter_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb67c8b2587465d76c2aa0e05549f072c684c771
+--- /dev/null
++++ b/test/manual/phala/test_xgrammar_adapter_cpu.py
+@@ -0,0 +1,457 @@
++"""Execute actual adapter methods; optional installed-native compiler/matcher.
++
++PHALA_XGRAMMAR_NATIVE=1 requires the installed union candidate and never skips
++its tests. No GPU runtime imports, model downloads or kernel stand-ins are used
++for native grammar compilation, token masks or rollback.
++"""
++
++import ast
++import importlib.util
++import json
++import logging
++import os
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++NATIVE = os.environ.get("PHALA_XGRAMMAR_NATIVE") == "1"
++spec = importlib.util.spec_from_file_location(
++    "adapter_schema", SRT / "constrained/xgrammar_schema.py"
++)
++schema_module = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(schema_module)
++
++
++class InvalidGrammar:
++    def __init__(self, message):
++        self.message = message
++
++
++def source_nodes(path, names, namespace, *, remove_imports=False):
++    tree = ast.parse((SRT / path).read_text(encoding="utf-8"))
++    tree.body = [node for node in tree.body if getattr(node, "name", None) in names]
++    if remove_imports:
++
++        class RemoveImports(ast.NodeTransformer):
++            def visit_Import(self, node):
++                return None
++
++            def visit_ImportFrom(self, node):
++                return None
++
++        tree = RemoveImports().visit(tree)
++    tree.body.insert(
++        0,
++        ast.ImportFrom(
++            module="__future__", names=[ast.alias(name="annotations")], level=0
++        ),
++    )
++    exec(compile(ast.fix_missing_locations(tree), str(SRT / path), "exec"), namespace)
++
++
++def adapter_namespace(compiler_factory=None):
++    namespace = {
++        "BaseGrammarBackend": object,
++        "json": json,
++        "logger": logging.getLogger(__name__),
++        "GrammarStats": lambda **kwargs: SimpleNamespace(**kwargs),
++        "InvalidGrammarObject": InvalidGrammar,
++        "GrammarCompiler": compiler_factory or Mock(),
++        "validate_xgrammar_schema": schema_module.validate_xgrammar_schema,
++        "validate_xgrammar_whitespace_limit": schema_module.validate_xgrammar_whitespace_limit,
++    }
++    source_nodes("constrained/utils.py", {"is_legacy_structural_tag"}, namespace)
++    source_nodes(
++        "constrained/xgrammar_backend.py",
++        {"TokenizerNotSupportedError", "XGrammarGrammarBackend"},
++        namespace,
++    )
++    namespace["XGrammarGrammarBackend"]._from_context = lambda self, ctx, key, stats: (
++        ctx
++    )
++    return namespace
++
++
++class SchemaTests(unittest.TestCase):
++    def test_pattern_and_length_rejected_only_in_schema_positions(self):
++        bad = {"type": "string", "pattern": "^a+$", "minLength": 3}
++        for schema in (
++            bad,
++            {"items": bad},
++            {"anyOf": [bad]},
++            {"$defs": {"x": bad}},
++            {"properties": {"pattern": bad}},
++            {"additionalProperties": bad},
++        ):
++            with self.subTest(schema=schema):
++                self.assertTrue(
++                    schema_module.has_xgrammar_unsupported_json_features(schema)
++                )
++        for key in ("const", "enum", "examples", "default"):
++            data = [bad] if key in {"enum", "examples"} else bad
++            self.assertFalse(
++                schema_module.has_xgrammar_unsupported_json_features({key: data})
++            )
++        self.assertFalse(
++            schema_module.has_xgrammar_unsupported_json_features(
++                {
++                    "properties": {
++                        "pattern": {"type": "string"},
++                        "minLength": {"type": "integer"},
++                    }
++                }
++            )
++        )
++
++    def test_limit_validation(self):
++        for limit in (0, -1, True, 1.5, "2", 2**31):
++            with self.subTest(limit=limit), self.assertRaises(ValueError):
++                schema_module.validate_xgrammar_whitespace_limit(limit)
++        for backend in ("none", "llguidance", "outlines", "custom"):
++            with self.assertRaises(ValueError):
++                schema_module.validate_xgrammar_whitespace_limit(2, backend=backend)
++            schema_module.validate_xgrammar_whitespace_limit(None, backend=backend)
++        with self.assertRaises(ValueError):
++            schema_module.validate_xgrammar_whitespace_limit(2, any_whitespace=False)
++        schema_module.validate_xgrammar_whitespace_limit(1)
++
++    def test_nested_structural_schema_validation(self):
++        target = adapter_namespace()["XGrammarGrammarBackend"]
++        bad = {"type": "array", "uniqueItems": True}
++        wrappers = [
++            lambda x: {"type": "tag", "content": x},
++            lambda x: {"type": "sequence", "elements": [x]},
++            lambda x: {"type": "or", "elements": [x]},
++            lambda x: {
++                "type": "triggered_tags",
++                "tags": [{"type": "tag", "content": x}],
++            },
++            lambda x: {
++                "type": "tags_with_separator",
++                "tags": [{"type": "tag", "content": x}],
++            },
++            lambda x: {"type": "dispatch", "rules": [["<call>", x]]},
++            lambda x: {"type": "token_dispatch", "rules": [[12, x]]},
++        ] + [
++            (lambda x, name=name: {"type": name, "content": x})
++            for name in ("optional", "plus", "star", "repeat")
++        ]
++        for fmt_type in ("json_schema", "qwen_xml_parameter"):
++            for wrap in wrappers:
++                with self.assertRaises(RuntimeError):
++                    target._sanitize_structural_format(
++                        wrap({"type": fmt_type, "json_schema": bad})
++                    )
++        with self.assertRaises(RuntimeError):
++            target._sanitize_structural_tag_structures(
++                {"structures": [{"schema": bad}]}
++            )
++        literal = {
++            "type": "json_schema",
++            "json_schema": {"const": {"uniqueItems": True}},
++        }
++        target._sanitize_structural_format(literal)
++        self.assertEqual(literal["json_schema"], {"const": {"uniqueItems": True}})
++
++    def test_factory_config_and_unsupported_tokenizer_fail_closed(self):
++        namespace = adapter_namespace()
++        cfg = SimpleNamespace(
++            constrained_json_max_whitespace_cnt=2,
++            constrained_json_disable_any_whitespace=False,
++            enable_strict_thinking=False,
++            reasoning_parser=None,
++        )
++        execution = SimpleNamespace(kernel=SimpleNamespace(grammar_backend="xgrammar"))
++        namespace.update(
++            get_exec=lambda: execution,
++            get_serving=lambda: cfg,
++            GRAMMAR_BACKEND_REGISTRY={},
++            get_context=lambda: SimpleNamespace(override=Mock()),
++        )
++        source_nodes(
++            "constrained/base_grammar_backend.py",
++            {"create_grammar_backend"},
++            namespace,
++            remove_imports=True,
++        )
++        factory = namespace["create_grammar_backend"]
++        backend = factory(
++            None, SimpleNamespace(init_xgrammar=lambda: ("info", None)), 257
++        )
++        self.assertEqual(backend.max_whitespace_cnt, 2)
++        with self.assertRaises(ValueError):
++            factory(None, SimpleNamespace(init_xgrammar=lambda: (None, None)), 257)
++        for name in ("none", "llguidance", "outlines"):
++            execution.kernel.grammar_backend = name
++            with self.assertRaises(ValueError):
++                factory(None, None, 257)
++        execution.kernel.grammar_backend = "xgrammar"
++        cfg.constrained_json_max_whitespace_cnt = None
++        self.assertIsNone(
++            factory(None, SimpleNamespace(init_xgrammar=lambda: (None, None)), 257)
++        )
++
++    def test_resolution_and_cli_field_wiring(self):
++        namespace = {
++            "resolving_view": lambda args: args,
++            "declare_resolution": Mock(),
++            "validate_xgrammar_whitespace_limit": schema_module.validate_xgrammar_whitespace_limit,
++        }
++        source_nodes(
++            "arg_groups/serving_hook.py",
++            {"handle_grammar_backend"},
++            namespace,
++            remove_imports=True,
++        )
++        cfg = SimpleNamespace(
++            grammar_backend=None,
++            constrained_json_max_whitespace_cnt=2,
++            constrained_json_disable_any_whitespace=False,
++        )
++        namespace["handle_grammar_backend"](cfg)
++        namespace["declare_resolution"].assert_called_once()
++        cfg.grammar_backend = "outlines"
++        with self.assertRaises(ValueError):
++            namespace["handle_grammar_backend"](cfg)
++        fields = ast.parse((SRT / "arg_groups/fields/serving.py").read_text())
++        cls = next(x for x in fields.body if isinstance(x, ast.ClassDef))
++        field = next(
++            x
++            for x in cls.body
++            if isinstance(x, ast.AnnAssign)
++            and x.target.id == "constrained_json_max_whitespace_cnt"
++        )
++        self.assertIsNone(ast.literal_eval(field.value))
++        self.assertIn("Optional[int]", ast.unparse(field.annotation))
++        self.assertIn(
++            '"constrained_json_max_whitespace_cnt"',
++            (SRT / "arg_groups/field_order.py").read_text(),
++        )
++
++
++@unittest.skipUnless(
++    NATIVE, "set PHALA_XGRAMMAR_NATIVE=1 for installed candidate tests"
++)
++class InstalledNativeTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import importlib.metadata
++
++        import xgrammar as xg
++
++        if importlib.metadata.version("xgrammar") != "0.2.6+phala.union1":
++            raise RuntimeError(
++                "native tests require the single pinned union1 candidate"
++            )
++        cls.xg = xg
++        cls.info = xg.TokenizerInfo(
++            [bytes([i]) for i in range(256)] + [b"<eos>"],
++            xg.VocabType.RAW,
++            stop_token_ids=[256],
++        )
++        namespace = adapter_namespace(
++            lambda **kwargs: xg.GrammarCompiler(max_threads=2, **kwargs)
++        )
++        namespace.update(
++            StructuralTag=xg.StructuralTag, StructuralTagItem=xg.StructuralTagItem
++        )
++        cls.backend_type = namespace["XGrammarGrammarBackend"]
++
++    def backend(self, limit=None):
++        return self.backend_type(
++            SimpleNamespace(init_xgrammar=lambda: (self.info, None)),
++            257,
++            max_whitespace_cnt=limit,
++        )
++
++    def accepts(self, compiled, text):
++        self.assertNotIsInstance(compiled, InvalidGrammar)
++        matcher = self.xg.GrammarMatcher(compiled)
++        return matcher.accept_string(text) and matcher.accept_token(256)
++
++    def test_direct_schema_bound_and_string_whitespace(self):
++        grammar = self.backend(2).dispatch_json(
++            json.dumps(
++                {
++                    "type": "object",
++                    "properties": {"x": {"type": "string"}},
++                    "required": ["x"],
++                }
++            )
++        )
++        self.assertTrue(self.accepts(grammar, '{"x":  "a     b"}'))
++        self.assertFalse(self.accepts(grammar, '{"x":   "a"}'))
++
++    def test_bounded_any_retains_arbitrary_json(self):
++        grammar = self.backend(2).dispatch_json("$$ANY$$")
++        for text in ("[1,  2]", '{"unknown":  2}', '"a    b"', "true", "2"):
++            self.assertTrue(self.accepts(grammar, text), text)
++        self.assertFalse(self.accepts(grammar, "[1,   2]"))
++        self.assertTrue(
++            self.accepts(self.backend().dispatch_json("$$ANY$$"), "[1,     2]")
++        )
++
++    def test_direct_pattern_length_fail_closed(self):
++        for keyword in ("minLength", "maxLength"):
++            result = self.backend().dispatch_json(
++                json.dumps(
++                    {
++                        "type": "string",
++                        "pattern": "^a+$",
++                        keyword: 2,
++                    }
++                )
++            )
++            self.assertIsInstance(result, InvalidGrammar)
++
++    def test_legacy_rejects_unsupported_schema(self):
++        result = self.backend().dispatch_structural_tag(
++            json.dumps(
++                {
++                    "type": "structural_tag",
++                    "triggers": ["<call>"],
++                    "structures": [
++                        {
++                            "begin": "<call>",
++                            "end": "</call>",
++                            "schema": {"type": "array", "uniqueItems": True},
++                        }
++                    ],
++                }
++            )
++        )
++        self.assertIsInstance(result, InvalidGrammar)
++
++    def test_legacy_order_and_required_native(self):
++        result = self.backend().dispatch_structural_tag(
++            json.dumps(
++                {
++                    "type": "structural_tag",
++                    "triggers": ["<call>"],
++                    "at_least_one": True,
++                    "structures": [
++                        {
++                            "begin": "<call>",
++                            "end": "</call>",
++                            "schema": {
++                                "type": "object",
++                                "properties": {
++                                    "a": {"type": "integer"},
++                                    "b": {"type": "integer"},
++                                },
++                                "required": ["a", "b"],
++                                "additionalProperties": False,
++                            },
++                        }
++                    ],
++                }
++            )
++        )
++        self.assertTrue(self.accepts(result, '<call>{"b":2,"a":1}</call>'))
++        self.assertFalse(self.accepts(result, '<call>{"b":2}</call>'))
++
++    def test_nested_json_and_xml_reject_ignored_constraints(self):
++        for fmt_type in ("json_schema", "qwen_xml_parameter"):
++            result = self.backend().dispatch_structural_tag(
++                json.dumps(
++                    {
++                        "type": "structural_tag",
++                        "format": {
++                            "type": "optional",
++                            "content": {
++                                "type": "tag",
++                                "begin": "<call>",
++                                "end": "</call>",
++                                "content": {
++                                    "type": fmt_type,
++                                    "json_schema": {
++                                        "properties": {
++                                            "x": {"pattern": "^a+$", "maxLength": 2}
++                                        }
++                                    },
++                                },
++                            },
++                        },
++                    }
++                )
++            )
++            self.assertIsInstance(result, InvalidGrammar)
++
++    def test_per_format_limit_preserved_not_global_override(self):
++        result = self.backend(1).dispatch_structural_tag(
++            json.dumps(
++                {
++                    "type": "structural_tag",
++                    "format": {
++                        "type": "json_schema",
++                        "json_schema": {"type": "array", "items": {"type": "integer"}},
++                        "max_whitespace_cnt": 3,
++                    },
++                }
++            )
++        )
++        self.assertTrue(self.accepts(result, "[1,   2]"))
++        self.assertFalse(self.accepts(result, "[1,    2]"))
++
++    def test_empty_xml_and_undeclared_required(self):
++        for schema, text, rejected in (
++            (
++                {"type": "object", "properties": {}, "additionalProperties": False},
++                "<call></call>",
++                "<call> </call>",
++            ),
++            (
++                {
++                    "type": "object",
++                    "required": ["x"],
++                    "additionalProperties": {"type": "integer"},
++                },
++                "<call><parameter=x>2</parameter></call>",
++                "<call></call>",
++            ),
++        ):
++            result = self.backend().dispatch_structural_tag(
++                json.dumps(
++                    {
++                        "type": "structural_tag",
++                        "format": {
++                            "type": "tag",
++                            "begin": "<call>",
++                            "end": "</call>",
++                            "content": {
++                                "type": "qwen_xml_parameter",
++                                "json_schema": schema,
++                            },
++                        },
++                    }
++                )
++            )
++            self.assertTrue(self.accepts(result, text))
++            self.assertFalse(self.accepts(result, rejected))
++
++    def test_mask_rollback_eos_from_adapter_compilation(self):
++        import torch
++
++        grammar = self.backend(2).dispatch_json(
++            '{"type":"array","items":{"type":"integer"}}'
++        )
++        matcher = self.xg.GrammarMatcher(grammar)
++        self.assertTrue(matcher.accept_string("[1,  "))
++        mask = self.xg.allocate_token_bitmask(1, 257)
++        matcher.fill_next_token_bitmask(mask)
++        self.assertFalse(int(mask[0, ord(" ") // 32]) & (1 << (ord(" ") % 32)))
++        before = mask.clone()
++        self.assertTrue(matcher.accept_token(ord("2")))
++        matcher.rollback(1)
++        matcher.fill_next_token_bitmask(mask)
++        self.assertTrue(torch.equal(before, mask))
++        self.assertTrue(matcher.accept_string("2]"))
++        self.assertTrue(matcher.accept_token(256))
++        self.assertTrue(matcher.is_terminated())
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/manual/unit/constrained/test_xgrammar_unsupported_schema.py b/test/manual/unit/constrained/test_xgrammar_unsupported_schema.py
+index bb1867ff034f203d829c0813f4a2feb86a8eb9f1..df7cb1bc0f170252b1e8d3e11f22eae7923a05d1 100644
+--- a/test/manual/unit/constrained/test_xgrammar_unsupported_schema.py
++++ b/test/manual/unit/constrained/test_xgrammar_unsupported_schema.py
+@@ -80,6 +80,7 @@ class TestHasXGrammarUnsupportedJsonFeatures(unittest.TestCase):
+         backend = XGrammarGrammarBackend.__new__(XGrammarGrammarBackend)
+         backend.grammar_compiler = MagicMock()
+         backend.any_whitespace = True
++        backend.max_whitespace_cnt = None
+         schema = {
+             "type": "object",
+             "dependentSchemas": {"mode": {"required": ["value"]}},
+diff --git a/test/registered/unit/constrained/test_base_grammar_backend.py b/test/registered/unit/constrained/test_base_grammar_backend.py
+index 0c49ce5981d02a1681788e2590f52f04badc6fb2..5fe364dccbcb016786310352b3f46a39f52c1818 100644
+--- a/test/registered/unit/constrained/test_base_grammar_backend.py
++++ b/test/registered/unit/constrained/test_base_grammar_backend.py
+@@ -259,6 +259,7 @@ class TestCreateGrammarBackend(unittest.TestCase):
+             "enable_strict_thinking": enable_strict_thinking,
+             "constrained_json_whitespace_pattern": None,
+             "constrained_json_disable_any_whitespace": False,
++            "constrained_json_max_whitespace_cnt": None,
+         }
+         published.update(fields)
+         self._publish(**published)
+@@ -335,7 +336,11 @@ class TestCreateGrammarBackend(unittest.TestCase):
+ 
+         result = create_grammar_backend(args, "tok", 32000, {1, 2})
+         mock_xgrammar_cls.assert_called_once_with(
+-            "tok", vocab_size=32000, model_eos_token_ids=[1, 2], any_whitespace=False
++            "tok",
++            vocab_size=32000,
++            model_eos_token_ids=[1, 2],
++            any_whitespace=False,
++            max_whitespace_cnt=None,
+         )
+         self.assertIs(result, mock_backend)
+ 

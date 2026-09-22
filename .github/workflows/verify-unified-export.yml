@@ -1,0 +1,114 @@
+name: Verify unified source export
+
+on:
+  pull_request:
+    paths:
+      - 'manifest.json'
+      - 'selectors.json'
+      - 'external-dependencies.json'
+      - '*verification.json'
+      - 'series'
+      - 'patches/**'
+      - 'integrations/**'
+      - 'scripts/export*.py'
+      - 'tests/test_export_selectors.py'
+      - '.github/workflows/verify-unified-export.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'manifest.json'
+      - 'selectors.json'
+      - 'external-dependencies.json'
+      - '*verification.json'
+      - 'series'
+      - 'patches/**'
+      - 'integrations/**'
+      - 'scripts/export*.py'
+      - 'tests/test_export_selectors.py'
+      - '.github/workflows/verify-unified-export.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set isolated source paths
+        shell: bash
+        run: |
+          echo "SOURCE=$RUNNER_TEMP/sglang-export-source" >> "$GITHUB_ENV"
+          echo "GOVERNOR=$RUNNER_TEMP/governor-export-source" >> "$GITHUB_ENV"
+      - name: Test existing selector replay fixtures
+        run: python3 -m unittest discover -s tests -p test_export_selectors.py -v
+      - name: Fetch and verify immutable source objects
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          manifest = json.loads(Path("manifest.json").read_text())
+          selectors = json.loads(Path("selectors.json").read_text())
+          engine_repository = "https://github.com/Phala-Network/sglang"
+          governor_repository = "https://github.com/Phala-Network/phala-inference-governor"
+          assert manifest["engine"]["repository"] == engine_repository
+          assert selectors["complete_engine_reference"]["repository"] == engine_repository
+          assert manifest["upstream"]["repository"] == "https://github.com/sgl-project/sglang"
+
+          commits = {manifest["upstream"]["commit"], manifest["engine"]["commit"],
+                     selectors["upstream"], selectors["complete_engine_reference"]["commit"]}
+          for patch in manifest["patches"]:
+              commits.update((patch["source_commit"], patch["source_parent"]))
+          for selector in selectors["selectors"].values():
+              commits.add(selector["fork_commit"])
+              if selector.get("source_parent"):
+                  commits.add(selector["source_parent"])
+              for patch in selector.get("patches", []):
+                  for field in ("source_commit", "source_parent"):
+                      if patch.get(field):
+                          commits.add(patch[field])
+
+          def fetch(path, repository, identities, depth):
+              identities = sorted(identities)
+              assert identities and all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in identities)
+              subprocess.run(["git", "init", "--quiet", path], check=True)
+              prefix = ["git", "-C", path]
+              subprocess.run(prefix + ["remote", "add", "origin", repository], check=True)
+              subprocess.run(prefix + ["config", "remote.origin.promisor", "true"], check=True)
+              subprocess.run(prefix + ["config", "remote.origin.partialclonefilter", "blob:none"], check=True)
+              # Fetch the frozen chain together so shallow boundaries cannot
+              # truncate its required linear history; blobs are loaded on demand.
+              subprocess.run(prefix + ["fetch", "--no-tags", "--filter=blob:none",
+                                      f"--depth={depth}", "origin", *identities], check=True)
+              for sha in identities:
+                  actual = subprocess.check_output(prefix + ["rev-parse", sha + "^{commit}"], text=True).strip()
+                  assert actual == sha, f"source identity mismatch: {sha}"
+              print(f"Verified {len(identities)} immutable commits from {repository}")
+
+          fetch(os.environ["SOURCE"], engine_repository, commits, len(manifest["patches"]) + 2)
+          fetch(os.environ["GOVERNOR"], governor_repository, {manifest["governor"]["commit"]}, 1)
+          external_path = Path("external-dependencies.json")
+          if external_path.exists():
+              native = json.loads(external_path.read_text())["xgrammar"]
+              assert native["upstream_repository"] == "https://github.com/mlc-ai/xgrammar"
+              assert re.fullmatch(r"[0-9a-f]{40}", native["upstream_commit"])
+              subprocess.run(["git", "-C", os.environ["SOURCE"], "fetch", "--no-tags",
+                              "--depth=1", native["upstream_repository"],
+                              native["upstream_commit"]], check=True)
+          PY
+      - name: Verify frozen export bytes and clean index replay
+        run: python3 scripts/export.py --source "$SOURCE" --governor "$GOVERNOR" --check
+      - name: Verify selector identities, bytes and declared replay outcomes
+        run: python3 scripts/export_selectors.py --source "$SOURCE" --check
