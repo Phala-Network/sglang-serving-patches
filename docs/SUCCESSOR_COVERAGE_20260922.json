@@ -33,7 +33,8 @@
     "upstreamcovered": 6
   },
   "independent_residual_closeout": {
-    "file": "tmp/model-union-completion-audit-20260922/RESIDUAL-CLOSEOUT.md",
+    "file": "docs/validation/RESIDUAL_CLOSEOUT_20260922.md",
+    "original_workspace_receipt": "tmp/model-union-completion-audit-20260922/RESIDUAL-CLOSEOUT.md",
     "sha256": "7273e1faeae8b987d3aa46142904001912c4ab84e6ee8a0be7b4ef1a9aa340bc",
     "engine_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
     "engine_tree": "0af2ff1dbe241285caacf8e8236c918a434b9889",
@@ -62,16 +63,13 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/kernels/jit/utils/compile/loader.py",
-        "python/sglang/kernels/ops/diffusion/ext/loader.py",
-        "python/sglang/multimodal_gen/runtime/models/sensenova_u1/loader.py",
         "python/sglang/srt/layers/linear.py",
         "python/sglang/srt/model_loader/gguf_name_maps.py",
         "python/sglang/srt/model_loader/loader.py",
         "python/sglang/srt/models/qwen3_5.py",
-        "python/sglang/srt/models/qwen3_5_text.py",
-        "python/sglang/srt/rust_extensions/loader.py"
+        "python/sglang/srt/models/qwen3_5_text.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`model_loader/gguf_name_maps.py` Qwen name/weight transforms, `loader.py:GGUFModelLoader`, `models/qwen3_5_text.py` quantized head; `0b921c2f15` guards Qwen+GGUF"
       ],
@@ -111,6 +109,7 @@
         "python/sglang/srt/model_loader/gguf_name_maps.py",
         "python/sglang/srt/model_loader/loader.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`model_loader/gguf_name_maps.py:get_missing_gguf_parameters` audits parameter identity, called by loader; `0b921c2f15`"
       ],
@@ -150,6 +149,7 @@
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
         "python/sglang/srt/function_call/utils.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/utils.py:get_argument_schema/coerce_argument_to_schema` plus `qwen3_coder_detector.py:_parse_complete_block`; `447dfcb6de` atomically withholds incomplete/unknown calls"
       ],
@@ -189,6 +189,7 @@
       "engine_paths": [
         "python/sglang/srt/constrained/llguidance_backend.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`constrained/llguidance_backend.py:GuidanceGrammar` alloc/move/apply mask callbacks; `87ace709c8`"
       ],
@@ -223,6 +224,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/utils.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/utils.py:get_json_schema_constraint` carries selected `$defs` and `definitions` into named-tool wrapper; `d912c600ba`"
       ],
@@ -262,6 +264,7 @@
         "python/sglang/srt/entrypoints/openai/mode_sampling_defaults.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`entrypoints/openai/mode_sampling_defaults.py:apply_mode_sampling_defaults` is actually called after sampling conversion in `serving_chat.py`; `1db913dd7b` preserves explicit field zero/null semantics and openai opt-out"
       ],
@@ -298,6 +301,7 @@
         "python/sglang/srt/model_loader/gguf_vision.py",
         "python/sglang/srt/model_loader/loader.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`model_loader/gguf_vision.py:qwen35_vision_weights_iterator` feeds audited projector tensors to GGUF loader; `0b921c2f15`"
       ],
@@ -333,9 +337,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/layers/quantization/gguf.py",
         "python/sglang/srt/layers/quantization/gguf.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/quantization/gguf.py` scoped BF16/Q8_0/CUDA/large-prefill dispatch; `8a51d28ba2`"
       ],
@@ -372,13 +376,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/kernels/ops/attention/fa4_sm120/scheduler.py",
-        "python/sglang/multimodal_gen/runtime/managers/scheduler.py",
-        "python/sglang/srt/dllm/mixin/scheduler.py",
         "python/sglang/srt/managers/scheduler.py",
-        "python/sglang/srt/managers/tokenizer_manager.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/scheduler.py"
+        "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`managers/tokenizer_manager.py` dispatched-state marking, failure abort retention; `scheduler.py` deferred chunk abort retry; official #35255 plus `0bf1ed94ed`"
       ],
@@ -419,20 +420,14 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
         "python/sglang/srt/constrained/xgrammar_backend.py",
         "python/sglang/srt/constrained/xgrammar_schema.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py",
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
-        "python/sglang/srt/function_call/utils.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/function_call/utils.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`protocol.py` allowed-tools validation, `serving_chat.py` effective-tool filtering, `constrained/xgrammar_schema.py` schema-only unsupported-feature walk; `abdd4d766e`, `83b69e75e7`, `514fcaf8c5`"
       ],
@@ -474,6 +469,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:_fold_qwen35_system_messages`, called before render; `348b3066f5`"
       ],
@@ -511,6 +507,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:_expose_qwen35_reasoning_tool_history`, called before encode; `348b3066f5`"
       ],
@@ -548,6 +545,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:_apply_qwen35_reasoning_effort_guidance`; low/medium/xhigh distinct, model-config guard"
       ],
@@ -593,6 +591,7 @@
         "python/sglang/srt/managers/io_struct.py",
         "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:_qwen35_reasoning_effort_token_range` feeds request bounds; `constrained/grammar_manager.py:_get_request_thinking_bounds` and reasoner filter consume them"
       ],
@@ -628,15 +627,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
-        "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/entrypoints/openai/protocol.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`protocol.py:normalize_reasoning_inputs` preserves nested explicit disabled control"
       ],
@@ -685,6 +678,7 @@
         "python/sglang/srt/constrained/grammar_manager.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`constrained/grammar_manager.py:_strict_thinking_grammar_disabled` is checked on compilation route, preserving explicit bounds"
       ],
@@ -723,6 +717,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:_process_tool_call_stream` withholds parameter-only deltas before name; `f3418d51a0`"
       ],
@@ -760,6 +755,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py` Qwen tool-result guidance remains in effort/history normalization"
       ],
@@ -797,16 +793,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
-        "python/sglang/srt/entrypoints/openai/serving_chat.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`protocol.py:reasoning_max_tokens` and Qwen request-cap math retained; earlier default experiment superseded by later quality/medium settings"
       ],
@@ -845,6 +835,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py` default8192/high alias and answer reserve retained without reapplying obsolete lower budget"
       ],
@@ -882,16 +873,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
-        "python/sglang/srt/entrypoints/openai/serving_chat.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`protocol.py` nested exclusion precedence; `serving_chat.py` output hiding separated from generation; `ffcf7799ff`"
       ],
@@ -941,6 +926,7 @@
         "python/sglang/srt/managers/scheduler.py",
         "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official #35255 dispatched abort plus `tokenizer_manager.py` current cleanup/identity strengthening"
       ],
@@ -990,6 +976,7 @@
         "python/sglang/srt/layers/attention/linear/kernels/gdn_flashinfer.py",
         "python/sglang/srt/models/qwen3_5.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `07199fa220cc353a2b5230b8bf47a0dead7ea96c`; six named layout/kernel functions AST-identical to exported donor; Qwen split views feed `gdn_flashinfer.py:extend` and strided gated norm",
         "GDN donor ae13fff53317c8db42f2bda64b20a2fe280591e2 has AST-equal gdn_prefill_qkv_prepare_kernel, gdn_prefill_qkv_prepare_fwd, _layer_norm_fwd_1pass_kernel, _layer_norm_fwd, rms_norm_gated and qwen3_5_gdn_prefill_projection_views. gdn_flashinfer.extend actually consumes preparation; Qwen non-spec extend selects strided views."
@@ -1026,6 +1013,7 @@
         "test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py",
         "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "historical fixture/config-bag adaptation; current Qwen serving fixtures use runtime bags, not a distinct runtime feature"
       ],
@@ -1063,6 +1051,7 @@
         "test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py",
         "test/registered/unit/entrypoints/openai/test_serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "completed Qwen reasoning fixture represented by current effort/history tests"
       ],
@@ -1100,12 +1089,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/kernels/jit/utils/common.py",
-        "python/sglang/multimodal_gen/runtime/utils/common.py",
-        "python/sglang/srt/layers/utils/common.py",
         "python/sglang/srt/utils/common.py",
         "python/sglang/srt/utils/watchdog.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`utils/common.py` eager PIL request-local decode checks and `utils/watchdog.py` recovery independent of diagnostics; `6a673233e9`, `fd778061bc`"
       ],
@@ -1147,6 +1134,7 @@
         "python/sglang/srt/utils/cudacore_pyspy_dump_utils.py",
         "python/sglang/srt/utils/watchdog.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`tokenizer_manager.py` budget validation before MM decode, watchdog bounded diagnostics/reap; `cc703a7a7b`, `fd778061bc`"
       ],
@@ -1182,6 +1170,7 @@
       "engine_paths": [
         "test/registered/unit/multimodal/test_base_processor_bad_input.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "existing eager-PIL failure test exercises actual image load boundary"
       ],
@@ -1215,6 +1204,7 @@
       "engine_paths": [
         "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "pre-MM config-bag fixture replaced by current native pre-MM validation test"
       ],
@@ -1249,6 +1239,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py` `_QWEN35_REASONING_EFFORT_ALIASES` applied to guidance, bounds and template kwargs"
       ],
@@ -1286,6 +1277,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "Qwen medium ceiling4096 remains distinct from low64/high8192 while keeping independent high minimum"
       ],
@@ -1329,6 +1321,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/utils.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/utils.py:normalize_json_schema_types` removes null optional schema fields; `6efe42ec6a`"
       ],
@@ -1367,6 +1360,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/qwen3_coder_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`qwen3_coder_detector.py` empty XML close and required repetition; native union1 selected"
       ],
@@ -1409,6 +1403,7 @@
         "test/manual/unit/function_call/test_named_tool_reference_scope.py",
         "test/manual/unit/function_call/test_qwen_xml_empty_required_schema.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "exported source is a CPU qualification fixture, not an independent engine build feature; current XML/required tests plus native recipe cover intent"
       ],
@@ -1448,6 +1443,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/qwen3_coder_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "detector typed `additionalProperties` and normalized-schema cases preserved in shared coercion"
       ],
@@ -1487,11 +1483,10 @@
       "audit_at_05a0fe7_status": "upstreamcovered",
       "status": "upstreamcovered",
       "engine_paths": [
-        "python/sglang/srt/arg_groups/model_overrides/nemotron_h.py",
-        "python/sglang/srt/configs/nemotron_h.py",
         "python/sglang/srt/layers/quantization/unquant.py",
         "python/sglang/srt/models/nemotron_h.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `214313ee796b804cb4191dfacfade4af9cf602f3`; `nemotron_h.py:_apply_latent_projection` invokes guarded `UnquantizedLinearMethod.apply_with_addend`; both production files unchanged from official base",
         "Integrator deep audit complete: docs/NEMOTRON_HISTORY_AUDIT_20260922.md. Exact upstream ancestry/functions plus retained caller/guards checked; Mamba4, saved admission debit with late-recompute negative control, page/exact-fill and deferred-decode source-method checks passed. No duplicate production overlay required."
@@ -1527,6 +1522,7 @@
       "engine_paths": [
         "python/sglang/srt/layers/sampler.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `be00a543a79f1fe8d2265624d11fadcd05a0a155`, `layers/sampler.py:sampling_from_probs_torch` Gumbel-max"
       ],
@@ -1559,6 +1555,7 @@
       "engine_paths": [
         "python/sglang/srt/constrained/llguidance_backend.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`llguidance_backend.py` guarded pinned host bitmask allocation; `87ace709c8`"
       ],
@@ -1593,6 +1590,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/muse_glimmer_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/muse_glimmer_detector.py` native ATEM/JSON channel parsing and constrained capability; `6b3ca7eddd`, `acec595f6b`"
       ],
@@ -1634,6 +1632,7 @@
         "python/sglang/srt/environ.py",
         "python/sglang/srt/parser/reasoning_parser.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`constrained/reasoner_grammar_backend.py` parser-provided channel token matcher and rollback; `252ce1114c`"
       ],
@@ -1670,16 +1669,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
-        "python/sglang/srt/entrypoints/openai/usage_processor.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/entrypoints/openai/usage_processor.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`protocol.py:CompletionTokensDetails`, `usage_processor.py` typed reasoning detail; `89f583819b`"
       ],
@@ -1720,6 +1713,7 @@
         "python/sglang/srt/function_call/function_call_parser.py",
         "python/sglang/srt/function_call/muse_glimmer_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:normalize_muse_history` plus actual prompt call, native constrained-output capability and named-cardinality routing"
       ],
@@ -1759,6 +1753,7 @@
         "python/sglang/srt/entrypoints/openai/protocol.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:apply_muse_structured_output_reasoning_default` model-scoped JSON direct-final default, explicit control wins"
       ],
@@ -1797,6 +1792,7 @@
         "python/sglang/srt/function_call/function_call_parser.py",
         "python/sglang/srt/function_call/muse_glimmer_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/function_call_parser.py` named choice not swallowed by required-native capability; Muse plain ATEM behavior retained"
       ],
@@ -1835,6 +1831,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/muse_glimmer_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`muse_glimmer_detector.py:get_structural_tag` required tools carry nonempty array/cardinality/schema constraint"
       ],
@@ -1881,11 +1878,10 @@
         "python/sglang/srt/entrypoints/openai/protocol.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py",
         "python/sglang/srt/function_call/utils.py",
-        "python/sglang/srt/hardware_backend/mlx/tp_worker.py",
-        "python/sglang/srt/managers/scheduler_components/weight_updater.py",
         "python/sglang/srt/managers/tp_worker.py",
         "python/sglang/srt/model_executor/model_runner_components/weight_updater.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "Muse strength/visibility, llguidance and schema parts covered; `tp_worker.py` and `weight_updater.py` malformed-payload guard/test missing at fixed head",
         "Residual closed by f172f7f6e2d3917c6f11491d0ef859ac76c2669d and 228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33: controlled own-rank deserialization failure; payload/name/local-rank/load-format/flattened bounds validation; unwrap and full-bucket reconstruction fail before model mutation. Existing DS derived-cache and active-cache guards preserved."
@@ -1934,6 +1930,7 @@
         "python/sglang/srt/layers/attention/mamba/mamba.py",
         "python/sglang/srt/layers/attention/mamba/mamba2_metadata.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `0b57847ebfd4e28a2c371892b9d4ac778e34b3fa`; tracked Mamba states/SSM indexing in `python/sglang/kernels/ops/mamba/triton_ops/ssd_combined.py` and Mamba attention consumers",
         "Integrator deep audit complete: docs/NEMOTRON_HISTORY_AUDIT_20260922.md. Exact upstream ancestry/functions plus retained caller/guards checked; Mamba4, saved admission debit with late-recompute negative control, page/exact-fill and deferred-decode source-method checks passed. No duplicate production overlay required."
@@ -1970,6 +1967,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/schedule_policy.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `e4adf63275005f4b3e6f8d74ae4ff203a75d05df`; `schedule_policy.py` snapshots mamba gap reserve before binding and reuses it for debit; cache tests use indexed assignment",
         "Integrator deep audit complete: docs/NEMOTRON_HISTORY_AUDIT_20260922.md. Exact upstream ancestry/functions plus retained caller/guards checked; Mamba4, saved admission debit with late-recompute negative control, page/exact-fill and deferred-decode source-method checks passed. No duplicate production overlay required."
@@ -2005,6 +2003,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/schedule_batch.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "official `8392c36bce22d3c54a6381aea6e003d6bf57719b`; deferred metadata clearing before speculative decode retained",
         "Integrator deep audit complete: docs/NEMOTRON_HISTORY_AUDIT_20260922.md. Exact upstream ancestry/functions plus retained caller/guards checked; Mamba4, saved admission debit with late-recompute negative control, page/exact-fill and deferred-decode source-method checks passed. No duplicate production overlay required."
@@ -2045,6 +2044,7 @@
         "python/sglang/srt/constrained/xgrammar_backend.py",
         "python/sglang/srt/server_args.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`constrained/base_grammar_backend.py`, `xgrammar_backend.py`, server argument opt-in bounded whitespace including ANY and nested structural formats; `9025b810d5`"
       ],
@@ -2090,6 +2090,7 @@
         "python/pyproject_npu.toml",
         "python/pyproject_other.toml"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "one `0.2.6+phala.union1` dependency/recipe replaces competing historical pins; bounded tests actually compiled with installed native library"
       ],
@@ -2130,6 +2131,7 @@
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
         "python/sglang/srt/parser/reasoning_parser.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`qwen3_coder_detector.py` native tool boundaries + reasoner finish handling, small-object ordering in selected external XGrammar"
       ],
@@ -2170,9 +2172,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/pipelines_core/schedule_batch.py",
         "python/sglang/srt/managers/schedule_batch.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`schedule_batch.py:_cap_reasoning_tokens_at_finished_len`; external patch bytes separately locked, not inferred from engine"
       ],
@@ -2223,6 +2225,7 @@
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
         "python/sglang/srt/parser/reasoning_parser.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`reasoning_parser.py:_set_finish_reason` and `serving_chat.py` termination propagation prevent truncated thinking from tool execution; `df95a7731e`"
       ],
@@ -2264,6 +2267,7 @@
         "python/sglang/srt/function_call/function_call_parser.py",
         "python/sglang/srt/function_call/qwen3_coder_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "shared `qwen3_coder_detector.py` waits for outer block close and drops unfinished tail instead of early name/arguments"
       ],
@@ -2302,6 +2306,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_chat.py:muse_format_template_kwargs` passes selected schema/response format to historical template"
       ],
@@ -2337,6 +2342,7 @@
       "engine_paths": [
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "actual `_process_messages` to `_apply_jinja_template` passes `tool_call_constraint` only on Muse path"
       ],
@@ -2373,12 +2379,10 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/entrypoints/post_training/io_struct.py",
-        "python/sglang/srt/managers/io_struct.py",
         "python/sglang/srt/managers/scheduler.py",
-        "python/sglang/srt/managers/tokenizer_manager.py",
-        "python/sglang/test/scripted_runtime/io_struct.py"
+        "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "common dispatched-state cleanup retained; `io_struct.py` registers only logical n parents before expansion, replacing old orphan-placeholder cleanup; `35fc03abe0`, `0bf1ed94ed`, `1e62ad753c`"
       ],
@@ -2428,6 +2432,7 @@
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
         "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "Nemotron answer reserve, prompt schema, fail-closed budget filter, schema-only pattern/length validation, literal-marker behavior are covered; first SSE error status-promotion hunk missing at fixed head",
         "Residual closed by f172f7f6e2d3917c6f11491d0ef859ac76c2669d: shared _streaming_response_before_headers promotes initial encoded 4xx/5xx SSE error before headers and closes generation. Later errors and existing ownership/disconnect cleanup stay streamed."
@@ -2478,6 +2483,7 @@
         "python/sglang/srt/parser/nemotron_token_boundary.py",
         "python/sglang/srt/parser/reasoning_parser.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`entrypoints/openai/nemotron_literal_tokens.py`, parser token context and guarded callsites; `6acf476ccf`"
       ],
@@ -2518,6 +2524,7 @@
         "python/sglang/srt/managers/scheduler.py",
         "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`tokenizer_manager.py:_release_req_states_on_failure` aborts/retains dispatched owners, removes undelivered; scheduler reissues moved-chunk abort"
       ],
@@ -2558,6 +2565,7 @@
         "test/registered/unit/managers/test_parallel_sampling_owner_lifecycle.py",
         "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "current parallel-sampling fixtures assert logical-parent/child dispatch ownership instead of old placeholder assumptions"
       ],
@@ -2602,6 +2610,7 @@
         "python/sglang/srt/layers/moe/moe_runner/triton_utils/moe_align_block_size.py",
         "python/sglang/srt/layers/quantization/marlin_utils_fp4.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/moe/fused_moe_triton` stable Marlin order and `layers/quantization` FP32 non-atomic scratch; `fa291d652a`"
       ],
@@ -2638,6 +2647,7 @@
       "engine_paths": [
         "test/manual/phala/test_xgrammar_adapter_cpu.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "bounded repetition/JSON-string FSM blocks implemented in paired XGrammar union1; deterministic native source tree bound to engine recipe"
       ],
@@ -2674,6 +2684,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/qwen3_coder_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`qwen3_coder_detector.py:_get_param_type` const-derived type fallback without overwriting model's value; shared coercion handles refs/intersections"
       ],
@@ -2712,6 +2723,7 @@
         "python/sglang/srt/managers/schedule_policy.py",
         "python/sglang/srt/managers/scheduler.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "newer `schedule_policy.py:_select_prefill_admission` page-floors the default chunk and rejects nonpositive extent before `init_load_back`; Kimi absolute-grid/virtual-page continuation retained, so old loop helper need not be copied",
         "Integrator deep audit complete: docs/NEMOTRON_HISTORY_AUDIT_20260922.md. Exact upstream ancestry/functions plus retained caller/guards checked; Mamba4, saved admission debit with late-recompute negative control, page/exact-fill and deferred-decode source-method checks passed. No duplicate production overlay required."
@@ -2748,6 +2760,7 @@
         "python/sglang/srt/model_executor/model_runner_components/cuda_graph_setup.py",
         "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`model_executor/runner/prefill_cuda_graph_runner.py` permits nonstandard GQA only for BREAKABLE, keeps FULL/TC checks; `fa291d652a`"
       ],
@@ -2790,6 +2803,7 @@
         "python/sglang/srt/model_executor/cuda_graph_config.py",
         "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`arg_groups/fields/exec_.py`, CUDA graph config and `runner/prefill_cuda_graph_runner.py` total sequence cap used for admission; `6329c4dddd`"
       ],
@@ -2825,6 +2839,7 @@
         "python/sglang/srt/entrypoints/openai/serving_base.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`entrypoints/openai/serving_base.py:GenerationStreamingResponse` shielded closure and chat generator finally; common `0bf1ed94ed`",
         "Separate first-SSE-status residual is now closed in f172f7f6e2 without replacing generator ownership."
@@ -2858,6 +2873,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/tokenizer_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`tokenizer_manager.py:ReqState.request_owner`, delayed abort checks object identity; `1e62ad753c`"
       ],
@@ -2894,9 +2910,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/pipelines_core/schedule_batch.py",
         "python/sglang/srt/managers/schedule_batch.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`schedule_batch.py` checkpoint track indices use absolute page grid, not relative suffix; `9bd58a1683`"
       ],
@@ -2931,6 +2947,7 @@
       "engine_paths": [
         "python/sglang/srt/mem_cache/hicache_storage.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`mem_cache/hicache_storage.py` model/pool owned file budgets and accounting; `cd0cca6903`"
       ],
@@ -2968,10 +2985,9 @@
       "engine_paths": [
         "python/sglang/srt/managers/cache_controller.py",
         "python/sglang/srt/mem_cache/hicache_storage.py",
-        "python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/cache_controller.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/hicache_storage.py"
+        "python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`hicache_storage.py`, `cache_controller.py` and hybrid controller intersect complete restorable endpoints and rank prefix; `cd0cca6903`"
       ],
@@ -3005,9 +3021,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/srt/mem_cache/unified_radix_cache.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/unified_radix_cache.py"
+        "python/sglang/srt/mem_cache/unified_radix_cache.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`unified_radix_cache.py` completed backup reused with supported-cache guards; `5a1799c43d`, `40f9a8089b`"
       ],
@@ -3060,12 +3076,12 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/kernels/ops/quantization/fp8_utils.py",
         "python/sglang/srt/layers/quantization/fp8.py",
         "python/sglang/srt/layers/quantization/fp8_utils.py",
         "python/sglang/srt/layers/quantization/mxfp8_input.py",
         "python/sglang/srt/models/deepseek_v4.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/quantization/mxfp8_input.py`, `fp8_utils.py` strict Blackwell/FlashInfer block32/UE8M0 path; `4734640dd1`, finite-scale fix `647be7d4d2`"
       ],
@@ -3106,9 +3122,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/srt/mem_cache/unified_radix_cache.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/unified_radix_cache.py"
+        "python/sglang/srt/mem_cache/unified_radix_cache.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`unified_radix_cache.py` one tested completed-chunk helper, not duplicate backup; `40f9a8089b`"
       ],
@@ -3161,21 +3177,14 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/encoding_dsv41.py",
-        "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
         "python/sglang/srt/entrypoints/openai/serving_base.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py",
         "python/sglang/srt/managers/async_dynamic_batch_tokenizer.py",
         "python/sglang/srt/managers/schedule_batch.py",
-        "python/sglang/srt/multimodal/processors/base_processor.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/multimodal/processors/base_processor.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`serving_base.py` async hook, real worker run_sync; media validators/common OS policy; typed bounded reasoning usage reused; `66ae92bedf`, `871326d498`",
         "Donor 3807c3569361ada6a53abdf1acdf8bfe639e174f adapted at integrated 871326d498; global monkeypatch package, broad OSError reclassification and global forced streaming usage deliberately excluded. Native DS-only async/strict integer1-100/media checks/tool-none semantics retained."
@@ -3221,6 +3230,7 @@
         "python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py",
         "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "deferred FlashInfer routed-weight path preserves BF16/FP32 declared dtype, no reinterpretation; `790615adcb`"
       ],
@@ -3269,6 +3279,7 @@
         "rust/sglang-radix-tree/src/unified_tree_core.rs",
         "rust/sglang-server/src/api_server/disaggregation/bootstrap.rs"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`rust/sglang-mm/src/dsv41/mod.rs`, radix bindings/pool names, server bootstrap exports; DS processor/cache/bootstrap consume corresponding interfaces"
       ],
@@ -3318,6 +3329,7 @@
         "python/sglang/kernels/ops/attention/dsv4/candidate_blocks.py",
         "python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py` and GEMM wrappers invoke staged JIT definitions"
       ],
@@ -3368,6 +3380,7 @@
         "python/sglang/kernels/jit/include/sgl_kernel/deepseek_v4/topk_impl.cuh",
         "python/sglang/srt/layers/attention/dsv4/candidate_indexer.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "candidate block table/top-k JIT wrappers feed `layers/attention/dsv4/candidate_indexer.py`"
       ],
@@ -3417,6 +3430,7 @@
         "python/sglang/kernels/ops/communication/all_reduce_fusion.py",
         "python/sglang/kernels/ops/communication/all_reduce_mhc.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`python/sglang/kernels/ops/communication/all_reduce_fusion.py`, mHC/allreduce wrappers consume native kernels; alignment/group guards retained"
       ],
@@ -3466,6 +3480,7 @@
         "python/sglang/kernels/jit/csrc/deepseek_v4/main_norm_rope.cuh",
         "python/sglang/kernels/jit/csrc/deepseek_v4/store.cuh"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "C1/C2 plan/store kernels connected through DS ratio pools/backend, not standalone unused files after DS0015"
       ],
@@ -3514,6 +3529,7 @@
         "python/sglang/srt/layers/attention/dsv4/indexer.py",
         "python/sglang/srt/layers/deep_gemm_wrapper/configurer.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/attention/dsv4/candidate_indexer.py`, `indexer.py` selected by DS attention backend"
       ],
@@ -3559,6 +3575,7 @@
         "python/sglang/kernels/ops/attention/dsv4/fp4_indexer_rope.py",
         "python/sglang/kernels/ops/attention/dsv4/fp4_rope_fake_quant.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`python/sglang/kernels/ops/attention/dsv4/fp4_indexer_rope.py` and native FP4 rope called by low-ratio indexer path"
       ],
@@ -3607,6 +3624,7 @@
         "test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py",
         "test/phala_deepseek_v41/test_union_remaining_cpu.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "Hopper small-M FP8 dispatch retains BF16/alignment/1<=M<32 gating and fallback, tuning files present"
       ],
@@ -3646,6 +3664,7 @@
       "engine_paths": [
         "python/sglang/kernels/ops/layernorm/mhc.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`python/sglang/kernels/ops/layernorm/mhc.py` compensation/projection consumed by DS mHC layers"
       ],
@@ -3694,6 +3713,7 @@
         "python/sglang/srt/multimodal/processors/deepseek_v41.py",
         "python/sglang/srt/utils/hf_transformers/processor.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`multimodal/processors/deepseek_v41.py` expands spans, `models/deepseek_v41_vit.py` and model get-image-feature path consume them"
       ],
@@ -3743,6 +3763,7 @@
         "python/sglang/srt/entrypoints/openai/serving_chat.py",
         "python/sglang/srt/environ.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`entrypoints/openai/encoding_dsv41.py`, `chat_encoding.py` selected by actual DS config/parser; native encode/tool parser path"
       ],
@@ -3792,6 +3813,7 @@
         "python/sglang/srt/model_executor/forward_batch_info.py",
         "python/sglang/srt/model_executor/model_runner_components/ngram_embedding_manager.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/engram.py`, scheduler history prep, forward batch and DS layer injection/hash updates connected; `f07476acea`"
       ],
@@ -3841,6 +3863,7 @@
         "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_allocator.py",
         "python/sglang/srt/hardware_backend/npu/dsv4/dsv4_common_hooks.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "DS backend pool/index grouping and disaggregation metadata generalized to ratio-dependent layouts; `5e7533f6c5`"
       ],
@@ -3889,6 +3912,7 @@
         "python/sglang/kernels/ops/attention/dsv4/decode_attention_sm100_gluon.py",
         "python/sglang/srt/models/deepseek_v4.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`models/deepseek_v4.py` constructs vision/Engram, forwards image embeddings and history; Python low-ratio host pools register sidecars; `5d462d447b`"
       ],
@@ -3934,6 +3958,7 @@
         "python/sglang/srt/layers/attention/dsv4/candidate_indexer.py",
         "python/sglang/srt/layers/attention/dsv4/dense_prefill_indexer.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`layers/attention/dsv4/dense_prefill_indexer.py` bounded-memory path called by candidate/backend; `91def7153c`"
       ],
@@ -3980,6 +4005,7 @@
         "test/phala_deepseek_v41/test_union_remaining_cpu.py",
         "test/registered/kernel/attention/test_dense_prefill_indexer.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "historical consumer/peak-memory fixtures retained and updated taxonomy at `05a0fe7c11`; `b8745690ae`"
       ],
@@ -4021,19 +4047,13 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/multimodal_gen/runtime/disaggregation/transport/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/action/protocol.py",
-        "python/sglang/multimodal_gen/runtime/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/anthropic/protocol.py",
-        "python/sglang/srt/entrypoints/ollama/protocol.py",
         "python/sglang/srt/entrypoints/openai/encoding_dsv41.py",
         "python/sglang/srt/entrypoints/openai/protocol.py",
-        "python/sglang/srt/entrypoints/openai/realtime/protocol.py",
         "python/sglang/srt/entrypoints/openai/serving_base.py",
         "python/sglang/srt/entrypoints/openai/serving_chat.py",
-        "python/sglang/srt/entrypoints/openai/usage_processor.py",
-        "python/sglang/srt/weight_cache/protocol.py"
+        "python/sglang/srt/entrypoints/openai/usage_processor.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "native DS role/effort mapping; DS-only async, strict integer1-100 guarded by actual encoder, both tool-none carriers filtered; `66ae92bedf`, `871326d498`",
         "Donor 3807c3569361ada6a53abdf1acdf8bfe639e174f adapted at integrated 871326d498; global monkeypatch package, broad OSError reclassification and global forced streaming usage deliberately excluded. Native DS-only async/strict integer1-100/media checks/tool-none semantics retained."
@@ -4082,6 +4102,7 @@
         "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
         "python/sglang/srt/models/deepseek_v2.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "separate communicator plus explicit DS/mHC/Blackwell/TP4 target-verify97-384 gate; `ea037cef31`"
       ],
@@ -4129,6 +4150,7 @@
         "python/sglang/srt/model_executor/runner/base_runner.py",
         "python/sglang/srt/models/deepseek_v4.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "native imports/env symbols repaired across quant runner/model; `d2309bf011`"
       ],
@@ -4172,6 +4194,7 @@
       "engine_paths": [
         "python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`mxfp4_flashinfer_trtllm_moe.py` restores padding before weight shuffle; `4109368860`"
       ],
@@ -4217,6 +4240,7 @@
         "test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py",
         "test/phala_deepseek_v41/test_union_remaining_cpu.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "actual parser boundaries tested in `test_cpu_contracts_v0520.py`, replacing obsolete wrapper-dependent selftest"
       ],
@@ -4257,6 +4281,7 @@
       "engine_paths": [
         "python/sglang/kernels/jit/csrc/deepseek_v4/candidate_block_table.cuh"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`candidate_block_table.cuh` host dispatch uses actual table width incl speculative scratch, distinct extents; `818de30111`"
       ],
@@ -4295,6 +4320,7 @@
       "engine_paths": [
         "python/sglang/srt/function_call/glm47_moe_detector.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`function_call/glm47_moe_detector.py` publishes only after closure; `2d12271ad4` retained by frozen ancestor"
       ],
@@ -4335,6 +4361,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/schedule_batch.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`managers/schedule_batch.py:_cap_reasoning_tokens_at_finished_len`; `1e645a80fb` retained"
       ],
@@ -4375,6 +4402,7 @@
       "engine_paths": [
         "test/manual/test_glm53_dsa_host_budget.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "hybrid pool assembler/allocation_budget/dsa/mmap allocator account startup host/hugepage bytes; `9e020f0cdf`"
       ],
@@ -4406,6 +4434,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/scheduler_components/metrics_reporter.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`scheduler_components/metrics_reporter.py` idle local gauge update does not reset token counters; `e84bb2a5c8`"
       ],
@@ -4446,6 +4475,7 @@
       "engine_paths": [
         "python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`mem_cache/storage/mooncake_store/mooncake_store.py` physical-worker-rank directories; `f7a7d6333a`"
       ],
@@ -4475,9 +4505,14 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/srt/mem_cache/unified_radix_cache.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/unified_radix_cache.py"
+        "test/manual/phala/test_dsv41_chat_migration_cpu.py",
+        "test/manual/phala/test_dsv41_shared_protocol_cpu.py",
+        "test/manual/test_glm53_completed_chunks.py",
+        "test/phala_deepseek_v41/test_cpu_contracts_v0520.py",
+        "test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py",
+        "test/phala_deepseek_v41/test_union_remaining_cpu.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`unified_radix_cache.py` rotation-accepted completed chunks backed up through shared helper; `8efd135647`, later `40f9a8089b`"
       ],
@@ -4516,6 +4551,7 @@
       "engine_paths": [
         "docker/phala-glm53-v0520/dependency-overlays/flashinfer/comm/allreduce.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`docker/phala-glm53-v0520/dependency-overlays/flashinfer/comm/allreduce.py` and hash manifest; `2f96c61019`"
       ],
@@ -4545,6 +4581,7 @@
       "engine_paths": [
         "python/sglang/srt/managers/schedule_policy.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`schedule_policy.py` continuation caps by actual allocator virtual pages; `c4ce9b5607`, strengthened `02558c2aaa`"
       ],
@@ -4574,9 +4611,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/srt/mem_cache/unified_radix_cache.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/unified_radix_cache.py"
+        "test/manual/test_hicache_async_ack_sync.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "`unified_radix_cache.py` guarded host-only ACK and environment gate; `5bae612858`"
       ],
@@ -4606,9 +4643,9 @@
       "audit_at_05a0fe7_status": "sourcecovered",
       "status": "sourcecovered",
       "engine_paths": [
-        "python/sglang/srt/mem_cache/unified_radix_cache.py",
-        "tools/sglang-simulator/src/sglang_simulator/simulation/sglang/unified_radix_cache.py"
+        "test/manual/test_hicache_async_ack_sync.py"
       ],
+      "path_resolution": "Exact tracked historical/current paths or unambiguous qualified suffixes; ambiguous bare filenames are omitted rather than expanded to unrelated components.",
       "semantic_evidence": [
         "same logical implementation; spawn-safe test correction folded into `5bae612858`, not a tenth runtime feature"
       ],
