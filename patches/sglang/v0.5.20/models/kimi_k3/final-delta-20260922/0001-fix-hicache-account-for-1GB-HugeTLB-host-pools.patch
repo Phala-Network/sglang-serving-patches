@@ -1,0 +1,220 @@
+From d70f095ea75be6ad1a2c8aafb7968d5941b315e5 Mon Sep 17 00:00:00 2001
+From: zozyo <zzy.touhou@gmail.com>
+Date: Tue, 22 Sep 2026 11:49:23 +0800
+Subject: [PATCH 1/3] fix(hicache): account for 1GB HugeTLB host pools
+
+---
+ python/sglang/srt/mem_cache/pool_host/base.py | 32 ++++++++++
+ .../mem_cache/storage/mmap/mmap_allocator.py  |  6 ++
+ .../unit/mem_cache/test_mem_pool_host.py      | 61 +++++++++++++++++++
+ .../unit/mem_cache/test_mmap_allocator.py     | 24 ++++++++
+ 4 files changed, 123 insertions(+)
+
+diff --git a/python/sglang/srt/mem_cache/pool_host/base.py b/python/sglang/srt/mem_cache/pool_host/base.py
+index 7be9f25c38f3f449d6991c8ef5153d4c68918fa2..0a0eb60c4a890734e6d26b221029f6e5fd02cd69 100644
+--- a/python/sglang/srt/mem_cache/pool_host/base.py
++++ b/python/sglang/srt/mem_cache/pool_host/base.py
+@@ -4,12 +4,14 @@ import abc
+ import logging
+ import threading
+ from functools import wraps
++from pathlib import Path
+ from typing import Optional
+ 
+ import psutil
+ import torch
+ 
+ from sglang.srt.distributed.parallel_state import get_world_group
++from sglang.srt.environ import envs
+ from sglang.srt.mem_cache.memory_pool import KVCache
+ from sglang.srt.mem_cache.pool_host.common import (
+     _cuda_host_unregister,
+@@ -48,6 +50,29 @@ def ranks_per_host() -> int:
+     return max(world_group.world_size // get_parallel().nnodes, 1)
+ 
+ 
++def _available_1g_hugetlb_bytes() -> int:
++    """Unreserved free bytes in the 1 GiB default pool; fail closed on bad data."""
++    fields = {}
++    required = {"HugePages_Free", "HugePages_Rsvd", "Hugepagesize"}
++    for line in Path("/proc/meminfo").read_text().splitlines():
++        key, separator, value = line.partition(":")
++        if key not in required:
++            continue
++        if not separator or key in fields:
++            raise ValueError("Malformed or duplicate HugeTLB memory accounting")
++        parts = value.split()
++        expected_parts = 2 if key == "Hugepagesize" else 1
++        if (len(parts) != expected_parts or not parts[0].isascii()
++                or not parts[0].isdecimal()
++                or (key == "Hugepagesize" and parts[1] != "kB")):
++            raise ValueError("Malformed HugeTLB memory accounting")
++        fields[key] = int(parts[0])
++    if set(fields) != required or fields["Hugepagesize"] != 1024 * 1024:
++        raise ValueError("Explicit 1GB mode requires verified 1 GiB HugeTLB accounting")
++    available_pages = max(0, fields["HugePages_Free"] - fields["HugePages_Rsvd"])
++    return available_pages * fields["Hugepagesize"] * 1024
++
++
+ def host_memory_budget_bytes() -> int:
+     """Host RAM this rank may claim for a HiCache pool.
+ 
+@@ -56,6 +81,13 @@ def host_memory_budget_bytes() -> int:
+     the host is oversubscribed by the number of ranks it holds.
+     """
+     free = psutil.virtual_memory().available - HICACHE_HOST_MEMORY_RESERVE_BYTES
++    if (envs.SGLANG_HUGEPAGE_SIZE.get() or "").strip().upper() == "1GB":
++        # Boot-reserved HugeTLB pages are absent from psutil MemAvailable.
++        # Ordinary RAM cannot substitute for an explicitly requested 1 GiB
++        # mapping, so cap the combined preflight budget at actual hugepage
++        # capacity. mmap remains the final authority under concurrent ranks.
++        huge_free = _available_1g_hugetlb_bytes()
++        free = min(free + huge_free, huge_free)
+     return free // ranks_per_host()
+ 
+ 
+diff --git a/python/sglang/srt/mem_cache/storage/mmap/mmap_allocator.py b/python/sglang/srt/mem_cache/storage/mmap/mmap_allocator.py
+index 1e966e4dff6d7b56cb62d77838aee2c5e25ec87f..25a0bed83a559e8a42c1feaa7ac21419e2b07c44 100644
+--- a/python/sglang/srt/mem_cache/storage/mmap/mmap_allocator.py
++++ b/python/sglang/srt/mem_cache/storage/mmap/mmap_allocator.py
+@@ -141,6 +141,8 @@ def alloc_mmap(dims: tuple, dtype: torch.dtype) -> torch.Tensor:
+ 
+     if extra_flags:
+         if _libc is None:
++            if hugepage_size == "1GB":
++                raise RuntimeError("1 GiB HugeTLB requires libc; plain mmap fallback forbidden")
+             logger.error(
+                 "Hugepage mmap requested but libc.so.6 could not be loaded; "
+                 "falling back to plain mmap. SGLANG_HUGEPAGE_SIZE=%s will be ignored.",
+@@ -153,6 +155,8 @@ def alloc_mmap(dims: tuple, dtype: torch.dtype) -> torch.Tensor:
+                     array, dtype=dtype, count=math.prod(dims)
+                 ).reshape(dims)
+             except OSError as e:
++                if hugepage_size == "1GB":
++                    raise RuntimeError("1 GiB HugeTLB mmap failed; plain mmap fallback forbidden") from e
+                 logger.error(
+                     "Hugepage mmap via libc failed (%s); falling back to plain mmap. "
+                     "SGLANG_HUGEPAGE_SIZE=%s will be ignored.",
+@@ -176,6 +180,8 @@ def alloc_shm(dims: tuple, dtype: torch.dtype) -> tuple[torch.Tensor, int, mmap.
+     and closing it when they are done.
+     """
+     hugepage_size = (envs.SGLANG_HUGEPAGE_SIZE.get() or "").strip().upper()
++    if hugepage_size == "1GB":
++        raise RuntimeError("1 GiB HugeTLB is unsupported by SHM; plain mmap fallback forbidden")
+     n_bytes = math.prod(dims) * torch.empty([], dtype=dtype).element_size()
+ 
+     # Note: hugepages are not directly supported with /dev/shm mmap files
+diff --git a/test/registered/unit/mem_cache/test_mem_pool_host.py b/test/registered/unit/mem_cache/test_mem_pool_host.py
+index a080edab485dc0f16cb5385e669539c9ad4142ac..0063c8ab4355c389a40e79ccf54791d6b35200e0 100644
+--- a/test/registered/unit/mem_cache/test_mem_pool_host.py
++++ b/test/registered/unit/mem_cache/test_mem_pool_host.py
+@@ -247,6 +247,9 @@ class TestHostMemoryBudget(CustomTestCase):
+             unittest.mock.patch.object(
+                 base.psutil, "virtual_memory", return_value=fake_mem
+             ),
++            unittest.mock.patch.object(
++                base.envs.SGLANG_HUGEPAGE_SIZE, "get", return_value=""
++            ),
+         ):
+             return base.host_memory_budget_bytes()
+ 
+@@ -276,6 +279,64 @@ class TestHostMemoryBudget(CustomTestCase):
+         ):
+             self.assertEqual(base.ranks_per_host(), 8)
+ 
++    def test_explicit_1g_counts_verified_free_hugetlb_pages(self):
++        fake_mem = unittest.mock.Mock(available=self._AVAILABLE)
++        meminfo = (
++            "HugePages_Free: 2680\n"
++            "HugePages_Rsvd: 0\n"
++            "Hugepagesize: 1048576 kB\n"
++        )
++        with (
++            unittest.mock.patch.object(base, "ranks_per_host", return_value=8),
++            unittest.mock.patch.object(
++                base.psutil, "virtual_memory", return_value=fake_mem
++            ),
++            unittest.mock.patch.object(
++                base.envs.SGLANG_HUGEPAGE_SIZE, "get", return_value="1GB"
++            ),
++            unittest.mock.patch.object(base.Path, "read_text", return_value=meminfo),
++        ):
++            self.assertGreaterEqual(base.host_memory_budget_bytes(), 254_490_000_000)
++
++    def test_explicit_1g_cannot_substitute_ordinary_ram_for_hugepages(self):
++        fake_mem = unittest.mock.Mock(available=10_000 * (1024**3))
++        meminfo = (
++            "HugePages_Free: 8\n"
++            "HugePages_Rsvd: 0\n"
++            "Hugepagesize: 1048576 kB\n"
++        )
++        with (
++            unittest.mock.patch.object(base, "ranks_per_host", return_value=8),
++            unittest.mock.patch.object(
++                base.psutil, "virtual_memory", return_value=fake_mem
++            ),
++            unittest.mock.patch.object(
++                base.envs.SGLANG_HUGEPAGE_SIZE, "get", return_value="1GB"
++            ),
++            unittest.mock.patch.object(base.Path, "read_text", return_value=meminfo),
++        ):
++            self.assertEqual(base.host_memory_budget_bytes(), 1024**3)
++
++    def test_explicit_1g_rejects_malformed_or_wrong_size_accounting(self):
++        fake_mem = unittest.mock.Mock(available=self._AVAILABLE)
++        invalid = (
++            "HugePages_Free: 2680\n"
++            "HugePages_Rsvd: 0\n"
++            "Hugepagesize: 2048 kB\n"
++        )
++        with (
++            unittest.mock.patch.object(base, "ranks_per_host", return_value=8),
++            unittest.mock.patch.object(
++                base.psutil, "virtual_memory", return_value=fake_mem
++            ),
++            unittest.mock.patch.object(
++                base.envs.SGLANG_HUGEPAGE_SIZE, "get", return_value="1GB"
++            ),
++            unittest.mock.patch.object(base.Path, "read_text", return_value=invalid),
++        ):
++            with self.assertRaisesRegex(ValueError, "verified 1 GiB"):
++                base.host_memory_budget_bytes()
++
+ 
+ class TestHostPoolGroup(CustomTestCase):
+     @staticmethod
+diff --git a/test/registered/unit/mem_cache/test_mmap_allocator.py b/test/registered/unit/mem_cache/test_mmap_allocator.py
+index 3090b1671aed69a3e9b3ce52cee07e268d21a84b..fd25d22abf3328d0d576c8bae4e6364769e0fc11 100644
+--- a/test/registered/unit/mem_cache/test_mmap_allocator.py
++++ b/test/registered/unit/mem_cache/test_mmap_allocator.py
+@@ -29,6 +29,30 @@ class TestMmapAllocator(unittest.TestCase):
+         # Verify it has mapped memory address
+         self.assertGreater(tensor.data_ptr(), 0)
+ 
++    def test_explicit_1g_mmap_failure_never_falls_back(self):
++        from sglang.srt.environ import envs
++        from sglang.srt.mem_cache.storage.mmap import mmap_allocator
++
++        with envs.SGLANG_HUGEPAGE_SIZE.override("1GB"):
++            with (
++                unittest.mock.patch.object(
++                    mmap_allocator, "_alloc_hugepage", side_effect=OSError("no pages")
++                ),
++                unittest.mock.patch.object(
++                    mmap_allocator, "_mmap_prefaulted"
++                ) as plain_mmap,
++            ):
++                with self.assertRaisesRegex(RuntimeError, "fallback forbidden"):
++                    alloc_mmap((16,), torch.float32)
++                plain_mmap.assert_not_called()
++
++    def test_explicit_1g_shm_never_falls_back(self):
++        from sglang.srt.environ import envs
++
++        with envs.SGLANG_HUGEPAGE_SIZE.override("1GB"):
++            with self.assertRaisesRegex(RuntimeError, "unsupported by SHM"):
++                alloc_shm((16,), torch.float32)
++
+     def test_alloc_shm(self):
+         dims = (10, 1024)
+         dtype = torch.float32

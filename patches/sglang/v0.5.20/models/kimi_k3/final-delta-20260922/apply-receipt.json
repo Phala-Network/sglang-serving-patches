@@ -1,0 +1,58 @@
+{
+  "schema": "phala.sglang-final-delta-apply.v1",
+  "date": "2026-09-22",
+  "patch_repository": {
+    "baseline_commit": "7f353ede6782e45d26df4daf75abdf38d260015a",
+    "baseline_tree": "226de02346a20f841cc12a33c1783338062f1cc6",
+    "branch": "codex/kimi-k3-final-delta-20260922"
+  },
+  "dependency": {
+    "description": "Apply after the existing profiles/v0.5.20/kimi-k3.yaml ten-patch stack; this delta does not update that profile or shared ordering.",
+    "engine_commit": "22dfb99dfadbc06f5474ca594613986e9cff22b7",
+    "engine_tree": "94aa4aeb1dc917d26f523517bdccaa346912bd16"
+  },
+  "patches": [
+    {
+      "order": 1,
+      "file": "0001-fix-hicache-account-for-1GB-HugeTLB-host-pools.patch",
+      "bytes": 10328,
+      "sha256": "a16d45ff0a61c9d71df6fb201647763d9c671e23b5fef1df8f4c7cc95e16747e",
+      "source_commit": "d70f095ea75be6ad1a2c8aafb7968d5941b315e5",
+      "source_tree": "751385fceed6df07931af8541740cd878c5a0e59",
+      "reproduced_commit": "13393b2df175b95365b0e8dcc9efb9cc7005cb2b"
+    },
+    {
+      "order": 2,
+      "file": "0002-Fix-staggered-HugeTLB-budgets-and-await-health-probe.patch",
+      "bytes": 18102,
+      "sha256": "b1a7e3cfe76597f2400380c74bd2ab2c961f21b6fa68ca5553c75126d87ae81b",
+      "source_commit": "921922920b80def6c062d7a34840d22d0f7c7225",
+      "source_tree": "5a83d6f288c31d5575fde9c98022f2720177b052",
+      "reproduced_commit": "9a0112a65141e0594b5c5ffdcb4869314b7cc1f1"
+    },
+    {
+      "order": 3,
+      "file": "0003-Add-focused-B300-registered-KV-transfer-extension-an.patch",
+      "bytes": 31759,
+      "sha256": "5d5cd0801fe5a950b92c4334badc1984ebbfd7f13d8547cffb8fb81acd5659e3",
+      "source_commit": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
+      "source_tree": "c900062f246b56bf01e71b80533888d6222d2906",
+      "reproduced_commit": "3961b3c7b73924eb7581b4f2cd16432cd1f7727a"
+    }
+  ],
+  "apply_check": {
+    "method": "git am in an isolated worktree detached at the dependency engine commit",
+    "result_commit": "3961b3c7b73924eb7581b4f2cd16432cd1f7727a",
+    "result_tree": "c900062f246b56bf01e71b80533888d6222d2906",
+    "expected_final_commit": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
+    "expected_final_tree": "c900062f246b56bf01e71b80533888d6222d2906",
+    "tree_equal": true,
+    "worktree_clean": true
+  },
+  "untouched": [
+    "profiles/v0.5.20/kimi-k3.yaml",
+    "patches/sglang/v0.5.20/manifest.json",
+    "patches/sglang/v0.5.20/kimi-k3.manifest.json",
+    "tools/validate_profile.py"
+  ]
+}
