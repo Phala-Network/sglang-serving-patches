@@ -4,8 +4,8 @@ This record does not update the frozen engine428 export, any Governor candidate,
 image, CVM or production acceptance. No image build or registry write is needed.
 
 The implementation is Phala-Network/sglang commit
-`8a51d28ba2ad953593ed033612d19205e1388cb9`, tree
-`6d646cb30e244380c26280db561adb308eb60675`, on navigation branch
+`a6bfd34af146093fea75d9ff824c5952837a9f3b`, tree
+`4dc14831e501a7067b63f678b6185e4139cef196`, on navigation branch
 `codex/model-union-v0520-20260922`. It combines the three common increments,
 six Kimi increments, one Muse increment and the guarded Nemotron literal-token
 migration, DS prerequisite/chat source, named-tool schema roots and Qwen complete-call
@@ -16,7 +16,7 @@ No common patch bytes were copied. The earlier commit
 `b6730c9fe47e14319bb92dc61b8463ae7dcfedfd`, equal to the earlier combined
 candidate `83d8dc47ee`. That historical equality is not claimed for the new tree.
 
-`unified-v0520-successor` records the full source range, 32 ordered patch
+`unified-v0520-successor` records the full source range, 33 ordered patch
 references, immutable commits and hashes. `export_selectors.py` independently
 replays the 31-entry frozen series from official v0.5.20
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` to tree
@@ -109,8 +109,23 @@ under `python/sglang/srt`.
   Metadata was copied read-only from the existing pinned development cache;
   no weights, services, containers or routes were changed.
 - No Linux full runtime imports, GPU, final-image or production tests were run
-  here. The local Python still has no torch or transformers. Source-method
-  and real-tokenizer tests cannot replace those gates.
+  here. The default local interpreter does not carry the serving stack; the
+  isolated `tmp/qwen-gguf-cpu-deps-20260922` environment does contain real
+  torch2.13.0/transformers5.12.1 used by the 31 GGUF tests above. Source-method,
+  CPU tensors and real-tokenizer tests cannot replace those gates.
+- Candidate CI/lint repair `a6bfd34af1` removes inherited automatic GPU/vendor,
+  release and robot triggers while preserving manual/reusable workflow bodies.
+  One PR-only source check runs real Python/config/registry lint and selected
+  CPU tests. Full upstream lint remains manual. Default-branch automation
+  cannot be disabled by this candidate branch. Old lint failure35729558772 is
+  retained; it exposed real format errors, missing dynamic class/json bindings
+  and a watchdog test entrypoint omission, all repaired in source.
+- After lint repair: Muse28/0skip, Nemotron19/0skip, DSchat10, Qwencomplete16,
+  Qwenhistory5, commonMarlin6 and GGUF20+11 pass again. HiCache source tests
+  pass13 with the real Gloo test explicitly skipped. Unregistered historical
+  tests moved from `test/registered/unit` to `test/manual/unit` at the same
+  relative depth; full-runtime and native-grammar tests are not represented
+  as lightweight checks.
 
 Run `python -m unittest discover -s tests -v` and
 `python scripts/export_selectors.py --source /path/to/sglang --check`.
@@ -124,8 +139,11 @@ the source record maps each exact historical commit. Native grammar, image
 template binding/license and cancellation acceptance remain separate.
 Nemotron's literal-token delta does not close MoE fusion, native tools/order,
 truncated thoughts, incomplete stream withholding, lifecycle/structured output,
-XML const types, Mamba/admission, Marlin/FP32, page alignment or guarded
-BREAKABLE prefill. Deferred metadata `12593d20ead3` retains its upstream-coverage
+XML const types or Mamba/admission. Marlin/FP32 and guarded BREAKABLE source
+migration is integrated by `fa291d652a` (donor `6281c5dcdd`); it still lacks
+Triton/CUDA numerical and capture acceptance. Page alignment is integrated in
+the shared Kimi checkpoint path, not separately model-qualified.
+Deferred metadata `12593d20ead3` retains its upstream-coverage
 proof rather than being duplicated. Old Goodput 0.714982 below 0.7338 was an
 override, not a pass.
 

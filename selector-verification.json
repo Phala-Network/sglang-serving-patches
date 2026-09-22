@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "8a51d28ba2ad953593ed033612d19205e1388cb9",
-      "fork_tree": "6d646cb30e244380c26280db561adb308eb60675",
+      "fork_commit": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
+      "fork_tree": "4dc14831e501a7067b63f678b6185e4139cef196",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 32,
+      "patch_count": 33,
       "replay_mode": "exact",
       "status": "source_replay_verified_native_closure_and_model_qualification_pending",
       "validation_boundary": "Muse28/0skip source/protocol tests include three real serving call-chain renders against external template900db3ef (immutable Compose2e16dfd8, not redistributed; packaging/license unresolved). Common Marlin/BREAKABLE6 source tests; Qwen GGUF20 real CPU tensor/reader tests and Q8 prefill11 dispatch tests (simulated kernels/device). Torch2.13.0/Transformers5.12.1/tokenizers0.22.2 match source pins; gguf0.19.0/numpy2.5.3 are tested unpinned inputs. Nemotron real-tokenizer19/0skip; DSchat10; named-schema5; Qwenhistory5; Qwen complete-call16/boundary4. Step3p5/nanbeige share that detector, not model-qualified. DS0012-26, vision/Engram consumption, Python C1/C2 metadata, shared-native regression remain pending; offline Rust check lacked cached prost. One native XGrammar reconciliation remains pending, not solved by source tests or stock version bump. No GPU, full runtime imports, ABI or final-image acceptance.",
-      "replay_tree": "6d646cb30e244380c26280db561adb308eb60675"
+      "replay_tree": "4dc14831e501a7067b63f678b6185e4139cef196"
     },
     "common-v0520-successor": {
       "passed": true,
