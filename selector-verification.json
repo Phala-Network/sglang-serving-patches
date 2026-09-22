@@ -166,5 +166,13 @@
       "validation_boundary": "Do not infer Qwen3.5/GGUF applicability from shared image"
     }
   },
-  "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates."
+  "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
+  "external_sources": {
+    "xgrammar": {
+      "version": "0.2.6+phala.union1",
+      "patch_sha256": "c6a4defdfe0967056e144351ff2027132c3fa4cb79026c862bff0306e946e26b",
+      "replay_tree": "b8dcb87b50b99cc61dbab46e7dcfbd34f78a2f45",
+      "passed": true
+    }
+  }
 }

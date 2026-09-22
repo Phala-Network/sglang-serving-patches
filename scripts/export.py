@@ -128,6 +128,11 @@ def main():
         for patch in selector.get("patches", [])
     }
     expected = {name for name in outputs if name.endswith(".patch")} | selector_paths
+    external_path = ROOT / "external-dependencies.json"
+    if external_path.exists():
+        external = json.loads(external_path.read_text(encoding="utf-8"))["xgrammar"]
+        expected.add(external["patch"])
+        assert sha((ROOT / external["patch"]).read_bytes()) == external["patch_sha256"]
     missing = expected - actual
     assert not missing, "missing base/selector patch files: " + ", ".join(sorted(missing))
     historical_prefixes = tuple(

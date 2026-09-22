@@ -1,0 +1,855 @@
+diff --git a/cpp/grammar_functor.cc b/cpp/grammar_functor.cc
+index 8028dd8adffa289930bc0a5bfc17a12a902cd7c7..fcbd744d5aa0cf234f3eb48c5cc3b2f93c096d30 100644
+--- a/cpp/grammar_functor.cc
++++ b/cpp/grammar_functor.cc
+@@ -2210,11 +2210,6 @@ int32_t RepetitionRangeExpanderImpl::ExpandRepetitionRange(
+   const auto repeat_name = cur_rule_name + "_repeat_1";
+   XGRAMMAR_DCHECK(lower >= kUnzipThreshold && upper >= lower);
+ 
+-  // If we have infinite repetition part, add it to the sequence.
+-  if (infinite_repetition_id.has_value()) {
+-    repeated_sequence.push_back(infinite_repetition_id.value());
+-  }
+-
+   // The repetition body.
+   if (upper != kUnzipThreshold) {
+     XGRAMMAR_DCHECK(upper > kUnzipThreshold);
+@@ -2235,6 +2230,16 @@ int32_t RepetitionRangeExpanderImpl::ExpandRepetitionRange(
+     repeated_sequence.push_back(grammar_expr_id);
+   }
+ 
++  // Keep the mandatory prefix before the unbounded tail: expr{lower} expr*.
++  // Putting expr* first is language-equivalent but keeps a possible start of
++  // the mandatory suffix at every input position. For lower > 128 this causes
++  // growing Earley state sets and second-scale token masks (issue #805).
++  // The counted prefix and its lookahead stay unchanged, preserving bounds,
++  // repeated-rule semantics, and rollback behavior.
++  if (infinite_repetition_id.has_value()) {
++    repeated_sequence.push_back(infinite_repetition_id.value());
++  }
++
+   // Add the sequence to choices.
+   choices.push_back(builder_->AddSequence(repeated_sequence));
+   auto result_rule_id = builder_->AddRuleWithHint(cur_rule_name, builder_->AddChoices(choices));
+diff --git a/cpp/json_schema_converter.cc b/cpp/json_schema_converter.cc
+index eabcebbdf6a231ae571e151f898daa21112dee73..e9c7d96ff0a4ea95e7fac64eea43cae885151eb9 100644
+--- a/cpp/json_schema_converter.cc
++++ b/cpp/json_schema_converter.cc
+@@ -29,6 +29,7 @@
+ #include "grammar_functor.h"
+ #include "json_schema_converter_ext.h"
+ #include "regex_converter.h"
++#include "support/encoding.h"
+ #include "support/json_parse.h"
+ #include "support/logging.h"
+ 
+@@ -1377,6 +1378,41 @@ Result<ObjectSpec, SchemaError> SchemaParser::ParseObject(const picojson::object
+     spec.allow_unevaluated_properties = false;
+   }
+ 
++  // "required" is independent of "properties" in JSON Schema. Materialize
++  // undeclared required names before generation: the properties-only emitter
++  // would otherwise ignore them (or compile a required object as empty).
++  // Iterate the input array, not the unordered set, for deterministic output.
++  if (schema.count("required")) {
++    std::unordered_set<std::string> declared;
++    for (const auto& property : spec.properties) declared.insert(property.name);
++    for (const auto& req : schema.at("required").get<picojson::array>()) {
++      const auto& name = req.get<std::string>();
++      if (!declared.insert(name).second) continue;
++      if (!spec.pattern_properties.empty() || spec.property_names) {
++        return ResultErr<SchemaError>(
++            SchemaErrorType::kInvalidSchema,
++            "Undeclared required names with patternProperties/propertyNames are unsupported; "
++            "declare the required property explicitly: " + name
++        );
++      }
++      const bool has_additional = schema.count("additionalProperties");
++      const bool has_unevaluated = schema.count("unevaluatedProperties");
++      if ((has_additional && !spec.allow_additional_properties) ||
++          (!has_additional && has_unevaluated && !spec.allow_unevaluated_properties)) {
++        return ResultErr<SchemaError>(
++            SchemaErrorType::kUnsatisfiableSchema,
++            "Required property is forbidden by the object schema: " + name
++        );
++      }
++      // The strict-mode default may close *optional* additional fields, but
++      // cannot erase an explicitly required name permitted by the input schema.
++      SchemaSpecPtr value = has_additional ? spec.additional_properties_schema
++                                          : spec.unevaluated_properties_schema;
++      if (!value) value = SchemaSpec::Make(AnySpec{}, "", name);
++      spec.properties.push_back({name, value});
++    }
++  }
++
+   if (schema.count("minProperties")) {
+     if (!schema.at("minProperties").is<int64_t>()) {
+       return ResultErr<SchemaError>(
+@@ -2389,8 +2425,88 @@ int32_t JSONSchemaConverter::GenerateString(const StringSpec& spec, const std::s
+   }
+   // Check for length constraints
+   if (spec.min_length != 0 || spec.max_length != -1) {
+-    int32_t character =
+-        builder_.AddCharacterClass({{'"', '"'}, {'\\', '\\'}, {'\r', '\r'}, {'\n', '\n'}}, true);
++    if (spec.max_length == -1) {
++      // Keep complete JSON characters in finite-state blocks. A one-character
++      // CFG rule makes almost every multi-character token uncertain, forcing
++      // a vocabulary walk per mask even after the minimum is satisfied.
++      // Each atom consumes one decoded Unicode scalar: an unescaped scalar,
++      // one short/BMP escape, or a complete high+low surrogate escape pair.
++      static const std::string kJSONCharacter =
++          R"re((?:[^"\\\x00-\x1f]|\\["\\/bfnrt]|\\u(?:[0-9A-CE-Fa-ce-f][0-9A-Fa-f]{3}|[Dd][0-7][0-9A-Fa-f]{2})|\\u[Dd][89ABab][0-9A-Fa-f]{2}\\u[Dd][C-Fc-f][0-9A-Fa-f]{2}))re";
++      static constexpr int32_t kBlockChars = 128;
++      const int32_t blocks = spec.min_length / kBlockChars;
++      const int32_t remainder = spec.min_length % kBlockChars;
++      std::vector<int32_t> elements{ByteString("\"")};
++      if (blocks > 0) {
++        auto block = builder_.AddRegex(kJSONCharacter + "{128}", false);
++        elements.push_back(Repeat(rule_name + "_prefix_blocks", block, blocks, blocks));
++      }
++      if (remainder > 0) {
++        elements.push_back(
++            builder_.AddRegex(kJSONCharacter + "{" + std::to_string(remainder) + "}", false)
++        );
++      }
++      elements.push_back(builder_.AddRegex(kJSONCharacter + "*", false));
++      elements.push_back(ByteString("\""));
++      return Sequence(elements);
++    }
++    // Each repetition must match exactly one JSON character so the Repeat budget counts
++    // characters (JSON Schema maxLength counts characters of the decoded string). An
++    // unescaped code point is one repetition; one complete escape sequence is also one.
++    // A bare [^"\\\r\n] class here would drop the escape branch entirely (issue #800),
++    // making \n/\"/\\/\\uXXXX unemittable inside length-bounded strings.
++    // kBasicEscape is not reused: it accepts every \uXXXX uniformly, so a surrogate pair
++    // (one code point spelled as two escapes) would cost two repetitions and lone
++    // surrogates would be admitted. Enumerate instead: a BMP escape is one repetition,
++    // a high+low surrogate pair is one repetition, and a lone surrogate matches nothing.
++    // The unescaped class mirrors AddHelperRules: all of U+0000-U+001F must stay escaped
++    // per RFC 8259 section 7.
++    int32_t unescaped_character =
++        builder_.AddCharacterClass({{0, 0x1f}, {'"', '"'}, {'\\', '\\'}}, true);
++    int32_t short_escape_character = builder_.AddCharacterClass(
++        {{'"', '"'},
++         {'\\', '\\'},
++         {'/', '/'},
++         {'b', 'b'},
++         {'f', 'f'},
++         {'n', 'n'},
++         {'r', 'r'},
++         {'t', 't'}}
++    );
++    int32_t hex_character = builder_.AddCharacterClass({{'0', '9'}, {'A', 'F'}, {'a', 'f'}});
++    int32_t non_surrogate_lead =
++        builder_.AddCharacterClass({{'0', '9'}, {'A', 'C'}, {'E', 'F'}, {'a', 'c'}, {'e', 'f'}});
++    int32_t surrogate_lead = builder_.AddCharacterClass({{'D', 'D'}, {'d', 'd'}});
++    int32_t bmp_escape = Sequence(
++        {ByteString("u"),
++         Choice(
++             {Sequence({non_surrogate_lead, hex_character, hex_character, hex_character}),
++              Sequence(
++                  {surrogate_lead,
++                   builder_.AddCharacterClass({{'0', '7'}}),
++                   hex_character,
++                   hex_character}
++              )}
++         )}
++    );
++    int32_t surrogate_pair_escape = Sequence(
++        {ByteString("u"),
++         surrogate_lead,
++         builder_.AddCharacterClass({{'8', '9'}, {'A', 'B'}, {'a', 'b'}}),
++         hex_character,
++         hex_character,
++         ByteString("\\u"),
++         surrogate_lead,
++         builder_.AddCharacterClass({{'C', 'F'}, {'c', 'f'}}),
++         hex_character,
++         hex_character}
++    );
++    int32_t character = Choice(
++        {unescaped_character,
++         Sequence({ByteString("\\"), short_escape_character}),
++         Sequence({ByteString("\\"), bmp_escape}),
++         Sequence({ByteString("\\"), surrogate_pair_escape})}
++    );
+     int32_t body = Repeat(rule_name + "_characters", character, spec.min_length, spec.max_length);
+     return Sequence({ByteString("\""), body, ByteString("\"")});
+   }
+@@ -2598,6 +2714,141 @@ int32_t JSONSchemaConverter::GetAnyOrderRuleForProperties(
+   return Sequence({first_separator, RuleRef(item_rule_id), repeated_items, last_separator});
+ }
+ 
++int32_t JSONSchemaConverter::GetExactOrderKeyPatternExcluding(
++    const std::vector<ObjectSpec::Property>& properties, const std::string& rule_name
++) {
++  struct KeyNode {
++    bool terminal = false;
++    std::map<TCodepoint, KeyNode> children;
++  } root;
++  for (const auto& property : properties) {
++    auto* node = &root;
++    for (auto cp : ParseUTF8(property.name.c_str())) {
++      XGRAMMAR_CHECK(cp >= 0) << "Invalid UTF-8 in declared property name";
++      node = &node->children[cp];
++    }
++    node->terminal = true;
++  }
++  const std::map<TCodepoint, std::string> short_escapes = {
++      {'"', "\\\""}, {'\\', "\\\\"}, {'/', "\\/"}, {'\b', "\\b"},
++      {'\f', "\\f"}, {'\n', "\\n"}, {'\r', "\\r"}, {'\t', "\\t"}
++  };
++  std::function<int32_t(const KeyNode&)> build = [&](const KeyNode& node) -> int32_t {
++    std::vector<int32_t> choices;
++    if (!node.terminal) choices.push_back(ByteString("\""));
++    std::vector<std::pair<TCodepoint, TCodepoint>> excluded = {
++        {0, 0x1f}, {'"', '"'}, {'\\', '\\'}, {0xd800, 0xdfff}
++    };
++    for (const auto& [cp, child] : node.children) {
++      static_cast<void>(child);
++      excluded.push_back({cp, cp});
++    }
++    // After the first different decoded character no suffix can alias a
++    // declared key, so the full JSON string suffix is safe.
++    // Use positive Unicode ranges. The upstream negative character-class
++    // normalizer is ASCII-only and would silently admit excluded non-ASCII keys.
++    std::sort(excluded.begin(), excluded.end());
++    std::vector<CharacterClassElement> allowed;
++    TCodepoint lower = 0;
++    for (const auto& [begin, end] : excluded) {
++      if (lower < begin) allowed.push_back({lower, begin - 1});
++      lower = std::max(lower, end + 1);
++    }
++    if (lower <= 0x10ffff) allowed.push_back({lower, 0x10ffff});
++    choices.push_back(Sequence({builder_.AddCharacterClass(allowed), RuleRef(kBasicStringSub)}));
++    for (const auto& [cp, spelling] : short_escapes) {
++      if (!node.children.count(cp)) {
++        choices.push_back(Sequence({ByteString(spelling), RuleRef(kBasicStringSub)}));
++      }
++    }
++    for (const auto& [cp, child] : node.children) {
++      std::string encoded = picojson::value(CharToUTF8(cp)).serialize();
++      encoded = encoded.substr(1, encoded.size() - 2);
++      std::vector<int32_t> spellings = {ByteString(encoded)};
++      if (cp == '/') spellings.push_back(ByteString("\\/"));
++      choices.push_back(Sequence({Choice(spellings), build(child)}));
++    }
++    // While a name can still match a declared key, require its canonical UTF-8
++    // / short-escape spelling. Arbitrary \\u aliases at that prefix are not
++    // permitted: the upstream generic-escape branch could otherwise bypass
++    // required/type/duplicate-key constraints. Values are unaffected.
++    return Choice(choices);
++  };
++  int32_t id = builder_.AddRuleWithHint(
++      rule_name + "_exact_addl_key", Sequence({ByteString("\""), build(root)})
++  );
++  return RuleRef(id);
++}
++
++int32_t JSONSchemaConverter::GetExactOrderRuleForProperties(
++    const std::vector<ObjectSpec::Property>& properties,
++    const std::unordered_set<std::string>& required,
++    const SchemaSpecPtr& additional,
++    const std::string& rule_name,
++    const std::string& additional_suffix
++) {
++  const size_t state_count = size_t{1} << properties.size();
++  XGRAMMAR_CHECK(state_count <= exact_order_states_left_);
++  exact_order_states_left_ -= state_count;
++  int32_t first_separator = NextSeparatorExpression();
++  int32_t middle_separator = NextSeparatorExpression();
++  int32_t last_separator = NextSeparatorExpression(true);
++
++  size_t required_mask = 0;
++  std::vector<int32_t> patterns;
++  for (size_t index = 0; index < properties.size(); ++index) {
++    const auto& property = properties[index];
++    if (required.count(property.name)) required_mask |= size_t{1} << index;
++    int32_t value_rule_id =
++        CreateRule(property.schema, rule_name + "_prop_" + std::to_string(index));
++    patterns.push_back(
++        FormatProperty(property.name, value_rule_id, rule_name, index, property.schema)
++    );
++  }
++  std::optional<int32_t> extra;
++  if (additional != nullptr) {
++    int32_t value_rule_id = CreateRule(additional, rule_name + "_" + additional_suffix);
++    extra = FormatOtherProperty(
++        GetExactOrderKeyPatternExcluding(properties, rule_name), value_rule_id,
++        rule_name, additional_suffix, /*schema=*/nullptr
++    );
++  }
++
++  // Each state records exactly which declared keys were consumed. Additional
++  // keys never stand in for a required key and cannot alias a declared key.
++  std::vector<int32_t> tails;
++  for (size_t mask = 0; mask < state_count; ++mask) {
++    tails.push_back(builder_.AddRuleWithHint(
++        rule_name + "_exact_order_" + std::to_string(mask), Empty()
++    ));
++  }
++  for (size_t mask = 0; mask < state_count; ++mask) {
++    std::vector<int32_t> choices;
++    if ((mask & required_mask) == required_mask) choices.push_back(Empty());
++    for (size_t index = 0; index < properties.size(); ++index) {
++      const size_t bit = size_t{1} << index;
++      if (!(mask & bit)) {
++        choices.push_back(Sequence({
++            middle_separator, patterns[index], RuleRef(tails[mask | bit])
++        }));
++      }
++    }
++    if (extra.has_value()) {
++      // This recursion always consumes a comma, key and value; it cannot be
++      // an epsilon/whitespace-only loop.
++      choices.push_back(Sequence({middle_separator, *extra, RuleRef(tails[mask])}));
++    }
++    builder_.UpdateRuleBody(tails[mask], Choice(choices));
++  }
++
++  std::vector<int32_t> first;
++  for (size_t index = 0; index < properties.size(); ++index) {
++    first.push_back(Sequence({patterns[index], RuleRef(tails[size_t{1} << index])}));
++  }
++  if (extra.has_value()) first.push_back(Sequence({*extra, RuleRef(tails[0])}));
++  return Sequence({first_separator, Choice(first), last_separator});
++}
++
+ int32_t JSONSchemaConverter::GetPartialRuleForProperties(
+     const std::vector<ObjectSpec::Property>& properties,
+     const std::unordered_set<std::string>& required,
+@@ -2624,6 +2875,26 @@ int32_t JSONSchemaConverter::GetPartialRuleForProperties(
+     );
+   }
+ 
++  // Preserve every constraint: unlike the opt-in any_order approximation,
++  // this subset construction enforces required keys, types and uniqueness.
++  // Unsupported shapes stay on the existing fixed-order implementation.
++  bool required_are_declared = std::all_of(required.begin(), required.end(), [&](const auto& key) {
++    return std::any_of(properties.begin(), properties.end(), [&](const auto& p) {
++      return p.name == key;
++    });
++  });
++  bool keys_have_no_nul = std::all_of(properties.begin(), properties.end(), [](const auto& p) {
++    return p.name.find('\0') == std::string::npos;
++  });
++  if (SupportsExactPropertyOrder() && properties.size() > 0 && properties.size() <= 8 &&
++      min_properties == 0 && max_properties == -1 && !additional_property_override.has_value() &&
++      required_are_declared && keys_have_no_nul &&
++      (size_t{1} << properties.size()) <= exact_order_states_left_) {
++    return GetExactOrderRuleForProperties(
++        properties, required, additional, rule_name, additional_suffix
++    );
++  }
++
+   int32_t first_separator = NextSeparatorExpression();
+   int32_t middle_separator = NextSeparatorExpression();
+   int32_t last_separator = NextSeparatorExpression(true);
+@@ -3097,7 +3368,9 @@ int32_t JSONSchemaConverter::GenerateObject(
+ 
+   int32_t result = need_braces ? Sequence({ByteString("{"), content, ByteString("}")}) : content;
+   if (could_be_empty) {
+-    int32_t empty_content = any_whitespace_ ? WhitespaceExpression() : Empty();
++    // An empty XML parameter region must yield to the closing tool tag,
++    // not consume unbounded whitespace. JSON objects retain brace whitespace.
++    int32_t empty_content = need_braces && any_whitespace_ ? WhitespaceExpression() : Empty();
+     int32_t empty_result =
+         need_braces ? Sequence({ByteString("{"), empty_content, ByteString("}")}) : empty_content;
+     return has_content ? Choice({result, empty_result}) : empty_result;
+diff --git a/cpp/json_schema_converter.h b/cpp/json_schema_converter.h
+index 982f37bd8da65debddedfc18864c1f87392fa799..71a9228b1ca296bf1f5a3f21d9df01db3dba710c 100644
+--- a/cpp/json_schema_converter.h
++++ b/cpp/json_schema_converter.h
+@@ -364,6 +364,9 @@ class JSONSchemaConverter {
+ 
+   /*! \brief Add basic rules for the format. Override for different formats. */
+   virtual void AddBasicRules();
++  // XML converters retain their format-specific ordering; this repair applies
++  // only to ordinary JSON objects.
++  virtual bool SupportsExactPropertyOrder() const { return true; }
+   void AddBasicRules(const std::vector<std::string>& additional_rule_names);
+ 
+   /*! \brief Add a key-value pair to the generation cache. Override for custom cache behavior. */
+@@ -450,6 +453,17 @@ class JSONSchemaConverter {
+       const std::optional<int32_t>& additional_property_override = std::nullopt
+   );
+ 
++  int32_t GetExactOrderRuleForProperties(
++      const std::vector<ObjectSpec::Property>& properties,
++      const std::unordered_set<std::string>& required,
++      const SchemaSpecPtr& additional,
++      const std::string& rule_name,
++      const std::string& additional_suffix
++  );
++  int32_t GetExactOrderKeyPatternExcluding(
++      const std::vector<ObjectSpec::Property>& properties, const std::string& rule_name
++  );
++
+   // ==================== Protected members ====================
+ 
+   GrammarBuilder builder_;
+@@ -461,6 +475,9 @@ class JSONSchemaConverter {
+   // Applies to all objects (including nested ones). Default false preserves the fixed-order
+   // behavior.
+   bool any_order_ = false;
++  // Bound the exponential subset construction across the whole schema, not
++  // only per object. Larger/unsupported shapes keep the original strict path.
++  size_t exact_order_states_left_ = 1024;
+ 
+  public:
+   // Basic rule names
+diff --git a/cpp/json_schema_converter_ext.h b/cpp/json_schema_converter_ext.h
+index f5d32b14168b8491d28f96fe543c0ec4cc7fea0a..5e06f84c9800ff20f173607b27041703dca38dbb 100644
+--- a/cpp/json_schema_converter_ext.h
++++ b/cpp/json_schema_converter_ext.h
+@@ -78,6 +78,7 @@ class XMLToolCallingConverter : public JSONSchemaConverter {
+   std::string NextSeparator(bool is_end = false) override;
+ 
+   void AddBasicRules() override;
++  bool SupportsExactPropertyOrder() const override { return false; }
+ 
+   void AddCache(const std::string& key, int32_t rule_id) override;
+   std::optional<int32_t> GetCache(const std::string& key) const override;
+diff --git a/docs/phala-union-source.json b/docs/phala-union-source.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..15427f9d89b01da4bdee38af14008edcb669a2ff
+--- /dev/null
++++ b/docs/phala-union-source.json
+@@ -0,0 +1,31 @@
++{
++  "scope": "Native source candidate only; no published wheel or runtime qualification",
++  "upstream_repository": "mlc-ai/xgrammar",
++  "upstream_commit": "bc09a30ec10ba30a6c1ab0c79eaeba3ca518d11f",
++  "upstream_version": "0.2.6",
++  "candidate_version": "0.2.6+phala.union1",
++  "dlpack_commit": "bbd2f4d32427e548797929af08cfe2a9cbb3cf12",
++  "license": "Apache-2.0",
++  "historical_patch_order": [
++    {"file": "xgrammar-strict-order.patch", "sha256": "f1755d033e8b56cc9e280714cf9fe38d7866e096539d044b05d861f4c37a2fdf"},
++    {"file": "xgrammar-bounded-string-escapes.patch", "sha256": "0b86f69f83464c2c6ea461dd4febb7ab0421ac3175ec11a43468513068cabf4e"},
++    {"file": "xgrammar-order-goldens.patch", "sha256": "7bb323ea5d6772ed90b649301e54f5e93a35762b4c408031c6f3782eb3909e7a"},
++    {"file": "xgrammar-unbounded-prefix.patch", "sha256": "0bd2f03e0639a1b086f430fa527f7733eb6d7cf641e017ac982f674d1a31c2b6"},
++    {"file": "xgrammar-string-fsm-blocks.patch", "sha256": "2470ab07e90b072146cbcee3e14fec52067088b31e6d5ef6e58172e5595aa31b"}
++  ],
++  "qwen_semantic_port": {
++    "source_commit": "5b4e9ce9e72524037ae24ecd831b9b6604d2eb48",
++    "file": "xgrammar-r5.patch",
++    "sha256": "cda7644a43f71f6d12152df16865055e5a429cc5aa04c82fe934206b981a9af7",
++    "changes": ["Materialize undeclared required properties preserving value schemas and fail-closed combinations", "Make empty no-braces XML parameter content epsilon while preserving JSON brace whitespace"],
++    "adaptation": "0.2.6 direct-AST emitter uses Empty() rather than the 0.2.1 EBNF string literal"
++  },
++  "historical_archive": "phala-models-compose release/sglang/v0.5.19/historical-inputs/{muse,nemotron,qwen36}",
++  "adapter_contract": {
++    "one_native_version": true,
++    "any_order_default": false,
++    "pattern_and_length": "Still unsupported together; engine must fail closed at schema positions, including structural-tag schemas",
++    "whitespace": "Engine must explicitly forward max_whitespace_cnt; unset preserves upstream behavior",
++    "tests": ["tests/python/test_json_schema_converter.py", "tests/python/test_phala_union.py"]
++  }
++}
+diff --git a/pyproject.toml b/pyproject.toml
+index 461a4478d08d501cf4b2d7643cf2708c94fbc786..94b1551996c841b762821d0d03f9277f929c950a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "xgrammar"
+-version = "0.2.6"
++version = "0.2.6+phala.union1"
+ description = "Efficient, Flexible and Portable Structured Generation"
+ authors = [{ name = "MLC Team" }]
+ readme = "README.md"
+diff --git a/tests/python/test_json_schema_converter.py b/tests/python/test_json_schema_converter.py
+index c4a32c07730e51c0272bcc3e04b4c90e490cc09f..3ce9f40c1fd167ec5145e78c36ada4ef1e59ce18 100644
+--- a/tests/python/test_json_schema_converter.py
++++ b/tests/python/test_json_schema_converter.py
+@@ -2482,6 +2482,71 @@ def test_min_max_length():
+     check_schema_with_instance(schema, instance_rejected, is_accepted=False, any_whitespace=True)
+ 
+ 
++def test_min_max_length_allows_json_escapes():
++    # Issue #800: the length-bounded path used a bare [^"\\\r\n] class with no escape
++    # alternative, so \" \\ \/ \b \f \n \r \t and \uXXXX were unrepresentable and a model
++    # needing one could never close the string.
++    schema = {"type": "string", "maxLength": 10}
++
++    check_schema_with_instance(schema, r'"ab\ncd"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\tb"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"say \"hi\""', any_whitespace=True)
++    check_schema_with_instance(schema, r'"back\\slash"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\/b"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\bb"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\fb"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\rb"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"a\u0062c"', any_whitespace=True)
++
++    # minLength alone and combined bounds share the same path.
++    check_schema_with_instance({"type": "string", "minLength": 3}, r'"a\nb"')
++    check_schema_with_instance({"type": "string", "minLength": 1, "maxLength": 3}, r'"a\nb"')
++
++
++def test_min_max_length_counts_escape_as_one_character():
++    # maxLength counts characters of the decoded string: one escape is one character.
++    check_schema_with_instance({"type": "string", "minLength": 3}, r'"a\nb"')
++    check_schema_with_instance({"type": "string", "maxLength": 2}, r'"a\nb"', is_accepted=False)
++    check_schema_with_instance(
++        {"type": "string", "maxLength": 10}, r'"\n\n\n\n\n\n\n\n\n\n"', any_whitespace=True
++    )
++    check_schema_with_instance(
++        {"type": "string", "maxLength": 10},
++        r'"\n\n\n\n\n\n\n\n\n\n\n"',
++        is_accepted=False,
++        any_whitespace=True,
++    )
++
++
++def test_min_max_length_rejects_unescaped_controls():
++    # Unescaped U+0000-U+001F are invalid JSON; the old class admitted them (except \r\n).
++    schema = {"type": "string", "minLength": 1, "maxLength": 3}
++
++    check_schema_with_instance(schema, '"a\tb"', is_accepted=False)
++    check_schema_with_instance(schema, '"a\nb"', is_accepted=False)
++
++
++def test_min_max_length_counts_surrogate_pair_as_one_character():
++    # U+1F600 is one code point however it is spelled: raw UTF-8 or a \uXXXX pair.
++    schema = {"type": "string", "maxLength": 1}
++
++    check_schema_with_instance(schema, r'"\uD83D\uDE00"', any_whitespace=True)
++    check_schema_with_instance(schema, '"\U0001f600"', any_whitespace=True)
++    check_schema_with_instance(
++        schema, r'"\uD83D\uDE00\uD83D\uDE00"', is_accepted=False, any_whitespace=True
++    )
++
++
++def test_min_max_length_rejects_lone_surrogate_escapes():
++    schema = {"type": "string", "maxLength": 4}
++
++    check_schema_with_instance(schema, r'"\uD800"', is_accepted=False, any_whitespace=True)
++    check_schema_with_instance(schema, r'"\uDC00"', is_accepted=False, any_whitespace=True)
++    # Non-surrogate \uXXXX stays legal.
++    check_schema_with_instance(schema, r'"\uD7FF"', any_whitespace=True)
++    check_schema_with_instance(schema, r'"\uE000"', any_whitespace=True)
++
++
+ def test_type_array():
+     schema = {
+         "type": ["integer", "string"],
+@@ -3031,8 +3096,9 @@ def test_integer_range_acceptance_sweep(bounds):
+ def test_limited_whitespace_cnt():
+     expected_grammar = r"""basic_escape ::= (([\"\\/bfnrt]) | ("u" [A-Fa-f0-9] [A-Fa-f0-9] [A-Fa-f0-9] [A-Fa-f0-9])) (=(basic_string_sub))
+ basic_string_sub ::= (("\"") | ([^\0-\x1f\"\\\r\n] basic_string_sub) | ("\\" basic_escape basic_string_sub)) (=(basic_string_sub_4 [,}\]:]))
+-basic_string ::= (("\"" basic_string_sub)) (=(basic_string_sub_4 "}"))
+-root ::= (("{" basic_string_sub_4 "\"key\"" basic_string_sub_4 ":" basic_string_sub_4 basic_string basic_string_sub_4 "}"))
++basic_string ::= (("\"" basic_string_sub)) (=(root_exact_order_1 basic_string_sub_4 "}"))
++root ::= (("{" basic_string_sub_4 "\"key\"" basic_string_sub_4 ":" basic_string_sub_4 basic_string root_exact_order_1 basic_string_sub_4 "}"))
++root_exact_order_1 ::= ("") (=(basic_string_sub_4 "}"))
+ basic_string_sub_2 ::= ("" | ([ \n\r\t] basic_string_sub_3))
+ basic_string_sub_3 ::= ("" | ([ \n\r\t]))
+ basic_string_sub_4 ::= ((basic_string_sub_2))
+@@ -3053,8 +3119,9 @@ basic_string_sub_4 ::= ((basic_string_sub_2))
+ def test_limited_whitespace_compile():
+     expected_grammar = r"""basic_escape ::= (([\"\\/bfnrt]) | ("u" [A-Fa-f0-9] [A-Fa-f0-9] [A-Fa-f0-9] [A-Fa-f0-9])) (=(basic_string_sub))
+ basic_string_sub ::= (("\"") | ([^\0-\x1f\"\\\r\n] basic_string_sub) | ("\\" basic_escape basic_string_sub)) (=(basic_string_sub_4 [,}\]:]))
+-basic_string ::= (("\"" basic_string_sub)) (=(basic_string_sub_4 "}"))
+-root ::= (("{" basic_string_sub_4 "\"key\"" basic_string_sub_4 ":" basic_string_sub_4 basic_string basic_string_sub_4 "}"))
++basic_string ::= (("\"" basic_string_sub)) (=(root_exact_order_1 basic_string_sub_4 "}"))
++root ::= (("{" basic_string_sub_4 "\"key\"" basic_string_sub_4 ":" basic_string_sub_4 basic_string root_exact_order_1 basic_string_sub_4 "}"))
++root_exact_order_1 ::= ("") (=(basic_string_sub_4 "}"))
+ basic_string_sub_2 ::= ("" | ([ \n\r\t] basic_string_sub_3))
+ basic_string_sub_3 ::= ("" | ([ \n\r\t]))
+ basic_string_sub_4 ::= ((basic_string_sub_2))
+diff --git a/tests/python/test_phala_union.py b/tests/python/test_phala_union.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..810559859674274f854deac397b9ca7c3365b611
+--- /dev/null
++++ b/tests/python/test_phala_union.py
+@@ -0,0 +1,237 @@
++"""CPU-native regressions for the shared Phala JSON/XML dependency.
++
++Sources: historical Qwen r5 and Muse/Nemotron strictorder4 fixtures. Raw-byte
++vocabulary tests exercise real compiled masks/rollback without model downloads.
++"""
++
++import itertools
++import json
++
++import pytest
++import torch
++
++import xgrammar as xg
++from xgrammar.testing import _is_grammar_accept_string, _json_schema_to_ebnf
++
++
++def accepts(schema, text, **kwargs):
++    return _is_grammar_accept_string(
++        xg.Grammar.from_json_schema(schema, max_whitespace_cnt=64, **kwargs), text
++    )
++
++
++@pytest.fixture(scope="module")
++def compiler():
++    vocab = [bytes([i]) for i in range(256)] + [b"aa", b'a"', b'aa"', b"<eos>"]
++    info = xg.TokenizerInfo(vocab, xg.VocabType.RAW, stop_token_ids=[259])
++    return xg.GrammarCompiler(info, max_threads=2)
++
++
++@pytest.mark.parametrize("required", [[], ["foo"], ["foo", "barbaz"]])
++@pytest.mark.parametrize("additional", [True, False, {"type": "integer"}])
++def test_exact_order_all_permutations(required, additional):
++    schema = {
++        "type": "object",
++        "properties": {"foo": {"type": "boolean"}, "barbaz": {"type": "string"}},
++        "required": required,
++        "additionalProperties": additional,
++    }
++    items = [("foo", True), ("barbaz", "x")]
++    if additional is not False:
++        items += [("zzz", 1), ("first", 2)]
++    grammar = xg.Grammar.from_json_schema(schema, max_whitespace_cnt=64)
++    for length in range(len(items) + 1):
++        for subset in itertools.combinations(items, length):
++            expected = set(required).issubset(dict(subset))
++            for ordered in itertools.permutations(subset):
++                text = json.dumps(dict(ordered), ensure_ascii=False)
++                assert _is_grammar_accept_string(grammar, text) == expected, text
++
++
++@pytest.mark.parametrize(
++    "text",
++    [
++        '{"barbaz":"x"}',
++        '{"barbaz":"x","foo":"wrong"}',
++        '{"foo":true,"barbaz":"x","foo":false}',
++        '{"barbaz":"x","barbaz":"y","foo":true}',
++        '{"foo":true,"barbaz":"x","\\u0066oo":"wrong"}',
++        '{"foo":true,"barbaz":"x","f\\u006fo":"wrong"}',
++        '{"foo":true,"barbaz":"x",}',
++        '{"foo":true,"barbaz":"x"} prose',
++        '{"barbaz":"x",' + " " * 65 + '"foo":true}',
++    ],
++)
++def test_exact_order_rejects_missing_wrong_duplicate_and_escaped_aliases(text):
++    schema = {
++        "type": "object",
++        "properties": {"foo": {"type": "boolean"}, "barbaz": {"type": "string"}},
++        "required": ["foo", "barbaz"],
++        "additionalProperties": True,
++    }
++    assert not accepts(schema, text)
++
++
++def test_unicode_keys_and_nested_references():
++    item = {
++        "type": "object",
++        "properties": {"中文": {"type": "integer"}, 'a"b': {"type": "boolean"}},
++        "required": ["中文", 'a"b'],
++        "additionalProperties": True,
++    }
++    assert accepts(item, json.dumps({'a"b': True, "extra\nkey": 3, "中文": 1},
++                                   ensure_ascii=False))
++    assert not accepts(item, '{"中文":1,"a\\"b":true,"\\u4e2d文":"wrong"}')
++    schema = {"$defs": {"item": item}, "type": "object",
++              "properties": {"item": {"$ref": "#/$defs/item"}, "n": {"const": 7}},
++              "required": ["item", "n"], "additionalProperties": False}
++    assert accepts(schema, '{"n":7,"item":{"a\\"b":true,"中文":1}}')
++    assert not accepts(schema, '{"n":7,"item":{"a\\"b":true}}')
++
++
++@pytest.mark.parametrize("properties", [8, 9])
++def test_exact_order_size_bound_preserves_required(properties):
++    schema = {"type": "object",
++              "properties": {f"k{i}": {"type": "integer"} for i in range(properties)},
++              "required": [f"k{i}" for i in range(properties)], "additionalProperties": False}
++    assert accepts(schema, json.dumps({f"k{i}": i for i in range(properties)}))
++    assert not accepts(schema, json.dumps({f"k{i}": i for i in range(properties - 1)}))
++    if properties == 8:
++        assert accepts(schema, json.dumps({f"k{i}": i for i in reversed(range(properties))}))
++
++
++@pytest.mark.parametrize("minimum", [1, 127, 128, 129, 200, 1000, 16385])
++@pytest.mark.parametrize("delta", [-1, 0, 1])
++@pytest.mark.parametrize("ascii_only", [False, True])
++def test_decoded_unicode_length_at_block_edges(compiler, minimum, delta, ascii_only):
++    ctx = compiler.compile_json_schema({"type": "string", "minLength": minimum})
++    count = minimum + delta
++    value = "a" * max(count - 1, 0) + ("😀" if count else "")
++    assert xg.GrammarMatcher(ctx).accept_string(json.dumps(value, ensure_ascii=ascii_only)) == (
++        delta >= 0
++    )
++
++
++@pytest.mark.parametrize("escape", [r"\n", r"\"", r"\\", r"\u0041", r"\uD83D\uDE00"])
++def test_escape_is_one_character_at_128_boundary(compiler, escape):
++    ctx = compiler.compile_json_schema({"type": "string", "minLength": 129})
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string('"' + "a" * 127 + escape)
++    assert not matcher.accept_string('"')
++    assert matcher.accept_string('a"')
++
++
++@pytest.mark.parametrize("invalid", [r"\uD800", r"\uDC00", r"\uD83D\u0041", "\t", "\x00"])
++@pytest.mark.parametrize("bounded", [False, True])
++def test_invalid_escape_or_control(compiler, invalid, bounded):
++    schema = {"type": "string", "minLength": 129}
++    if bounded:
++        schema["maxLength"] = 140
++    ctx = compiler.compile_json_schema(schema)
++    assert not xg.GrammarMatcher(ctx).accept_string('"' + "a" * 128 + invalid + '"')
++
++
++def test_multichar_token_mask_rollback_and_eos(compiler):
++    ctx = compiler.compile_json_schema({"type": "string", "minLength": 129})
++    matcher = xg.GrammarMatcher(ctx, max_rollback_tokens=5)
++    assert matcher.accept_string('"' + "a" * 127)
++    mask = xg.allocate_token_bitmask(1, 260)
++    matcher.fill_next_token_bitmask(mask)
++    before = mask.clone()
++
++    def allowed(index):
++        return bool(int(mask[0, index // 32]) & (1 << (index % 32)))
++
++    assert allowed(256)
++    assert not allowed(257)
++    assert allowed(258)
++    assert matcher.accept_token(256)
++    matcher.fill_next_token_bitmask(mask)
++    reached = mask.clone()
++    assert allowed(ord('"'))
++    matcher.rollback(1)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, before)
++    assert matcher.accept_token(256)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
++    assert matcher.accept_token(ord('"'))
++    assert matcher.accept_token(259)
++    assert matcher.is_terminated()
++    matcher.rollback(2)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, reached)
++
++
++@pytest.mark.parametrize("minimum", [128, 129, 200, 1000])
++@pytest.mark.parametrize("delta", [-1, 0, 1, 129])
++def test_unbounded_repetition_prefix(compiler, minimum, delta):
++    grammar = f'root ::= "[" ("ab" | "cd"){{{minimum},}} "]"'
++    matcher = xg.GrammarMatcher(compiler.compile_grammar(grammar))
++    assert matcher.accept_string("[" + "ab" * (minimum + delta))
++    assert matcher.accept_string("]") == (delta >= 0)
++
++
++@pytest.mark.parametrize("length", [0, 1, 128, 129, 200, 258])
++def test_nullable_and_overlapping_repetitions(compiler, length):
++    for expression, expected in [('("a" | "")', True), ('("a" | "aa")', length >= 129)]:
++        ctx = compiler.compile_grammar(f'root ::= {expression}{{129,}} "!"')
++        assert xg.GrammarMatcher(ctx).accept_string("a" * length + "!") == expected
++
++
++@pytest.mark.parametrize("format", ["json", "qwen_xml"])
++@pytest.mark.parametrize("value_keyword", ["additionalProperties", "unevaluatedProperties"])
++def test_undeclared_required_keeps_value_constraints(format, value_keyword):
++    schema = {"type": "object", "required": ["n"], value_keyword: {"type": "integer"}}
++    grammar = _json_schema_to_ebnf(json.dumps(schema), json_format=format)
++    valid = '{"n":7}' if format == "json" else "<parameter=n>7</parameter>"
++    invalid = '{"n":"wrong"}' if format == "json" else "<parameter=n>wrong</parameter>"
++    empty = "{}" if format == "json" else ""
++    assert _is_grammar_accept_string(grammar, valid)
++    assert not _is_grammar_accept_string(grammar, invalid)
++    assert not _is_grammar_accept_string(grammar, empty)
++
++
++@pytest.mark.parametrize("strict_mode", [True, False])
++def test_undeclared_required_without_additional_keyword(strict_mode):
++    schema = {"type": "object", "required": ["n"]}
++    assert accepts(schema, '{"n":null}', strict_mode=strict_mode)
++    assert not accepts(schema, "{}", strict_mode=strict_mode)
++
++
++@pytest.mark.parametrize("extra", [
++    {"additionalProperties": False},
++    {"unevaluatedProperties": False},
++    {"patternProperties": {"^n$": {"type": "integer"}}},
++    {"propertyNames": {"pattern": "^n$"}},
++])
++def test_forbidden_or_unsupported_undeclared_required_fails_closed(extra):
++    with pytest.raises(RuntimeError):
++        xg.Grammar.from_json_schema({"type": "object", "required": ["n"], **extra})
++
++
++def test_empty_xml_yields_to_end_tag_but_json_keeps_whitespace(compiler):
++    schema = {"type": "object", "properties": {}, "additionalProperties": False}
++    grammar = _json_schema_to_ebnf(json.dumps(schema), json_format="qwen_xml")
++    assert _is_grammar_accept_string(grammar, "")
++    assert not _is_grammar_accept_string(grammar, " ")
++    assert not _is_grammar_accept_string(grammar, "\n")
++    assert accepts(schema, "{ \n }")
++    tag = {"type": "structural_tag", "format": {
++        "type": "tag", "begin": "<tool>", "end": "</tool>",
++        "content": {"type": "json_schema", "style": "qwen_xml", "json_schema": schema}}}
++    ctx = compiler.compile_structural_tag(json.dumps(tag))
++    assert xg.GrammarMatcher(ctx).accept_string("<tool></tool>")
++    assert not xg.GrammarMatcher(ctx).accept_string("<tool> \n</tool>")
++
++
++def test_xml_declared_order_and_nested_json_types_are_unchanged():
++    schema = {"type": "object", "properties": {
++        "a": {"type": "integer"},
++        "b": {"type": "object", "properties": {"n": {"const": 7}},
++              "required": ["n"], "additionalProperties": False}},
++        "required": ["a", "b"], "additionalProperties": False}
++    grammar = _json_schema_to_ebnf(json.dumps(schema), json_format="qwen_xml")
++    assert _is_grammar_accept_string(grammar, '<parameter=a>1</parameter><parameter=b>{"n":7}</parameter>')
++    assert not _is_grammar_accept_string(grammar, '<parameter=b>{"n":7}</parameter><parameter=a>1</parameter>')
++    assert not _is_grammar_accept_string(grammar, '<parameter=a>1</parameter><parameter=b>{"n":"7"}</parameter>')
+diff --git a/tests/python/test_phala_union_supplement.py b/tests/python/test_phala_union_supplement.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..33b01d89ae20838fe6415893e2117f2513109f69
+--- /dev/null
++++ b/tests/python/test_phala_union_supplement.py
+@@ -0,0 +1,45 @@
++"""Installed-library checks; no model downloads or GPU allocation."""
++import json
++
++import pytest
++import torch
++import xgrammar as xg
++
++
++def compiler():
++    return xg.GrammarCompiler(
++        xg.TokenizerInfo([bytes([i]) for i in range(256)] + [b"<eos>"],
++                         xg.VocabType.RAW, stop_token_ids=[256]),
++        max_threads=2,
++    )
++
++
++@pytest.mark.parametrize("value", ["a", "\n", '"', "\\", "\u4e2d", "\U0001f600"])
++@pytest.mark.parametrize("ascii_only", [False, True])
++def test_bounded_decoded_character(value, ascii_only):
++    ctx = compiler().compile_json_schema({"type": "string", "minLength": 1, "maxLength": 1})
++    assert xg.GrammarMatcher(ctx).accept_string(json.dumps(value, ensure_ascii=ascii_only))
++    assert not xg.GrammarMatcher(ctx).accept_string('""')
++    assert not xg.GrammarMatcher(ctx).accept_string(json.dumps(value * 2, ensure_ascii=ascii_only))
++
++
++def test_order_mask_rollback():
++    ctx = compiler().compile_json_schema({
++        "type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
++        "required": ["a", "b"], "additionalProperties": False,
++    })
++    matcher = xg.GrammarMatcher(ctx)
++    assert matcher.accept_string('{"b":2,')
++    mask = xg.allocate_token_bitmask(1, 257)
++    matcher.fill_next_token_bitmask(mask)
++    before = mask.clone()
++    assert matcher.accept_token(ord('"'))
++    matcher.fill_next_token_bitmask(mask)
++    assert int(mask[0, ord("a") // 32]) & (1 << (ord("a") % 32))
++    assert not (int(mask[0, ord("b") // 32]) & (1 << (ord("b") % 32)))
++    matcher.rollback(1)
++    matcher.fill_next_token_bitmask(mask)
++    assert torch.equal(mask, before)
++    assert matcher.accept_string('"a":1}')
++    assert matcher.accept_token(256)
++    assert matcher.is_terminated()

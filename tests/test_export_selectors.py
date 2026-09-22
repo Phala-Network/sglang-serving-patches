@@ -130,6 +130,37 @@ class SelectorReplayTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.run_export()
 
+    def native_manifest(self):
+        patch = self.export("native.patch", self.frozen, self.target)
+        return {
+            "version": "0.2.6+phala.union1",
+            "upstream_commit": self.frozen,
+            "candidate_commit": self.target,
+            "candidate_tree": self.git("rev-parse", self.target + "^{tree}"),
+            "patch": patch["path"],
+            "patch_sha256": patch["sha256"],
+            "license_file": "value",
+            "license_sha256": EXPORT.sha256(
+                EXPORT.git(self.repo, "show", self.frozen + ":value").stdout
+            ),
+        }
+
+    def test_external_delta_replays_without_public_candidate_ref(self):
+        native = self.native_manifest()
+        self.write_json("external-dependencies.json", {"xgrammar": native})
+        result = self.run_export()["external_sources"]["xgrammar"]
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["replay_tree"], native["candidate_tree"])
+
+    def test_external_wrong_tree_or_license_is_rejected(self):
+        for field in ("candidate_tree", "license_sha256"):
+            with self.subTest(field=field):
+                native = self.native_manifest()
+                native[field] = "0" * len(native[field])
+                self.write_json("external-dependencies.json", {"xgrammar": native})
+                with self.assertRaises(AssertionError):
+                    self.run_export()
+
 
 if __name__ == "__main__":
     unittest.main()

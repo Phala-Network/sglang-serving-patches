@@ -76,12 +76,45 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--external-source", type=Path)
     args = parser.parse_args()
 
     document = json.loads(SELECTORS.read_text(encoding="utf-8"))
     base_tree = verify_frozen_base(args.source, document)
     results = {}
     generated = {}
+    external_results = {}
+    external_manifest = ROOT / "external-dependencies.json"
+    if external_manifest.exists():
+        external = json.loads(external_manifest.read_text(encoding="utf-8"))["xgrammar"]
+        path = ROOT / external["patch"]
+        if args.external_source:
+            source_tree = git(args.external_source, "rev-parse",
+                              external["candidate_commit"] + "^{tree}").stdout.decode().strip()
+            assert source_tree == external["candidate_tree"], "external candidate tree differs"
+            data = git(args.external_source, "diff", "--binary", "--full-index",
+                       "--no-ext-diff", "--no-renames", external["upstream_commit"],
+                       external["candidate_commit"], "--").stdout
+            assert sha256(data) == external["patch_sha256"], "external source delta differs"
+            if not args.check:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            else:
+                assert path.read_bytes() == data, "external exported bytes differ"
+        assert sha256(path.read_bytes()) == external["patch_sha256"], "external patch hash differs"
+        license_data = git(args.source, "show",
+                           external["upstream_commit"] + ":" + external["license_file"]).stdout
+        assert sha256(license_data) == external["license_sha256"], "external license differs"
+        with tempfile.TemporaryDirectory(prefix="phala-native-replay-") as temporary:
+            env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+            git(args.source, "read-tree", external["upstream_commit"], env=env)
+            git(args.source, "apply", "--cached", str(path.resolve()), env=env)
+            tree = git(args.source, "write-tree", env=env).stdout.decode().strip()
+        assert tree == external["candidate_tree"], "external clean replay tree differs"
+        external_results["xgrammar"] = {
+            "version": external["version"], "patch_sha256": external["patch_sha256"],
+            "replay_tree": tree, "passed": True,
+        }
     for name, selector in document["selectors"].items():
         commit = selector["fork_commit"]
         expected_tree = selector["fork_tree"]
@@ -164,6 +197,8 @@ def main():
         "results": results,
         "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
     }
+    if external_results:
+        verification["external_sources"] = external_results
     encoded = canonical(verification)
     if args.check:
         assert VERIFICATION.read_bytes() == encoded, "selector verification record differs"

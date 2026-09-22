@@ -5,6 +5,7 @@ on:
     paths:
       - 'manifest.json'
       - 'selectors.json'
+      - 'external-dependencies.json'
       - '*verification.json'
       - 'series'
       - 'patches/**'
@@ -17,6 +18,7 @@ on:
     paths:
       - 'manifest.json'
       - 'selectors.json'
+      - 'external-dependencies.json'
       - '*verification.json'
       - 'series'
       - 'patches/**'
@@ -97,6 +99,14 @@ jobs:
 
           fetch(os.environ["SOURCE"], engine_repository, commits, len(manifest["patches"]) + 2)
           fetch(os.environ["GOVERNOR"], governor_repository, {manifest["governor"]["commit"]}, 1)
+          external_path = Path("external-dependencies.json")
+          if external_path.exists():
+              native = json.loads(external_path.read_text())["xgrammar"]
+              assert native["upstream_repository"] == "https://github.com/mlc-ai/xgrammar"
+              assert re.fullmatch(r"[0-9a-f]{40}", native["upstream_commit"])
+              subprocess.run(["git", "-C", os.environ["SOURCE"], "fetch", "--no-tags",
+                              "--depth=1", native["upstream_repository"],
+                              native["upstream_commit"]], check=True)
           PY
       - name: Verify frozen export bytes and clean index replay
         run: python3 scripts/export.py --source "$SOURCE" --governor "$GOVERNOR" --check
