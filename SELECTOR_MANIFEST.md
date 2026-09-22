@@ -30,6 +30,10 @@ have `passed: null`, not a replay pass.
 `unified-v0520-successor` combines the existing common, Kimi and Muse increments
 with guarded Nemotron literal-token boundaries, DS prerequisites/chat encoding,
 named-tool schema roots and Qwen complete-call boundaries in a single source tree.
+Further unified increments restore Muse constraint/grammar/history/template
+call-chain semantics, common Marlin/BREAKABLE guards and Qwen-scoped GGUF
+loading/vision/prefill. Exact CPU evidence does not replace native/kernel or
+external-template packaging acceptance.
 The latter also affects `step3p5` and `nanbeige`, which use the same detector;
 their model behavior has not been qualified.
 The ordered range and exact limitations

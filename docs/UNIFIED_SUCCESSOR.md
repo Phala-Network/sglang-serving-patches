@@ -4,17 +4,19 @@ This record does not update the frozen engine428 export, any Governor candidate,
 image, CVM or production acceptance. No image build or registry write is needed.
 
 The implementation is Phala-Network/sglang commit
-`447dfcb6dee95be0db682036b55804bd03724c8f`, tree
-`0e948706692d53eb3e3a46a08be10e30deb6a14d`, on navigation branch
+`8a51d28ba2ad953593ed033612d19205e1388cb9`, tree
+`6d646cb30e244380c26280db561adb308eb60675`, on navigation branch
 `codex/model-union-v0520-20260922`. It combines the three common increments,
 six Kimi increments, one Muse increment and the guarded Nemotron literal-token
 migration, DS prerequisite/chat source, named-tool schema roots and Qwen complete-call
-boundaries. No common patch bytes were copied. The earlier commit
+boundaries. It now adds Muse constraints/channel grammar/history/template wiring,
+shared Marlin/BREAKABLE guards and guarded Qwen GGUF loading/vision/prefill.
+No common patch bytes were copied. The earlier commit
 `6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780` had tree
 `b6730c9fe47e14319bb92dc61b8463ae7dcfedfd`, equal to the earlier combined
 candidate `83d8dc47ee`. That historical equality is not claimed for the new tree.
 
-`unified-v0520-successor` records the full source range, 25 ordered patch
+`unified-v0520-successor` records the full source range, 32 ordered patch
 references, immutable commits and hashes. `export_selectors.py` independently
 replays the 31-entry frozen series from official v0.5.20
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` to tree
@@ -29,13 +31,13 @@ must not be silently relabeled as successor acceptance.
 
 | Model or family | Present in this successor | Still not established |
 | --- | --- | --- |
-| Common | llguidance mask callbacks/pinning `87ace709c88e`, typed usage `89f583819b2f`, opt-in mode defaults `1db913dd7b38` | Linux package/import and combined runtime tests |
+| Common | llguidance mask callbacks/pinning, typed usage, opt-in mode defaults, stable Marlin route order, NVFP4/MXFP4 FP32 non-atomic reduction and BREAKABLE-only hybrid gate | Linux full runtime imports, Triton/CUDA numerical/capture tests |
 | Kimi K3 | Owner identity `1e62ad753c42`, absolute checkpoint grid `9bd58a168358`, prefill sequence cap `6329c4dddd08`, file ownership/prefix `cd0cca6903e8`, chunk guards `5a1799c43d72`, virtual page continuation `02558c2aaab1` | TP8/DCP1/DCP8 runtime and new Governor combination; old CPU/CUDA evidence is scoped to its original source |
-| Muse Glimmer | Required tool native channel delta `6b3ca7eddd1f`; Gumbel/deferred-Mamba upstream coverage retains its original proof | Historical template/cardinality/grammar/cancellation deltas are not all proven equivalent by this one parser patch |
-| Nemotron 3.5 Lightning | Literal/control-token source `4dbfdf98a4d5` adapted in `6acf476ccf45`: prompt helper, token-ID propagation, model/template guard and current parser methods; 19 CPU tests with real pinned tokenizer | Historical missing-closer fallback, complete tool/schema contracts, Marlin/FP32 and BREAKABLE graph history remain separately pending; no model/GPU acceptance |
+| Muse Glimmer | Existing ATEM/JSON channel parser plus required/named schema, cardinality, channel-header grammar wait/copy/rollback, history/reasoning strength/default and actual Jinja constraint propagation; 28 CPU tests | External template image packaging/license, native XGrammar semantics, real tokenizer/model and cancellation scope remain separate |
+| Nemotron 3.5 Lightning | Literal/control-token source adapted in `6acf476ccf45`, real pinned tokenizer tests; shared Marlin/FP32 and BREAKABLE source now integrated | force_nonempty/termination, complete tool/schema/lifecycle contracts, native grammar and GPU acceptance remain pending |
 | DeepSeek V4.1 Flash | Original DS0001–0010 source prerequisites and adapted DS0011 chat/effort/tool encoding, 10 CPU checks | DS0012–0026 remain pending. Vision/Engram model consumption, Python C1/C2 cache metadata, native ABI/recipe and model tests are not closed |
 | Gemma 4 26B A4B | Common source; historical fork `d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571` remains identifiable | Shared old image does not prove a Gemma-specific increment or qualify Qwen GGUF paths |
-| Qwen3.8 27B / Qwen3.5 GGUF | Current guarded Qwen/common implementation, mode sampling defaults and complete-call atomic publication | Historical GGUF load, vision and Q8_0 source records still require semantic and hardware review |
+| Qwen3.8 27B / Qwen3.5 GGUF | Complete-call atomic publication; guarded name/head/layout/BF16/shared-identity completeness and vision projector loading; Qwen-only BF16/Q8_0 CUDA prefill dispatch | Full model loading and CUDA numerical/performance tests; CPU fixtures do not qualify kernels or weights |
 | Qwen3.6 27B | Current common template, effort/history/schema/media paths; historical fork `711978779936d1918d038de8515e33f968cb5193` retained | Native XGrammar version/required/XML equivalence is not established by source export |
 | Qwen2.5 7B | Common source only | Do not infer Qwen3.5/GGUF applicability from shared historical image |
 | GLM 5.3 | Existing frozen nine logical changes and formatting correction unchanged | No new GPU or Governor-on-GLM acceptance |
@@ -70,6 +72,27 @@ under `python/sglang/srt`.
 - Seven real-Git fixture regressions passed: moved/deleted navigation refs,
   reference-only evidence, corrupt baseline bytes, wrong tree, unverified base,
   expected failure retention and invalid replay mode.
+- Muse suite: 28 CPU cases, zero skips with the pinned template. Three tests
+  execute actual `_process_messages` → `_apply_jinja_template` → render/encode
+  methods, with real Jinja rendering and a test tokenizer. Other cases execute
+  real schema/parser/grammar/protocol source; inner grammar and media are doubles.
+  Without the template input, its three tests explicitly skip.
+- External Muse template SHA256:
+  `900db3effc316e33295ec3d7dfa2df83ea2735228cba73adba8fecc2e83343f7`,
+  matched to immutable Compose `2e16dfd8ab1b433e549fb1dc7cdd200dbd326bbd`.
+  The source migration record is `docs/validation/MUSE_SOURCE_MIGRATION_20260922.md`
+  in the engine fork. No template bytes were redistributed into this repository.
+  A standalone template license was not found; packaging/redistribution remains
+  a separate gate rather than inventing an Apache grant for that artifact.
+- Marlin/BREAKABLE: 6 dependency-free source tests. Both FP4 formats retain FP32
+  scratch reduction; non-Marlin/default dispatch and non-BREAKABLE GQA gates remain.
+  Scalar Triton fixtures do not establish actual kernel compilation or numerics.
+- Qwen GGUF correctness: 20 tests with real CPU tensors, GGUF reader/writer,
+  Transformers meta mapping and actual source-method loader chain. Q8 prefill:
+  11 source-dispatch tests; simulated CUDA/device/kernel metadata, not GPU speed.
+  Tested torch2.13.0/transformers5.12.1/tokenizers0.22.2 match source pins;
+  gguf0.19.0 and numpy2.5.3 are unpinned test inputs. Historical kernel0.4.6.post1
+  versus source0.4.7 has no loaded-extension acceptance here.
 - Linux export CI passed on workflow fix `d175bcc22f0e52ccf12051758b9554d943bddcab`,
   run `35727054057`; the earlier invalid-context run `35726737708` is retained.
 - Nemotron default dependency-light source-method suite: 9 tests pass, real
@@ -96,10 +119,9 @@ No additional per-model workflow or long-lived profile was added.
 
 ## Remaining historical semantics
 
-Muse's channel delta does not close native JSON fallback, reasoning/grammar,
-cardinality/named/history, direct-final structured output, required constraints,
-effort/visibility/schema, or cancellation. Historical `69743bca633b` and
-`ed4266b4513f` also require a template artifact outside the engine projection.
+Muse's nine source contracts are now migrated or reuse current shared behavior;
+the source record maps each exact historical commit. Native grammar, image
+template binding/license and cancellation acceptance remain separate.
 Nemotron's literal-token delta does not close MoE fusion, native tools/order,
 truncated thoughts, incomplete stream withholding, lifecycle/structured output,
 XML const types, Mamba/admission, Marlin/FP32, page alignment or guarded
@@ -108,8 +130,8 @@ proof rather than being duplicated. Old Goodput 0.714982 below 0.7338 was an
 override, not a pass.
 
 Qwen GGUF historical `5404f7600755`, `d67e821bd5ea`, `2b2584575aa5` and
-type-gated optimization `c4afa9828243` remain separate from the now-adapted
-complete-call contract. Gemma4 FP8 and Qwen2.5 FP8 sharing an old image does not
+type-gated optimization `c4afa9828243` are now adapted in guarded source paths,
+separate from full-model/kernel acceptance. Gemma4 FP8 and Qwen2.5 FP8 sharing an old image does not
 qualify either model. One selected XGrammar dependency must reconcile historical
 0.2.1 (`5b4e9ce9e72524037ae24ecd831b9b6604d2eb48`) and 0.2.6
 (`bc09a30ec10ba30a6c1ab0c79eaeba3ca518d11f`) semantics; co-installing them is not

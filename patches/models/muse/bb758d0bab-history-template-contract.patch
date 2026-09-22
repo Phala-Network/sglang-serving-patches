@@ -1,0 +1,579 @@
+diff --git a/docs/validation/MUSE_SOURCE_MIGRATION_20260922.md b/docs/validation/MUSE_SOURCE_MIGRATION_20260922.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e88781b0a743fa9c9f188e490f4a1533b2a805bb
+--- /dev/null
++++ b/docs/validation/MUSE_SOURCE_MIGRATION_20260922.md
+@@ -0,0 +1,66 @@
++# Muse source migration, 2026-09-22
++
++This is a CPU/source stage, not image, GPU, native grammar or model acceptance.
++It preserves the frozen engine428 and the separate frozen PIG candidate.
++
++## Historical semantic inputs
++
++| Historical source | Current treatment |
++| --- | --- |
++| `405fa1086fdb40d97959ccde22c404e3d3b6748f` | Reuse existing Muse ATEM/channel detector and JSON fallback; do not duplicate it |
++| `c5af5ab92184f5d29e4c12ac7d8e8cf81fba46a5` | Adapt token-level channel-header wait and actual grammar acceptance accounting; preserve current min-think and request-specific terminator APIs |
++| `889dac086485d3b29d119e8957ce75de718e199f` | Constrained-output capability, constructor/call-site propagation, history normalization and assistant reasoning alias |
++| `7aad27962602cc89876ca2c3b536a95aa15a46cd` | Muse-only JSON direct-final default; explicit reasoning wins |
++| `c5052c199e05166199b3cb01e4e2adc2d4ed3bba` | Named choice remains constrained independently of native-required capability |
++| `7070885b6c511f61d8ae2c4787d7d2dc38fd3e9b` | Required choice has a schema/cardinality constraint; remove duplicate `True` overrides |
++| `2224d5c899711426210957da0f3ba341f6b6c110` | Muse-scoped strength mapping; retain current shared schema roots, mask callbacks and visibility/exclusion precedence rather than replacing them with older code |
++| `69743bca633b582d9df2bbb41c3a0f3d09926d41` | Exact chosen JSON schema/response format reaches opt-in baked template kwargs |
++| `ed4266b4513fd6b23023aed93c00a65eb3fdc434` | Pass the selected constraint through actual `_process_messages` → `_apply_jinja_template` → `_render_and_encode_chat_template` |
++
++The channel matcher uses the full ` to=self<|message|>` token sequence, not
++just a recipient prefix. Non-channel models retain the previous compact
++reasoning-match history and generation counter instead of new per-token state
++snapshots. Chat and Responses both route Muse constrained output through the
++native detector; schema enforcement and native parsing are separate capabilities.
++
++## External template identity
++
++The supplied historical Compose source is
++`2e16dfd8ab1b433e549fb1dc7cdd200dbd326bbd`, path
++`release/sglang/v0.5.19/historical-inputs/muse/release/phala/muse-nemotron-colocation-v0519/muse-glimmer-chat-template.jinja`.
++Its bytes are SHA256
++`900db3effc316e33295ec3d7dfa2df83ea2735228cba73adba8fecc2e83343f7`.
++The historical image path was `/opt/muse-glimmer-chat-template.jinja`.
++The source tests require that exact hash through `MUSE_TEMPLATE`; the template
++is not silently substituted for a checkpoint template and is not copied into
++this engine repository.
++
++The existing template contains the constrained JSON instructions and direct-final
++generation prefix. This stage fixes its engine call sites; it does not build,
++install or verify an image containing it. A future recipe must explicitly bind
++the template artifact above. No standalone template license was found in the
++supplied historical artifact; retain that provenance and resolve redistribution
++terms before packaging it elsewhere. No template redistribution is performed here.
++
++## CPU evidence and limitations
++
++Run `test/manual/phala/test_muse_migration_cpu.py`. Its source-method tests
++execute real detector, schema builder, request normalizer and reasoner code.
++Pydantic validates and serializes the real assistant message class. The optional
++template tests execute the three real serving call sites against the pinned
++template in an immutable Jinja sandbox. Protocol envelopes, unrelated media
++helpers, tokenizer encoding and the inner grammar are test doubles: this does
++not establish native XGrammar compilation, real tokenization or SSE behavior.
++Without `MUSE_TEMPLATE`, the three artifact-dependent tests are explicitly skipped.
++
++The isolated local test packages are Jinja2 3.1.6 (BSD-3-Clause), MarkupSafe 3.0.3
++(BSD-3-Clause), jsonschema 4.26.0 (MIT) and Pydantic 2.13.5 (MIT); bundled package
++license files remain with the task-local dependencies. These test dependencies
++are not changes to the engine/image dependency pins.
++
++Historical XGrammar 0.2.1 source
++`5b4e9ce9e72524037ae24ecd831b9b6604d2eb48` versus 0.2.6 source
++`bc09a30ec10ba30a6c1ab0c79eaeba3ca518d11f` still needs native API/semantic
++reconciliation. No version bump or co-installation is used as evidence.
++Cancellation, actual tokenizer/native grammar integration, Linux full runtime
++imports and model/GPU acceptance remain separately scoped.
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 07426527a109575a382d7a607d30a5493b1ad031..0049165369932cd44caa6532d3d33bcae007fdbc 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -728,6 +728,8 @@ class ChatCompletionMessageGenericParam(BaseModel):
+     name: Optional[str] = None
+     phase: Optional[Literal["commentary", "final_answer"]] = None
+     reasoning_content: Optional[str] = None
++    # Legacy assistant-history alias; serialize only the canonical field.
++    reasoning: Optional[str] = Field(default=None, exclude=True)
+     tool_calls: Optional[List[ToolCall]] = Field(default=None, examples=[None])
+     tools: Optional[List[Tool]] = Field(default=None, examples=[None])
+ 
+@@ -744,6 +746,14 @@ class ChatCompletionMessageGenericParam(BaseModel):
+ 
+     @model_validator(mode="after")
+     def validate_thinking_parts_role(self):
++        if self.reasoning_content is None and self.reasoning is not None:
++            self.reasoning_content = self.reasoning
++        if self.role != "assistant" and (
++            self.reasoning_content is not None or self.reasoning is not None
++        ):
++            raise ValueError(
++                "reasoning and reasoning_content are only valid in assistant messages"
++            )
+         if self.role != "assistant" and isinstance(self.content, list):
+             for part in self.content:
+                 if isinstance(part, ChatCompletionMessageContentThinkingPart):
+@@ -1082,6 +1092,8 @@ class ChatCompletionRequest(BaseModel):
+     def normalize_reasoning_inputs(cls, values: Dict):
+         r = values.get("reasoning")
+         thinking = None
++        top_level_enable_thinking = values.pop("enable_thinking", None)
++        thinking_config = values.pop("thinking", None)
+ 
+         include_reasoning = values.get("include_reasoning")
+         if include_reasoning is not None and not isinstance(include_reasoning, bool):
+@@ -1149,6 +1161,22 @@ class ChatCompletionRequest(BaseModel):
+         if effort is not None:
+             thinking = effort != "none"
+ 
++        if thinking is None and isinstance(thinking_config, dict):
++            thinking_type = thinking_config.get("type")
++            if isinstance(thinking_type, str):
++                thinking_type = thinking_type.strip().lower()
++                if thinking_type == "disabled":
++                    thinking = False
++                elif thinking_type in {"enabled", "adaptive"}:
++                    thinking = True
++        if thinking is None and top_level_enable_thinking is not None:
++            if isinstance(top_level_enable_thinking, str):
++                thinking = top_level_enable_thinking.strip().lower() in {
++                    "1", "true", "yes", "y", "on"
++                }
++            else:
++                thinking = bool(top_level_enable_thinking)
++
+         if thinking is not None:
+             ctk = values.get("chat_template_kwargs")
+             if not isinstance(ctk, dict):
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index fd09a98ab2844c1afb373b9afe31538196b3dc36..b9988e1c1d91e628da524a294fadff82c9e59773 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -4,6 +4,7 @@ import copy
+ import json
+ import logging
+ import math
++import re
+ import time
+ import uuid
+ from collections import OrderedDict
+@@ -125,6 +126,100 @@ if TYPE_CHECKING:
+ 
+ logger = logging.getLogger(__name__)
+ 
++_COMPLETE_THINK_CONTENT_RE = re.compile(
++    r"\A\s*<think>(?P<reasoning>.*?)</think>\s*\Z", re.DOTALL
++)
++
++
++def normalize_muse_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """Preserve control messages and legacy reasoning in Muse's Jinja contract."""
++    control_messages, normalized = [], []
++    for source in messages:
++        message = copy.deepcopy(source)
++        role = message.get("role")
++        if role in ("system", "developer"):
++            message["role"] = "system"
++            control_messages.append(message)
++            continue
++        if role == "assistant":
++            reasoning = message.get("reasoning_content")
++            if reasoning is None:
++                reasoning = message.get("reasoning")
++            if reasoning is not None:
++                message["reasoning_content"] = reasoning
++            elif isinstance(message.get("content"), str):
++                match = _COMPLETE_THINK_CONTENT_RE.fullmatch(message["content"])
++                if match is not None:
++                    message["reasoning_content"] = match.group("reasoning")
++                    message["content"] = ""
++            message.pop("reasoning", None)
++        normalized.append(message)
++    if control_messages and all(
++        isinstance(message.get("content"), str) for message in control_messages
++    ):
++        normalized.insert(0, {
++            "role": "system",
++            "content": "\n\n".join(message["content"] for message in control_messages),
++        })
++    else:
++        normalized[0:0] = control_messages
++    return normalized
++
++
++def normalize_muse_reasoning(request, reasoning_parser):
++    """Map normalized controls to Muse's strength without changing other models."""
++    if reasoning_parser != "muse":
++        return
++    kwargs = dict(request.chat_template_kwargs or {})
++    if "reasoning_strength" not in kwargs:
++        effort = request.reasoning_effort
++        if isinstance(effort, str) and effort != "minimal":
++            kwargs["reasoning_strength"] = effort
++        else:
++            for key in ("enable_thinking", "thinking"):
++                if key not in kwargs:
++                    continue
++                value = kwargs[key]
++                enabled = (
++                    value.strip().lower() in {"1", "true", "yes", "y", "on"}
++                    if isinstance(value, str) else bool(value)
++                )
++                if not enabled:
++                    kwargs["reasoning_strength"] = "none"
++                break
++    request.chat_template_kwargs = kwargs
++
++
++def apply_muse_structured_output_reasoning_default(request, reasoning_parser):
++    """Use direct-final for Muse JSON unless the caller chose reasoning controls."""
++    if reasoning_parser != "muse" or request.response_format is None:
++        return
++    if request.response_format.type not in {"json_object", "json_schema"}:
++        return
++    if request.reasoning_effort is not None or request.include_reasoning is True:
++        return
++    kwargs = dict(request.chat_template_kwargs or {})
++    if any(key in kwargs for key in ("reasoning_strength", "enable_thinking", "thinking")):
++        return
++    kwargs["reasoning_strength"] = "none"
++    request.chat_template_kwargs = kwargs
++
++
++def muse_format_template_kwargs(request, reasoning_parser, tool_call_constraint):
++    """Describe the selected format in the opt-in, pinned Muse baked template."""
++    if reasoning_parser != "muse":
++        return {}
++    if tool_call_constraint is not None and tool_call_constraint[0] == "json_schema":
++        return {"_phala_muse_tool_schema": tool_call_constraint[1]}
++    if request.response_format is not None and request.response_format.type in {
++        "json_object", "json_schema"
++    }:
++        return {"_phala_muse_response_format": request.response_format.model_dump(
++            mode="json", by_alias=True, exclude_none=True
++        )}
++    return {}
++
++
+ _QWEN35_REASONING_EFFORT_GUIDANCE = {
+     "low": (
+         "For this low-effort request, reason briefly in one compact internal "
+@@ -1629,6 +1724,8 @@ class OpenAIServingChat(OpenAIServingBase):
+         normalize_hunyuan_reasoning_effort(
+             request, self.reasoning_parser, self.template_manager.reasoning_config
+         )
++        normalize_muse_reasoning(request, self.reasoning_parser)
++        apply_muse_structured_output_reasoning_default(request, self.reasoning_parser)
+ 
+         # GptOss model needs to keep special tokens for harmony parsing
+         if self.is_gpt_oss or self.is_gemma4:
+@@ -1714,7 +1811,13 @@ class OpenAIServingChat(OpenAIServingBase):
+                 stop=request.stop or [],
+             )
+         elif self.template_manager.chat_template_name is None:
+-            result = self._apply_jinja_template(request, tools, is_multimodal)
++            if self.reasoning_parser == "muse":
++                result = self._apply_jinja_template(
++                    request, tools, is_multimodal,
++                    tool_call_constraint=tool_call_constraint,
++                )
++            else:
++                result = self._apply_jinja_template(request, tools, is_multimodal)
+         else:
+             result = self._apply_conversation_template(request, is_multimodal)
+ 
+@@ -1763,6 +1866,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         request: ChatCompletionRequest,
+         tools: Optional[List[Dict]],
+         is_multimodal: bool,
++        tool_call_constraint=None,
+     ) -> MessageProcessingResult:
+         """Apply Jinja chat template"""
+         prompt = ""
+@@ -1784,6 +1888,8 @@ class OpenAIServingChat(OpenAIServingBase):
+             ThinkingMode.THINKING if thinking_requested else ThinkingMode.CHAT
+         )
+         messages = [msg.model_dump() for msg in request.messages]
++        if self.tool_call_parser == "muse" or self.reasoning_parser == "muse":
++            messages = normalize_muse_history(messages)
+         messages = self._fold_qwen35_system_messages(messages)
+         messages = self._apply_qwen35_reasoning_effort_guidance(
+             messages, request.reasoning_effort
+@@ -1966,6 +2072,11 @@ class OpenAIServingChat(OpenAIServingBase):
+                 extra_template_kwargs["reasoning_effort"] = template_reasoning_effort
+             if request.chat_template_kwargs:
+                 extra_template_kwargs.update(request.chat_template_kwargs)
++            extra_template_kwargs.update(
++                muse_format_template_kwargs(
++                    request, self.reasoning_parser, tool_call_constraint
++                )
++            )
+ 
+             rc = self.template_manager.reasoning_config
+             if rc is not None and rc.effort_kwarg is not None:
+@@ -3233,6 +3344,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         if not self.reasoning_parser:
+             return False
+ 
++        if self.reasoning_parser == "muse":
++            return (request.chat_template_kwargs or {}).get("reasoning_strength") != "none"
++
+         if self.reasoning_parser == "minimax-m3":
+             # M3 template prefills <mm:think> for thinking_mode=enabled, so it never
+             # appears in output and reasoning must be forced. Mirrors reasoning_parser.py.
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index b7f00d8cb9077a2b23c9783efb72bb184cbabe70..9179e3b1e8bdb66717f7709da4f7a5dc1a73afe2 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -2035,7 +2035,8 @@ class MuseGlimmerDetector(BaseReasoningFormatDetector):
+     """
+ 
+     grammar_channel_header_end = MESSAGE
+-    grammar_channel_reasoning_header = " to=self"
++    # Include the delimiter so a tool named "selfish" is not a reasoning channel.
++    grammar_channel_reasoning_header = " to=self" + MESSAGE
+ 
+     def __init__(
+         self,
+diff --git a/test/manual/phala/test_muse_migration_cpu.py b/test/manual/phala/test_muse_migration_cpu.py
+index 16cf8bfeeffc8479eba9a23d90d6a4a81345c15f..a224529056c3706dbb97b6aa3cdec8a313d23ff7 100644
+--- a/test/manual/phala/test_muse_migration_cpu.py
++++ b/test/manual/phala/test_muse_migration_cpu.py
+@@ -5,15 +5,19 @@ selection, Muse parsing and JSON Schema validation are real source/library code.
+ This is not native grammar compilation, a tokenizer test, or SSE acceptance.
+ """
+ import ast
++import copy
++import hashlib
+ import inspect
+ import json
+ import logging
++import os
+ from pathlib import Path
+ import re
+ from types import SimpleNamespace
+ import unittest
+ from dataclasses import dataclass, field
+ from unittest.mock import MagicMock
++from enum import Enum
+ 
+ from jsonschema import Draft202012Validator
+ 
+@@ -85,7 +89,7 @@ Parser = NS["FunctionCallParser"]
+ 
+ def tool(name):
+     return SimpleNamespace(function=SimpleNamespace(
+-        name=name, strict=False, parameters={
++        name=name, description="Weather lookup", strict=False, parameters={
+             "type": "object", "properties": {"city": {"type": "string"}},
+             "required": ["city"]}))
+ 
+@@ -174,7 +178,7 @@ class MuseGrammarTests(unittest.TestCase):
+     def make(self, channel=True, reasoning=True, **kwargs):
+         grammar = MagicMock()
+         obj = load_reasoner()(grammar, [7, 8], channel_header_end_ids=[12, 13] if channel else None,
+-                              channel_reasoning_header_ids=[10, 11] if channel else None, **kwargs)
++                              channel_reasoning_header_ids=[10, 11, 12, 13] if channel else None, **kwargs)
+         obj.maybe_init_reasoning(reasoning)
+         return obj, grammar
+ 
+@@ -202,6 +206,11 @@ class MuseGrammarTests(unittest.TestCase):
+         self.feed(obj, [98, 7, 8, 50, 12, 13, 100])
+         grammar.accept_token.assert_called_once_with(100)
+ 
++    def test_self_prefix_tool_name_does_not_disable_grammar(self):
++        obj, grammar = self.make()
++        self.feed(obj, [99, 7, 8, 10, 11, 55, 12, 13, 100])
++        grammar.accept_token.assert_called_once_with(100)
++
+     def test_rollback_each_boundary_restores_exact_state_and_counts(self):
+         tokens = [99, 7, 8, 10, 11, 12, 13, 98, 7, 8, 50, 12, 13, 100, 101]
+         for keep in range(len(tokens) + 1):
+@@ -277,5 +286,202 @@ class MuseGrammarTests(unittest.TestCase):
+         self.assertIs(filters.call_args.args[3], True)
+ 
+ 
++def load_chat():
++    ns = dict(NS, copy=copy, Enum=Enum, MessageProcessingResult=SimpleNamespace,
++              process_content_for_template_format=lambda message, *args: message,
++              normalize_hunyuan_reasoning_effort=lambda *args: None,
++              _CHAT_TEMPLATE_CLIENT_ERRORS=(ValueError,))
++    ns["envs"] = SimpleNamespace(SGLANG_DEFAULT_THINKING=SimpleNamespace(get=lambda: False))
++    functions = {
++        "normalize_muse_history", "normalize_muse_reasoning",
++        "apply_muse_structured_output_reasoning_default", "muse_format_template_kwargs",
++        "normalize_tool_content", "normalize_assistant_tool_call_arguments", "ThinkingMode",
++    }
++    execute(source_nodes("entrypoints/openai/serving_chat.py", functions), ns)
++    ns["_COMPLETE_THINK_CONTENT_RE"] = re.compile(r"\A\s*<think>(?P<reasoning>.*?)</think>\s*\Z", re.DOTALL)
++    cls = source_nodes("entrypoints/openai/serving_chat.py", {"OpenAIServingChat"})[0]
++    cls.bases = []
++    cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in {
++        "_process_messages", "_apply_jinja_template", "_get_reasoning_from_request",
++        "_render_and_encode_chat_template"}]
++    execute([cls], ns)
++    # Preserve the actual request normalizer and its existing exclusion precedence.
++    request = source_nodes("entrypoints/openai/protocol.py", {"ChatCompletionRequest"})[0]
++    normalizer = next(n for n in request.body if isinstance(n, ast.FunctionDef)
++                      and n.name == "normalize_reasoning_inputs")
++    normalizer.decorator_list = []
++    execute([normalizer], ns)
++    return ns
++
++
++CHAT = load_chat()
++
++
++def request(**kwargs):
++    values = dict(response_format=None, reasoning_effort=None, include_reasoning=None,
++                  chat_template_kwargs=None, stop=[], input_ids=None, tools=[],
++                  parallel_tool_calls=True, continue_final_message=False,
++                  messages=[SimpleNamespace(model_dump=lambda: {"role": "user", "content": "Literal 中文 \"quote\" \\ backslash"})])
++    values.update(kwargs)
++    return SimpleNamespace(**values)
++
++
++class MuseHistoryTests(unittest.TestCase):
++    def test_history_control_promotion_alias_and_no_input_mutation(self):
++        messages = [{"role": "user", "content": "first"},
++                    {"role": "developer", "content": "rule"},
++                    {"role": "assistant", "content": None, "reasoning": "legacy"},
++                    {"role": "system", "content": "second rule"},
++                    {"role": "assistant", "content": "<think>private</think>"}]
++        original = copy.deepcopy(messages)
++        normalized = CHAT["normalize_muse_history"](messages)
++        self.assertEqual(messages, original)
++        self.assertEqual(normalized[0], {"role": "system", "content": "rule\n\nsecond rule"})
++        self.assertEqual(normalized[2]["reasoning_content"], "legacy")
++        self.assertNotIn("reasoning", normalized[2])
++        self.assertEqual(normalized[3]["content"], "")
++        self.assertEqual(normalized[3]["reasoning_content"], "private")
++
++    def test_empty_canonical_reasoning_wins_and_embedded_think_is_literal(self):
++        messages = [{"role": "assistant", "content": "A <think>x</think> example.",
++                     "reasoning_content": "", "reasoning": "legacy"}]
++        normalized = CHAT["normalize_muse_history"](messages)
++        self.assertEqual(normalized[0]["content"], messages[0]["content"])
++        self.assertEqual(normalized[0]["reasoning_content"], "")
++
++    def test_protocol_alias_real_pydantic_validation_and_serialization(self):
++        from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
++        from typing import Optional, Union, List, Literal, Tuple, get_args
++        ns = dict(BaseModel=BaseModel, Field=Field, field_validator=field_validator,
++                  model_validator=model_validator, Optional=Optional, Union=Union, List=List,
++                  Literal=Literal, Tuple=Tuple, get_args=get_args, ToolCall=dict, Tool=dict,
++                  ChatCompletionMessageContentPart=dict,
++                  ChatCompletionMessageContentThinkingPart=type("ThinkingPart", (), {}))
++        # Keep role validators and actual Pydantic field definitions unchanged.
++        ns["_GenericMessageRole"] = Literal["system", "assistant", "tool", "function", "developer", "latest_reminder"]
++        ns["_GENERIC_MESSAGE_ROLES"] = get_args(ns["_GenericMessageRole"])
++        execute(source_nodes("entrypoints/openai/protocol.py", {"ChatCompletionMessageGenericParam"}), ns)
++        model = ns["ChatCompletionMessageGenericParam"]
++        model.model_rebuild(_types_namespace=ns)
++        msg = model(role="assistant", reasoning="legacy", content=None)
++        self.assertEqual(msg.reasoning_content, "legacy")
++        self.assertNotIn("reasoning", msg.model_dump())
++        self.assertEqual(model(role="assistant", reasoning="legacy", reasoning_content="").reasoning_content, "")
++        with self.assertRaises(ValidationError):
++            model(role="developer", reasoning="private")
++
++    def test_strength_and_default_precedence(self):
++        for effort in ("none", "low", "medium", "high", "xhigh", "max"):
++            req = request(reasoning_effort=effort)
++            CHAT["normalize_muse_reasoning"](req, "muse")
++            self.assertEqual(req.chat_template_kwargs["reasoning_strength"], effort)
++        for val in (False, "false", "off"):
++            req = request(chat_template_kwargs={"enable_thinking": val})
++            CHAT["normalize_muse_reasoning"](req, "muse")
++            self.assertEqual(req.chat_template_kwargs["reasoning_strength"], "none")
++        req = request(reasoning_effort="low", chat_template_kwargs={"reasoning_strength": "high"})
++        CHAT["normalize_muse_reasoning"](req, "muse")
++        self.assertEqual(req.chat_template_kwargs["reasoning_strength"], "high")
++        req = request(response_format=SimpleNamespace(type="json_object"))
++        CHAT["apply_muse_structured_output_reasoning_default"](req, "muse")
++        self.assertEqual(req.chat_template_kwargs["reasoning_strength"], "none")
++        for control in ({"reasoning_effort": "high"}, {"include_reasoning": True},
++                        {"chat_template_kwargs": {"thinking": True}}):
++            req = request(response_format=SimpleNamespace(type="json_schema"), **control)
++            CHAT["apply_muse_structured_output_reasoning_default"](req, "muse")
++            self.assertNotEqual((req.chat_template_kwargs or {}).get("reasoning_strength"), "none")
++
++    def test_non_muse_helpers_are_noops(self):
++        for parser in (None, "qwen3", "nemotron_3", "kimi_k3", "deepseek-v4"):
++            req = request(reasoning_effort="none", response_format=SimpleNamespace(type="json_object"))
++            CHAT["normalize_muse_reasoning"](req, parser)
++            CHAT["apply_muse_structured_output_reasoning_default"](req, parser)
++            self.assertIsNone(req.chat_template_kwargs)
++            self.assertEqual(CHAT["muse_format_template_kwargs"](req, parser, ("json_schema", {})), {})
++
++    def test_protocol_aliases_preserve_explicit_and_visibility_precedence(self):
++        normalize = CHAT["normalize_reasoning_inputs"]
++        for raw in ({"enable_thinking": False}, {"thinking": {"type": "disabled"}}):
++            result = normalize(None, raw)
++            self.assertFalse(result["chat_template_kwargs"]["thinking"])
++        result = normalize(None, {"reasoning": {"enabled": True, "exclude": True}, "enable_thinking": False})
++        self.assertTrue(result["chat_template_kwargs"]["thinking"])
++        self.assertTrue(result["reasoning_exclude"])
++        self.assertNotIn("reasoning_strength", result["chat_template_kwargs"])
++        result = normalize(None, {"reasoning": {"exclude": False}, "include_reasoning": False})
++        self.assertFalse(result["reasoning_exclude"])
++        self.assertNotIn("chat_template_kwargs", result)
++
++
++@unittest.skipUnless(os.environ.get("MUSE_TEMPLATE"), "requires pinned historical Muse template")
++class MuseTemplateCallChainTests(unittest.TestCase):
++    def make_serving(self):
++        from jinja2.sandbox import ImmutableSandboxedEnvironment
++        data = Path(os.environ["MUSE_TEMPLATE"]).read_bytes()
++        self.assertEqual(hashlib.sha256(data).hexdigest(),
++                         "900db3effc316e33295ec3d7dfa2df83ea2735228cba73adba8fecc2e83343f7")
++        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
++        env.filters["tojson"] = lambda value: json.dumps(value, ensure_ascii=False)
++        template = env.from_string(data.decode())
++        def render(messages, **kwargs):
++            self.kwargs = kwargs
++            self.rendered = template.render(messages=messages, bos_token="<s>", **kwargs)
++            return self.rendered
++        serving = CHAT["OpenAIServingChat"]()
++        serving.reasoning_parser = serving.tool_call_parser = "muse"
++        serving.is_gpt_oss = serving.is_gemma4 = False
++        serving.chat_encoding_spec = None
++        serving.default_chat_template_kwargs = {}
++        serving._tokenizer_auto_adds_specials = False
++        serving.template_manager = SimpleNamespace(
++            reasoning_config=None, chat_template_name=None,
++            jinja_template_content_format="string", jinja_template_may_reorder_tool_results=False)
++        serving.tokenizer_manager = SimpleNamespace(tokenizer=SimpleNamespace(
++            apply_chat_template=render, encode=lambda text, **kw: list(text.encode())))
++        serving._effective_tools = lambda req: req.tools
++        serving._effective_tool_choice = lambda req: getattr(req, "tool_choice", "auto")
++        serving._request_tools_for_prompt = lambda req: [
++            {"type": "function", "function": vars(t.function)} for t in req.tools]
++        serving._patch_reasoning_skip_special_tokens = lambda req: None
++        serving._fold_qwen35_system_messages = lambda messages: messages
++        serving._apply_qwen35_reasoning_effort_guidance = lambda messages, effort: messages
++        serving._expose_qwen35_reasoning_tool_history = lambda messages: None
++        serving._filter_message_tools_for_prompt = lambda messages, req: None
++        serving._uses_qwen35_chat_template = lambda: False
++        serving._encode_messages = lambda *args, **kwargs: None
++        serving._handle_last_assistant_message = lambda messages, req: (messages, "")
++        return serving
++
++    def test_real_process_jinja_render_chain_carries_required_schema(self):
++        serving = self.make_serving()
++        req = request(tools=[tool("weather")], tool_choice="required",
++                      reasoning_effort="none", skip_special_tokens=True)
++        result = serving._process_messages(req, False)
++        self.assertEqual(self.kwargs["_phala_muse_tool_schema"], result.tool_call_constraint[1])
++        self.assertIn("one JSON array", self.rendered)
++        self.assertNotIn('<atem:invoke name="$FUNCTION_NAME">', self.rendered)
++        self.assertTrue(self.rendered.endswith("<|start|>assistant to=user<|message|>"))
++        self.assertFalse(result.require_reasoning)
++        self.assertIn('Literal 中文 "quote" \\ backslash', self.rendered)
++
++    def test_real_chain_json_default_and_explicit_reasoning(self):
++        for effort, expected in ((None, False), ("high", True)):
++            serving = self.make_serving()
++            fmt = SimpleNamespace(type="json_object", model_dump=lambda **kw: {"type": "json_object"})
++            result = serving._process_messages(request(
++                response_format=fmt, reasoning_effort=effort, skip_special_tokens=True), False)
++            self.assertIn("one valid JSON object", self.rendered)
++            self.assertEqual(result.require_reasoning, expected)
++            self.assertEqual(self.kwargs["_phala_muse_response_format"], {"type": "json_object"})
++
++    def test_plain_auto_keeps_atem_instructions_and_default_reasoning(self):
++        serving = self.make_serving()
++        result = serving._process_messages(request(
++            tools=[tool("weather")], tool_choice="auto", skip_special_tokens=True), False)
++        self.assertNotIn("_phala_muse_tool_schema", self.kwargs)
++        self.assertIn('<atem:invoke name="$FUNCTION_NAME">', self.rendered)
++        self.assertTrue(result.require_reasoning)
++
++
+ if __name__ == "__main__":
+     unittest.main()

@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
-      "fork_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d",
+      "fork_commit": "8a51d28ba2ad953593ed033612d19205e1388cb9",
+      "fork_tree": "6d646cb30e244380c26280db561adb308eb60675",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 25,
+      "patch_count": 32,
       "replay_mode": "exact",
       "status": "source_replay_verified_native_closure_and_model_qualification_pending",
-      "validation_boundary": "Nemotron real-tokenizer suite 19/0 skip; DS chat migration 10; named-schema roots 5; Qwen/Gemma guarded methods 5; Qwen complete-call source methods 16 and boundary probe 4/4. Shared Qwen detector also changes step3p5/nanbeige; registrations/no-argument constructor and parser delegation inspected, not model-qualified. DS prerequisites/chat are source-integrated, not native closure: vision/Engram model consumption and Python C1/C2 cache metadata remain pending; shared allreduce/PTX/FP8 changes need non-DS regression. Offline Rust check lacks cached prost and never compiled. Linux full imports, ABI, GPU/model and final-image acceptance remain pending.",
-      "replay_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d"
+      "validation_boundary": "Muse28/0skip source/protocol tests include three real serving call-chain renders against external template900db3ef (immutable Compose2e16dfd8, not redistributed; packaging/license unresolved). Common Marlin/BREAKABLE6 source tests; Qwen GGUF20 real CPU tensor/reader tests and Q8 prefill11 dispatch tests (simulated kernels/device). Torch2.13.0/Transformers5.12.1/tokenizers0.22.2 match source pins; gguf0.19.0/numpy2.5.3 are tested unpinned inputs. Nemotron real-tokenizer19/0skip; DSchat10; named-schema5; Qwenhistory5; Qwen complete-call16/boundary4. Step3p5/nanbeige share that detector, not model-qualified. DS0012-26, vision/Engram consumption, Python C1/C2 metadata, shared-native regression remain pending; offline Rust check lacked cached prost. One native XGrammar reconciliation remains pending, not solved by source tests or stock version bump. No GPU, full runtime imports, ABI or final-image acceptance.",
+      "replay_tree": "6d646cb30e244380c26280db561adb308eb60675"
     },
     "common-v0520-successor": {
       "passed": true,

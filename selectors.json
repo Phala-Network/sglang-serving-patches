@@ -16,11 +16,11 @@
       "model_family": "shared-serving-and-model-increments",
       "version": "v0.5.20",
       "topology": ["model-and-topology-guarded"],
-      "fork_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
-      "fork_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d",
+      "fork_commit": "8a51d28ba2ad953593ed033612d19205e1388cb9",
+      "fork_tree": "6d646cb30e244380c26280db561adb308eb60675",
       "fork_branch": "codex/model-union-v0520-20260922",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..447dfcb6dee95be0db682036b55804bd03724c8f",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..8a51d28ba2ad953593ed033612d19205e1388cb9",
       "replay_mode": "exact",
       "patches": [
         {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
@@ -47,12 +47,19 @@
         {"id":"dsv41-chat-encoding-adapted","path":"patches/models/deepseek/407ab50cf5-chat-encoding-adapted.patch","source_commit":"407ab50cf5849ccc66d646f93244a4ce98e754e1","sha256":"d478ecf64152105756e49bab2e77f4dacf4a40aacccd46f86e1bb43110990c64"},
         {"id":"common-named-tool-reference-roots","path":"patches/common/d912c600ba-named-tool-reference-roots.patch","source_commit":"d912c600bad54887952a0e5d4c96bf1a922294d3","sha256":"f422a4388d935e3106ea0e1d2bbe89d2d69bedbf57d73d9c103340007d1d5c1e"},
         {"id":"qwen-gemma-history-reconciliation","path":"patches/models/qwen/23bd4b2a9b-history-reconciliation.patch","source_commit":"23bd4b2a9be8dcad15e54fae5d3ab6f233230de1","sha256":"df0efcdc9be06fa76da1e7c004c914b48c66419217862c668a4194c1a8e92b50"},
-        {"id":"qwen-complete-call-boundaries","path":"patches/models/qwen/447dfcb6de-complete-call-boundaries.patch","source_commit":"447dfcb6dee95be0db682036b55804bd03724c8f","sha256":"6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"}
+        {"id":"qwen-complete-call-boundaries","path":"patches/models/qwen/447dfcb6de-complete-call-boundaries.patch","source_commit":"447dfcb6dee95be0db682036b55804bd03724c8f","sha256":"6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"},
+        {"id":"muse-required-named-constraints","path":"patches/models/muse/acec595f6b-required-named-constraints.patch","source_commit":"acec595f6b6d2b6e8969af0d5a39fe6ec51a30f5","sha256":"a6911a3756d1088a30a786c69bdf6ff361dc5867aad3bb302bd1aae199e5f91e"},
+        {"id":"muse-channel-grammar-lifecycle","path":"patches/models/muse/252ce1114c-channel-grammar-lifecycle.patch","source_commit":"252ce1114c157031bdc4a8ebfbffe798b7527507","sha256":"3434c916f30c41cda2a07f6151d636d5762f3e8b3a57d0e028b4f5d2f9304241"},
+        {"id":"muse-history-template-contract","path":"patches/models/muse/bb758d0bab-history-template-contract.patch","source_commit":"bb758d0babab3a0d345aa55f503791564923ac4d","sha256":"a531ecb3f00e224df9ea39007647e5a261193a2e83da0853c738c27e30f43abc"},
+        {"id":"common-marlin-breakable","path":"patches/common/fa291d652a-marlin-breakable.patch","source_commit":"fa291d652a4a736d770f1dde59f8a57a41f4d85f","sha256":"6249c0c85c2ef0b63e5e6877eefe9225e4f45114109f859cb112525ee82dade2"},
+        {"id":"qwen-gguf-load-vision","path":"patches/models/qwen/0b921c2f15-gguf-load-vision.patch","source_commit":"0b921c2f15623b0ad9e5fa23984d86b4c16b0951","sha256":"ba2ac10cde69ced4f062f932d1e82acc78626d772341b65e566badb2a5702590"},
+        {"id":"muse-explicit-budget-regression","path":"patches/models/muse/f76d68047d-explicit-budget-regression.patch","source_commit":"f76d68047de08e2cde1884d25c461eccda7a11e1","sha256":"98f5c6cb68024fc08f88575c99a0cebea573c13335020f4077395b5974e95dca"},
+        {"id":"qwen-guarded-q8-prefill","path":"patches/models/qwen/8a51d28ba2-guarded-q8-prefill.patch","source_commit":"8a51d28ba2ad953593ed033612d19205e1388cb9","sha256":"c083dc7957434c1d7374a9f7d074d9732765a03d20a0e0ebd0089ba8d076c9fc"}
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": ["dsv41-0012", "dsv41-0013", "dsv41-0014", "dsv41-0015", "dsv41-0016", "dsv41-0017", "dsv41-0018", "dsv41-0019", "dsv41-0020", "dsv41-0021", "dsv41-0022", "dsv41-0023", "dsv41-0024", "dsv41-0025", "dsv41-0026"],
       "status": "source_replay_verified_native_closure_and_model_qualification_pending",
-      "validation_boundary": "Nemotron real-tokenizer suite 19/0 skip; DS chat migration 10; named-schema roots 5; Qwen/Gemma guarded methods 5; Qwen complete-call source methods 16 and boundary probe 4/4. Shared Qwen detector also changes step3p5/nanbeige; registrations/no-argument constructor and parser delegation inspected, not model-qualified. DS prerequisites/chat are source-integrated, not native closure: vision/Engram model consumption and Python C1/C2 cache metadata remain pending; shared allreduce/PTX/FP8 changes need non-DS regression. Offline Rust check lacks cached prost and never compiled. Linux full imports, ABI, GPU/model and final-image acceptance remain pending."
+      "validation_boundary": "Muse28/0skip source/protocol tests include three real serving call-chain renders against external template900db3ef (immutable Compose2e16dfd8, not redistributed; packaging/license unresolved). Common Marlin/BREAKABLE6 source tests; Qwen GGUF20 real CPU tensor/reader tests and Q8 prefill11 dispatch tests (simulated kernels/device). Torch2.13.0/Transformers5.12.1/tokenizers0.22.2 match source pins; gguf0.19.0/numpy2.5.3 are tested unpinned inputs. Nemotron real-tokenizer19/0skip; DSchat10; named-schema5; Qwenhistory5; Qwen complete-call16/boundary4. Step3p5/nanbeige share that detector, not model-qualified. DS0012-26, vision/Engram consumption, Python C1/C2 metadata, shared-native regression remain pending; offline Rust check lacked cached prost. One native XGrammar reconciliation remains pending, not solved by source tests or stock version bump. No GPU, full runtime imports, ABI or final-image acceptance."
     },
     "common-v0520-successor": {
       "model_family": "shared-serving",

@@ -98,7 +98,9 @@ from the fork or treat a moving branch as a release input.
 The [2026-09-22 unified successor](docs/UNIFIED_SUCCESSOR.md) combines the
 existing shared, Kimi and Muse increments, Nemotron literal-token boundaries,
 DS prerequisites/chat, named-tool schema roots and Qwen complete-call boundaries
-into one source tree. Its selector
+into one source tree. It also includes Muse constraint/grammar/history/template
+call-chain migration, shared Marlin/BREAKABLE guards and guarded Qwen GGUF
+loading/vision/Q8 prefill source. Its selector
 replays the frozen series from the official base, then the ordered successor
 range; historical reference-only selectors have no replay-pass result.
 This is not a claim that Nemotron, DeepSeek or historical Qwen/Gemma migrations
