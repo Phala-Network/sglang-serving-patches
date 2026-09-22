@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
-      "fork_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd",
+      "fork_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
+      "fork_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 10,
+      "patch_count": 11,
       "replay_mode": "exact",
       "status": "pending_linux_cpu_and_model_topology_validation",
-      "validation_boundary": "Combined source reproduces historical candidate 83d8dc47ee tree exactly; this combines common/Kimi/Muse only, not all historical models or current Governor v4. Linux imports, GPU/model and final-image acceptance remain pending.",
-      "replay_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd"
+      "validation_boundary": "Common/Kimi/Muse tree plus guarded Nemotron literal-token migration. Nine default source-method CPU tests and 19 tests with pinned real Nemotron tokenizer pass (no skips in artifact run). Not all historical models or current Governor v4; Linux imports, GPU/model and final-image acceptance remain pending.",
+      "replay_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b"
     },
     "common-v0520-successor": {
       "passed": true,

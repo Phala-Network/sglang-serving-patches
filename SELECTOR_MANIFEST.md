@@ -26,7 +26,8 @@ or be archived without invalidating immutable evidence. Reference-only results
 have `passed: null`, not a replay pass.
 
 `unified-v0520-successor` combines the existing common, Kimi and Muse increments
-once in a single complete source tree. The ordered range and exact limitations
+with guarded Nemotron literal-token boundaries in a single source tree.
+The ordered range and exact limitations
 are recorded in [UNIFIED_SUCCESSOR.md](docs/UNIFIED_SUCCESSOR.md).
 
 No selector claims final-image, GPU, model-serving or production acceptance.

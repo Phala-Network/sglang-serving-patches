@@ -13,14 +13,14 @@
   },
   "selectors": {
     "unified-v0520-successor": {
-      "model_family": "shared-serving-kimi-muse",
+      "model_family": "shared-serving-kimi-muse-nemotron",
       "version": "v0.5.20",
       "topology": ["model-and-topology-guarded"],
-      "fork_commit": "6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
-      "fork_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd",
+      "fork_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
+      "fork_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b",
       "fork_branch": "codex/model-union-v0520-20260922",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..6acf476ccf453e5545be9b12353b67fe09cdbf4c",
       "replay_mode": "exact",
       "patches": [
         {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
@@ -32,10 +32,11 @@
         {"id":"kimi-file-ownership","path":"patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch","source_commit":"cd0cca6903e8f0d0fa73dc286b04b85834272840","sha256":"23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"},
         {"id":"kimi-completed-chunk-guards","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","source_commit":"5a1799c43d726eaa0f89df8dfe0604285fa3730a","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
         {"id":"kimi-virtual-page-continuation","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","source_commit":"02558c2aaab1b1e91a15a8352659bba489dd5ff0","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"},
-        {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"}
+        {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"},
+        {"id":"nemotron-literal-token-boundaries","path":"patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch","source_commit":"6acf476ccf453e5545be9b12353b67fe09cdbf4c","sha256":"ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"}
       ],
       "status": "pending_linux_cpu_and_model_topology_validation",
-      "validation_boundary": "Combined source reproduces historical candidate 83d8dc47ee tree exactly; this combines common/Kimi/Muse only, not all historical models or current Governor v4. Linux imports, GPU/model and final-image acceptance remain pending."
+      "validation_boundary": "Common/Kimi/Muse tree plus guarded Nemotron literal-token migration. Nine default source-method CPU tests and 19 tests with pinned real Nemotron tokenizer pass (no skips in artifact run). Not all historical models or current Governor v4; Linux imports, GPU/model and final-image acceptance remain pending."
     },
     "common-v0520-successor": {
       "model_family": "shared-serving",
