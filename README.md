@@ -29,7 +29,7 @@ Apply [series](series) in order, using the exact inputs in [manifest.json](manif
   the external FlashInfer workspace fix is under `patches/dependencies`.
 - One final, explicitly Governor-owned hook step under `integrations/governor`,
   copied byte-for-byte from tested Governor source
-  `74e981760572420329468eef663e5dfcf4ba8f6b`, version 0.2.1 / ABI 4. Its
+  `675c5364bb103a6aacb12c26af406217cdd93622`, version 0.2.2 / ABI 4. Its
   SHA256 is
   `52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea`.
   This is not a serving fix and does not bundle the external Governor component.

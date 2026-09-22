@@ -15,8 +15,8 @@
     "tree": "b0b36fb1d0b46410a6bd8c721ddb163237cc1be9"
   },
   "governor": {
-    "commit": "74e981760572420329468eef663e5dfcf4ba8f6b",
-    "version": "0.2.1",
+    "commit": "675c5364bb103a6aacb12c26af406217cdd93622",
+    "version": "0.2.2",
     "abi_version": 4,
     "hooks_only": true,
     "component_installation_required": true
@@ -660,7 +660,7 @@
       ],
       "component_source": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
-        "commit": "74e981760572420329468eef663e5dfcf4ba8f6b",
+        "commit": "675c5364bb103a6aacb12c26af406217cdd93622",
         "path": "patches/sglang/v0.5.20/0001-governor-hooks.patch",
         "sha256": "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea"
       }

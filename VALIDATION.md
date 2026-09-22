@@ -13,7 +13,7 @@ The ordered first 30 entries preserve the existing common/Qwen/GLM source
 history. Entry 31 is the common pre-header HTTP error propagation fix. Entry 32
 is the exact external Governor hook, retaining component ownership and patch
 bytes. Runtime Governor requires independently pinned component commit
-`74e981760572420329468eef663e5dfcf4ba8f6b`, version 0.2.1, Rust ABI 4.
+`675c5364bb103a6aacb12c26af406217cdd93622`, version 0.2.2, Rust ABI 4.
 
 ## Actual source tests
 
@@ -37,13 +37,17 @@ allows reuse of that source evidence for the unchanged first 30 entries.
 
 On September 21, 2026, entry 31 passed 10 native SGLang tests covering real
 pre-header 429 responses for chat/completions/responses, normal 200 SSE and the
-retained streaming 503 error-chunk behavior. The final Governor source passed 28
-Rust unit tests, a release build/check, the real ABI 4 component probe and 133
-Python/FFI/SGLang tests. Clean replay produced serving tree
+retained streaming 503 error-chunk behavior. On September 22, 2026, Governor
+0.2.2 passed 28 Rust unit tests, a release build/check, the real ABI 4 component
+probe and 138 Python/FFI/real-SGLang tests, including the observed
+`954291 -> 954454` capacity increase and fail-closed decrease regression. Clean
+replay produced serving tree
 `b0b36fb1d0b46410a6bd8c721ddb163237cc1be9` and final tree
 `2733a3bae11d56e4bf3f694fbb49f8e9e156086d`, committed as
 `354d47922eafa95ebc2d7bd63b7627d780a01c26` directly on the frozen serving
-parent. The Governor repository records the exact Linux evidence in
+parent. The Governor repository records the component evidence in
+`docs/validation/governor-v4-capacity-compat-linux-r1.json`; the unchanged
+current hook/engine replay baseline is retained in
 `docs/validation/governor-v4-linux-r2.json`.
 No GPU tests were run for this source packaging step.
 

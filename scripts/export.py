@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
 ENGINE = "354d47922eafa95ebc2d7bd63b7627d780a01c26"
 TREE = "2733a3bae11d56e4bf3f694fbb49f8e9e156086d"
-GOVERNOR = "74e981760572420329468eef663e5dfcf4ba8f6b"
+GOVERNOR = "675c5364bb103a6aacb12c26af406217cdd93622"
 HOOK = "patches/sglang/v0.5.20/0001-governor-hooks.patch"
 HOOK_SHA = "52087d47d575c95351e17e5335ac6ca5a3d5b6bb63548438502521ca524117ea"
 
@@ -85,7 +85,7 @@ def export(source, governor):
         "serving_result": {"commit": entries[-2]["source_commit"], "tree": entries[-2]["result_tree"]},
         "governor": {
             "commit": GOVERNOR,
-            "version": "0.2.1",
+            "version": "0.2.2",
             "abi_version": 4,
             "hooks_only": True,
             "component_installation_required": True,
