@@ -1,0 +1,677 @@
+diff --git a/docs/validation/qwen_history_boundary_probe.py b/docs/validation/qwen_history_boundary_probe.py
+index b344db0b1e333b5615148b0ec1f62f3968489b46..0d5a93795cf19cee371bed4b2d00c366b4a21dfc 100644
+--- a/docs/validation/qwen_history_boundary_probe.py
++++ b/docs/validation/qwen_history_boundary_probe.py
+@@ -1,4 +1,4 @@
+-"""Reproduce unported historical Qwen parser contracts; exits 1 while gaps exist.
++"""Regression for historical Qwen parser contracts; exits 1 on any regression.
+ 
+ This executes real parser methods with a minimal output envelope and the actual
+ base initializer. It does not import or qualify the complete serving runtime.
+@@ -49,6 +49,7 @@ namespace = {
+     "json": json, "re": re, "logger": logging.getLogger(__name__),
+     "ToolCallItem": ToolCallItem, "StreamingParseResult": StreamingParseResult,
+     "get_schema_properties": lambda parameters: parameters.get("properties", {}),
++    "envs": SimpleNamespace(SGLANG_FORWARD_UNKNOWN_TOOLS=SimpleNamespace(get=lambda: False)),
+ }
+ exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
+              str(source), "exec"), namespace)
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 7a84609aa9a9495712ff100181572420681e46b4..31b214a8385761d3375d13b640ad3c399510bb45 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -4,6 +4,7 @@ import re
+ from typing import Any, List, Literal, Optional, Union
+ 
+ from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.environ import envs
+ from sglang.srt.function_call.base_format_detector import (
+     BaseFormatDetector,
+     StructuralTag,
+@@ -64,33 +65,16 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         self.parameter_prefix: str = "<parameter="
+         self.parameter_end_token: str = "</parameter>"
+ 
+-        # Regex for non-streaming fallback
++        # Only closed function bodies inside closed tool blocks are executable.
+         self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+         self.tool_call_function_regex = re.compile(
+-            r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
++            r"<function=([^<>]+)>(.*?)</function>", re.DOTALL
+         )
+         self.tool_call_parameter_regex = re.compile(
+             r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+             re.DOTALL,
+         )
+ 
+-        # Streaming State
+-        # Base class already initializes _buffer, we just use it directly
+-        # No need to check with hasattr - we control the lifecycle through inheritance
+-
+-        # Index pointing to the next character to be processed in buffer
+-        self.parsed_pos: int = 0
+-        # Parameter count inside the current tool being processed, used to determine whether to add comma
+-        self.current_tool_param_count: int = 0
+-        # Flag indicating whether current tool has already sent '{'
+-        self.json_started: bool = False
+-
+-        # [FIX] New state flag: mark whether inside tool_call structure block
+-        self.is_inside_tool_call: bool = False
+-
+-        # Initialize attributes that were missing in the original PR
+-        self.current_func_name: Optional[str] = None
+-
+     def has_tool_call(self, text: str) -> bool:
+         return self.tool_call_start_token in text
+ 
+@@ -240,33 +224,32 @@ class Qwen3CoderDetector(BaseFormatDetector):
+             return param_value
+ 
+     def detect_and_parse(self, text: str, tools: List[Tool]) -> StreamingParseResult:
+-        """One-shot parsing for non-streaming scenarios."""
+-        if self.tool_call_start_token not in text:
+-            return StreamingParseResult(normal_text=text)
++        """Use the streaming block boundary rules without retaining request state."""
++        detector = type(self)()
++        parsed = detector.parse_streaming_increment(text, tools)
++        tail = detector.finish(tools)
++        return StreamingParseResult(
++            normal_text=parsed.normal_text + tail.normal_text, calls=parsed.calls
++        )
+ 
++    def _parse_complete_block(self, text: str, tools: List[Tool]) -> List[ToolCallItem]:
++        """Parse function bodies only after the outer block has closed."""
+         calls = []
+         try:
+-            # Simple cleanup of the text to find tool calls
+-            # Note: This is a simplified regex approach consistent with vLLM
+             raw_tool_calls = self.tool_call_regex.findall(text)
+-            if not raw_tool_calls:
+-                # Fallback: maybe the whole text is inside the tag or tags are stripped
+-                if self.tool_call_prefix in text:
+-                    raw_tool_calls = [text]
++            known_names = {tool.function.name for tool in tools or []}
+ 
+             tool_idx = 0
+             for tool_content in raw_tool_calls:
+                 # Find function calls
+                 funcs = self.tool_call_function_regex.findall(tool_content)
+-                for func_match in funcs:
+-                    func_body = func_match[0] or func_match[1]
+-                    if ">" not in func_body:
++                for func_name, params_str in funcs:
++                    if (
++                        func_name not in known_names
++                        and not envs.SGLANG_FORWARD_UNKNOWN_TOOLS.get()
++                    ):
+                         continue
+ 
+-                    name_end = func_body.index(">")
+-                    func_name = func_body[:name_end]
+-                    params_str = func_body[name_end + 1 :]
+-
+                     param_config = self._get_arguments_config(func_name, tools)
+                     parsed_params = {}
+ 
+@@ -295,252 +278,63 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     )
+                     tool_idx += 1
+ 
+-            # Determine normal text (text before the first tool call)
+-            start_idx = text.find(self.tool_call_start_token)
+-            if start_idx == -1:
+-                start_idx = text.find(self.tool_call_prefix)
+-            normal_text = text[:start_idx] if start_idx > 0 else ""
+-
+-            return StreamingParseResult(normal_text=normal_text, calls=calls)
+-
+         except Exception as e:
+-            logger.error(f"Error in detect_and_parse: {e}")
+-            return StreamingParseResult(normal_text=text)
++            logger.error(f"Error parsing complete Qwen tool block: {e}")
++            return []
++        return calls
+ 
+     def parse_streaming_increment(
+         self, new_text: str, tools: List[Tool]
+     ) -> StreamingParseResult:
+-        """
+-        Robust cursor-based streaming parser.
+-        """
++        """Publish complete blocks atomically; incomplete calls are never emitted."""
+         self._buffer += new_text
+-
+-        # Guard against empty buffer
+-        if not self._buffer:
+-            return StreamingParseResult()
+-
+         calls = []
+         normal_text_chunks = []
+ 
+-        while True:
+-            # Working text slice
+-            current_slice = self._buffer[self.parsed_pos :]
+-
+-            # Optimization: If almost empty, wait for more
+-            if not current_slice:
++        while self._buffer:
++            start = self._buffer.find(self.tool_call_start_token)
++            if start < 0:
++                # Retain a suffix only if it could become the opening marker.
++                keep = 0
++                for size in range(
++                    1, min(len(self._buffer), len(self.tool_call_start_token) - 1) + 1
++                ):
++                    if self.tool_call_start_token.startswith(self._buffer[-size:]):
++                        keep = size
++                normal_text_chunks.append(self._buffer[:-keep] if keep else self._buffer)
++                self._buffer = self._buffer[-keep:] if keep else ""
+                 break
+-
+-            # -------------------------------------------------------
+-            # 1. Priority detection: check if it's the start of Tool Call
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_start_token):
+-                self.parsed_pos += len(self.tool_call_start_token)
+-                self.is_inside_tool_call = True
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 2. Function Name: <function=name>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_prefix):
+-                end_angle = current_slice.find(">")
+-                if end_angle != -1:
+-                    func_name = current_slice[len(self.tool_call_prefix) : end_angle]
+-
+-                    self.current_tool_id += 1
+-                    self.current_tool_name_sent = True
+-                    self.current_tool_param_count = 0
+-                    self.json_started = False
+-                    self.current_func_name = func_name
+-
+-                    calls.append(
+-                        ToolCallItem(
+-                            tool_index=self.current_tool_id,
+-                            name=func_name,
+-                            parameters="",
+-                        )
+-                    )
+-
+-                    self.parsed_pos += end_angle + 1
+-                    continue
+-                else:
+-                    # Incomplete tag
+-                    break
+-
+-            # -------------------------------------------------------
+-            # 3. Parameter: <parameter=name>value...
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.parameter_prefix):
+-                name_end = current_slice.find(">")
+-                if name_end != -1:
+-                    value_start_idx = name_end + 1
+-                    rest_of_slice = current_slice[value_start_idx:]
+-
+-                    # A parameter can end in multiple ways:
+-                    # 1. [Normal] Encounter </parameter>
+-                    # 2. [Abnormal] Encounter next <parameter=
+-                    # 3. [Abnormal] Encounter </function>
+-                    # So we need to find the smallest one as the parameter end position.
+-                    cand_end_param = rest_of_slice.find(self.parameter_end_token)
+-                    cand_next_param = rest_of_slice.find(self.parameter_prefix)
+-                    cand_end_func = rest_of_slice.find(self.function_end_token)
+-
+-                    candidates = []
+-                    if cand_end_param != -1:
+-                        candidates.append(
+-                            (cand_end_param, len(self.parameter_end_token))
+-                        )
+-                    if cand_next_param != -1:
+-                        candidates.append((cand_next_param, 0))
+-                    if cand_end_func != -1:
+-                        candidates.append((cand_end_func, 0))
+-
+-                    if candidates:
+-                        best_cand = min(candidates, key=lambda x: x[0])
+-                        end_pos = best_cand[0]
+-                        end_token_len = best_cand[1]
+-
+-                        param_name = current_slice[
+-                            len(self.parameter_prefix) : name_end
+-                        ]
+-                        raw_value = rest_of_slice[:end_pos]
+-
+-                        # Cleanup value
+-                        if raw_value.startswith("\n"):
+-                            raw_value = raw_value[1:]
+-                        if raw_value.endswith("\n"):
+-                            raw_value = raw_value[:-1]
+-
+-                        # JSON Construction
+-                        if not self.json_started:
+-                            calls.append(
+-                                ToolCallItem(
+-                                    tool_index=self.current_tool_id, parameters="{"
+-                                )
+-                            )
+-                            self.json_started = True
+-
+-                        param_config = self._get_arguments_config(
+-                            self.current_func_name, tools
+-                        )
+-                        converted_val = self._convert_param_value(
+-                            raw_value,
+-                            param_name,
+-                            param_config,
+-                            self.current_func_name,
+-                            tools,
+-                        )
+-
+-                        # Construct JSON fragment: "key": value
+-                        # Note: We must be careful with json.dumps to ensure valid JSON streaming
+-                        json_key_val = f"{json.dumps(param_name)}: {json.dumps(converted_val, ensure_ascii=False)}"
+-
+-                        if self.current_tool_param_count > 0:
+-                            fragment = f", {json_key_val}"
+-                        else:
+-                            fragment = json_key_val
+-
+-                        calls.append(
+-                            ToolCallItem(
+-                                tool_index=self.current_tool_id, parameters=fragment
+-                            )
+-                        )
+-                        self.current_tool_param_count += 1
+-
+-                        # Advance cursor
+-                        total_len = (name_end + 1) + end_pos + end_token_len
+-                        self.parsed_pos += total_len
+-                        continue
+-
+-                # Incomplete parameter tag or value
++            if start:
++                normal_text_chunks.append(self._buffer[:start])
++                self._buffer = self._buffer[start:]
++            end = self._buffer.find(
++                self.tool_call_end_token, len(self.tool_call_start_token)
++            )
++            if end < 0:
+                 break
+-
+-            # -------------------------------------------------------
+-            # 4. Function End: </function>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.function_end_token):
+-                if not self.json_started:
+-                    calls.append(
+-                        ToolCallItem(tool_index=self.current_tool_id, parameters="{")
+-                    )
+-                    self.json_started = True
+-
++            boundary = end + len(self.tool_call_end_token)
++            block = self._buffer[:boundary]
++            self._buffer = self._buffer[boundary:]
++            for call in self._parse_complete_block(block, tools):
++                self.current_tool_id += 1
+                 calls.append(
+-                    ToolCallItem(tool_index=self.current_tool_id, parameters="}")
++                    ToolCallItem(
++                        tool_index=self.current_tool_id,
++                        name=call.name,
++                        parameters=call.parameters,
++                    )
+                 )
+-                self.parsed_pos += len(self.function_end_token)
+-                self.current_func_name = None
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 5. Tool Call End: </tool_call>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_end_token):
+-                self.parsed_pos += len(self.tool_call_end_token)
+-                self.is_inside_tool_call = False  # [FIX] Exit tool call region
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 6. Handling content / whitespace / normal text
+-            # -------------------------------------------------------
+-            # If current position is not the start of a tag (i.e., doesn't start with <), it might be plain text,
+-            # or a newline between two tags.
+-            # But we need to be careful not to output truncated tags like "<fun" as text.
+-
+-            next_open_angle = current_slice.find("<")
+-
+-            if next_open_angle == -1:
+-                # This entire segment is plain text
+-                if not self.is_inside_tool_call:
+-                    normal_text_chunks.append(current_slice)
+-                # [FIX] If inside tool call, discard this text (usually \n), don't append
+-                self.parsed_pos += len(current_slice)
+-                continue
+-
+-            elif next_open_angle == 0:
+-                # Looks like a Tag, but doesn't match any known Tag above
+-
+-                possible_tags = [
+-                    self.tool_call_start_token,
+-                    self.tool_call_end_token,
+-                    self.tool_call_prefix,
+-                    self.function_end_token,
+-                    self.parameter_prefix,
+-                    self.parameter_end_token,
+-                ]
+-
+-                is_potential_tag = False
+-                for tag in possible_tags:
+-                    if tag.startswith(current_slice):
+-                        is_potential_tag = True
+-                        break
+-
+-                if is_potential_tag:
+-                    break  # Wait for more
+-                else:
+-                    # Just a plain '<' symbol
+-                    if not self.is_inside_tool_call:
+-                        normal_text_chunks.append("<")
+-                    self.parsed_pos += 1
+-                    continue
+-
+-            else:
+-                # '<' is in the middle
+-                text_segment = current_slice[:next_open_angle]
+-                if not self.is_inside_tool_call:
+-                    normal_text_chunks.append(text_segment)
+-                # [FIX] If inside tool call, discard whitespace/text before Tag
+-                self.parsed_pos += next_open_angle
+-                continue
+-
+-        # Memory Cleanup: Slice the buffer
+-        # Keep unparsed part, discard parsed part
+-        if self.parsed_pos > 0:
+-            self._buffer = self._buffer[self.parsed_pos :]
+-            self.parsed_pos = 0
+ 
+         normal_text = "".join(normal_text_chunks) if normal_text_chunks else ""
+         return StreamingParseResult(calls=calls, normal_text=normal_text)
+ 
++    def finish(self, tools: List[Tool]) -> StreamingParseResult:
++        tail = self._buffer
++        self._buffer = ""
++        if tail.startswith(self.tool_call_start_token):
++            return StreamingParseResult()
++        return StreamingParseResult(normal_text=tail)
++
+     def supports_structural_tag(self) -> bool:
+         return True
+ 
+diff --git a/test/registered/unit/function_call/test_qwen_complete_call_cpu.py b/test/registered/unit/function_call/test_qwen_complete_call_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e602ff0e54d284024146a5d79482dd1b70b5845
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen_complete_call_cpu.py
+@@ -0,0 +1,263 @@
++"""Execute real Qwen methods and schema helpers without the GPU serving imports.
++
++Only protocol data envelopes and the environment getter are substituted. Schema
++validation uses the real jsonschema library, not a fake validator. These tests
++do not qualify native grammar compilation, SSE framing, IDs or finish_reason.
++"""
++
++import ast
++from dataclasses import dataclass, field
++import json
++import logging
++import math
++from pathlib import Path
++import re
++import threading
++from types import SimpleNamespace
++import unittest
++import warnings
++
++from jsonschema import Draft202012Validator
++from referencing import Registry
++from referencing.exceptions import NoSuchResource
++
++
++ROOT = Path(__file__).resolve().parents[4]
++SOURCE = ROOT / "python/sglang/srt/function_call"
++
++
++@dataclass
++class ToolCallItem:
++    tool_index: int
++    parameters: str
++    name: str | None = None
++
++
++@dataclass
++class StreamingParseResult:
++    normal_text: str = ""
++    calls: list = field(default_factory=list)
++
++
++def load_detector(forward_unknown=False, source_override=None):
++    namespace = dict(
++        ast=ast, json=json, logging=logging, math=math, re=re,
++        threading=threading, warnings=warnings,
++        Draft202012Validator=Draft202012Validator,
++        Registry=Registry, NoSuchResource=NoSuchResource,
++        ToolCallItem=ToolCallItem, StreamingParseResult=StreamingParseResult,
++        logger=logging.getLogger(__name__),
++        envs=SimpleNamespace(SGLANG_FORWARD_UNKNOWN_TOOLS=SimpleNamespace(
++            get=lambda: forward_unknown)),
++    )
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias(name="annotations")], level=0
++    )
++    tree = ast.parse((SOURCE / "utils.py").read_text(encoding="utf-8"))
++    nodes = [
++        node for node in tree.body
++        if isinstance(node, (ast.FunctionDef, ast.Assign, ast.AnnAssign))
++    ]
++    exec(compile(ast.fix_missing_locations(ast.Module(
++        body=[future, *nodes], type_ignores=[]
++    )), str(SOURCE / "utils.py"), "exec"), namespace)
++    tree = ast.parse((SOURCE / "base_format_detector.py").read_text(encoding="utf-8"))
++    base = next(node for node in tree.body
++                if isinstance(node, ast.ClassDef) and node.name == "BaseFormatDetector")
++    base.bases = []
++    base.body = [node for node in base.body
++                 if isinstance(node, ast.FunctionDef) and node.name == "__init__"]
++    source = source_override or (SOURCE / "qwen3_coder_detector.py").read_text(encoding="utf-8")
++    tree = ast.parse(source)
++    detector = next(node for node in tree.body
++                    if isinstance(node, ast.ClassDef) and node.name == "Qwen3CoderDetector")
++    exec(compile(ast.fix_missing_locations(ast.Module(
++        body=[future, base, detector], type_ignores=[]
++    )), str(SOURCE / "qwen3_coder_detector.py"), "exec"), namespace)
++    return namespace["Qwen3CoderDetector"]
++
++
++def tool(name="probe", parameters=None):
++    return SimpleNamespace(type="function", function=SimpleNamespace(
++        name=name, parameters=parameters or {}))
++
++
++def call(name="probe", body=""):
++    return f"<tool_call><function={name}>{body}</function></tool_call>"
++
++
++def parameter(name, value):
++    return f"<parameter={name}>\n{value}\n</parameter>"
++
++
++def signature(result):
++    return [(item.tool_index, item.name, json.loads(item.parameters))
++            for item in result.calls]
++
++
++class QwenCompleteCallTests(unittest.TestCase):
++    def setUp(self):
++        self.subject = load_detector()
++        self.tools = [tool()]
++
++    def stream(self, text, size, tools=None):
++        detector = self.subject()
++        normal, calls = [], []
++        for start in range(0, len(text), size):
++            result = detector.parse_streaming_increment(
++                text[start:start + size], tools or self.tools
++            )
++            normal.append(result.normal_text)
++            calls.extend(result.calls)
++        tail = detector.finish(tools or self.tools)
++        normal.append(tail.normal_text)
++        calls.extend(tail.calls)
++        self.assertEqual(detector.finish(self.tools).calls, [])
++        self.assertEqual(detector.finish(self.tools).normal_text, "")
++        return StreamingParseResult("".join(normal), calls)
++
++    def test_every_truncation_before_outer_close_emits_no_call(self):
++        text = call(body=parameter("message", 'hello "world"'))
++        for end in range(len("<tool_call>"), len(text)):
++            with self.subTest(end=end):
++                partial = text[:end]
++                self.assertEqual(self.subject().detect_and_parse(partial, self.tools).calls, [])
++                parsed = self.stream(partial, 1)
++                self.assertEqual(parsed.calls, [])
++                self.assertEqual(parsed.normal_text, "")
++
++    def test_every_two_chunk_split_is_atomic_and_complete(self):
++        text = call()
++        for split in range(1, len(text)):
++            with self.subTest(split=split):
++                detector = self.subject()
++                self.assertEqual(detector.parse_streaming_increment(text[:split], self.tools).calls, [])
++                result = detector.parse_streaming_increment(text[split:], self.tools)
++                self.assertEqual(signature(result), [(0, "probe", {})])
++                self.assertEqual(detector.finish(self.tools).calls, [])
++
++    def test_unknown_rejected_in_both_modes_without_consuming_index(self):
++        text = call("missing") + call()
++        self.assertEqual(signature(self.subject().detect_and_parse(text, self.tools)),
++                         [(0, "probe", {})])
++        for size in (1, 7, 64):
++            self.assertEqual(signature(self.stream(text, size)), [(0, "probe", {})])
++
++    def test_explicit_unknown_forwarding_compatibility(self):
++        detector = load_detector(forward_unknown=True)
++        self.assertEqual(signature(detector().detect_and_parse(call("missing"), self.tools)),
++                         [(0, "missing", {})])
++        self.assertEqual(signature(detector().parse_streaming_increment(call("missing"), self.tools)),
++                         [(0, "missing", {})])
++
++    def test_empty_or_prefix_names_never_match(self):
++        for name in ("", "pro", "probe ", "probe_extra"):
++            with self.subTest(name=name):
++                self.assertEqual(self.subject().detect_and_parse(call(name), self.tools).calls, [])
++                self.assertEqual(self.stream(call(name), 1).calls, [])
++
++    def test_missing_function_end_in_closed_block_is_not_a_call(self):
++        text = "<tool_call><function=probe><parameter=x>1</parameter></tool_call>"
++        self.assertEqual(self.subject().detect_and_parse(text, self.tools).calls, [])
++        self.assertEqual(self.stream(text, 1).calls, [])
++
++    def test_closed_first_function_does_not_validate_incomplete_second(self):
++        text = "<tool_call><function=probe></function><function=probe></tool_call>"
++        self.assertEqual(signature(self.subject().detect_and_parse(text, self.tools)),
++                         [(0, "probe", {})])
++        self.assertEqual(signature(self.stream(text, 1)), [(0, "probe", {})])
++
++    def test_parallel_and_repeated_calls_have_contiguous_indexes(self):
++        tools = [tool(), tool("second")]
++        text = call() + "\n" + call("second") + "\n" + call()
++        expected = [(0, "probe", {}), (1, "second", {}), (2, "probe", {})]
++        self.assertEqual(signature(self.subject().detect_and_parse(text, tools)), expected)
++        for size in (1, 2, 7, 64, len(text)):
++            self.assertEqual(signature(self.stream(text, size, tools)), expected)
++
++    def test_two_functions_in_one_block_are_both_drained(self):
++        text = "<tool_call><function=probe></function><function=probe></function></tool_call>"
++        expected = [(0, "probe", {}), (1, "probe", {})]
++        self.assertEqual(signature(self.subject().detect_and_parse(text, self.tools)), expected)
++        self.assertEqual(signature(self.stream(text, len(text))), expected)
++
++    def test_orphan_parameters_never_emit_argument_only_delta(self):
++        for text in (
++            "<tool_call><parameter=x>1</parameter></function></tool_call>",
++            "<parameter=x>1</parameter></function>",
++        ):
++            self.assertEqual(self.subject().detect_and_parse(text, self.tools).calls, [])
++            self.assertEqual(self.stream(text, 1).calls, [])
++
++    def test_complete_call_survives_truncated_followup(self):
++        text = call() + "\n<tool_call><function=probe>"
++        self.assertEqual(signature(self.subject().detect_and_parse(text, self.tools)),
++                         [(0, "probe", {})])
++        self.assertEqual(signature(self.stream(text, 1)), [(0, "probe", {})])
++
++    def test_text_and_partial_marker_flush_parity(self):
++        for text in ("plain final answer", "a < b <tool", "before" + call() + "after"):
++            with self.subTest(text=text):
++                expected = self.subject().detect_and_parse(text, self.tools)
++                for size in (1, 7, 64):
++                    parsed = self.stream(text, size)
++                    self.assertEqual(parsed.normal_text, expected.normal_text)
++                    self.assertEqual(signature(parsed), signature(expected))
++
++    def test_refs_unions_enum_const_nested_and_large_string(self):
++        schema = {
++            "$defs": {"record": {"type": "object", "properties": {"n": {"type": "integer"}}}},
++            "type": "object",
++            "properties": {
++                "payload": {"$ref": "#/$defs/record"},
++                "nullable": {"type": ["integer", "null"]},
++                "enum": {"enum": ["ready", 2]},
++                "const": {"const": 7},
++                "message": {"type": "string"},
++                "path": {"type": "string"},
++                "regex": {"type": "string"},
++                "array": {"type": "array"},
++            },
++        }
++        message = 'Unicode 北京 "quoted" \\\\ ' * 256
++        values = {
++            "payload": '{"n": 7}', "nullable": "null", "enum": "2",
++            "const": "7", "message": message, "path": r"C:\data\file.txt",
++            "regex": r"^\d+_[a-z]+$", "array": '[true, null, {"a": 1}]',
++        }
++        text = call(body="".join(parameter(key, value) for key, value in values.items()))
++        tools = [tool(parameters=schema)]
++        expected = [(0, "probe", {
++            "payload": {"n": 7}, "nullable": None, "enum": 2,
++            "const": 7, "message": message, "path": r"C:\data\file.txt",
++            "regex": r"^\d+_[a-z]+$", "array": [True, None, {"a": 1}],
++        })]
++        self.assertEqual(signature(self.subject().detect_and_parse(text, tools)), expected)
++        for size in (1, 7, 64, len(text)):
++            self.assertEqual(signature(self.stream(text, size, tools)), expected)
++
++    def test_empty_arguments_and_lenient_parameter_end_remain_supported(self):
++        for body, expected in (
++            ("", {}),
++            ("<parameter=x>value", {"x": "value"}),
++            ("<parameter=x>1<parameter=y>2", {"x": "1", "y": "2"}),
++        ):
++            with self.subTest(body=body):
++                text = call(body=body)
++                self.assertEqual(signature(self.subject().detect_and_parse(text, self.tools)),
++                                 [(0, "probe", expected)])
++                self.assertEqual(signature(self.stream(text, 1)), [(0, "probe", expected)])
++
++    def test_no_tools_does_not_authorize_unknown_name(self):
++        self.assertEqual(self.subject().detect_and_parse(call(), []).calls, [])
++        self.assertEqual(self.subject().parse_streaming_increment(call(), []).calls, [])
++
++    def test_nonstream_reuse_does_not_carry_stream_indexes(self):
++        detector = self.subject()
++        detector.parse_streaming_increment(call(), self.tools)
++        self.assertEqual(signature(detector.detect_and_parse(call(), self.tools)),
++                         [(0, "probe", {})])
++
++
++if __name__ == "__main__":
++    unittest.main()

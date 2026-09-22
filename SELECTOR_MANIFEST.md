@@ -14,8 +14,10 @@ Muse selects the same baseline plus its native channel patch. Both selectors
 reproduce exact immutable fork trees from engine 428. Nemotron, Gemma and the
 historical Qwen deployments bind extant v0.5.19 fork branch tips and trees, but
 remain pending migration rather than pretending to be v0.5.20 selections.
-DeepSeek lists its complete model patch set; the expected replay failure and
-missing native closure/ABI keep it blocked.
+The historical DeepSeek selector lists its model patch set and preserves its
+expected raw-DS0011 replay failure. The unified successor separately contains
+DS0001–0010 prerequisites and adapted DS0011; missing remaining source closure,
+native ABI and model-forward/cache consumption keep model acceptance blocked.
 
 Run `scripts/export_selectors.py --source /path/to/sglang --check` before using
 a selector. The check verifies the immutable commit and tree, regenerates
@@ -26,7 +28,10 @@ or be archived without invalidating immutable evidence. Reference-only results
 have `passed: null`, not a replay pass.
 
 `unified-v0520-successor` combines the existing common, Kimi and Muse increments
-with guarded Nemotron literal-token boundaries in a single source tree.
+with guarded Nemotron literal-token boundaries, DS prerequisites/chat encoding,
+named-tool schema roots and Qwen complete-call boundaries in a single source tree.
+The latter also affects `step3p5` and `nanbeige`, which use the same detector;
+their model behavior has not been qualified.
 The ordered range and exact limitations
 are recorded in [UNIFIED_SUCCESSOR.md](docs/UNIFIED_SUCCESSOR.md).
 

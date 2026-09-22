@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
-      "fork_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b",
+      "fork_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
+      "fork_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 11,
+      "patch_count": 25,
       "replay_mode": "exact",
-      "status": "pending_linux_cpu_and_model_topology_validation",
-      "validation_boundary": "Common/Kimi/Muse tree plus guarded Nemotron literal-token migration. Nine default source-method CPU tests and 19 tests with pinned real Nemotron tokenizer pass (no skips in artifact run). Not all historical models or current Governor v4; Linux imports, GPU/model and final-image acceptance remain pending.",
-      "replay_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b"
+      "status": "source_replay_verified_native_closure_and_model_qualification_pending",
+      "validation_boundary": "Nemotron real-tokenizer suite 19/0 skip; DS chat migration 10; named-schema roots 5; Qwen/Gemma guarded methods 5; Qwen complete-call source methods 16 and boundary probe 4/4. Shared Qwen detector also changes step3p5/nanbeige; registrations/no-argument constructor and parser delegation inspected, not model-qualified. DS prerequisites/chat are source-integrated, not native closure: vision/Engram model consumption and Python C1/C2 cache metadata remain pending; shared allreduce/PTX/FP8 changes need non-DS regression. Offline Rust check lacks cached prost and never compiled. Linux full imports, ABI, GPU/model and final-image acceptance remain pending.",
+      "replay_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d"
     },
     "common-v0520-successor": {
       "passed": true,
@@ -61,7 +61,7 @@
       "fork_branch": "codex/dsv41-v0520-11-candidate-bitmap",
       "patch_count": 22,
       "replay_mode": "expected_failure",
-      "status": "blocked_native_closure_recipe_and_abi_validation",
+      "status": "historical_failed_replay_not_successor_acceptance",
       "validation_boundary": "sglang-mm, radix-tree C1/C2, candidate/indexer kernels, compression pools, routed-weight ABI and model/runtime integration",
       "applied_before_failure": 10,
       "failed_patch": "patches/models/deepseek/dsv41-0011-chat-encoding.patch"

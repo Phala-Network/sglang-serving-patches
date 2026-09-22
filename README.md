@@ -63,8 +63,8 @@ Model consumers may select additional family patches from [selectors.json](selec
 when their version and topology match. A selector is a necessary patch list for
 that consumer, not a duplicated full source profile or release pipeline. Kimi and
 Muse candidate selectors are present with their hashes and pending validation
-boundaries; DeepSeek remains an explicit native-closure dependency with no selected
-patches until its ABI/build inputs are prepared. The frozen complete source remains
+boundaries. The unified successor selects DeepSeek prerequisites plus adapted
+chat encoding, but full native closure and ABI/build inputs remain pending. The frozen complete source remains
 the development and review mainline.
 
 See [SELECTOR_MANIFEST.md](SELECTOR_MANIFEST.md) for every model directory,
@@ -78,8 +78,9 @@ and guarded host-mask pinning, typed reasoning usage, and opt-in checkpoint
 sampling defaults. Kimi selects those common increments plus six Kimi-guarded
 patches; Muse selects the same common increments plus one Muse-guarded native
 channel patch. Both clean-apply from frozen engine 428 to their exact fork trees.
-DeepSeek stores its real native/model patch closure but replay stops at
-`dsv41-0011-chat-encoding.patch`, so its selector is blocked. Nemotron and
+The historical DeepSeek selector stops at raw
+`dsv41-0011-chat-encoding.patch`; the unified successor separately replays the
+adapted prefix/chat source without claiming full native closure. Nemotron and
 Gemma, along with the historical Qwen deployments, bind exact v0.5.19 fork
 branch tips and trees without claiming a v0.5.20 replay.
 These states preserve actual bytes and failures without calling them accepted.
@@ -95,7 +96,9 @@ selected set from the pinned upstream base. Do not hand-edit patches to diverge
 from the fork or treat a moving branch as a release input.
 
 The [2026-09-22 unified successor](docs/UNIFIED_SUCCESSOR.md) combines the
-existing shared, Kimi and Muse increments into one source tree. Its selector
+existing shared, Kimi and Muse increments, Nemotron literal-token boundaries,
+DS prerequisites/chat, named-tool schema roots and Qwen complete-call boundaries
+into one source tree. Its selector
 replays the frozen series from the official base, then the ordered successor
 range; historical reference-only selectors have no replay-pass result.
 This is not a claim that Nemotron, DeepSeek or historical Qwen/Gemma migrations

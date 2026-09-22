@@ -13,14 +13,14 @@
   },
   "selectors": {
     "unified-v0520-successor": {
-      "model_family": "shared-serving-kimi-muse-nemotron",
+      "model_family": "shared-serving-and-model-increments",
       "version": "v0.5.20",
       "topology": ["model-and-topology-guarded"],
-      "fork_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
-      "fork_tree": "4913ef5c124fbbfb169c74fc714b64def9f4ba8b",
+      "fork_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
+      "fork_tree": "0e948706692d53eb3e3a46a08be10e30deb6a14d",
       "fork_branch": "codex/model-union-v0520-20260922",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..6acf476ccf453e5545be9b12353b67fe09cdbf4c",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..447dfcb6dee95be0db682036b55804bd03724c8f",
       "replay_mode": "exact",
       "patches": [
         {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
@@ -33,10 +33,26 @@
         {"id":"kimi-completed-chunk-guards","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","source_commit":"5a1799c43d726eaa0f89df8dfe0604285fa3730a","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
         {"id":"kimi-virtual-page-continuation","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","source_commit":"02558c2aaab1b1e91a15a8352659bba489dd5ff0","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"},
         {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"},
-        {"id":"nemotron-literal-token-boundaries","path":"patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch","source_commit":"6acf476ccf453e5545be9b12353b67fe09cdbf4c","sha256":"ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"}
+        {"id":"nemotron-literal-token-boundaries","path":"patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch","source_commit":"6acf476ccf453e5545be9b12353b67fe09cdbf4c","sha256":"ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"},
+        {"id":"dsv41-0001","path":"patches/models/deepseek/dsv41-0001-rust-interfaces.patch","source_commit":"5392a7324f23e0f1d960edb2c60e4fd9020978e9","sha256":"261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"},
+        {"id":"dsv41-0002","path":"patches/models/deepseek/dsv41-0002-standalone-kernels.patch","source_commit":"6842c9135a8a2af8458f836bb81ac6ff83e33c32","sha256":"6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"},
+        {"id":"dsv41-0003","path":"patches/models/deepseek/dsv41-0003-topk-candidates.patch","source_commit":"ae829a492f29d50286ca62e524f66bdab7a314b3","sha256":"4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"},
+        {"id":"dsv41-0004","path":"patches/models/deepseek/dsv41-0004-communication-kernels.patch","source_commit":"2058fb0a106ef3e9a1431f6400d512333643f618","sha256":"58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"},
+        {"id":"dsv41-0005","path":"patches/models/deepseek/dsv41-0005-compression-kv-io.patch","source_commit":"d25d72a68e5b240851a0b645b98582d7924b540f","sha256":"72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"},
+        {"id":"dsv41-0006","path":"patches/models/deepseek/dsv41-0006-candidate-indexer.patch","source_commit":"df74a3ed2401723ff865b514f5bba23a5a0164e4","sha256":"ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"},
+        {"id":"dsv41-0007","path":"patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch","source_commit":"79a3ac5416bfa512b95d7e615c901eaf9dd63482","sha256":"7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"},
+        {"id":"dsv41-0008","path":"patches/models/deepseek/dsv41-0008-hopper-fp8.patch","source_commit":"5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e","sha256":"85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"},
+        {"id":"dsv41-0009","path":"patches/models/deepseek/dsv41-0009-mhc-projections.patch","source_commit":"a55765773e792cb3a7dbbf152a0968eb31c74354","sha256":"b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"},
+        {"id":"dsv41-0010","path":"patches/models/deepseek/dsv41-0010-vision-preprocessing.patch","source_commit":"d31c3fa098ffd37ff1b3bbe27219eb5f990e030e","sha256":"bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"},
+        {"id":"dsv41-chat-encoding-adapted","path":"patches/models/deepseek/407ab50cf5-chat-encoding-adapted.patch","source_commit":"407ab50cf5849ccc66d646f93244a4ce98e754e1","sha256":"d478ecf64152105756e49bab2e77f4dacf4a40aacccd46f86e1bb43110990c64"},
+        {"id":"common-named-tool-reference-roots","path":"patches/common/d912c600ba-named-tool-reference-roots.patch","source_commit":"d912c600bad54887952a0e5d4c96bf1a922294d3","sha256":"f422a4388d935e3106ea0e1d2bbe89d2d69bedbf57d73d9c103340007d1d5c1e"},
+        {"id":"qwen-gemma-history-reconciliation","path":"patches/models/qwen/23bd4b2a9b-history-reconciliation.patch","source_commit":"23bd4b2a9be8dcad15e54fae5d3ab6f233230de1","sha256":"df0efcdc9be06fa76da1e7c004c914b48c66419217862c668a4194c1a8e92b50"},
+        {"id":"qwen-complete-call-boundaries","path":"patches/models/qwen/447dfcb6de-complete-call-boundaries.patch","source_commit":"447dfcb6dee95be0db682036b55804bd03724c8f","sha256":"6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"}
       ],
-      "status": "pending_linux_cpu_and_model_topology_validation",
-      "validation_boundary": "Common/Kimi/Muse tree plus guarded Nemotron literal-token migration. Nine default source-method CPU tests and 19 tests with pinned real Nemotron tokenizer pass (no skips in artifact run). Not all historical models or current Governor v4; Linux imports, GPU/model and final-image acceptance remain pending."
+      "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
+      "pending_dsv41_closure": ["dsv41-0012", "dsv41-0013", "dsv41-0014", "dsv41-0015", "dsv41-0016", "dsv41-0017", "dsv41-0018", "dsv41-0019", "dsv41-0020", "dsv41-0021", "dsv41-0022", "dsv41-0023", "dsv41-0024", "dsv41-0025", "dsv41-0026"],
+      "status": "source_replay_verified_native_closure_and_model_qualification_pending",
+      "validation_boundary": "Nemotron real-tokenizer suite 19/0 skip; DS chat migration 10; named-schema roots 5; Qwen/Gemma guarded methods 5; Qwen complete-call source methods 16 and boundary probe 4/4. Shared Qwen detector also changes step3p5/nanbeige; registrations/no-argument constructor and parser delegation inspected, not model-qualified. DS prerequisites/chat are source-integrated, not native closure: vision/Engram model consumption and Python C1/C2 cache metadata remain pending; shared allreduce/PTX/FP8 changes need non-DS regression. Offline Rust check lacks cached prost and never compiled. Linux full imports, ABI, GPU/model and final-image acceptance remain pending."
     },
     "common-v0520-successor": {
       "model_family": "shared-serving",
@@ -132,9 +148,10 @@
       "fork_branch": "codex/dsv41-v0520-11-candidate-bitmap",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
       "replay_mode": "expected_failure",
+      "historical_replay_only": true,
       "expected_applied_before_failure": 10,
       "expected_failure_patch": "patches/models/deepseek/dsv41-0011-chat-encoding.patch",
-      "status": "blocked_native_closure_recipe_and_abi_validation",
+      "status": "historical_failed_replay_not_successor_acceptance",
       "required_closure": "sglang-mm, radix-tree C1/C2, candidate/indexer kernels, compression pools, routed-weight ABI and model/runtime integration"
     },
     "nemotron-v0519-historical": {
