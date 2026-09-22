@@ -1,7 +1,6 @@
-# Local native waiting preparation
+# Canonical LF Governor 0.2.4 candidate
 
-Engine: `e02dfa1256c5d7d6e8b731d439229d5aca72cbe5`
-
-Governor: `3ae4601ea8486eaae32b8aaa1be8d721cac09d88` (0.2.3, ABI 4).
-
-manifest.json and verification.json describe this local export. Earlier validation documents are historical; this preparation ran export and export --check, verifying all 32 intermediate trees, with the first 31 steps unchanged. No CPU suite, GPU test, image build, publication or production acceptance was performed in this preparation.
+Governor c27f4d10905eb7b2ef1bb2b01c14e8cc09236b44, ABI 4 plus observe_replacement.
+Engine e02dfa1256c5d7d6e8b731d439229d5aca72cbe5 is unchanged.
+All 32 ordered intermediate trees checked. First 31 patches and Governor hook bytes unchanged.
+Local export metadata only; this export commit is not publicly published. No image or GPU acceptance.
