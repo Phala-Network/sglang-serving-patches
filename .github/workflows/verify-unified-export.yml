@@ -34,14 +34,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      SOURCE: ${{ runner.temp }}/sglang-export-source
-      GOVERNOR: ${{ runner.temp }}/governor-export-source
       PYTHONDONTWRITEBYTECODE: '1'
       GIT_TERMINAL_PROMPT: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Set isolated source paths
+        shell: bash
+        run: |
+          echo "SOURCE=$RUNNER_TEMP/sglang-export-source" >> "$GITHUB_ENV"
+          echo "GOVERNOR=$RUNNER_TEMP/governor-export-source" >> "$GITHUB_ENV"
       - name: Test existing selector replay fixtures
         run: python3 -m unittest discover -s tests -p test_export_selectors.py -v
       - name: Fetch and verify immutable source objects
