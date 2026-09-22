@@ -12,6 +12,31 @@
     "rule": "Future implementation lives in an immutable fork commit/tree; patch files are deterministic exports for audit and external consumers."
   },
   "selectors": {
+    "unified-v0520-successor": {
+      "model_family": "shared-serving-kimi-muse",
+      "version": "v0.5.20",
+      "topology": ["model-and-topology-guarded"],
+      "fork_commit": "6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
+      "fork_tree": "b6730c9fe47e14319bb92dc61b8463ae7dcfedfd",
+      "fork_branch": "codex/model-union-v0520-20260922",
+      "source_parent": "4281309187007db579a2195f40adfd4baa538528",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
+      "replay_mode": "exact",
+      "patches": [
+        {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
+        {"id":"common-typed-reasoning-usage","path":"patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch","source_commit":"89f583819b2f515bfde21762e885d88d3761bdd8","sha256":"2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"},
+        {"id":"common-mode-sampling-defaults","path":"patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch","source_commit":"1db913dd7b389922243a76caf61bac1c344b3162","sha256":"eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"},
+        {"id":"kimi-request-owner","path":"patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch","source_commit":"1e62ad753c4243ba8b3e627a41813e3df353e924","sha256":"3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"},
+        {"id":"kimi-mamba-checkpoint","path":"patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch","source_commit":"9bd58a168358f7c336f63fa3f3965659e8bacc23","sha256":"2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"},
+        {"id":"kimi-prefill-sequence-cap","path":"patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch","source_commit":"6329c4dddd08bc526dbda58449272034cfa6c7e6","sha256":"b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"},
+        {"id":"kimi-file-ownership","path":"patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch","source_commit":"cd0cca6903e8f0d0fa73dc286b04b85834272840","sha256":"23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"},
+        {"id":"kimi-completed-chunk-guards","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","source_commit":"5a1799c43d726eaa0f89df8dfe0604285fa3730a","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
+        {"id":"kimi-virtual-page-continuation","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","source_commit":"02558c2aaab1b1e91a15a8352659bba489dd5ff0","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"},
+        {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"}
+      ],
+      "status": "pending_linux_cpu_and_model_topology_validation",
+      "validation_boundary": "Combined source reproduces historical candidate 83d8dc47ee tree exactly; this combines common/Kimi/Muse only, not all historical models or current Governor v4. Linux imports, GPU/model and final-image acceptance remain pending."
+    },
     "common-v0520-successor": {
       "model_family": "shared-serving",
       "version": "v0.5.20",

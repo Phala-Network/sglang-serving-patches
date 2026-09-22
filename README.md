@@ -94,6 +94,13 @@ commit/tree, regenerate the selector exports and provenance, then replay each
 selected set from the pinned upstream base. Do not hand-edit patches to diverge
 from the fork or treat a moving branch as a release input.
 
+The [2026-09-22 unified successor](docs/UNIFIED_SUCCESSOR.md) combines the
+existing shared, Kimi and Muse increments into one source tree. Its selector
+replays the frozen series from the official base, then the ordered successor
+range; historical reference-only selectors have no replay-pass result.
+This is not a claim that Nemotron, DeepSeek or historical Qwen/Gemma migrations
+are complete, nor does it change any frozen Governor candidate.
+
 Runtime image releases belong to `ghcr.io/phala-network/sglang` and bind to the
 complete engine source commit. This repository does not establish image or
 production acceptance.

@@ -18,9 +18,16 @@ DeepSeek lists its complete model patch set; the expected replay failure and
 missing native closure/ABI keep it blocked.
 
 Run `scripts/export_selectors.py --source /path/to/sglang --check` before using
-a selector. The check resolves the branch tip, verifies its immutable commit and
-tree, regenerates source-backed patch bytes, checks every SHA256, and cleanly
-replays exact selectors in a temporary Git index.
+a selector. The check verifies the immutable commit and tree, regenerates
+source-backed patch bytes, checks every SHA256, replays the complete frozen
+series from its official base, and then cleanly replays exact successor
+selectors in a temporary Git index. Branches are navigation aids and may move
+or be archived without invalidating immutable evidence. Reference-only results
+have `passed: null`, not a replay pass.
+
+`unified-v0520-successor` combines the existing common, Kimi and Muse increments
+once in a single complete source tree. The ordered range and exact limitations
+are recorded in [UNIFIED_SUCCESSOR.md](docs/UNIFIED_SUCCESSOR.md).
 
 No selector claims final-image, GPU, model-serving or production acceptance.
 

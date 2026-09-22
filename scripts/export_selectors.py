@@ -34,12 +34,26 @@ def canonical(value):
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
 
 
-def resolve_branch(repo, branch):
-    for ref in (f"phala/{branch}", f"origin/{branch}", branch):
-        result = git(repo, "rev-parse", "--verify", ref, check=False)
-        if result.returncode == 0:
-            return ref, result.stdout.decode().strip()
-    raise AssertionError(f"missing fork branch: {branch}")
+def replay_patches(repo, patches, start, env):
+    git(repo, "read-tree", start, env=env)
+    for patch in patches:
+        target = ROOT / patch["path"]
+        assert sha256(target.read_bytes()) == patch["sha256"], patch["path"]
+        git(repo, "apply", "--cached", str(target.resolve()), env=env)
+    return git(repo, "write-tree", env=env).stdout.decode().strip()
+
+
+def verify_frozen_base(repo, document):
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    engine = document["complete_engine_reference"]
+    assert manifest["engine"]["commit"] == engine["commit"]
+    assert manifest["engine"]["tree"] == engine["tree"]
+    assert manifest["upstream"]["commit"] == document["upstream"]
+    with tempfile.TemporaryDirectory(prefix="sglang-selector-base-") as temporary:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+        tree = replay_patches(repo, manifest["patches"], document["upstream"], env)
+    assert tree == engine["tree"], "frozen base replay tree differs"
+    return tree
 
 
 def export_patch(repo, commit):
@@ -65,6 +79,7 @@ def main():
     args = parser.parse_args()
 
     document = json.loads(SELECTORS.read_text(encoding="utf-8"))
+    base_tree = verify_frozen_base(args.source, document)
     results = {}
     generated = {}
     for name, selector in document["selectors"].items():
@@ -72,8 +87,8 @@ def main():
         expected_tree = selector["fork_tree"]
         actual_tree = git(args.source, "rev-parse", commit + "^{tree}").stdout.decode().strip()
         assert actual_tree == expected_tree, f"fork tree differs: {name}"
-        branch_ref, branch_commit = resolve_branch(args.source, selector["fork_branch"])
-        assert branch_commit == commit, f"branch tip differs: {name}: {branch_ref}"
+        # Branches are navigation aids, never mutable release inputs. Immutable
+        # objects and exported bytes must remain verifiable after archival.
 
         for patch in selector.get("patches", []):
             target = ROOT / patch["path"]
@@ -90,12 +105,13 @@ def main():
             assert sha256(actual) == patch["sha256"], f"patch hash differs: {patch['path']}"
 
         mode = selector.get("replay_mode", "reference_only")
+        assert mode in ("exact", "expected_failure", "reference_only"), name
         result = {
-            "passed": True,
+            "passed": None,
+            "identity_verified": True,
             "fork_commit": commit,
             "fork_tree": expected_tree,
             "fork_branch": selector["fork_branch"],
-            "resolved_branch_ref": branch_ref,
             "patch_count": len(selector.get("patches", [])),
             "replay_mode": mode,
             "status": selector["status"],
@@ -116,10 +132,12 @@ def main():
                     git(args.source, "apply", "--cached", target, env=env)
                     applied += 1
                 if mode == "exact":
+                    assert selector["source_parent"] == document["complete_engine_reference"]["commit"], f"unverified replay base: {name}"
                     assert failure is None, f"selector replay failed: {name}: {failure}"
                     replay_tree = git(args.source, "write-tree", env=env).stdout.decode().strip()
                     assert replay_tree == expected_tree, f"selector replay tree differs: {name}"
                     result["replay_tree"] = replay_tree
+                    result["passed"] = True
                 else:
                     assert failure == selector["expected_failure_patch"], f"unexpected failure: {name}: {failure}"
                     assert applied == selector["expected_applied_before_failure"], f"failure count differs: {name}"
@@ -138,10 +156,11 @@ def main():
             target.write_bytes(data)
 
     verification = {
-        "schema": "phala.sglang.selector-verification.v2",
-        "as_of": "2026-09-21",
+        "schema": "phala.sglang.selector-verification.v3",
+        "as_of": "2026-09-22",
         "source_repository": "https://github.com/Phala-Network/sglang",
-        "method": "Verify branch tip, immutable commit/tree, exported patch bytes and SHA256; exact selectors clean-apply in a temporary Git index to their target tree.",
+        "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
+        "frozen_base_replay_tree": base_tree,
         "results": results,
         "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
     }
