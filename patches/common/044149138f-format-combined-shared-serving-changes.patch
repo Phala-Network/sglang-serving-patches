@@ -1,0 +1,15 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 08abd70a5b385ce5bcca81533df7feeaf556a92c..b95d09060edb3a81f19cdb8e0f120e18627213fd 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -339,7 +339,9 @@ _QWEN35_REASONING_EFFORT_FULL_BUDGET = 8192
+ _QWEN35_DEFAULT_REASONING_BUDGET = 8192
+ _QWEN35_REASONING_ANSWER_RESERVE_CAP = 256
+ 
+-_MEDIA_CONTENT_PART_TYPES = frozenset({"image_url", "video_url", "audio_url", "input_audio"})
++_MEDIA_CONTENT_PART_TYPES = frozenset(
++    {"image_url", "video_url", "audio_url", "input_audio"}
++)
+ _CHAT_TEMPLATE_CACHE_MAX_SIZE = 128
+ 
+ 

@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
-      "fork_tree": "4dc14831e501a7067b63f678b6185e4139cef196",
+      "fork_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+      "fork_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6",
       "fork_branch": "codex/model-union-v0520-20260922",
-      "patch_count": 33,
+      "patch_count": 57,
       "replay_mode": "exact",
-      "status": "source_replay_verified_native_closure_and_model_qualification_pending",
-      "validation_boundary": "Muse28/0skip source/protocol tests include three real serving call-chain renders against external template900db3ef (immutable Compose2e16dfd8, not redistributed; packaging/license unresolved). Common Marlin/BREAKABLE6 source tests; Qwen GGUF20 real CPU tensor/reader tests and Q8 prefill11 dispatch tests (simulated kernels/device). Torch2.13.0/Transformers5.12.1/tokenizers0.22.2 match source pins; gguf0.19.0/numpy2.5.3 are tested unpinned inputs. Nemotron real-tokenizer19/0skip; DSchat10; named-schema5; Qwenhistory5; Qwen complete-call16/boundary4. Step3p5/nanbeige share that detector, not model-qualified. DS0012-26, vision/Engram consumption, Python C1/C2 metadata, shared-native regression remain pending; offline Rust check lacked cached prost. One native XGrammar reconciliation remains pending, not solved by source tests or stock version bump. No GPU, full runtime imports, ABI or final-image acceptance.",
-      "replay_tree": "4dc14831e501a7067b63f678b6185e4139cef196"
+      "status": "source_replay_and_focused_cpu_verified_full_runtime_qualification_pending",
+      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes.",
+      "replay_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6"
     },
     "common-v0520-successor": {
       "passed": true,

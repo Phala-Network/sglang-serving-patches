@@ -1,0 +1,679 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 391bff1d63a40c11e8ad2a94a39c2fd2b58b4827..beca9b17d32a0cac1eabc34bbea835759daa64a8 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -45,6 +45,9 @@ jobs:
+           python test/manual/phala/test_muse_migration_cpu.py
+           python test/manual/phala/test_xgrammar_adapter_cpu.py
+           python test/manual/phala/test_nemotron_token_context_cpu.py
++          python test/manual/phala/test_nemotron_termination_cpu.py
++          python test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++          python test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py
+           python test/manual/phala/test_dsv41_chat_migration_cpu.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+diff --git a/docker/phala-xgrammar/build.py b/docker/phala-xgrammar/build.py
+index ca589da26ec99f33348f135a73d885883effa97d..2b9cda7005346ace8e579c32fb9dbbf365d43134 100644
+--- a/docker/phala-xgrammar/build.py
++++ b/docker/phala-xgrammar/build.py
+@@ -65,6 +65,15 @@ def main():
+     ).hexdigest()
+     if license_hash != manifest["license_sha256"]:
+         raise ValueError("external license hash mismatch")
++    for path, dependency in manifest["submodules"].items():
++        repository = git(
++            args.source, "config", "-f", ".gitmodules", "--get", f"submodule.{path}.url"
++        )
++        if repository != dependency["repository"]:
++            raise ValueError(f"native submodule repository differs: {path}")
++        entry = git(args.source, "ls-files", "--stage", "--", path).split()
++        if entry[:2] != ["160000", dependency["commit"]]:
++            raise ValueError(f"native submodule gitlink differs: {path}")
+     print(f"Verified native source tree {tree}")
+     if args.verify_only:
+         return
+diff --git a/python/sglang/srt/constrained/grammar_manager.py b/python/sglang/srt/constrained/grammar_manager.py
+index 6d2a9bee874aba2f56119f60d779a1bdd8210b9e..e1be2f0c2ba4d162dccb1c985c8f351718ac3aad 100644
+--- a/python/sglang/srt/constrained/grammar_manager.py
++++ b/python/sglang/srt/constrained/grammar_manager.py
+@@ -147,6 +147,14 @@ class GrammarManager:
+             req.grammar.min_think_tokens = min_thinking_budget
+         if thinking_budget is not None:
+             req.grammar.max_think_tokens = thinking_budget
++            if thinking_budget >= 0:
++                if req.grammar.token_filter_fn is None:
++                    req.set_finish_with_abort(
++                        "Per-request thinking_budget requires a grammar backend "
++                        "with token-filter support"
++                    )
++                    return
++                req.grammar.enable_token_filter = True
+ 
+     def _strict_thinking_grammar_disabled(self, req: Req) -> bool:
+         custom_params = req.sampling_params.custom_params
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index a8a58e42ac3de9e6394d25db2119fcdcdb6a1338..958191db6d6f24ebab831532a7a7c85cf7b8b2bb 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -465,7 +465,9 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+                 "filtering (e.g., xgrammar) or disable strict reasoning mode."
+             )
+         self._token_filter_fn = (
+-            self.grammar_backend.set_token_filter if self.enable_token_filter else None
++            self.grammar_backend.set_token_filter
++            if self.grammar_backend.is_support_token_filter
++            else None
+         )
+ 
+     @staticmethod
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 3212b09c682453ecf0f378970993c856716ef98a..8b982ff25be2202a5efd81de99ac89b1b8598653 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -217,6 +217,60 @@ def apply_muse_structured_output_reasoning_default(request, reasoning_parser):
+     request.chat_template_kwargs = kwargs
+ 
+ 
++def apply_nemotron_structured_output_reasoning_budget(
++    request, reasoning_parser, *, structured_tools=None
++):
++    """Reserve final-answer space without changing explicit thinking controls."""
++    if reasoning_parser != "nemotron_3":
++        return
++    structured_format = (
++        request.response_format is not None
++        and request.response_format.type in {"json_object", "json_schema"}
++    )
++    if structured_tools is None:
++        structured_tools = bool(request.tools) and request.tool_choice != "none"
++    if not (structured_format or structured_tools):
++        return
++    if request.input_ids is not None or request.continue_final_message:
++        return
++    kwargs = request.chat_template_kwargs or {}
++    if request.reasoning_effort == "none" or any(
++        kwargs.get(key) is False for key in ("enable_thinking", "thinking")
++    ):
++        return
++    if (request.custom_params or {}).get("thinking_budget") is not None:
++        return
++    total_budget = (
++        request.max_completion_tokens
++        if request.max_completion_tokens is not None
++        else request.max_tokens
++    )
++    if total_budget is None or total_budget <= 0:
++        return
++    final_reserve = max(128, min(4096, total_budget // 2))
++    request.custom_params = dict(
++        request.custom_params or {},
++        thinking_budget=max(0, total_budget - final_reserve),
++    )
++
++
++def nemotron_response_format_template_kwargs(request, reasoning_parser):
++    """Give the template the same JSON contract that the grammar enforces."""
++    if (
++        reasoning_parser != "nemotron_3"
++        or request.response_format is None
++        or request.response_format.type not in {"json_object", "json_schema"}
++        or request.input_ids is not None
++        or request.continue_final_message
++    ):
++        return {}
++    return {
++        "response_format": request.response_format.model_dump(
++            exclude_unset=True, by_alias=True
++        )
++    }
++
++
+ def muse_format_template_kwargs(request, reasoning_parser, tool_call_constraint):
+     """Describe the selected format in the opt-in, pinned Muse baked template."""
+     if reasoning_parser != "muse":
+@@ -1752,6 +1806,11 @@ class OpenAIServingChat(OpenAIServingBase):
+ 
+         effective_tools = self._effective_tools(request)
+         effective_tool_choice = self._effective_tool_choice(request)
++        apply_nemotron_structured_output_reasoning_budget(
++            request,
++            self.reasoning_parser,
++            structured_tools=bool(effective_tools) and effective_tool_choice != "none",
++        )
+         glm_constraint = self.tool_call_parser == "glm47" and not any(
+             tool.function.strict for tool in effective_tools
+         )
+@@ -2084,6 +2143,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                 extra_template_kwargs["reasoning_effort"] = template_reasoning_effort
+             if request.chat_template_kwargs:
+                 extra_template_kwargs.update(request.chat_template_kwargs)
++            extra_template_kwargs.update(
++                nemotron_response_format_template_kwargs(request, self.reasoning_parser)
++            )
+             extra_template_kwargs.update(
+                 muse_format_template_kwargs(
+                     request, self.reasoning_parser, tool_call_constraint
+@@ -2803,6 +2865,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                     )
+                     reasoning_text, text = parser.parse_non_stream(
+                         text,
++                        finish_reason_type=finish_reason.get("type")
++                        if finish_reason
++                        else None,
+                         **(
+                             {"output_ids": ret_item.get("output_ids")}
+                             if self.reasoning_parser == "nemotron_3"
+@@ -3179,7 +3244,9 @@ class OpenAIServingChat(OpenAIServingBase):
+             delta, **token_context
+         )
+         if finish_reason_type is not None and finish_reason_type != "abort":
+-            end_reasoning_text, end_normal_text = reasoning_parser.parse_stream_end()
++            end_reasoning_text, end_normal_text = reasoning_parser.parse_stream_end(
++                finish_reason_type=finish_reason_type
++            )
+             if end_reasoning_text:
+                 reasoning_text = (reasoning_text or "") + end_reasoning_text
+             if end_normal_text:
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 5bafd722be0271b1297591b134b7c94e46563d97..124d2eb33be4e8646fc47ca42a2f02dce40c2fbb 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -110,7 +110,14 @@ class Qwen3CoderDetector(BaseFormatDetector):
+ 
+     def _get_param_type(self, param_schema: Any) -> str:
+         """Infer the parser conversion type from a JSON schema parameter."""
+-        inferred_type = infer_type_from_json_schema(param_schema)
++        # Const intersects union types; infer conversion from its JSON type,
++        # without substituting the constant for the model's actual value.
++        type_schema = (
++            {"enum": [param_schema["const"]]}
++            if isinstance(param_schema, dict) and "const" in param_schema
++            else param_schema
++        )
++        inferred_type = infer_type_from_json_schema(type_schema)
+         if inferred_type is None:
+             return "string"
+         return str(inferred_type).strip().lower()
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index 7a86f7d99ab536b83536c8aad257977449cc86aa..746758250cf38a04e5566103509874790ccc4721 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -75,11 +75,14 @@ class BaseReasoningFormatDetector:
+         thinks_internally: bool = False,
+         reasoning_default: str = "always",
+         force_nonempty_content: bool = False,
++        defer_tool_start_until_end: bool = False,
+     ):
+         self.think_start_token = think_start_token
+         self.think_end_token = think_end_token
+         self.think_excluded_tokens = think_excluded_tokens
+         self.tool_start_token = tool_start_token
++        self.defer_tool_start_until_end = defer_tool_start_until_end
++        self.allow_tool_start_fallback = True
+         self.force_reasoning = force_reasoning
+         self._in_reasoning = force_reasoning
+         self.stream_reasoning = stream_reasoning
+@@ -109,7 +112,11 @@ class BaseReasoningFormatDetector:
+     def _maybe_apply_force_nonempty_content(
+         self, ret: StreamingParseResult
+     ) -> StreamingParseResult:
+-        if self._force_nonempty_content and not ret.normal_text:
++        if (
++            self._force_nonempty_content
++            and not ret.normal_text
++            and self.allow_tool_start_fallback
++        ):
+             ret.normal_text, ret.reasoning_text = ret.reasoning_text, ret.normal_text
+         return ret
+ 
+@@ -151,6 +158,7 @@ class BaseReasoningFormatDetector:
+             # Check for tool_start_token interruption
+             if (
+                 in_reasoning
++                and self.allow_tool_start_fallback
+                 and self.tool_start_token is not None
+                 and self.tool_start_token in processed_text
+             ):
+@@ -240,6 +248,13 @@ class BaseReasoningFormatDetector:
+             # think_end_token that has not arrived yet; see the chunk_dependent test.
+             if self.tool_start_token and self.tool_start_token in current_text:
+                 tool_idx = current_text.find(self.tool_start_token)
++                if self.defer_tool_start_until_end:
++                    if self.stream_reasoning:
++                        self._buffer = current_text[tool_idx:]
++                        return StreamingParseResult(
++                            reasoning_text=current_text[:tool_idx]
++                        )
++                    return StreamingParseResult()
+                 reasoning_text = current_text[:tool_idx]
+                 # Preserve tool_start_token in normal text
+                 normal_text = current_text[tool_idx:]
+@@ -307,7 +322,20 @@ class BaseReasoningFormatDetector:
+         buffer = self._strip_leading_think_start(self._buffer)
+         self._buffer = ""
+ 
+-        if self._force_nonempty_content:
++        if (
++            self.defer_tool_start_until_end
++            and self.allow_tool_start_fallback
++            and self.tool_start_token
++            and self.tool_start_token in buffer
++        ):
++            tool_idx = buffer.find(self.tool_start_token)
++            self._in_reasoning = False
++            self._accumulated_reasoning = ""
++            return StreamingParseResult(
++                reasoning_text=buffer[:tool_idx], normal_text=buffer[tool_idx:]
++            )
++
++        if self._force_nonempty_content and self.allow_tool_start_fallback:
+             normal_text = self._accumulated_reasoning + buffer
+             self._accumulated_reasoning = ""
+             if normal_text:
+@@ -1051,6 +1079,7 @@ class Nemotron3Detector(BaseReasoningFormatDetector):
+             previous_content=previous_content,
+             reasoning_default="enable_thinking",
+             force_nonempty_content=force_nonempty_content,
++            defer_tool_start_until_end=True,
+         )
+         self._tokenizer = tokenizer
+         self._token_boundary = None
+@@ -2350,11 +2379,25 @@ class ReasoningParser:
+                 text, output_ids, incremental, self._token_decode_kwargs
+             )
+ 
++    def _set_finish_reason(self, finish_reason_type: Optional[str]) -> None:
++        if getattr(self.detector, "defer_tool_start_until_end", False):
++            # An unfinished thought is not executable content. Token context
++            # additionally disables the missing-closer compatibility fallback.
++            self.detector.allow_tool_start_fallback = (
++                finish_reason_type not in {"length", "abort"}
++                and getattr(self.detector, "_token_boundary", None) is None
++            )
++
+     def parse_non_stream(
+-        self, full_text: str, *, output_ids=None
++        self,
++        full_text: str,
++        finish_reason_type: Optional[str] = None,
++        *,
++        output_ids=None,
+     ) -> Tuple[Optional[str], Optional[str]]:
+         """Non-streaming call: one-time parsing"""
+         self._set_output_token_context(full_text, output_ids)
++        self._set_finish_reason(finish_reason_type)
+         ret = self.detector.detect_and_parse(full_text)
+         return ret.reasoning_text, ret.normal_text
+ 
+@@ -2379,8 +2422,11 @@ class ReasoningParser:
+         ret = self.detector.parse_streaming_increment(chunk_text)
+         return ret.reasoning_text, ret.normal_text
+ 
+-    def parse_stream_end(self) -> Tuple[Optional[str], Optional[str]]:
++    def parse_stream_end(
++        self, finish_reason_type: Optional[str] = None
++    ) -> Tuple[Optional[str], Optional[str]]:
+         """Streaming call: flush any detector-specific buffered state once
+         the stream ends."""
++        self._set_finish_reason(finish_reason_type)
+         ret = self.detector.finish()
+         return ret.reasoning_text, ret.normal_text
+diff --git a/test/manual/phala/test_muse_migration_cpu.py b/test/manual/phala/test_muse_migration_cpu.py
+index f984911f003693ada0002e230acc4eab498a0e27..18196fc3be2e791e0ae20da4e7dde0ba469f4790 100644
+--- a/test/manual/phala/test_muse_migration_cpu.py
++++ b/test/manual/phala/test_muse_migration_cpu.py
+@@ -442,6 +442,8 @@ def load_chat():
+         "normalize_muse_history",
+         "normalize_muse_reasoning",
+         "apply_muse_structured_output_reasoning_default",
++        "apply_nemotron_structured_output_reasoning_budget",
++        "nemotron_response_format_template_kwargs",
+         "muse_format_template_kwargs",
+         "normalize_tool_content",
+         "normalize_assistant_tool_call_arguments",
+diff --git a/test/manual/phala/test_nemotron_termination_cpu.py b/test/manual/phala/test_nemotron_termination_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..27d27c9832b3a3b819ccdbc3829b717106a79656
+--- /dev/null
++++ b/test/manual/phala/test_nemotron_termination_cpu.py
+@@ -0,0 +1,267 @@
++"""Execute Nemotron termination/budget source without importing GPU infrastructure."""
++
++import ast
++import itertools
++import unittest
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import Mock
++
++import test_nemotron_token_context_cpu as token_context
++from test_nemotron_token_context_cpu import (
++    LiteralTokenizer,
++    load_source_methods,
++    ordinary,
++)
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def load_functions(path, names, namespace):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    selected = []
++    for name in names:
++        body = tree.body
++        for part in name.split("."):
++            node = next(n for n in body if getattr(n, "name", None) == part)
++            body = getattr(node, "body", [])
++        selected.append(node)
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias("annotations")], level=0
++    )
++    exec(
++        compile(
++            ast.fix_missing_locations(
++                ast.Module(body=[future, *selected], type_ignores=[])
++            ),
++            str(path),
++            "exec",
++        ),
++        namespace,
++    )
++
++
++class TerminationTests(unittest.TestCase):
++    def parser(self, stream=True, force=True, tokenizer=None):
++        parser = load_source_methods()["ReasoningParser"](
++            "nemotron_3",
++            force_reasoning=True,
++            stream_reasoning=stream,
++            tokenizer=tokenizer,
++        )
++        parser.detector._force_nonempty_content = force
++        return parser
++
++    def test_unfinished_thought_never_becomes_content_on_cut(self):
++        text = "Example <tool_call><function=f></function></tool_call> unfinished"
++        for finish, stream, force, width in itertools.product(
++            ("length", "abort"), (False, True), (False, True), (1, 7, 1000)
++        ):
++            with self.subTest(finish=finish, stream=stream, force=force, width=width):
++                parser = self.parser(stream, force)
++                self.assertEqual(parser.parse_non_stream(text, finish), (text, ""))
++                parser = self.parser(stream, force)
++                parts = [
++                    parser.parse_stream_chunk(text[i : i + width])
++                    for i in range(0, len(text), width)
++                ]
++                parts.append(parser.parse_stream_end(finish))
++                self.assertEqual("".join(r for r, _ in parts), text)
++                self.assertEqual("".join(c for _, c in parts), "")
++
++    def test_normal_eof_retains_compatibility_without_token_context(self):
++        text = "Need a tool.<tool_call>f</tool_call>"
++        for stream, width in itertools.product((False, True), (1, 7, 1000)):
++            parser = self.parser(stream, False)
++            parts = [
++                parser.parse_stream_chunk(text[i : i + width])
++                for i in range(0, len(text), width)
++            ]
++            parts.append(parser.parse_stream_end("stop"))
++            self.assertEqual("".join(r for r, _ in parts), "Need a tool.")
++            self.assertEqual("".join(c for _, c in parts), "<tool_call>f</tool_call>")
++
++    def test_real_closer_preserves_final_on_length(self):
++        text = (
++            "Example <tool_call>quoted</tool_call></think><tool_call>real</tool_call>"
++        )
++        for stream, width in itertools.product((False, True), (1, 7, 1000)):
++            parser = self.parser(stream)
++            parts = [
++                parser.parse_stream_chunk(text[i : i + width])
++                for i in range(0, len(text), width)
++            ]
++            parts.append(parser.parse_stream_end("length"))
++            self.assertEqual(
++                "".join(r for r, _ in parts), "Example <tool_call>quoted</tool_call>"
++            )
++            self.assertEqual(
++                "".join(c for _, c in parts), "<tool_call>real</tool_call>"
++            )
++
++    def test_other_detector_keeps_existing_force_content(self):
++        parser = load_source_methods()["ReasoningParser"]("qwen3", force_reasoning=True)
++        parser.detector._force_nonempty_content = True
++        self.assertEqual(parser.parse_non_stream("thought", "length"), ("", "thought"))
++
++
++class TokenTerminationTests(unittest.TestCase):
++    setUpClass = token_context.TokenContextTests.__dict__["setUpClass"]
++    setUp = token_context.TokenContextTests.setUp
++
++    def test_force_content_cannot_promote_unclosed_real_token_thought(self):
++        text = "Example <tool_call>quoted</tool_call>"
++        for finish, stream in itertools.product(
++            ("stop", "length", "abort"), (False, True)
++        ):
++            parser = self.parser(
++                "nemotron_3",
++                force_reasoning=True,
++                tokenizer=LiteralTokenizer(),
++                stream_reasoning=stream,
++            )
++            parser.detector._force_nonempty_content = True
++            self.assertEqual(
++                parser.parse_non_stream(text, finish, output_ids=ordinary(text)),
++                (text, ""),
++            )
++            parser = self.parser(
++                "nemotron_3",
++                force_reasoning=True,
++                tokenizer=LiteralTokenizer(),
++                stream_reasoning=stream,
++            )
++            parser.detector._force_nonempty_content = True
++            parts = [parser.parse_stream_chunk(text, output_ids=ordinary(text))]
++            parts.append(parser.parse_stream_end(finish))
++            self.assertEqual("".join(r for r, _ in parts), text)
++            self.assertEqual("".join(c for _, c in parts), "")
++
++
++class BudgetTests(unittest.TestCase):
++    def setUp(self):
++        self.namespace = {}
++        load_functions(
++            SRT / "entrypoints/openai/serving_chat.py",
++            [
++                "apply_nemotron_structured_output_reasoning_budget",
++                "nemotron_response_format_template_kwargs",
++            ],
++            self.namespace,
++        )
++
++    def request(self, **kwargs):
++        values = dict(
++            response_format=NS(type="json_object"),
++            tools=None,
++            tool_choice=None,
++            input_ids=None,
++            continue_final_message=False,
++            reasoning_effort=None,
++            chat_template_kwargs={},
++            custom_params={},
++            max_completion_tokens=None,
++            max_tokens=8192,
++        )
++        values.update(kwargs)
++        return NS(**values)
++
++    def test_reservation_boundaries_and_explicit_controls(self):
++        apply = self.namespace["apply_nemotron_structured_output_reasoning_budget"]
++        for total, expected in (
++            (1, 0),
++            (128, 0),
++            (512, 256),
++            (8192, 4096),
++            (16384, 12288),
++        ):
++            req = self.request(max_tokens=total, custom_params={"other": 3})
++            apply(req, "nemotron_3")
++            self.assertEqual(
++                req.custom_params, {"other": 3, "thinking_budget": expected}
++            )
++        for overrides in (
++            {"reasoning_effort": "none"},
++            {"chat_template_kwargs": {"thinking": False}},
++            {"chat_template_kwargs": {"enable_thinking": False}},
++            {"input_ids": [1]},
++            {"continue_final_message": True},
++            {"max_tokens": None},
++            {"response_format": None},
++            {"custom_params": {"thinking_budget": -1}},
++        ):
++            req = self.request(**overrides)
++            original = dict(req.custom_params)
++            apply(req, "nemotron_3")
++            self.assertEqual(req.custom_params, original)
++        req = self.request()
++        apply(req, "qwen3")
++        self.assertEqual(req.custom_params, {})
++
++    def test_effective_tools_and_completion_budget_precedence(self):
++        apply = self.namespace["apply_nemotron_structured_output_reasoning_budget"]
++        req = self.request(
++            response_format=None, max_tokens=10, max_completion_tokens=512
++        )
++        apply(req, "nemotron_3", structured_tools=True)
++        self.assertEqual(req.custom_params, {"thinking_budget": 256})
++        req = self.request(response_format=None, tools=[1], tool_choice="none")
++        apply(req, "nemotron_3")
++        self.assertEqual(req.custom_params, {})
++
++    def test_template_receives_exact_response_contract(self):
++        payload = {"type": "json_schema", "json_schema": {"name": "answer"}}
++        req = self.request(
++            response_format=NS(
++                type="json_schema", model_dump=Mock(return_value=payload)
++            )
++        )
++        self.assertEqual(
++            self.namespace["nemotron_response_format_template_kwargs"](
++                req, "nemotron_3"
++            ),
++            {"response_format": payload},
++        )
++
++    def test_budget_enables_filter_or_aborts(self):
++        class Grammar:
++            pass
++
++        namespace = dict(
++            ReasonerGrammarObject=Grammar,
++            get_request_reasoning_end_token_ids=lambda *a, **kw: None,
++        )
++        load_functions(
++            SRT / "constrained/grammar_manager.py",
++            [
++                "GrammarManager._get_request_thinking_bounds",
++                "GrammarManager._apply_request_reasoning_config",
++            ],
++            namespace,
++        )
++        owner = NS(scheduler=NS(model_config=NS()))
++        owner._get_request_thinking_bounds = lambda req: namespace[
++            "_get_request_thinking_bounds"
++        ](owner, req)
++        for budget, supports_filter in itertools.product((-1, 0, 100), (False, True)):
++            grammar = Grammar()
++            grammar.token_filter_fn = Mock() if supports_filter else None
++            grammar.enable_token_filter = False
++            req = NS(
++                grammar=grammar,
++                sampling_params=NS(custom_params={"thinking_budget": budget}),
++                set_finish_with_abort=Mock(),
++            )
++            namespace["_apply_request_reasoning_config"](owner, req)
++            self.assertEqual(grammar.max_think_tokens, budget)
++            self.assertEqual(
++                req.set_finish_with_abort.called, budget >= 0 and not supports_filter
++            )
++            self.assertEqual(
++                grammar.enable_token_filter, budget >= 0 and supports_filter
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/manual/phala/test_nemotron_token_context_cpu.py b/test/manual/phala/test_nemotron_token_context_cpu.py
+index c31b9a868df068649291d12830f77ad8e4f487e1..c442522d0fc0c1e266a7ef5216fee3f7513b8174 100644
+--- a/test/manual/phala/test_nemotron_token_context_cpu.py
++++ b/test/manual/phala/test_nemotron_token_context_cpu.py
+@@ -345,12 +345,16 @@ class LiteralInputGuardTests(unittest.TestCase):
+                     "parser": parser,
+                     "self": SimpleNamespace(reasoning_parser=model),
+                     "text": "answer",
++                    "finish_reason": {"type": "length"},
+                     "ret_item": {"output_ids": [12, 13]},
+                 },
+             )
+             self.assertEqual(
+                 parser.parse_non_stream.call_args.kwargs,
+-                {"output_ids": [12, 13]} if model == "nemotron_3" else {},
++                {
++                    "finish_reason_type": "length",
++                    **({"output_ids": [12, 13]} if model == "nemotron_3" else {}),
++                },
+             )
+ 
+ 
+diff --git a/test/manual/unit/function_call/test_qwen_complete_call_cpu.py b/test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+index 791c7a4d4c00b19d622682511cd3c6c0702dea42..f87848f9a5530f6398e78ad6b2ced89829be06da 100644
+--- a/test/manual/unit/function_call/test_qwen_complete_call_cpu.py
++++ b/test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+@@ -6,6 +6,7 @@ do not qualify native grammar compilation, SSE framing, IDs or finish_reason.
+ """
+ 
+ import ast
++import copy
+ import json
+ import logging
+ import math
+@@ -165,6 +166,38 @@ class QwenCompleteCallTests(unittest.TestCase):
+                 self.assertEqual(parsed.calls, [])
+                 self.assertEqual(parsed.normal_text, "")
+ 
++    def test_const_intersects_union_in_shared_complete_call_executor(self):
++        cases = [
++            ({"oneOf": [{"type": "string"}, {"type": "integer"}], "const": 7}, "7", 7),
++            ({"type": ["string", "integer"], "const": 8}, "8", 8),
++            ({"enum": ["alpha", 2, False], "const": False}, "false", False),
++            ({"enum": ["true", True, 1], "const": True}, "true", True),
++            ({"type": ["string", "object"], "const": {"x": 1}}, '{"x":1}', {"x": 1}),
++            ({"type": ["string", "array"], "const": [2]}, "[2]", [2]),
++            ({"type": ["string", "integer"], "const": "007"}, "007", "007"),
++            ({"type": ["integer", "null"], "const": None}, "null", None),
++        ]
++        for schema, raw, expected in cases:
++            parameters = {"type": "object", "properties": {"value": schema}}
++            before = copy.deepcopy(parameters)
++            tools = [tool(parameters=parameters)]
++            text = call(body=parameter("value", raw))
++            for result in (
++                self.subject().detect_and_parse(text, tools),
++                self.stream(text, 1, tools),
++            ):
++                value = signature(result)[0][2]["value"]
++                self.assertEqual(value, expected)
++                self.assertIs(type(value), type(expected))
++            self.assertEqual(parameters, before)
++        # Conversion never replaces the generated value with the constant.
++        tools = [tool(parameters={"properties": {"value": {"const": 7}}})]
++        text = call(body=parameter("value", "8"))
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, tools))[0][2], {"value": 8}
++        )
++        self.assertEqual(signature(self.stream(text, 1, tools))[0][2], {"value": 8})
++
+     def test_every_two_chunk_split_is_atomic_and_complete(self):
+         text = call()
+         for split in range(1, len(text)):

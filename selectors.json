@@ -15,66 +15,418 @@
     "unified-v0520-successor": {
       "model_family": "shared-serving-and-model-increments",
       "version": "v0.5.20",
-      "topology": ["model-and-topology-guarded"],
-      "fork_commit": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
-      "fork_tree": "4dc14831e501a7067b63f678b6185e4139cef196",
+      "topology": [
+        "model-and-topology-guarded"
+      ],
+      "fork_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+      "fork_tree": "3ed4e8e8a04e9a9ac8024b7b6d5dea1a649f32c6",
       "fork_branch": "codex/model-union-v0520-20260922",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..a6bfd34af146093fea75d9ff824c5952837a9f3b",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..05a0fe7c11e8262c804b0816328378ddc13beb87",
       "replay_mode": "exact",
       "patches": [
-        {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
-        {"id":"common-typed-reasoning-usage","path":"patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch","source_commit":"89f583819b2f515bfde21762e885d88d3761bdd8","sha256":"2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"},
-        {"id":"common-mode-sampling-defaults","path":"patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch","source_commit":"1db913dd7b389922243a76caf61bac1c344b3162","sha256":"eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"},
-        {"id":"kimi-request-owner","path":"patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch","source_commit":"1e62ad753c4243ba8b3e627a41813e3df353e924","sha256":"3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"},
-        {"id":"kimi-mamba-checkpoint","path":"patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch","source_commit":"9bd58a168358f7c336f63fa3f3965659e8bacc23","sha256":"2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"},
-        {"id":"kimi-prefill-sequence-cap","path":"patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch","source_commit":"6329c4dddd08bc526dbda58449272034cfa6c7e6","sha256":"b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"},
-        {"id":"kimi-file-ownership","path":"patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch","source_commit":"cd0cca6903e8f0d0fa73dc286b04b85834272840","sha256":"23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"},
-        {"id":"kimi-completed-chunk-guards","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","source_commit":"5a1799c43d726eaa0f89df8dfe0604285fa3730a","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
-        {"id":"kimi-virtual-page-continuation","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","source_commit":"02558c2aaab1b1e91a15a8352659bba489dd5ff0","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"},
-        {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"},
-        {"id":"nemotron-literal-token-boundaries","path":"patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch","source_commit":"6acf476ccf453e5545be9b12353b67fe09cdbf4c","sha256":"ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"},
-        {"id":"dsv41-0001","path":"patches/models/deepseek/dsv41-0001-rust-interfaces.patch","source_commit":"5392a7324f23e0f1d960edb2c60e4fd9020978e9","sha256":"261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"},
-        {"id":"dsv41-0002","path":"patches/models/deepseek/dsv41-0002-standalone-kernels.patch","source_commit":"6842c9135a8a2af8458f836bb81ac6ff83e33c32","sha256":"6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"},
-        {"id":"dsv41-0003","path":"patches/models/deepseek/dsv41-0003-topk-candidates.patch","source_commit":"ae829a492f29d50286ca62e524f66bdab7a314b3","sha256":"4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"},
-        {"id":"dsv41-0004","path":"patches/models/deepseek/dsv41-0004-communication-kernels.patch","source_commit":"2058fb0a106ef3e9a1431f6400d512333643f618","sha256":"58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"},
-        {"id":"dsv41-0005","path":"patches/models/deepseek/dsv41-0005-compression-kv-io.patch","source_commit":"d25d72a68e5b240851a0b645b98582d7924b540f","sha256":"72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"},
-        {"id":"dsv41-0006","path":"patches/models/deepseek/dsv41-0006-candidate-indexer.patch","source_commit":"df74a3ed2401723ff865b514f5bba23a5a0164e4","sha256":"ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"},
-        {"id":"dsv41-0007","path":"patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch","source_commit":"79a3ac5416bfa512b95d7e615c901eaf9dd63482","sha256":"7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"},
-        {"id":"dsv41-0008","path":"patches/models/deepseek/dsv41-0008-hopper-fp8.patch","source_commit":"5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e","sha256":"85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"},
-        {"id":"dsv41-0009","path":"patches/models/deepseek/dsv41-0009-mhc-projections.patch","source_commit":"a55765773e792cb3a7dbbf152a0968eb31c74354","sha256":"b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"},
-        {"id":"dsv41-0010","path":"patches/models/deepseek/dsv41-0010-vision-preprocessing.patch","source_commit":"d31c3fa098ffd37ff1b3bbe27219eb5f990e030e","sha256":"bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"},
-        {"id":"dsv41-chat-encoding-adapted","path":"patches/models/deepseek/407ab50cf5-chat-encoding-adapted.patch","source_commit":"407ab50cf5849ccc66d646f93244a4ce98e754e1","sha256":"d478ecf64152105756e49bab2e77f4dacf4a40aacccd46f86e1bb43110990c64"},
-        {"id":"common-named-tool-reference-roots","path":"patches/common/d912c600ba-named-tool-reference-roots.patch","source_commit":"d912c600bad54887952a0e5d4c96bf1a922294d3","sha256":"f422a4388d935e3106ea0e1d2bbe89d2d69bedbf57d73d9c103340007d1d5c1e"},
-        {"id":"qwen-gemma-history-reconciliation","path":"patches/models/qwen/23bd4b2a9b-history-reconciliation.patch","source_commit":"23bd4b2a9be8dcad15e54fae5d3ab6f233230de1","sha256":"df0efcdc9be06fa76da1e7c004c914b48c66419217862c668a4194c1a8e92b50"},
-        {"id":"qwen-complete-call-boundaries","path":"patches/models/qwen/447dfcb6de-complete-call-boundaries.patch","source_commit":"447dfcb6dee95be0db682036b55804bd03724c8f","sha256":"6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"},
-        {"id":"muse-required-named-constraints","path":"patches/models/muse/acec595f6b-required-named-constraints.patch","source_commit":"acec595f6b6d2b6e8969af0d5a39fe6ec51a30f5","sha256":"a6911a3756d1088a30a786c69bdf6ff361dc5867aad3bb302bd1aae199e5f91e"},
-        {"id":"muse-channel-grammar-lifecycle","path":"patches/models/muse/252ce1114c-channel-grammar-lifecycle.patch","source_commit":"252ce1114c157031bdc4a8ebfbffe798b7527507","sha256":"3434c916f30c41cda2a07f6151d636d5762f3e8b3a57d0e028b4f5d2f9304241"},
-        {"id":"muse-history-template-contract","path":"patches/models/muse/bb758d0bab-history-template-contract.patch","source_commit":"bb758d0babab3a0d345aa55f503791564923ac4d","sha256":"a531ecb3f00e224df9ea39007647e5a261193a2e83da0853c738c27e30f43abc"},
-        {"id":"common-marlin-breakable","path":"patches/common/fa291d652a-marlin-breakable.patch","source_commit":"fa291d652a4a736d770f1dde59f8a57a41f4d85f","sha256":"6249c0c85c2ef0b63e5e6877eefe9225e4f45114109f859cb112525ee82dade2"},
-        {"id":"qwen-gguf-load-vision","path":"patches/models/qwen/0b921c2f15-gguf-load-vision.patch","source_commit":"0b921c2f15623b0ad9e5fa23984d86b4c16b0951","sha256":"ba2ac10cde69ced4f062f932d1e82acc78626d772341b65e566badb2a5702590"},
-        {"id":"muse-explicit-budget-regression","path":"patches/models/muse/f76d68047d-explicit-budget-regression.patch","source_commit":"f76d68047de08e2cde1884d25c461eccda7a11e1","sha256":"98f5c6cb68024fc08f88575c99a0cebea573c13335020f4077395b5974e95dca"},
-        {"id":"qwen-guarded-q8-prefill","path":"patches/models/qwen/8a51d28ba2-guarded-q8-prefill.patch","source_commit":"8a51d28ba2ad953593ed033612d19205e1388cb9","sha256":"c083dc7957434c1d7374a9f7d074d9732765a03d20a0e0ebd0089ba8d076c9fc"},
-        {"id":"common-source-ci-lint","path":"patches/common/a6bfd34af1-source-ci-lint.patch","source_commit":"a6bfd34af146093fea75d9ff824c5952837a9f3b","sha256":"582f80ab78c7c796856b9c6c8a5220fb46eaa70dfd6b07ff33f2eeff989133ee"}
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        },
+        {
+          "id": "kimi-request-owner",
+          "path": "patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch",
+          "source_commit": "1e62ad753c4243ba8b3e627a41813e3df353e924",
+          "sha256": "3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"
+        },
+        {
+          "id": "kimi-mamba-checkpoint",
+          "path": "patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch",
+          "source_commit": "9bd58a168358f7c336f63fa3f3965659e8bacc23",
+          "sha256": "2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"
+        },
+        {
+          "id": "kimi-prefill-sequence-cap",
+          "path": "patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch",
+          "source_commit": "6329c4dddd08bc526dbda58449272034cfa6c7e6",
+          "sha256": "b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"
+        },
+        {
+          "id": "kimi-file-ownership",
+          "path": "patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch",
+          "source_commit": "cd0cca6903e8f0d0fa73dc286b04b85834272840",
+          "sha256": "23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"
+        },
+        {
+          "id": "kimi-completed-chunk-guards",
+          "path": "patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch",
+          "source_commit": "5a1799c43d726eaa0f89df8dfe0604285fa3730a",
+          "sha256": "e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"
+        },
+        {
+          "id": "kimi-virtual-page-continuation",
+          "path": "patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch",
+          "source_commit": "02558c2aaab1b1e91a15a8352659bba489dd5ff0",
+          "sha256": "a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"
+        },
+        {
+          "id": "muse-native-channel",
+          "path": "patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch",
+          "source_commit": "6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
+          "sha256": "dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"
+        },
+        {
+          "id": "nemotron-literal-token-boundaries",
+          "path": "patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch",
+          "source_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
+          "sha256": "ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"
+        },
+        {
+          "id": "dsv41-0001",
+          "path": "patches/models/deepseek/dsv41-0001-rust-interfaces.patch",
+          "source_commit": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+          "sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"
+        },
+        {
+          "id": "dsv41-0002",
+          "path": "patches/models/deepseek/dsv41-0002-standalone-kernels.patch",
+          "source_commit": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+          "sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"
+        },
+        {
+          "id": "dsv41-0003",
+          "path": "patches/models/deepseek/dsv41-0003-topk-candidates.patch",
+          "source_commit": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+          "sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"
+        },
+        {
+          "id": "dsv41-0004",
+          "path": "patches/models/deepseek/dsv41-0004-communication-kernels.patch",
+          "source_commit": "2058fb0a106ef3e9a1431f6400d512333643f618",
+          "sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"
+        },
+        {
+          "id": "dsv41-0005",
+          "path": "patches/models/deepseek/dsv41-0005-compression-kv-io.patch",
+          "source_commit": "d25d72a68e5b240851a0b645b98582d7924b540f",
+          "sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"
+        },
+        {
+          "id": "dsv41-0006",
+          "path": "patches/models/deepseek/dsv41-0006-candidate-indexer.patch",
+          "source_commit": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+          "sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"
+        },
+        {
+          "id": "dsv41-0007",
+          "path": "patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch",
+          "source_commit": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+          "sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"
+        },
+        {
+          "id": "dsv41-0008",
+          "path": "patches/models/deepseek/dsv41-0008-hopper-fp8.patch",
+          "source_commit": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+          "sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"
+        },
+        {
+          "id": "dsv41-0009",
+          "path": "patches/models/deepseek/dsv41-0009-mhc-projections.patch",
+          "source_commit": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+          "sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"
+        },
+        {
+          "id": "dsv41-0010",
+          "path": "patches/models/deepseek/dsv41-0010-vision-preprocessing.patch",
+          "source_commit": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+          "sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"
+        },
+        {
+          "id": "dsv41-chat-encoding-adapted",
+          "path": "patches/models/deepseek/407ab50cf5-chat-encoding-adapted.patch",
+          "source_commit": "407ab50cf5849ccc66d646f93244a4ce98e754e1",
+          "sha256": "d478ecf64152105756e49bab2e77f4dacf4a40aacccd46f86e1bb43110990c64"
+        },
+        {
+          "id": "common-named-tool-reference-roots",
+          "path": "patches/common/d912c600ba-named-tool-reference-roots.patch",
+          "source_commit": "d912c600bad54887952a0e5d4c96bf1a922294d3",
+          "sha256": "f422a4388d935e3106ea0e1d2bbe89d2d69bedbf57d73d9c103340007d1d5c1e"
+        },
+        {
+          "id": "qwen-gemma-history-reconciliation",
+          "path": "patches/models/qwen/23bd4b2a9b-history-reconciliation.patch",
+          "source_commit": "23bd4b2a9be8dcad15e54fae5d3ab6f233230de1",
+          "sha256": "df0efcdc9be06fa76da1e7c004c914b48c66419217862c668a4194c1a8e92b50"
+        },
+        {
+          "id": "qwen-complete-call-boundaries",
+          "path": "patches/models/qwen/447dfcb6de-complete-call-boundaries.patch",
+          "source_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
+          "sha256": "6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"
+        },
+        {
+          "id": "muse-required-named-constraints",
+          "path": "patches/models/muse/acec595f6b-required-named-constraints.patch",
+          "source_commit": "acec595f6b6d2b6e8969af0d5a39fe6ec51a30f5",
+          "sha256": "a6911a3756d1088a30a786c69bdf6ff361dc5867aad3bb302bd1aae199e5f91e"
+        },
+        {
+          "id": "muse-channel-grammar-lifecycle",
+          "path": "patches/models/muse/252ce1114c-channel-grammar-lifecycle.patch",
+          "source_commit": "252ce1114c157031bdc4a8ebfbffe798b7527507",
+          "sha256": "3434c916f30c41cda2a07f6151d636d5762f3e8b3a57d0e028b4f5d2f9304241"
+        },
+        {
+          "id": "muse-history-template-contract",
+          "path": "patches/models/muse/bb758d0bab-history-template-contract.patch",
+          "source_commit": "bb758d0babab3a0d345aa55f503791564923ac4d",
+          "sha256": "a531ecb3f00e224df9ea39007647e5a261193a2e83da0853c738c27e30f43abc"
+        },
+        {
+          "id": "common-marlin-breakable",
+          "path": "patches/common/fa291d652a-marlin-breakable.patch",
+          "source_commit": "fa291d652a4a736d770f1dde59f8a57a41f4d85f",
+          "sha256": "6249c0c85c2ef0b63e5e6877eefe9225e4f45114109f859cb112525ee82dade2"
+        },
+        {
+          "id": "qwen-gguf-load-vision",
+          "path": "patches/models/qwen/0b921c2f15-gguf-load-vision.patch",
+          "source_commit": "0b921c2f15623b0ad9e5fa23984d86b4c16b0951",
+          "sha256": "ba2ac10cde69ced4f062f932d1e82acc78626d772341b65e566badb2a5702590"
+        },
+        {
+          "id": "muse-explicit-budget-regression",
+          "path": "patches/models/muse/f76d68047d-explicit-budget-regression.patch",
+          "source_commit": "f76d68047de08e2cde1884d25c461eccda7a11e1",
+          "sha256": "98f5c6cb68024fc08f88575c99a0cebea573c13335020f4077395b5974e95dca"
+        },
+        {
+          "id": "qwen-guarded-q8-prefill",
+          "path": "patches/models/qwen/8a51d28ba2-guarded-q8-prefill.patch",
+          "source_commit": "8a51d28ba2ad953593ed033612d19205e1388cb9",
+          "sha256": "c083dc7957434c1d7374a9f7d074d9732765a03d20a0e0ebd0089ba8d076c9fc"
+        },
+        {
+          "id": "common-source-ci-lint",
+          "path": "patches/common/a6bfd34af1-source-ci-lint.patch",
+          "source_commit": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
+          "sha256": "582f80ab78c7c796856b9c6c8a5220fb46eaa70dfd6b07ff33f2eeff989133ee"
+        },
+        {
+          "id": "union-9025b810d5",
+          "path": "patches/dependencies/xgrammar/9025b810d5-integrate-pinned-xgrammar-union-native-semantics-and-bounded-adapter.patch",
+          "source_commit": "9025b810d5aadd921516d99aa5810c6d7f842a9d",
+          "source_parent": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
+          "sha256": "3b0b949d4bb6156694dae6d4587f45fa382f8e80f7b9e75e48d6c948a7fa4188"
+        },
+        {
+          "id": "union-f07476acea",
+          "path": "patches/models/deepseek/f07476acea-dsv4-1-engram-module-and-request-history-support-39666.patch",
+          "source_commit": "f07476acea968d239b32c29bbb7890dca4bddb69",
+          "source_parent": "9025b810d5aadd921516d99aa5810c6d7f842a9d",
+          "sha256": "069a8d0b527789026ee3fbb28eac82917ef620eb4393d902b95db4f06ce33324"
+        },
+        {
+          "id": "union-5e7533f6c5",
+          "path": "patches/models/deepseek/5e7533f6c5-dsv4-generalize-attention-metadata-sparse-prefill-and-kv-pool-over-compress-ratios-39921.patch",
+          "source_commit": "5e7533f6c5ecef1ab069ff7cbabc563c1bba1602",
+          "source_parent": "f07476acea968d239b32c29bbb7890dca4bddb69",
+          "sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a"
+        },
+        {
+          "id": "union-4734640dd1",
+          "path": "patches/models/deepseek/4734640dd1-quant-serve-32-wide-k-ue8m0-block-fp8-linears-through-the-flashinfer-mxfp8-gemms-40039.patch",
+          "source_commit": "4734640dd102c9bcd56bc774e88b25b76e60b7a1",
+          "source_parent": "5e7533f6c5ecef1ab069ff7cbabc563c1bba1602",
+          "sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d"
+        },
+        {
+          "id": "union-5d462d447b",
+          "path": "patches/models/deepseek/5d462d447b-dsv4-1-remaining-model-and-runtime-integration-38798.patch",
+          "source_commit": "5d462d447b167346ec0957ee229f19293b8697f4",
+          "source_parent": "4734640dd102c9bcd56bc774e88b25b76e60b7a1",
+          "sha256": "ddc0de34b2c61262b617d6a1747b6592e557590bcfbec43699e8c8c43d3ddf5f"
+        },
+        {
+          "id": "union-91def7153c",
+          "path": "patches/models/deepseek/91def7153c-bound-deepseek-v4-1-dense-prefill-indexer-memory.patch",
+          "source_commit": "91def7153cd790589feb3511eab3059c5406754b",
+          "source_parent": "5d462d447b167346ec0957ee229f19293b8697f4",
+          "sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"
+        },
+        {
+          "id": "union-b8745690ae",
+          "path": "patches/common/b8745690ae-strengthen-dense-prefill-consumer-correctness-and-memory-tests.patch",
+          "source_commit": "b8745690ae05ed0591da110b9ec86e81a0dce5c2",
+          "source_parent": "91def7153cd790589feb3511eab3059c5406754b",
+          "sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"
+        },
+        {
+          "id": "union-40f9a8089b",
+          "path": "patches/common/40f9a8089b-fix-hicache-back-up-completed-write-through-chunks.patch",
+          "source_commit": "40f9a8089b643f880d1e3abb80c13dc01937403a",
+          "source_parent": "b8745690ae05ed0591da110b9ec86e81a0dce5c2",
+          "sha256": "5719c05c00911004a0d12458a6d178f2cf21eec1b7dedf3db4dfd6a26fa8a1f8"
+        },
+        {
+          "id": "union-ea037cef31",
+          "path": "patches/models/deepseek/ea037cef31-perf-dsv41-isolate-medium-target-finalize-plane.patch",
+          "source_commit": "ea037cef312d5658fede1c27da8cd466b33a0b83",
+          "source_parent": "40f9a8089b643f880d1e3abb80c13dc01937403a",
+          "sha256": "797f1729370976b3f9cf5b66a2ff51610da75941228ff781050e3b71b3fe13c0"
+        },
+        {
+          "id": "union-d2309bf011",
+          "path": "patches/models/deepseek/d2309bf011-fix-dsv41-close-stable-transplant-imports-and-document-qualification-boundaries.patch",
+          "source_commit": "d2309bf011c298e7aeb6d0acd7e9ab5350c3159d",
+          "source_parent": "ea037cef312d5658fede1c27da8cd466b33a0b83",
+          "sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0"
+        },
+        {
+          "id": "union-4109368860",
+          "path": "patches/models/deepseek/4109368860-fix-dsv41-restore-mxfp4-padding-before-weight-shuffle.patch",
+          "source_commit": "4109368860365fc1baa4e980a018b3208efba637",
+          "source_parent": "d2309bf011c298e7aeb6d0acd7e9ab5350c3159d",
+          "sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26"
+        },
+        {
+          "id": "union-790615adcb",
+          "path": "patches/models/deepseek/790615adcb-fix-dsv41-preserve-native-flashinfer-routed-weight-abi.patch",
+          "source_commit": "790615adcbc594fd465fec1bf049063a70166180",
+          "source_parent": "4109368860365fc1baa4e980a018b3208efba637",
+          "sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179"
+        },
+        {
+          "id": "union-818de30111",
+          "path": "patches/models/deepseek/818de30111-fix-dsv41-size-candidate-bitmap-for-speculative-scratch-extent.patch",
+          "source_commit": "818de30111761ba60e81ace113f2a1b14ed6d163",
+          "source_parent": "790615adcbc594fd465fec1bf049063a70166180",
+          "sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"
+        },
+        {
+          "id": "union-66ae92bedf",
+          "path": "patches/models/deepseek/66ae92bedf-adapt-native-deepseek-encoder-and-common-async-conversion-hooks.patch",
+          "source_commit": "66ae92bedfe6ca50840dceada40bab68cad17606",
+          "source_parent": "818de30111761ba60e81ace113f2a1b14ed6d163",
+          "sha256": "f635ff462983dc22690035ffc1da57b5df81ba19dfc29fe87f4ff14a3bf25507"
+        },
+        {
+          "id": "union-647be7d4d2",
+          "path": "patches/models/deepseek/647be7d4d2-reject-nonfinite-ue8m0-scales-and-verify-deepseek-union-cpu-contracts.patch",
+          "source_commit": "647be7d4d2d06ef4b62943bf466ffb2688947633",
+          "source_parent": "66ae92bedfe6ca50840dceada40bab68cad17606",
+          "sha256": "480c9454bb327beb0db9712187413927557b3fa8d882c58ee54157777be190e5"
+        },
+        {
+          "id": "union-6de6497807",
+          "path": "patches/models/deepseek/6de6497807-record-deepseek-union-donor-migration-and-current-consumer-closure-evidence.patch",
+          "source_commit": "6de64978075d966e43f8900acfee51faf7ea053b",
+          "source_parent": "647be7d4d2d06ef4b62943bf466ffb2688947633",
+          "sha256": "4b7e8efa1ac9ac5a6ea0ed897772cc2344092575f695d8af5f23b8acf59ec885"
+        },
+        {
+          "id": "union-df95a7731e",
+          "path": "patches/models/nemotron/df95a7731e-preserve-nemotron-termination-and-structured-answer-budget-contracts.patch",
+          "source_commit": "df95a7731e0c0e29b2d3149435bb1362342d900b",
+          "source_parent": "6de64978075d966e43f8900acfee51faf7ea053b",
+          "sha256": "7caa57ec10462ab58e70b5443c5ad190f272e120eafacd5ab2fca1bab06c4f20"
+        },
+        {
+          "id": "union-2aa5522ed5",
+          "path": "patches/models/deepseek/2aa5522ed5-format-deepseek-integrated-regression-sources.patch",
+          "source_commit": "2aa5522ed5fd3a5087ce64223a45ba25cd067c0c",
+          "source_parent": "df95a7731e0c0e29b2d3149435bb1362342d900b",
+          "sha256": "09a6ed9ec950a76d984944d68f552d4a2ee701b738097cf1fe3abcb7e12f9057"
+        },
+        {
+          "id": "union-965f2a37ae",
+          "path": "patches/models/nemotron/965f2a37ae-add-termination-guard-removal-control.patch",
+          "source_commit": "965f2a37ae659245d51679cd08281dd9c6b709f5",
+          "source_parent": "2aa5522ed5fd3a5087ce64223a45ba25cd067c0c",
+          "sha256": "d1d60c2996c1fbb329cfcc29a30fe8921e622e22518ca2a83a00ddf12e764233"
+        },
+        {
+          "id": "union-871326d498",
+          "path": "patches/models/deepseek/871326d498-integrate-guarded-deepseek-shared-chat-protocol-contracts.patch",
+          "source_commit": "871326d49831759e021c3b9656bb3f6f4f42a895",
+          "source_parent": "965f2a37ae659245d51679cd08281dd9c6b709f5",
+          "sha256": "fbffe496f1f747274f3040fe566761df3ffbcf9ca12e25b31b1c471961cb6bdd"
+        },
+        {
+          "id": "union-e202be0fdb",
+          "path": "patches/models/deepseek/e202be0fdb-run-integrated-deepseek-protocol-checks-in-shared-cpu-ci.patch",
+          "source_commit": "e202be0fdb1c61632bda5be461eb4e6aae79aba0",
+          "source_parent": "871326d49831759e021c3b9656bb3f6f4f42a895",
+          "sha256": "d80a92d64ebb68adbe9288f27f9b280a32cfa1b2e032c8db1e4c5b5b7c950fc8"
+        },
+        {
+          "id": "union-044149138f",
+          "path": "patches/common/044149138f-format-combined-shared-serving-changes.patch",
+          "source_commit": "044149138fceeb38a5d931c797e7a001795111f6",
+          "source_parent": "e202be0fdb1c61632bda5be461eb4e6aae79aba0",
+          "sha256": "0ea4f61e03007f46b61cfa256ba9d91b2af608e61e5e545e8bdfa941074524a6"
+        },
+        {
+          "id": "union-962cccfd55",
+          "path": "patches/common/962cccfd55-record-unified-source-and-installed-native-cpu-evidence.patch",
+          "source_commit": "962cccfd554752644e8c79a36bb6105148eea6c0",
+          "source_parent": "044149138fceeb38a5d931c797e7a001795111f6",
+          "sha256": "0d78fe0c1f7a2449adb1fdde15ac65ea717a83320740c02cec14cbf0bd6b8766"
+        },
+        {
+          "id": "union-05a0fe7c11",
+          "path": "patches/models/deepseek/05a0fe7c11-place-integrated-deepseek-gpu-regressions-in-kernel-taxonomy.patch",
+          "source_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+          "source_parent": "962cccfd554752644e8c79a36bb6105148eea6c0",
+          "sha256": "3df1c2c4ba63c9f70b42a98741256bbb6e8faa5d61c7c2ae2b8257e50f4abb15"
+        }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
-      "pending_dsv41_closure": ["dsv41-0012", "dsv41-0013", "dsv41-0014", "dsv41-0015", "dsv41-0016", "dsv41-0017", "dsv41-0018", "dsv41-0019", "dsv41-0020", "dsv41-0021", "dsv41-0022", "dsv41-0023", "dsv41-0024", "dsv41-0025", "dsv41-0026"],
-      "status": "source_replay_verified_native_closure_and_model_qualification_pending",
-      "validation_boundary": "Muse28/0skip source/protocol tests include three real serving call-chain renders against external template900db3ef (immutable Compose2e16dfd8, not redistributed; packaging/license unresolved). Common Marlin/BREAKABLE6 source tests; Qwen GGUF20 real CPU tensor/reader tests and Q8 prefill11 dispatch tests (simulated kernels/device). Torch2.13.0/Transformers5.12.1/tokenizers0.22.2 match source pins; gguf0.19.0/numpy2.5.3 are tested unpinned inputs. Nemotron real-tokenizer19/0skip; DSchat10; named-schema5; Qwenhistory5; Qwen complete-call16/boundary4. Step3p5/nanbeige share that detector, not model-qualified. DS0012-26, vision/Engram consumption, Python C1/C2 metadata, shared-native regression remain pending; offline Rust check lacked cached prost. One native XGrammar reconciliation remains pending, not solved by source tests or stock version bump. No GPU, full runtime imports, ABI or final-image acceptance."
+      "pending_dsv41_closure": [],
+      "status": "source_replay_and_focused_cpu_verified_full_runtime_qualification_pending",
+      "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes."
     },
     "common-v0520-successor": {
       "model_family": "shared-serving",
       "version": "v0.5.20",
-      "topology": ["model-guarded"],
+      "topology": [
+        "model-guarded"
+      ],
       "fork_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
       "fork_tree": "530b9c4618f336340ca7370c742e43583c844655",
       "fork_branch": "codex/common-serving-v0520-maintenance-20260921",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
       "replay_mode": "exact",
       "patches": [
-        {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
-        {"id":"common-typed-reasoning-usage","path":"patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch","source_commit":"89f583819b2f515bfde21762e885d88d3761bdd8","sha256":"2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"},
-        {"id":"common-mode-sampling-defaults","path":"patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch","source_commit":"1db913dd7b389922243a76caf61bac1c344b3162","sha256":"eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"}
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        }
       ],
       "status": "pending_linux_cpu_validation",
       "validation_boundary": "Exact source/tree replay passes; Linux imports and affected runtime tests remain pending"
@@ -82,7 +434,11 @@
     "kimi-k3-v0520-candidate": {
       "model_family": "kimi-k3",
       "version": "v0.5.20",
-      "topology": ["TP8", "DCP1", "DCP8"],
+      "topology": [
+        "TP8",
+        "DCP1",
+        "DCP8"
+      ],
       "fork_commit": "02558c2aaab1b1e91a15a8352659bba489dd5ff0",
       "fork_tree": "12b9bdd3308e36d38d1aad10e767a6624e590f14",
       "fork_branch": "codex/kimi-k3-v0520-maintenance-20260921",
@@ -90,24 +446,74 @@
       "replay_mode": "exact",
       "inherits": "common-v0520-successor",
       "patches": [
-        {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
-        {"id":"common-typed-reasoning-usage","path":"patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch","source_commit":"89f583819b2f515bfde21762e885d88d3761bdd8","sha256":"2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"},
-        {"id":"common-mode-sampling-defaults","path":"patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch","source_commit":"1db913dd7b389922243a76caf61bac1c344b3162","sha256":"eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"},
-        {"id":"kimi-request-owner","path":"patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch","source_commit":"1e62ad753c4243ba8b3e627a41813e3df353e924","sha256":"3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"},
-        {"id":"kimi-mamba-checkpoint","path":"patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch","source_commit":"9bd58a168358f7c336f63fa3f3965659e8bacc23","sha256":"2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"},
-        {"id":"kimi-prefill-sequence-cap","path":"patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch","source_commit":"6329c4dddd08bc526dbda58449272034cfa6c7e6","sha256":"b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"},
-        {"id":"kimi-file-ownership","path":"patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch","source_commit":"cd0cca6903e8f0d0fa73dc286b04b85834272840","sha256":"23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"},
-        {"id":"kimi-completed-chunk-guards","path":"patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch","source_commit":"5a1799c43d726eaa0f89df8dfe0604285fa3730a","sha256":"e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"},
-        {"id":"kimi-virtual-page-continuation","path":"patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch","source_commit":"02558c2aaab1b1e91a15a8352659bba489dd5ff0","sha256":"a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"}
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        },
+        {
+          "id": "kimi-request-owner",
+          "path": "patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch",
+          "source_commit": "1e62ad753c4243ba8b3e627a41813e3df353e924",
+          "sha256": "3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"
+        },
+        {
+          "id": "kimi-mamba-checkpoint",
+          "path": "patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch",
+          "source_commit": "9bd58a168358f7c336f63fa3f3965659e8bacc23",
+          "sha256": "2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"
+        },
+        {
+          "id": "kimi-prefill-sequence-cap",
+          "path": "patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch",
+          "source_commit": "6329c4dddd08bc526dbda58449272034cfa6c7e6",
+          "sha256": "b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"
+        },
+        {
+          "id": "kimi-file-ownership",
+          "path": "patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch",
+          "source_commit": "cd0cca6903e8f0d0fa73dc286b04b85834272840",
+          "sha256": "23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"
+        },
+        {
+          "id": "kimi-completed-chunk-guards",
+          "path": "patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch",
+          "source_commit": "5a1799c43d726eaa0f89df8dfe0604285fa3730a",
+          "sha256": "e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"
+        },
+        {
+          "id": "kimi-virtual-page-continuation",
+          "path": "patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch",
+          "source_commit": "02558c2aaab1b1e91a15a8352659bba489dd5ff0",
+          "sha256": "a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"
+        }
       ],
-      "excluded_common_overlap": ["chat-close", "completed-chunk-core"],
+      "excluded_common_overlap": [
+        "chat-close",
+        "completed-chunk-core"
+      ],
       "status": "pending_linux_cpu_and_model_topology_validation",
       "validation_boundary": "Local source-method DCP red/green and backup guards pass; Linux imports, Kimi runtime and Governor combination not accepted"
     },
     "muse-glimmer-v0520-candidate": {
       "model_family": "muse-glimmer",
       "version": "v0.5.20",
-      "topology": ["model-guarded"],
+      "topology": [
+        "model-guarded"
+      ],
       "fork_commit": "109089bac878e6a67224dad900a96d0c3556fb41",
       "fork_tree": "7a76873eccad5b9942952e5ae25b609195a941de",
       "fork_branch": "codex/muse-glimmer-v0520-maintenance-20260921",
@@ -115,10 +521,30 @@
       "replay_mode": "exact",
       "inherits": "common-v0520-successor",
       "patches": [
-        {"id":"common-llguidance-callbacks","path":"patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch","source_commit":"87ace709c88e8fd362d83584c7a4dd6742fc1d8b","sha256":"168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"},
-        {"id":"common-typed-reasoning-usage","path":"patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch","source_commit":"89f583819b2f515bfde21762e885d88d3761bdd8","sha256":"2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"},
-        {"id":"common-mode-sampling-defaults","path":"patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch","source_commit":"1db913dd7b389922243a76caf61bac1c344b3162","sha256":"eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"},
-        {"id":"muse-native-channel","path":"patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch","source_commit":"109089bac878e6a67224dad900a96d0c3556fb41","sha256":"dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"}
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        },
+        {
+          "id": "muse-native-channel",
+          "path": "patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch",
+          "source_commit": "109089bac878e6a67224dad900a96d0c3556fb41",
+          "sha256": "dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"
+        }
       ],
       "pending_historical_patch_directory": "patches/models/muse",
       "status": "pending_linux_cpu_validation",
@@ -128,28 +554,116 @@
       "model_family": "deepseek-v4.1",
       "version": "v0.5.20",
       "patches": [
-        {"id":"dsv41-0001","path":"patches/models/deepseek/dsv41-0001-rust-interfaces.patch","sha256":"261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"},
-        {"id":"dsv41-0002","path":"patches/models/deepseek/dsv41-0002-standalone-kernels.patch","sha256":"6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"},
-        {"id":"dsv41-0003","path":"patches/models/deepseek/dsv41-0003-topk-candidates.patch","sha256":"4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"},
-        {"id":"dsv41-0004","path":"patches/models/deepseek/dsv41-0004-communication-kernels.patch","sha256":"58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"},
-        {"id":"dsv41-0005","path":"patches/models/deepseek/dsv41-0005-compression-kv-io.patch","sha256":"72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"},
-        {"id":"dsv41-0006","path":"patches/models/deepseek/dsv41-0006-candidate-indexer.patch","sha256":"ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"},
-        {"id":"dsv41-0007","path":"patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch","sha256":"7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"},
-        {"id":"dsv41-0008","path":"patches/models/deepseek/dsv41-0008-hopper-fp8.patch","sha256":"85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"},
-        {"id":"dsv41-0009","path":"patches/models/deepseek/dsv41-0009-mhc-projections.patch","sha256":"b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"},
-        {"id":"dsv41-0010","path":"patches/models/deepseek/dsv41-0010-vision-preprocessing.patch","sha256":"bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"},
-        {"id":"dsv41-0011","path":"patches/models/deepseek/dsv41-0011-chat-encoding.patch","sha256":"947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85"},
-        {"id":"dsv41-0012","path":"patches/models/deepseek/dsv41-0012-engram-history.patch","sha256":"49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c"},
-        {"id":"dsv41-0013","path":"patches/models/deepseek/dsv41-0013-compress-ratios.patch","sha256":"239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a"},
-        {"id":"dsv41-0015","path":"patches/models/deepseek/dsv41-0015-native-integration.patch","sha256":"a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb"},
-        {"id":"dsv41-0016","path":"patches/models/deepseek/dsv41-0016-dense-prefill.patch","sha256":"162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"},
-        {"id":"dsv41-0017","path":"patches/models/deepseek/dsv41-0017-dense-prefill-tests.patch","sha256":"c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"},
-        {"id":"dsv41-0020","path":"patches/models/deepseek/dsv41-0020-model-protocol-contracts.patch","sha256":"36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4"},
-        {"id":"dsv41-0021","path":"patches/models/deepseek/dsv41-0021-medium-finalize.patch","sha256":"273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02"},
-        {"id":"dsv41-0022","path":"patches/models/deepseek/dsv41-0022-transplant-closure.patch","sha256":"3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0"},
-        {"id":"dsv41-0023","path":"patches/models/deepseek/dsv41-0023-mxfp4-padding.patch","sha256":"2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26"},
-        {"id":"dsv41-0024","path":"patches/models/deepseek/dsv41-0024-protocol-selftest.patch","sha256":"7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56"},
-        {"id":"dsv41-0026","path":"patches/models/deepseek/dsv41-0026-candidate-bitmap.patch","sha256":"cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"}
+        {
+          "id": "dsv41-0001",
+          "path": "patches/models/deepseek/dsv41-0001-rust-interfaces.patch",
+          "sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"
+        },
+        {
+          "id": "dsv41-0002",
+          "path": "patches/models/deepseek/dsv41-0002-standalone-kernels.patch",
+          "sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"
+        },
+        {
+          "id": "dsv41-0003",
+          "path": "patches/models/deepseek/dsv41-0003-topk-candidates.patch",
+          "sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"
+        },
+        {
+          "id": "dsv41-0004",
+          "path": "patches/models/deepseek/dsv41-0004-communication-kernels.patch",
+          "sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"
+        },
+        {
+          "id": "dsv41-0005",
+          "path": "patches/models/deepseek/dsv41-0005-compression-kv-io.patch",
+          "sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"
+        },
+        {
+          "id": "dsv41-0006",
+          "path": "patches/models/deepseek/dsv41-0006-candidate-indexer.patch",
+          "sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"
+        },
+        {
+          "id": "dsv41-0007",
+          "path": "patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch",
+          "sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"
+        },
+        {
+          "id": "dsv41-0008",
+          "path": "patches/models/deepseek/dsv41-0008-hopper-fp8.patch",
+          "sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"
+        },
+        {
+          "id": "dsv41-0009",
+          "path": "patches/models/deepseek/dsv41-0009-mhc-projections.patch",
+          "sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"
+        },
+        {
+          "id": "dsv41-0010",
+          "path": "patches/models/deepseek/dsv41-0010-vision-preprocessing.patch",
+          "sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"
+        },
+        {
+          "id": "dsv41-0011",
+          "path": "patches/models/deepseek/dsv41-0011-chat-encoding.patch",
+          "sha256": "947f162d2e629c208f17c837d3b141a8b90e62b261b6016096dfc47590c23c85"
+        },
+        {
+          "id": "dsv41-0012",
+          "path": "patches/models/deepseek/dsv41-0012-engram-history.patch",
+          "sha256": "49717ab0fea64c8f15354e203d5d41990b648134e8c02c97b8c4f39d728c905c"
+        },
+        {
+          "id": "dsv41-0013",
+          "path": "patches/models/deepseek/dsv41-0013-compress-ratios.patch",
+          "sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a"
+        },
+        {
+          "id": "dsv41-0015",
+          "path": "patches/models/deepseek/dsv41-0015-native-integration.patch",
+          "sha256": "a1d94e3cd63dd76074f338d2a7c201c0e7fb075502d4903e1413d9307f6aa3cb"
+        },
+        {
+          "id": "dsv41-0016",
+          "path": "patches/models/deepseek/dsv41-0016-dense-prefill.patch",
+          "sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"
+        },
+        {
+          "id": "dsv41-0017",
+          "path": "patches/models/deepseek/dsv41-0017-dense-prefill-tests.patch",
+          "sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"
+        },
+        {
+          "id": "dsv41-0020",
+          "path": "patches/models/deepseek/dsv41-0020-model-protocol-contracts.patch",
+          "sha256": "36498f9dba2590d205ab0f4b81e0a1cef7691cd6d8d46993caf6ec85c77c64d4"
+        },
+        {
+          "id": "dsv41-0021",
+          "path": "patches/models/deepseek/dsv41-0021-medium-finalize.patch",
+          "sha256": "273b1570aec613d290d1241db7eeec4837361e82bf1411489ab3fd9ae2897e02"
+        },
+        {
+          "id": "dsv41-0022",
+          "path": "patches/models/deepseek/dsv41-0022-transplant-closure.patch",
+          "sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0"
+        },
+        {
+          "id": "dsv41-0023",
+          "path": "patches/models/deepseek/dsv41-0023-mxfp4-padding.patch",
+          "sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26"
+        },
+        {
+          "id": "dsv41-0024",
+          "path": "patches/models/deepseek/dsv41-0024-protocol-selftest.patch",
+          "sha256": "7377222672155ffb6662d08e4c356491fb8dd300ab3f890ac81cb45969db4a56"
+        },
+        {
+          "id": "dsv41-0026",
+          "path": "patches/models/deepseek/dsv41-0026-candidate-bitmap.patch",
+          "sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"
+        }
       ],
       "fork_commit": "b6a5ec4af0f7981cab954de9a5f4e9ad16fd6948",
       "fork_tree": "1fa53db30f547b951bb50119a88f2d4cb25c306f",
@@ -200,13 +714,25 @@
     "glm-5.3-v0520-frozen": {
       "model_family": "glm-5.3",
       "version": "v0.5.20",
-      "topology": ["TP8", "host-ACK-guarded", "Mooncake-guarded"],
+      "topology": [
+        "TP8",
+        "host-ACK-guarded",
+        "Mooncake-guarded"
+      ],
       "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
       "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
       "fork_branch": "codex/unified-serving-v0520",
       "patches": [
-        {"id":"0021","path":"patches/models/glm/0021-publish-glm-tool-calls-atomically-after-the-closing-marker.patch","sha256":"048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d"},
-        {"id":"0030","path":"patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch","sha256":"984ec91c39d024b7ba560837c00c76bd4c0acaf2c24d0f3da42cc60709830787"}
+        {
+          "id": "0021",
+          "path": "patches/models/glm/0021-publish-glm-tool-calls-atomically-after-the-closing-marker.patch",
+          "sha256": "048780c40f697cdc04adb427248f7ed431a23f9164a155278aabccf4e312d95d"
+        },
+        {
+          "id": "0030",
+          "path": "patches/models/glm/0030-apply-recorded-glm-parser-regression-formatting-fixes.patch",
+          "sha256": "984ec91c39d024b7ba560837c00c76bd4c0acaf2c24d0f3da42cc60709830787"
+        }
       ],
       "status": "selected_in_complete_engine_428",
       "validation_boundary": "GLM CPU/Gloo evidence exists; no new GPU/Governor-on-GLM acceptance"
@@ -214,13 +740,23 @@
     "qwen3-family-v0520": {
       "model_family": "qwen3-family",
       "version": "v0.5.20",
-      "topology": ["model-guarded"],
+      "topology": [
+        "model-guarded"
+      ],
       "fork_commit": "4281309187007db579a2195f40adfd4baa538528",
       "fork_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
       "fork_branch": "codex/unified-serving-v0520",
       "patches": [
-        {"id":"0017","path":"patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch","sha256":"fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24"},
-        {"id":"0018","path":"patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch","sha256":"a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32"}
+        {
+          "id": "0017",
+          "path": "patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch",
+          "sha256": "fb7b2c058b382644323d66a0f41fd61ab126bec21d953d40ed3b2674e716ef24"
+        },
+        {
+          "id": "0018",
+          "path": "patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch",
+          "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32"
+        }
       ],
       "status": "selected_in_complete_engine_428",
       "validation_boundary": "Common/Qwen source evidence; architecture/load-format guards remain required"

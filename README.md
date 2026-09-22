@@ -106,6 +106,15 @@ range; historical reference-only selectors have no replay-pass result.
 This is not a claim that Nemotron, DeepSeek or historical Qwen/Gemma migrations
 are complete, nor does it change any frozen Governor candidate.
 
+The current successor also contains DS0012–0026, native shared DS protocol
+adaptations and connected Vision/Engram/Python C1/C2 consumers; Nemotron
+termination/final-budget and shared XML const semantics; and the single
+`xgrammar==0.2.6+phala.union1` dependency. Its 655 installed native checks plus
+14 adapter checks are distinct from model/GPU acceptance. Use
+`external-dependencies.json` and the engine's `docker/phala-xgrammar/build.py`
+to reproduce the native source from public upstream and the exported delta;
+no public Phala wheel or native candidate ref is assumed.
+
 Runtime image releases belong to `ghcr.io/phala-network/sglang` and bind to the
 complete engine source commit. This repository does not establish image or
 production acceptance.
