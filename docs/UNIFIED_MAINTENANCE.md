@@ -9,12 +9,14 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `db0a9f1ec46a3d417d7be190ebc0ce654dad9abd`.
-- Engine tree: `93fba1f82c9298c0d16aa192d0e2e312eb77f36d`.
-- Ordered engine stack: 31 protected steps plus 62 successor steps.
+- Active engine: `5a3634cab912a98f2ecdacc24c29c05e3c09a09d`.
+- Engine tree: `54a0dcd3bb47aae7159a794e4ffcdb6532a8b5d2`.
+- Ordered engine stack: 31 protected steps plus 63 successor steps.
 - New increments: framework log privacy/health cleanup and configurable DSA
   ordinary-memory reserve, with its original 128 GiB default; shared HugeTLB
-  accounting for staggered Kimi allocations without changing the DSA ledger.
+  accounting for staggered Kimi allocations without changing the DSA ledger;
+  reviewed SRT privacy migration preserving log controls, required evaluations,
+  request decoding, scheduler time gates and business CLI output.
 - These are source candidates. Native dependencies, every target configuration,
   the final image and production deployment are not qualified by replay.
 
@@ -99,8 +101,9 @@ downloads, but is not a network sandbox itself.
 
 `regressions.json` owns the one set of test selections:
 
-- `cpu`: shared privacy, health, initial SSE status, host-reserve, HugeTLB
-  accounting and eight-process DSA allocation/rollback contracts.
+- `cpu`: framework/SRT privacy, transformation and parser canaries, health,
+  initial SSE status, host-reserve, HugeTLB accounting and eight-process DSA
+  allocation/rollback contracts.
 - `model-fixtures`: existing model protocol fixtures. Supply their required
   tokenizer/template artifacts; missing fixture skips are not a pass.
 - `simulator`: upstream paged decode, cache tiers, HTTP/trace replay and prefix
@@ -108,6 +111,14 @@ downloads, but is not a network sandbox itself.
 - `simulator-aic`: the original upstream AIC OFFLINE/BLOCKING test, requiring the
   documented `aiconfigurator==0.10.0` setup. A replay-based experiment does not
   substitute for this test.
+
+For the existing pinned model fixtures, supply `MUSE_TEMPLATE` (SHA256
+`900db3effc316e33295ec3d7dfa2df83ea2735228cba73adba8fecc2e83343f7`)
+and `NEMOTRON_TOKENIZER_JSON` (the qualified input SHA256 is
+`623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7`).
+These are external test inputs, not vendored weights or template distribution
+permission. Record the actual artifact identities with each qualification.
+Without the inputs, the suite remains incomplete, not passed.
 
 Every case records its exit code, JUnit counts, log hash and source identity when
 available. Zero tests, skips, missing/broken JUnit or a nonzero exit cannot become

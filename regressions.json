@@ -27,6 +27,18 @@
       {
         "name": "dsa-allocation-ledger",
         "path": "test/manual/test_glm53_dsa_host_budget.py"
+      },
+      {
+        "name": "srt-privacy-transform",
+        "path": "test/manual/phala/test_srt_log_transform.py"
+      },
+      {
+        "name": "srt-privacy-contract",
+        "path": "test/manual/phala/test_srt_privacy_contract_cpu.py"
+      },
+      {
+        "name": "srt-parser-privacy",
+        "path": "test/manual/phala/test_srt_parser_privacy_gate.py"
       }
     ],
     "model-fixtures": [

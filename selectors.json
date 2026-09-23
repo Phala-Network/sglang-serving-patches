@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
-      "fork_tree": "93fba1f82c9298c0d16aa192d0e2e312eb77f36d",
+      "fork_commit": "5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
+      "fork_tree": "54a0dcd3bb47aae7159a794e4ffcdb6532a8b5d2",
       "fork_branch": "codex/sglang-image-unification-20260923",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
       "replay_mode": "exact",
       "patches": [
         {
@@ -427,6 +427,13 @@
         "source_commit": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
         "source_parent": "2e098cde62d22c3afc19e25923fd8a53578360de",
         "sha256": "8083e2a40b8c8ad8b7d74b95cd158b3528d60542498116446a668eb684f00762"
+      },
+      {
+        "id": "union-5a3634cab9",
+        "path": "patches/common/5a3634cab9-srt-privacy-contracts.patch",
+        "source_commit": "5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
+        "source_parent": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+        "sha256": "e382cf5bc42d61327a7c117eee3b69830f51bd34f1fab697ad67910f31698421"
       }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
