@@ -5,6 +5,7 @@ on:
     paths:
       - 'manifest.json'
       - 'selectors.json'
+      - 'stack.json'
       - 'external-dependencies.json'
       - '*verification.json'
       - 'series'
@@ -19,6 +20,7 @@ on:
     paths:
       - 'manifest.json'
       - 'selectors.json'
+      - 'stack.json'
       - 'external-dependencies.json'
       - '*verification.json'
       - 'series'
@@ -60,6 +62,10 @@ jobs:
           from pathlib import Path
           import re
           import subprocess
+          import sys
+
+          sys.path.insert(0, "scripts")
+          from stack import read_stack
 
           manifest = json.loads(Path("manifest.json").read_text())
           selectors = json.loads(Path("selectors.json").read_text())
@@ -81,6 +87,12 @@ jobs:
                   for field in ("source_commit", "source_parent"):
                       if patch.get(field):
                           commits.add(patch[field])
+          active = read_stack()
+          commits.update((active["upstream"], active["engine_commit"]))
+          for patch in active["patches"]:
+              for field in ("source_commit", "source_parent"):
+                  if patch.get(field):
+                      commits.add(patch[field])
 
           def fetch(path, repository, identities, depth):
               identities = sorted(identities)
@@ -99,7 +111,8 @@ jobs:
                   assert actual == sha, f"source identity mismatch: {sha}"
               print(f"Verified {len(identities)} immutable commits from {repository}")
 
-          fetch(os.environ["SOURCE"], engine_repository, commits, len(manifest["patches"]) + 2)
+          fetch(os.environ["SOURCE"], engine_repository, commits,
+                max(len(manifest["patches"]), len(active["patches"])) + 2)
           fetch(os.environ["GOVERNOR"], governor_repository, {manifest["governor"]["commit"]}, 1)
           external_path = Path("external-dependencies.json")
           if external_path.exists():
@@ -114,3 +127,5 @@ jobs:
         run: python3 scripts/export.py --source "$SOURCE" --governor "$GOVERNOR" --check
       - name: Verify selector identities, bytes and declared replay outcomes
         run: python3 scripts/export_selectors.py --source "$SOURCE" --check
+      - name: Verify the complete active unified stack
+        run: python3 scripts/stack.py verify --source "$SOURCE"

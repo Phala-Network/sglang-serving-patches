@@ -79,12 +79,75 @@ Its index tree must equal the preflight result. It remains uncommitted so source
 review and tests precede a new engine identity. The prior source is not modified.
 If review is needed, no output checkout is created.
 
-After resolving or removing patches with evidence, commit the combined source,
-regenerate the ordered exports and update the active version binding together.
-Automating that next-version export refresh is still pending; the current tool
-does not pretend to rewrite the protected version's historical records.
-With no newer official release selected, same-base rehearsal proves the mechanics,
-not a successful cross-version migration.
+This trial checkout is for inspection/tests. Its uncommitted edits are not
+implicitly consumed by the exporter.
+
+## Re-export an Upgrade
+
+```sh
+python scripts/stack.py upgrade-export --source /path/to/sglang \
+  --upstream OFFICIAL_COMMIT --branch codex/unified-next \
+  --output /new/next-stack
+python scripts/stack.py verify --source /path/to/sglang \
+  --stack-root /new/next-stack
+python scripts/stack.py prepare --source /path/to/sglang \
+  --stack-root /new/next-stack --output /new/next-source
+python scripts/stack.py test --source /new/next-source \
+  --stack-root /new/next-stack --suite cpu --suite model-fixtures \
+  --output /new/next-results
+```
+
+The exporter retains the ordered logical patch IDs, applies each patch in a
+temporary Git index, creates a linear source commit per retained patch, exports
+its real diff, and verifies the complete result before creating the new local
+branch. HEAD, the caller's index and working files stay unchanged. Existing
+output paths and branch names are rejected; a concurrent branch creation cannot
+be overwritten. A failure while copying final artifacts or creating the ref may
+leave an output directory for inspection, not an accepted release.
+
+The result is one `stack.json`, its generated patches, the shared dependency
+lock/patches, and the shared regression selection. `upgrade-result.json` records
+the executed source verification and its limits. The new format is consumable
+by the same commands through `--stack-root`, including a subsequent upgrade.
+Patch bytes and resulting trees are reproducible; regenerated commit IDs also
+depend on the local Git author/committer identity and timestamps.
+
+On conflict or an already-present patch, export stops without silently dropping
+it. Copy the `decision_context` object from `upgrade-check` into a decisions
+file and add entries only for reviewed exceptions:
+
+```json
+{
+  "id": "EXISTING_LOGICAL_PATCH_ID",
+  "action": "replace",
+  "source_commit": "REVIEWED_REPLACEMENT_COMMIT",
+  "reason": "Adapt this fix to the new upstream interface.",
+  "evidence": "Review record identifying the changed contract and its tests."
+}
+```
+
+Pass that file with `--decisions /path/to/decisions.json`. A replacement must be
+a single-parent source commit whose parent tree equals the accumulated new
+upstream plus earlier retained patches. Construct it in an isolated review
+checkout at that position; a whole combined candidate or unrelated donor diff
+cannot substitute for that prefix. For a reviewed upstream-covered/superseded
+patch use `"action": "drop"` with a reason and evidence instead. Reverse
+application alone is not proof of semantic equivalence. Decision context binds
+the old patch stack and target commit; stale, duplicate and unknown decisions
+are rejected. Tool success records the decision but does not prove its rationale.
+
+After qualification, promote the generated bundle into the existing patch
+maintenance checkout and commit it with the new source release identity. A
+root `stack.json` becomes the single default active list; do not hand-maintain
+it alongside a new per-model selector set. Existing frozen manifests, selectors
+and old patch bytes remain historical evidence, not another active release line.
+The existing CI verifies both frozen evidence and the actual active stack.
+Do not delete prior version history or publish an unqualified source candidate.
+
+With no newer official release selected, same-base rehearsal proves these
+mechanics, not a successful cross-version migration. Export does not fetch or
+certify an official release, change dependency versions, build native code,
+publish an image, enable Governor or deploy.
 
 ## One Regression Entry Point
 

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,27 +55,59 @@ def resolve(source, ref):
 
 
 def read_stack(root=ROOT):
-    document = read_json(root / "selectors.json")
-    manifest = read_json(root / "manifest.json")
-    name = document.get("active_selector")
-    if not name or name not in document["selectors"]:
-        raise StackError("One active_selector must be explicitly selected")
-    active = document["selectors"][name]
-    if active.get("replay_mode") != "exact":
-        raise StackError("The active stack must have exact replay semantics")
-    if (
-        document["upstream"] != manifest["upstream"]["commit"]
-        or document["complete_engine_reference"]["commit"]
-        != manifest["engine"]["commit"]
-        or document["complete_engine_reference"]["tree"] != manifest["engine"]["tree"]
-        or active["source_parent"] != manifest["engine"]["commit"]
-    ):
-        raise StackError("Active successor does not bind the frozen base")
-    for value in (document["upstream"], active["fork_commit"], active["fork_tree"]):
+    if (root / "stack.json").exists():
+        document = read_json(root / "stack.json")
+        if document.get("schema") != "phala.sglang.unified-stack.v1":
+            raise StackError("Unsupported unified stack schema")
+        name = "unified"
+        upstream = document["upstream"]["commit"]
+        engine = document["engine"]
+        engine_commit, engine_tree = engine["commit"], engine["tree"]
+        patches = document["patches"]
+        frozen_count, frozen_tree = 0, None
+        previous = upstream
+        for entry in patches:
+            if entry.get("source_parent") != previous:
+                raise StackError("Unified source commits must form one ordered chain")
+            previous = object_id(entry["source_commit"])
+        if previous != engine_commit:
+            raise StackError("Unified source chain does not end at the engine")
+        layout = "unified"
+    else:
+        document = read_json(root / "selectors.json")
+        manifest = read_json(root / "manifest.json")
+        name = document.get("active_selector")
+        if not name or name not in document["selectors"]:
+            raise StackError("One active_selector must be explicitly selected")
+        active = document["selectors"][name]
+        if active.get("replay_mode") != "exact":
+            raise StackError("The active stack must have exact replay semantics")
+        if (
+            document["upstream"] != manifest["upstream"]["commit"]
+            or document["complete_engine_reference"]["commit"]
+            != manifest["engine"]["commit"]
+            or document["complete_engine_reference"]["tree"]
+            != manifest["engine"]["tree"]
+            or active["source_parent"] != manifest["engine"]["commit"]
+        ):
+            raise StackError("Active successor does not bind the frozen base")
+        upstream = document["upstream"]
+        engine_commit, engine_tree = active["fork_commit"], active["fork_tree"]
+        patches = manifest["patches"] + active["patches"]
+        frozen_count, frozen_tree = len(manifest["patches"]), manifest["engine"]["tree"]
+        layout = "legacy"
+    for value in (upstream, engine_commit, engine_tree):
         object_id(value)
-    patches = manifest["patches"] + active["patches"]
-    seen = set()
+    seen, identifiers = set(), set()
     for entry in patches:
+        identifier = entry["id"]
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or identifier in identifiers
+        ):
+            raise StackError("Patch IDs must be nonempty and unique")
+        identifiers.add(identifier)
         path = local_path(root, entry["path"])
         if path in seen:
             raise StackError("The active stack repeats a patch path")
@@ -101,14 +134,15 @@ def read_stack(root=ROOT):
                 "native_source_replay_and_build": "not-run-by-this-command",
             }
     return {
+        "layout": layout,
         "active_selector": name,
-        "upstream": document["upstream"],
-        "engine_commit": active["fork_commit"],
-        "engine_tree": active["fork_tree"],
+        "upstream": upstream,
+        "engine_commit": engine_commit,
+        "engine_tree": engine_tree,
         "patches": patches,
         "dependencies": dependencies,
-        "frozen_count": len(manifest["patches"]),
-        "frozen_tree": manifest["engine"]["tree"],
+        "frozen_count": frozen_count,
+        "frozen_tree": frozen_tree,
     }
 
 
@@ -151,6 +185,30 @@ def verify(source, root=ROOT):
                     raise StackError("Source-to-patch export differs: " + entry["path"])
                 if entry.get("source_parent") and entry["source_parent"] != parent:
                     raise StackError("Source parent differs: " + entry["path"])
+                if stack["layout"] == "unified":
+                    parents = git(
+                        source,
+                        "rev-list",
+                        "--parents",
+                        "-n",
+                        "1",
+                        entry["source_commit"],
+                    ).stdout.split()
+                    if len(parents) != 2:
+                        raise StackError(
+                            "Unified patches must be single-parent commits"
+                        )
+                if entry.get("component_origin"):
+                    component_origins.append(
+                        {
+                            "patch": entry["path"],
+                            "origin": entry["component_origin"],
+                            "origin_repository_readback": "not-run-by-this-command",
+                            "rebased_patch_is_not_original_component_bytes": (
+                                entry["sha256"] != entry["component_origin"]["sha256"]
+                            ),
+                        }
+                    )
             git(
                 source,
                 "apply",
@@ -236,7 +294,189 @@ def upgrade_check(source, upstream, root=ROOT):
         "unchecked_patch_count": len(stack["patches"]) - len(records),
         "changed_refs_or_worktree": False,
         "qualification": "No patch removal, build, regression or deployment was performed.",
+        "decision_context": {
+            "schema": "phala.sglang.upgrade-decisions.v1",
+            "source_stack_sha256": sha256(canonical(stack)),
+            "target_upstream": target,
+            "patches": [],
+        },
     }
+
+
+def upgrade_decisions(path, stack, target):
+    if path is None:
+        return {}
+    document = read_json(path)
+    if (
+        document.get("schema") != "phala.sglang.upgrade-decisions.v1"
+        or document.get("source_stack_sha256") != sha256(canonical(stack))
+        or document.get("target_upstream") != target
+    ):
+        raise StackError("Stale or invalid upgrade decision context")
+    known = {entry["id"] for entry in stack["patches"]}
+    decisions = {}
+    for row in document["patches"]:
+        identifier = row["id"]
+        if identifier not in known or identifier in decisions:
+            raise StackError("Unknown or duplicate upgrade decision ID")
+        if row.get("action") not in {"replace", "drop"}:
+            raise StackError("Upgrade decisions must replace or drop a patch")
+        for field in ("reason", "evidence"):
+            if not isinstance(row.get(field), str) or not row[field].strip():
+                raise StackError("Upgrade decisions require a reason and evidence")
+        if row["action"] == "replace":
+            object_id(row["source_commit"])
+        decisions[identifier] = row
+    return decisions
+
+
+def export_upgrade(source, upstream, output, branch, decisions=None, root=ROOT):
+    source, root = source.resolve(), root.resolve()
+    if output.exists() or output.is_symlink():
+        raise StackError("Upgrade export output must not already exist")
+    output = output.resolve()
+    if output.is_relative_to(source):
+        raise StackError("Upgrade export output must be outside the source checkout")
+    ref = "refs/heads/" + branch
+    git(source, "check-ref-format", ref)
+    if not git(source, "show-ref", "--verify", "--quiet", ref, check=False).returncode:
+        raise StackError("Upgrade engine branch already exists")
+    verify(source, root)
+    stack = read_stack(root)
+    target = resolve(source, upstream)
+    choices = upgrade_decisions(decisions, stack, target)
+    with tempfile.TemporaryDirectory(prefix="phala-reexport-") as temporary:
+        staging = Path(temporary) / "bundle"
+        staging.mkdir()
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+        git(source, "read-tree", target, env=env)
+        previous, exported = target, []
+        for entry in stack["patches"]:
+            choice = choices.get(entry["id"])
+            if choice and choice["action"] == "drop":
+                continue
+            current_tree = git(source, "write-tree", env=env).stdout.decode().strip()
+            if choice:
+                parents = git(
+                    source, "rev-list", "--parents", "-n", "1", choice["source_commit"]
+                ).stdout.split()
+                if len(parents) != 2:
+                    raise StackError("Replacement must be a single-parent commit")
+                parent, data = export_patch(source, choice["source_commit"])
+                parent_tree = (
+                    git(source, "rev-parse", parent + "^{tree}").stdout.decode().strip()
+                )
+                if parent_tree != current_tree:
+                    raise StackError(
+                        "Replacement parent tree differs from the ordered prefix: "
+                        + entry["id"]
+                    )
+            else:
+                data = local_path(root, entry["path"]).read_bytes()
+                if sha256(data) != entry["sha256"]:
+                    raise StackError("Patch changed during export: " + entry["path"])
+            candidate = Path(temporary) / "candidate.patch"
+            candidate.write_bytes(data)
+            checked = git(
+                source,
+                "apply",
+                "--cached",
+                "--check",
+                str(candidate),
+                env=env,
+                check=False,
+            )
+            if checked.returncode:
+                raise StackError(
+                    "Patch conflicts or is already present; reviewed replace/drop "
+                    "decision required: " + entry["id"]
+                )
+            git(source, "apply", "--cached", str(candidate), env=env)
+            tree = git(source, "write-tree", env=env).stdout.decode().strip()
+            message = (
+                f"Reapply unified patch {entry['id']}\n\n"
+                f"Previous patch SHA256: {entry['sha256']}\n"
+                f"Target upstream: {target}"
+            )
+            commit = (
+                git(source, "commit-tree", tree, "-p", previous, "-m", message)
+                .stdout.decode()
+                .strip()
+            )
+            parent, generated = export_patch(source, commit)
+            patch_path = f"patches/{target[:12]}/{len(exported) + 1:04d}-{sha256(generated)[:12]}.patch"
+            destination = local_path(staging, patch_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(generated)
+            row = {
+                "id": entry["id"],
+                "path": patch_path,
+                "sha256": sha256(generated),
+                "source_commit": commit,
+                "source_parent": parent,
+                "result_tree": tree,
+                "origin": entry.get("origin")
+                or {
+                    key: entry[key]
+                    for key in ("id", "path", "sha256", "source_commit")
+                    if key in entry
+                },
+            }
+            component = entry.get("component_source") or entry.get("component_origin")
+            if component:
+                row["component_origin"] = component
+            exported.append(row)
+            previous = commit
+        tree = git(source, "write-tree", env=env).stdout.decode().strip()
+        document = {
+            "schema": "phala.sglang.unified-stack.v1",
+            "upstream": {"commit": target},
+            "engine": {"commit": previous, "tree": tree, "branch": branch},
+            "previous_stack": {
+                "upstream": stack["upstream"],
+                "engine_commit": stack["engine_commit"],
+                "sha256": sha256(canonical(stack)),
+            },
+            "reviewed_decisions": list(choices.values()),
+            "patches": exported,
+        }
+        (staging / "stack.json").write_bytes(canonical(document))
+        for filename in ("regressions.json", "external-dependencies.json"):
+            origin = root / filename
+            if origin.exists():
+                (staging / filename).write_bytes(origin.read_bytes())
+        dependency_file = staging / "external-dependencies.json"
+        if dependency_file.exists():
+            for name, spec in read_json(dependency_file).items():
+                if name == "schema":
+                    continue
+                data = local_path(root, spec["patch"]).read_bytes()
+                if sha256(data) != spec["patch_sha256"]:
+                    raise StackError("Dependency changed during export: " + name)
+                destination = local_path(staging, spec["patch"])
+                if destination.exists():
+                    raise StackError("Dependency path collides with generated files")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+        verified = verify(source, staging)
+        if sha256(canonical(read_stack(root))) != document["previous_stack"]["sha256"]:
+            raise StackError("Source patch stack changed during export")
+        # Only verified artifacts leave the temporary directory. update-ref's
+        # zero old ID prevents overwriting a branch created concurrently.
+        shutil.copytree(staging, output)
+        git(source, "update-ref", ref, previous, "0" * 40)
+    result = {
+        **verified,
+        "status": "upgrade-exported-source-verified",
+        "exported_stack": str(output),
+        "engine_branch": branch,
+        "upstream_changed": target != stack["upstream"],
+        "reviewed_decision_count": len(choices),
+        "tests_run": False,
+        "qualification": "Local source export only; official release identity, decisions, regressions, dependencies, image and GPU acceptance require their own evidence.",
+    }
+    (output / "upgrade-result.json").write_bytes(canonical(result))
+    return result
 
 
 def prepare(source, output, root=ROOT, upstream=None):
@@ -459,13 +699,18 @@ def run_tests(source, output, suites, timeout, root=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("inspect")
-    for name in ("verify", "upgrade-check", "prepare", "test"):
+    inspect_command = commands.add_parser("inspect")
+    inspect_command.add_argument("--stack-root", type=Path, default=ROOT)
+    for name in ("verify", "upgrade-check", "upgrade-export", "prepare", "test"):
         command = commands.add_parser(name)
+        command.add_argument("--stack-root", type=Path, default=ROOT)
         command.add_argument("--source", type=Path, required=True)
         command.add_argument("--output", type=Path, required=name != "verify")
-        if name in ("upgrade-check", "prepare"):
-            command.add_argument("--upstream", required=name == "upgrade-check")
+        if name in ("upgrade-check", "upgrade-export", "prepare"):
+            command.add_argument("--upstream", required=name != "prepare")
+        if name == "upgrade-export":
+            command.add_argument("--branch", required=True)
+            command.add_argument("--decisions", type=Path)
         if name == "test":
             command.add_argument("--suite", action="append")
             command.add_argument("--timeout", type=int, default=600)
@@ -478,18 +723,33 @@ def main():
         ):
             raise StackError("Report output already exists")
         if args.command == "inspect":
-            stack = read_stack()
+            stack = read_stack(args.stack_root)
             result = {key: value for key, value in stack.items() if key != "patches"}
             result["patches"] = [row["path"] for row in stack["patches"]]
         elif args.command == "verify":
-            result = verify(args.source)
+            result = verify(args.source, args.stack_root)
         elif args.command == "upgrade-check":
-            result = upgrade_check(args.source, args.upstream)
+            result = upgrade_check(args.source, args.upstream, args.stack_root)
+        elif args.command == "upgrade-export":
+            result = export_upgrade(
+                args.source,
+                args.upstream,
+                args.output,
+                args.branch,
+                decisions=args.decisions,
+                root=args.stack_root,
+            )
         elif args.command == "prepare":
-            result = prepare(args.source, args.output, upstream=args.upstream)
+            result = prepare(
+                args.source, args.output, args.stack_root, upstream=args.upstream
+            )
         else:
             result = run_tests(
-                args.source, args.output, args.suite or ["cpu"], args.timeout
+                args.source,
+                args.output,
+                args.suite or ["cpu"],
+                args.timeout,
+                args.stack_root,
             )
         if args.command in ("verify", "upgrade-check") and args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
