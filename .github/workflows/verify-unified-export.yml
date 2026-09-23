@@ -10,8 +10,9 @@ on:
       - 'series'
       - 'patches/**'
       - 'integrations/**'
-      - 'scripts/export*.py'
-      - 'tests/test_export_selectors.py'
+      - 'scripts/*.py'
+      - 'tests/*.py'
+      - 'regressions.json'
       - '.github/workflows/verify-unified-export.yml'
   push:
     branches: [main]
@@ -23,8 +24,9 @@ on:
       - 'series'
       - 'patches/**'
       - 'integrations/**'
-      - 'scripts/export*.py'
-      - 'tests/test_export_selectors.py'
+      - 'scripts/*.py'
+      - 'tests/*.py'
+      - 'regressions.json'
       - '.github/workflows/verify-unified-export.yml'
   workflow_dispatch:
 
@@ -47,8 +49,8 @@ jobs:
         run: |
           echo "SOURCE=$RUNNER_TEMP/sglang-export-source" >> "$GITHUB_ENV"
           echo "GOVERNOR=$RUNNER_TEMP/governor-export-source" >> "$GITHUB_ENV"
-      - name: Test existing selector replay fixtures
-        run: python3 -m unittest discover -s tests -p test_export_selectors.py -v
+      - name: Test selector and unified maintenance fixtures
+        run: python3 -m unittest discover -s tests -v
       - name: Fetch and verify immutable source objects
         shell: bash
         run: |

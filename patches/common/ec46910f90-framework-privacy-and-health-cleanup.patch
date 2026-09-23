@@ -1,0 +1,816 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 2809693bd007f9143a5032f04af81be13e9c8812..63ef595be72b9a14d178a351168f75e808d4a1dc 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -52,6 +52,8 @@ jobs:
+           python test/manual/phala/test_dsv41_chat_migration_cpu.py
+           python test/manual/phala/test_dsv41_shared_protocol_cpu.py
+           python test/manual/phala/test_initial_stream_error_cpu.py
++          python test/manual/phala/test_framework_log_privacy_cpu.py
++          python test/manual/phala/test_health_task_cleanup_cpu.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+           python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+diff --git a/python/sglang/srt/disaggregation/encoder/http_server.py b/python/sglang/srt/disaggregation/encoder/http_server.py
+index f38f881b614c10a3689820a8dfd669a393f0a35c..e617363f22def5b70aee203d6d523b4d0fd61904 100644
+--- a/python/sglang/srt/disaggregation/encoder/http_server.py
++++ b/python/sglang/srt/disaggregation/encoder/http_server.py
+@@ -232,6 +232,9 @@ def launch_server(server_args: ServerArgs):
+         _register_encoder_url_with_bootstrap()
+         atexit.register(_unregister_encoder_url_from_bootstrap)
+ 
++    from sglang.srt.utils.framework_log_privacy import configure_framework_log_privacy
++
++    configure_framework_log_privacy()
+     uvicorn.run(app, host=get_serving().host, port=get_serving().port)
+ 
+ 
+diff --git a/python/sglang/srt/disaggregation/encoder/receiver.py b/python/sglang/srt/disaggregation/encoder/receiver.py
+index 7404c61149fba487aa308ed0a3c77b578795a0c0..0115a41612b38ed1b2cd0ba9fcb9f08bfcf7faaf 100644
+--- a/python/sglang/srt/disaggregation/encoder/receiver.py
++++ b/python/sglang/srt/disaggregation/encoder/receiver.py
+@@ -331,6 +331,11 @@ class EncoderBootstrapServer:
+     # ------------------------------------------------------------------ #
+     def _run_server(self):
+ 
++        from sglang.srt.utils.framework_log_privacy import (
++            configure_framework_log_privacy,
++        )
++
++        configure_framework_log_privacy()
+         config = uvicorn.Config(
+             self.app,
+             host=self.host,
+diff --git a/python/sglang/srt/distributed/gated_launch.py b/python/sglang/srt/distributed/gated_launch.py
+index da36301ae08deeaf7c57564887e20ac2d430e090..3787382cc58aa73f01c98d78aa9ad24071779c73 100644
+--- a/python/sglang/srt/distributed/gated_launch.py
++++ b/python/sglang/srt/distributed/gated_launch.py
+@@ -72,6 +72,11 @@ class _GatedLaunchServer:
+         self._thread: Optional[threading.Thread] = None
+ 
+     def serve(self, *, host: str, port: int) -> None:
++        from sglang.srt.utils.framework_log_privacy import (
++            configure_framework_log_privacy,
++        )
++
++        configure_framework_log_privacy()
+         config = uvicorn.Config(
+             _build_app(self), host=host, port=port, log_level="warning"
+         )
+diff --git a/python/sglang/srt/entrypoints/engine_info_bootstrap_server.py b/python/sglang/srt/entrypoints/engine_info_bootstrap_server.py
+index 77de7fc7d0307fabd5708dc6a00ad807a2e7d6be..f876ce36069b5a61a2b19ef8416208a9ac8e8d0c 100644
+--- a/python/sglang/srt/entrypoints/engine_info_bootstrap_server.py
++++ b/python/sglang/srt/entrypoints/engine_info_bootstrap_server.py
+@@ -87,6 +87,11 @@ class EngineInfoBootstrapServer:
+ 
+             return {"rank": rank, "remote_instance_transfer_engine_info": list(info)}
+ 
++        from sglang.srt.utils.framework_log_privacy import (
++            configure_framework_log_privacy,
++        )
++
++        configure_framework_log_privacy()
+         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+         self._server = uvicorn.Server(config)
+         self._thread = threading.Thread(
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 32ed237bce15310a71a6da59746e02d6c6219d1e..39b9d0d67f7a339a649ea885878893851641c5aa 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -26,7 +26,7 @@ import tempfile
+ import threading
+ import time
+ import uuid
+-from contextlib import asynccontextmanager
++from contextlib import aclosing, asynccontextmanager
+ from http import HTTPStatus
+ from typing import (
+     Annotated,
+@@ -718,34 +718,58 @@ async def health_generate(request: Request) -> Response:
+         )
+ 
+     async def gen():
+-        async for _ in _global_state.tokenizer_manager.generate_request(gri, request):
+-            break
++        try:
++            async with aclosing(
++                _global_state.tokenizer_manager.generate_request(gri, request)
++            ) as responses:
++                async for _ in responses:
++                    break
++        except ValueError as exc:
++            # Only this probe's known disconnects are benign.
++            expected = {
++                "Request is disconnected from the client side "
++                f"(type {kind}). Abort request obj.rid={rid!r}"
++                for kind in (1, 3)
++            }
++            if str(exc) not in expected:
++                raise
++            logger.debug("Health probe client disconnected.")
+ 
+     task = asyncio.create_task(gen())
+ 
+     # As long as we receive any response from the detokenizer/scheduler, we consider the server is healthy.
+-    tic = time.time()
+-    while time.time() < tic + HEALTH_CHECK_TIMEOUT:
+-        await asyncio.sleep(1)
+-        if _global_state.tokenizer_manager.last_receive_tstamp > tic:
+-            task.cancel()
+-            _global_state.tokenizer_manager.rid_to_state.pop(rid, None)
+-            _global_state.tokenizer_manager.server_status = ServerStatus.Up
+-            return Response(status_code=200)
++    try:
++        tic = time.time()
++        while time.time() < tic + HEALTH_CHECK_TIMEOUT:
++            await asyncio.sleep(1)
++            if task.done() and not task.cancelled():
++                task.result()
++            if _global_state.tokenizer_manager.last_receive_tstamp > tic:
++                _global_state.tokenizer_manager.server_status = ServerStatus.Up
++                return Response(status_code=200)
+ 
+-    task.cancel()
+-    tic_time = time.strftime("%H:%M:%S", time.localtime(tic))
+-    last_receive_time = time.strftime(
+-        "%H:%M:%S", time.localtime(_global_state.tokenizer_manager.last_receive_tstamp)
+-    )
+-    logger.error(
+-        f"Health check failed. Server couldn't get a response from detokenizer for last "
+-        f"{HEALTH_CHECK_TIMEOUT} seconds. tic start time: {tic_time}. "
+-        f"last_heartbeat time: {last_receive_time}"
+-    )
+-    _global_state.tokenizer_manager.rid_to_state.pop(rid, None)
+-    _global_state.tokenizer_manager.server_status = ServerStatus.UnHealthy
+-    return Response(status_code=503)
++        tic_time = time.strftime("%H:%M:%S", time.localtime(tic))
++        last_receive_time = time.strftime(
++            "%H:%M:%S",
++            time.localtime(_global_state.tokenizer_manager.last_receive_tstamp),
++        )
++        logger.error(
++            f"Health check failed. Server couldn't get a response from detokenizer for last "
++            f"{HEALTH_CHECK_TIMEOUT} seconds. tic start time: {tic_time}. "
++            f"last_heartbeat time: {last_receive_time}"
++        )
++        _global_state.tokenizer_manager.server_status = ServerStatus.UnHealthy
++        return Response(status_code=503)
++    finally:
++        task.cancel()
++        try:
++            await task
++        except asyncio.CancelledError:
++            pass
++        finally:
++            # Abort while ownership state exists; abort_request deduplicates dispatch.
++            _global_state.tokenizer_manager.abort_request(rid)
++            _global_state.tokenizer_manager.rid_to_state.pop(rid, None)
+ 
+ 
+ @app.get("/get_model_info")
+@@ -2514,6 +2538,8 @@ def _run_granian_server(
+     from granian.http import HTTP2Settings
+     from granian.server.embed import Server as GranianEmbeddedServer
+ 
++    from sglang.srt.utils.framework_log_privacy import configure_granian_log_privacy
++
+     Server = GranianEmbeddedServer if tokenizer_worker_num == 1 else Granian
+     target = (
+         app if tokenizer_worker_num == 1 else "sglang.srt.entrypoints.http_server:app"
+@@ -2529,6 +2555,7 @@ def _run_granian_server(
+             max_concurrent_streams=http2_max_concurrent_streams,
+         ),
+         log_level=log_level,
++        log_dictconfig=configure_granian_log_privacy(),
+         ssl_cert=ssl_certfile,
+         ssl_key=ssl_keyfile,
+         ssl_key_password=ssl_keyfile_password,
+diff --git a/python/sglang/srt/mem_cache/storage/hf3fs/mini_3fs_metadata_server.py b/python/sglang/srt/mem_cache/storage/hf3fs/mini_3fs_metadata_server.py
+index 9993d3cc5a98fdc2a7bd751ea61874642a3d36f0..a31f6d5c9b78a7086aaeea7694661fcb7de6ed05 100644
+--- a/python/sglang/srt/mem_cache/storage/hf3fs/mini_3fs_metadata_server.py
++++ b/python/sglang/srt/mem_cache/storage/hf3fs/mini_3fs_metadata_server.py
+@@ -330,6 +330,11 @@ class Hf3fsMetadataServer:
+         else:
+             logging.info("Persistence is DISABLED.")
+ 
++        from sglang.srt.utils.framework_log_privacy import (
++            configure_framework_log_privacy,
++        )
++
++        configure_framework_log_privacy()
+         uvicorn.run(self.app, host=host, port=port)
+ 
+ 
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index 0a00234d7c7ac61b956c08d320ad6b34e673b969..fb8169949cb483533e31e96576d48c5f8d4fce8d 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -3297,6 +3297,8 @@ class UvicornAccessLogFilter(logging.Filter):
+ def set_uvicorn_logging_configs(server_args=None):
+     from uvicorn.config import LOGGING_CONFIG
+ 
++    from sglang.srt.utils.framework_log_privacy import configure_framework_log_privacy
++
+     LOGGING_CONFIG["formatters"]["default"]["fmt"] = (
+         "[%(asctime)s] %(levelprefix)s %(message)s"
+     )
+@@ -3307,6 +3309,7 @@ def set_uvicorn_logging_configs(server_args=None):
+     LOGGING_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+ 
+     _configure_uvicorn_access_log_filter(LOGGING_CONFIG, server_args)
++    configure_framework_log_privacy(LOGGING_CONFIG)
+ 
+ 
+ def _configure_uvicorn_access_log_filter(
+@@ -3399,6 +3402,9 @@ def launch_dummy_health_check_server(host, port, enable_metrics):
+         add_prometheus_middleware(app)
+         enable_func_timer()
+ 
++    from sglang.srt.utils.framework_log_privacy import configure_framework_log_privacy
++
++    configure_framework_log_privacy()
+     config = uvicorn.Config(
+         app,
+         host=host,
+diff --git a/python/sglang/srt/utils/framework_log_privacy.py b/python/sglang/srt/utils/framework_log_privacy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb4e086adde408598b99017dd8251752b102a666
+--- /dev/null
++++ b/python/sglang/srt/utils/framework_log_privacy.py
+@@ -0,0 +1,110 @@
++"""Privacy-safe framework diagnostics without changing request processing."""
++
++import logging
++from copy import deepcopy
++
++_METHODS = frozenset(
++    {"GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
++)
++_EXCEPTIONS = frozenset(
++    {
++        "RuntimeError",
++        "ValueError",
++        "TypeError",
++        "KeyError",
++        "IndexError",
++        "AssertionError",
++        "AttributeError",
++        "TimeoutError",
++        "ConnectionError",
++        "OSError",
++        "CancelledError",
++        "HTTPException",
++        "RequestValidationError",
++    }
++)
++_STATIC_EVENTS = frozenset(
++    {
++        "Application startup complete.",
++        "Application shutdown complete.",
++        "Waiting for application startup.",
++        "Waiting for application shutdown.",
++        "Shutting down",
++        "Invalid HTTP request received.",
++        "ASGI callable returned without starting response.",
++        "ASGI callable returned without completing response.",
++        "ASGI callable returned without sending handshake.",
++        "Unsupported upgrade request.",
++    }
++)
++
++
++class FrameworkPrivacyFilter(logging.Filter):
++    def filter(self, record):
++        if not record.name.startswith(("uvicorn", "granian", "_granian")):
++            return True
++        # Uvicorn's colored formatter can substitute this alternate template.
++        record.__dict__.pop("color_message", None)
++        record.__dict__.pop("message", None)
++        if record.name == "uvicorn.access":
++            values = record.args if isinstance(record.args, tuple) else ()
++            method = (
++                values[1]
++                if len(values) == 5 and type(values[1]) is str and values[1] in _METHODS
++                else "OTHER"
++            )
++            status = values[4] if len(values) == 5 else 0
++            status = status if type(status) is int and 100 <= status <= 599 else 0
++            # AccessFormatter requires its native five-item tuple.
++            record.msg = '%s - "%s %s HTTP/%s" %d'
++            record.args = ("redacted", method, "<request>", "1.1", status)
++        elif record.name == "granian.access":
++            values = record.args if isinstance(record.args, dict) else {}
++            method = values.get("method")
++            method = method if type(method) is str and method in _METHODS else "OTHER"
++            status = values.get("status", 0)
++            status = status if type(status) is int and 100 <= status <= 599 else 0
++            record.msg = "HTTP request completed (method=%s, status=%d)"
++            record.args = (method, status)
++        elif record.exc_info or record.exc_text or record.stack_info:
++            name = (
++                getattr(record.exc_info[0], "__name__", "") if record.exc_info else ""
++            )
++            name = name if name in _EXCEPTIONS else "Exception"
++            record.msg = "HTTP application exception (type=%s)"
++            record.args = (name,)
++        elif record.args:
++            record.msg = "HTTP server event (details redacted)"
++            record.args = ()
++        elif not isinstance(record.msg, str):
++            record.msg = "HTTP server event (details redacted)"
++        elif record.msg not in _STATIC_EVENTS:
++            record.msg = "HTTP server event (details redacted)"
++        record.exc_info = None
++        record.exc_text = None
++        record.stack_info = None
++        return True
++
++
++def configure_framework_log_privacy(config=None):
++    if config is None:
++        from uvicorn.config import LOGGING_CONFIG
++
++        config = LOGGING_CONFIG
++    name = "sglang_framework_log_privacy"
++    config.setdefault("filters", {})[name] = {
++        "()": "sglang.srt.utils.framework_log_privacy.FrameworkPrivacyFilter",
++    }
++    for handler in config.get("handlers", {}).values():
++        filters = [
++            existing for existing in handler.get("filters", ()) if existing != name
++        ]
++        filters.append(name)
++        handler["filters"] = filters
++    return config
++
++
++def configure_granian_log_privacy():
++    from granian.log import LOGGING_CONFIG
++
++    return configure_framework_log_privacy(deepcopy(LOGGING_CONFIG))
+diff --git a/test/manual/phala/test_framework_log_privacy_cpu.py b/test/manual/phala/test_framework_log_privacy_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9c4ff74d449daf77d7005480e9f34796d7cbc51
+--- /dev/null
++++ b/test/manual/phala/test_framework_log_privacy_cpu.py
+@@ -0,0 +1,278 @@
++"""Source/stdlib checks; final-image HTTP and native framework gates are separate."""
++
++import ast
++import copy
++import importlib.util
++import io
++import logging
++import sys
++import types
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++SPEC = importlib.util.spec_from_file_location(
++    "framework_log_privacy_source", SRT / "utils/framework_log_privacy.py"
++)
++PRIVACY = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(PRIVACY)
++MARKER = "SYNTHETIC_PRIVATE_FRAMEWORK_MARKER"
++FILTER_NAME = "sglang_framework_log_privacy"
++
++
++def source_tree(relative):
++    return ast.parse((SRT / relative).read_text(encoding="utf-8-sig"))
++
++
++class FrameworkPrivacyTests(unittest.TestCase):
++    def render(self, name, message, args=(), exception=None):
++        record = logging.LogRecord(
++            name, logging.WARNING, __file__, 1, message, args, exception
++        )
++        record.message = MARKER
++        record.color_message = MARKER
++        record.stack_info = MARKER if exception else None
++        record.exc_text = MARKER if exception else None
++        stream = io.StringIO()
++        handler = logging.StreamHandler(stream)
++        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
++        handler.addFilter(PRIVACY.FrameworkPrivacyFilter())
++        handler.handle(record)
++        handler.close()
++        self.assertEqual(record.levelno, logging.WARNING)
++        self.assertNotIn("color_message", record.__dict__)
++        self.assertNotIn(MARKER, stream.getvalue())
++        return record, stream.getvalue()
++
++    def test_uvicorn_access_keeps_formatter_tuple_and_status(self):
++        record, output = self.render(
++            "uvicorn.access",
++            '%s - "%s %s HTTP/%s" %d',
++            (MARKER, "POST", "/" + MARKER, "1.1", 503),
++        )
++        self.assertEqual(len(record.args), 5)
++        self.assertIn("POST", output)
++        self.assertIn("503", output)
++
++    def test_bad_access_method_and_status_are_not_interpolated(self):
++        record, _ = self.render(
++            "uvicorn.access",
++            MARKER,
++            (MARKER, MARKER, MARKER, MARKER, MARKER),
++        )
++        self.assertEqual(record.args[1], "OTHER")
++        self.assertEqual(record.args[-1], 0)
++
++    def test_granian_access_keeps_method_and_status(self):
++        _, output = self.render(
++            "granian.access",
++            "%(path)s",
++            {"path": MARKER, "method": "GET", "status": 200},
++        )
++        self.assertIn("GET", output)
++        self.assertIn("200", output)
++
++    def test_exception_and_context_are_removed(self):
++        try:
++            raise RuntimeError(MARKER)
++        except RuntimeError:
++            record, output = self.render(
++                "uvicorn.error", MARKER, exception=sys.exc_info()
++            )
++        self.assertIn("RuntimeError", output)
++        self.assertIsNone(record.exc_info)
++        self.assertIsNone(record.exc_text)
++        self.assertIsNone(record.stack_info)
++
++    def test_customer_controlled_exception_class_name_is_not_logged(self):
++        error = type(MARKER, (RuntimeError,), {})
++        _, output = self.render("_granian", MARKER, exception=(error, error(), None))
++        self.assertIn("type=Exception", output)
++
++    def test_preformatted_and_argument_messages(self):
++        for logger in ("uvicorn.error", "uvicorn.asgi", "_granian", "granian"):
++            with self.subTest(logger=logger):
++                self.render(logger, MARKER)
++                self.render(logger, "request %s", (MARKER,))
++
++    def test_static_lifecycle_event_is_preserved(self):
++        _, output = self.render("uvicorn.error", "Application startup complete.")
++        self.assertIn("Application startup complete.", output)
++        self.assertIn("WARNING", output)
++
++    def test_other_loggers_are_not_changed(self):
++        record = logging.LogRecord(
++            "sglang.test", logging.INFO, __file__, 1, "ok %s", (1,), None
++        )
++        before = copy.copy(record.__dict__)
++        self.assertTrue(PRIVACY.FrameworkPrivacyFilter().filter(record))
++        self.assertEqual(record.__dict__, before)
++
++    def test_repeated_configure_preserves_path_filter_before_privacy(self):
++        config = {
++            "handlers": {
++                "access": {"filters": [FILTER_NAME, "path_filter", FILTER_NAME]}
++            },
++            "loggers": {"uvicorn.access": {"level": "WARNING"}},
++        }
++        for _ in range(3):
++            self.assertIs(PRIVACY.configure_framework_log_privacy(config), config)
++            self.assertEqual(
++                config["handlers"]["access"]["filters"], ["path_filter", FILTER_NAME]
++            )
++            self.assertEqual(config["loggers"]["uvicorn.access"]["level"], "WARNING")
++
++    def test_path_exclusion_runs_before_redaction_with_real_handlers(self):
++        class PathFilter(logging.Filter):
++            def filter(self, record):
++                return not record.args[2].startswith("/metrics")
++
++        stream = io.StringIO()
++        handler = logging.StreamHandler(stream)
++        handler.addFilter(PathFilter())
++        handler.addFilter(PRIVACY.FrameworkPrivacyFilter())
++        try:
++            for path in ("/metrics?" + MARKER, "/included/" + MARKER):
++                record = logging.LogRecord(
++                    "uvicorn.access",
++                    logging.INFO,
++                    __file__,
++                    1,
++                    '%s - "%s %s HTTP/%s" %d',
++                    (MARKER, "GET", path, "1.1", 200),
++                    None,
++                )
++                handler.handle(record)
++                if path.startswith("/metrics"):
++                    self.assertEqual(stream.getvalue(), "")
++            self.assertIn("GET", stream.getvalue())
++            self.assertNotIn(MARKER, stream.getvalue())
++        finally:
++            handler.close()
++
++    def test_removing_filter_restores_the_marker_leak(self):
++        record = logging.LogRecord(
++            "uvicorn.error", logging.ERROR, __file__, 1, "request %s", (MARKER,), None
++        )
++        self.assertIn(MARKER, logging.Formatter().format(record))
++        PRIVACY.FrameworkPrivacyFilter().filter(record)
++        self.assertNotIn(MARKER, logging.Formatter().format(record))
++
++    def test_granian_configuration_is_a_copy(self):
++        log_module = types.ModuleType("granian.log")
++        log_module.LOGGING_CONFIG = {"handlers": {"default": {}}}
++        with patch.dict(sys.modules, {"granian.log": log_module}):
++            config = PRIVACY.configure_granian_log_privacy()
++        self.assertIn(FILTER_NAME, config["filters"])
++        self.assertEqual(log_module.LOGGING_CONFIG, {"handlers": {"default": {}}})
++
++    def test_common_installer_is_inside_function_after_path_configuration(self):
++        tree = source_tree("utils/common.py")
++        function = next(
++            node
++            for node in tree.body
++            if isinstance(node, ast.FunctionDef)
++            and node.name == "set_uvicorn_logging_configs"
++        )
++        calls = {
++            node.func.id: node.lineno
++            for node in ast.walk(function)
++            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
++        }
++        self.assertLess(
++            calls["_configure_uvicorn_access_log_filter"],
++            calls["configure_framework_log_privacy"],
++        )
++        for node in tree.body:
++            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
++                self.assertNotEqual(
++                    getattr(node.value.func, "id", None),
++                    "configure_framework_log_privacy",
++                )
++
++    def test_standalone_uvicorn_sites_are_configured(self):
++        files = (
++            "disaggregation/encoder/http_server.py",
++            "disaggregation/encoder/receiver.py",
++            "distributed/gated_launch.py",
++            "entrypoints/engine_info_bootstrap_server.py",
++            "mem_cache/storage/hf3fs/mini_3fs_metadata_server.py",
++            "utils/common.py",
++        )
++        for relative in files:
++            with self.subTest(relative=relative):
++                tree = source_tree(relative)
++                functions = [
++                    node
++                    for node in ast.walk(tree)
++                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++                ]
++                for function in functions:
++                    calls = [
++                        node
++                        for node in ast.walk(function)
++                        if isinstance(node, ast.Call)
++                    ]
++                    starts = [
++                        node.lineno
++                        for node in calls
++                        if isinstance(node.func, ast.Attribute)
++                        and isinstance(node.func.value, ast.Name)
++                        and node.func.value.id == "uvicorn"
++                        and node.func.attr in {"run", "Config"}
++                    ]
++                    if starts:
++                        installs = [
++                            node.lineno
++                            for node in calls
++                            if isinstance(node.func, ast.Name)
++                            and node.func.id == "configure_framework_log_privacy"
++                        ]
++                        self.assertTrue(installs)
++                        self.assertLess(min(installs), min(starts))
++
++    def test_main_uvicorn_and_granian_share_the_source_integration(self):
++        tree = source_tree("entrypoints/http_server.py")
++        main = next(
++            node
++            for node in tree.body
++            if isinstance(node, ast.FunctionDef)
++            and node.name == "_setup_and_run_http_server"
++        )
++        calls = [node for node in ast.walk(main) if isinstance(node, ast.Call)]
++        installer = next(
++            node
++            for node in calls
++            if isinstance(node.func, ast.Name)
++            and node.func.id == "set_uvicorn_logging_configs"
++        )
++        starts = [
++            node
++            for node in calls
++            if isinstance(node.func, ast.Attribute)
++            and isinstance(node.func.value, ast.Name)
++            and node.func.value.id == "uvicorn"
++        ]
++        self.assertTrue(starts)
++        self.assertTrue(all(installer.lineno < node.lineno for node in starts))
++        granian = next(
++            node
++            for node in tree.body
++            if isinstance(node, ast.FunctionDef) and node.name == "_run_granian_server"
++        )
++        self.assertTrue(
++            any(
++                isinstance(node, ast.keyword)
++                and node.arg == "log_dictconfig"
++                and isinstance(node.value, ast.Call)
++                and getattr(node.value.func, "id", None)
++                == "configure_granian_log_privacy"
++                for node in ast.walk(granian)
++            )
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/manual/phala/test_health_task_cleanup_cpu.py b/test/manual/phala/test_health_task_cleanup_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..37a27a1a303a8974798c51cb8e4b36702a9d511a
+--- /dev/null
++++ b/test/manual/phala/test_health_task_cleanup_cpu.py
+@@ -0,0 +1,176 @@
++"""Execute the actual health endpoint with CPU-only dependency fixtures."""
++
++import ast
++import asyncio
++import unittest
++from contextlib import aclosing
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import Mock
++
++SOURCE = (
++    Path(__file__).resolve().parents[3] / "python/sglang/srt/entrypoints/http_server.py"
++)
++
++
++class HealthTaskTests(unittest.IsolatedAsyncioTestCase):
++    def setUp(self):
++        self.clock = 100.0
++        self.closed = False
++        self.child = None
++        self.mode = "pending"
++        self.heartbeat = True
++        self.rid = "HEALTH_CHECK_fixed"
++        self.manager = NS(
++            gracefully_exit=False,
++            server_status="Up",
++            is_generation=True,
++            last_receive_tstamp=0,
++            rid_to_state={},
++            abort_request=Mock(),
++        )
++
++        async def generate(obj, request):
++            self.child = asyncio.current_task()
++            self.manager.rid_to_state[obj.rid] = object()
++            try:
++                if self.mode.startswith("disconnect"):
++                    kind = self.mode[-1]
++                    raise ValueError(
++                        "Request is disconnected from the client side "
++                        f"(type {kind}). Abort request obj.rid={obj.rid!r}"
++                    )
++                if self.mode == "wrong_rid":
++                    raise ValueError(
++                        "Request is disconnected from the client side "
++                        "(type 1). Abort request obj.rid='CUSTOMER_1'"
++                    )
++                if self.mode == "error":
++                    raise RuntimeError("real engine failure")
++                if self.mode == "value_error":
++                    raise ValueError("invalid model input")
++                if self.mode == "response":
++                    yield {}
++                else:
++                    await asyncio.Event().wait()
++            finally:
++                self.closed = True
++
++        async def sleep(_):
++            await asyncio.sleep(0)
++            self.clock += 1
++            if self.heartbeat:
++                self.manager.last_receive_tstamp = self.clock
++            if self.mode == "cancel_handler":
++                raise asyncio.CancelledError
++
++        self.manager.generate_request = generate
++
++        def flag(value):
++            return NS(get=lambda: value)
++
++        self.ns = {
++            "asyncio": NS(
++                create_task=asyncio.create_task,
++                sleep=sleep,
++                CancelledError=asyncio.CancelledError,
++            ),
++            "aclosing": aclosing,
++            "_global_state": NS(tokenizer_manager=self.manager),
++            "ServerStatus": NS(Starting="Starting", Up="Up", UnHealthy="UnHealthy"),
++            "Response": lambda **kw: NS(**kw),
++            "Request": object,
++            "GenerateReqInput": lambda **kw: NS(**kw),
++            "EmbeddingReqInput": lambda **kw: NS(**kw),
++            "get_disagg": lambda: NS(disaggregation_mode="null"),
++            "DisaggregationMode": NS(NULL=NS(value="null")),
++            "envs": NS(
++                SGLANG_DIAG_BYPASS_HEALTH_GENERATE=flag(False),
++                SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=flag(True),
++            ),
++            "uuid": NS(uuid4=lambda: NS(hex="fixed")),
++            "HEALTH_CHECK_RID_PREFIX": "HEALTH_CHECK",
++            "HEALTH_CHECK_TIMEOUT": 2,
++            "time": NS(
++                time=lambda: self.clock,
++                localtime=lambda t: t,
++                strftime=lambda *args: "fixture",
++            ),
++            "logger": Mock(),
++        }
++        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
++        node = next(
++            n
++            for n in tree.body
++            if isinstance(n, ast.AsyncFunctionDef) and n.name == "health_generate"
++        )
++        node.decorator_list = []
++        exec(
++            compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"),
++            self.ns,
++        )
++
++    async def run_endpoint(self):
++        return await self.ns["health_generate"](NS(url=NS(path="/health")))
++
++    def assert_clean(self):
++        self.assertTrue(self.closed)
++        self.assertTrue(self.child.done())
++        self.assertNotIn(self.rid, self.manager.rid_to_state)
++        self.manager.abort_request.assert_called_once_with(self.rid)
++
++    async def test_heartbeat_cancels_and_awaits_pending_probe(self):
++        self.assertEqual((await self.run_endpoint()).status_code, 200)
++        self.assert_clean()
++
++    async def test_timeout_cleans_pending_probe(self):
++        self.heartbeat = False
++        self.assertEqual((await self.run_endpoint()).status_code, 503)
++        self.assertEqual(self.manager.server_status, "UnHealthy")
++        self.assert_clean()
++
++    async def test_handler_cancellation_is_propagated_and_cleans_child(self):
++        self.mode = "cancel_handler"
++        with self.assertRaises(asyncio.CancelledError):
++            await self.run_endpoint()
++        self.assert_clean()
++
++    async def test_completed_generator_is_closed(self):
++        self.mode = "response"
++        self.assertEqual((await self.run_endpoint()).status_code, 200)
++        self.assert_clean()
++
++    async def test_known_disconnects_are_retrieved(self):
++        for mode in ("disconnect1", "disconnect3"):
++            self.setUp()
++            self.mode = mode
++            self.assertEqual((await self.run_endpoint()).status_code, 200)
++            self.assert_clean()
++
++    async def test_disconnect_without_heartbeat_does_not_mark_healthy(self):
++        self.mode, self.heartbeat = "disconnect1", False
++        self.assertEqual((await self.run_endpoint()).status_code, 503)
++        self.assert_clean()
++
++    async def test_unrelated_exceptions_are_not_swallowed(self):
++        for mode, exception in (
++            ("error", RuntimeError),
++            ("value_error", ValueError),
++            ("wrong_rid", ValueError),
++            ("disconnect2", ValueError),
++        ):
++            self.setUp()
++            self.mode = mode
++            with self.assertRaises(exception):
++                await self.run_endpoint()
++            self.assert_clean()
++
++    async def test_starting_server_creates_no_child(self):
++        self.manager.server_status = "Starting"
++        self.assertEqual((await self.run_endpoint()).status_code, 503)
++        self.assertIsNone(self.child)
++        self.manager.abort_request.assert_not_called()
++
++
++if __name__ == "__main__":
++    unittest.main()

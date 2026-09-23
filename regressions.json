@@ -1,0 +1,74 @@
+{
+  "schema": "phala.sglang.unified-regressions.v1",
+  "qualification": "CPU/source suites only. No suite alone qualifies a runtime image, real GPU topology, model capacity or production.",
+  "suites": {
+    "cpu": [
+      {
+        "name": "framework-privacy",
+        "path": "test/manual/phala/test_framework_log_privacy_cpu.py"
+      },
+      {
+        "name": "health-lifecycle",
+        "path": "test/manual/phala/test_health_task_cleanup_cpu.py"
+      },
+      {
+        "name": "initial-sse-status",
+        "path": "test/manual/phala/test_initial_stream_error_cpu.py"
+      },
+      {
+        "name": "host-reserve",
+        "path": "test/manual/unit/mem_cache/test_hicache_host_allocation_budget.py",
+        "simulator_hooks": true
+      }
+    ],
+    "model-fixtures": [
+      {
+        "name": "muse-protocol",
+        "path": "test/manual/phala/test_muse_migration_cpu.py"
+      },
+      {
+        "name": "nemotron-token-context",
+        "path": "test/manual/phala/test_nemotron_token_context_cpu.py"
+      },
+      {
+        "name": "nemotron-termination",
+        "path": "test/manual/phala/test_nemotron_termination_cpu.py"
+      },
+      {
+        "name": "qwen-complete-call",
+        "path": "test/manual/unit/function_call/test_qwen_complete_call_cpu.py"
+      },
+      {
+        "name": "deepseek-protocol",
+        "path": "test/manual/phala/test_dsv41_shared_protocol_cpu.py"
+      }
+    ],
+    "simulator": [
+      {
+        "name": "paged-decode",
+        "path": "tools/sglang-simulator/test/test_simulation_sglang_runner.py"
+      },
+      {
+        "name": "cache-tiers",
+        "path": "tools/sglang-simulator/test/test_simulation_cache_hit_ratio.py",
+        "args": ["-k", "in_process"]
+      },
+      {
+        "name": "replay-serving",
+        "path": "tools/sglang-simulator/test/test_simulation_sglang_serving.py",
+        "args": ["-k", "replay or timestamp"]
+      },
+      {
+        "name": "cache-reuse",
+        "path": "tools/sglang-simulator/test/test_simulation_cache_hit_ratio.py",
+        "args": ["-k", "second_replay"]
+      }
+    ],
+    "simulator-aic": [
+      {
+        "name": "aic-offline-blocking",
+        "path": "tools/sglang-simulator/test/test_simulation_offline_blocking.py"
+      }
+    ]
+  }
+}

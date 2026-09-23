@@ -18,11 +18,15 @@ pinned versions of these projects.
 
 ## Current unified source
 
-Use `unified-v0520-successor` in [selectors.json](selectors.json):
-engine `228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33`, tree
-`0af2ff1dbe241285caacf8e8236c918a434b9889`, on navigation branch
-`codex/model-union-v0520-20260922`.
-It cleanly replays the 31-step protected baseline and 59 successor patches.
+Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
+`python scripts/stack.py`, rather than assembling model profiles.
+The explicit `active_selector` in [selectors.json](selectors.json) binds
+engine `2e098cde62d22c3afc19e25923fd8a53578360de`, tree
+`9cd0b572048fd7d75b4a158ff7af567f55b5ded9`, on navigation branch
+`codex/sglang-image-unification-20260923`.
+It combines the 31-step protected baseline and 61 successor patches.
+The September 23 increments add framework privacy/health cleanup and the GLM
+host-reserve configuration; native and final-image acceptance remain separate.
 
 [Current source evidence](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
 Kimi, Muse, Nemotron, DS0001–0026 and native DS protocol adaptation, GLM,

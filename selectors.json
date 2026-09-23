@@ -1,6 +1,8 @@
 {
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "active_selector": "unified-v0520-successor",
+  "as_of": "2026-09-23",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -18,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
-      "fork_tree": "0af2ff1dbe241285caacf8e8236c918a434b9889",
-      "fork_branch": "codex/model-union-v0520-20260922",
+      "fork_commit": "2e098cde62d22c3afc19e25923fd8a53578360de",
+      "fork_tree": "9cd0b572048fd7d75b4a158ff7af567f55b5ded9",
+      "fork_branch": "codex/sglang-image-unification-20260923",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..2e098cde62d22c3afc19e25923fd8a53578360de",
       "replay_mode": "exact",
       "patches": [
         {
@@ -402,9 +404,23 @@
           "id": "union-228f7d93dc",
           "path": "patches/common/228f7d93dc-fix-reject-malformed-flattened-reconstruction-before-weight-mutation.patch",
           "source_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
-          "source_parent": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
-          "sha256": "394ebcb4240ecc8455e839ba95641e3121604601cb41460276a0ce685576c3b7"
-        }
+        "source_parent": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+        "sha256": "394ebcb4240ecc8455e839ba95641e3121604601cb41460276a0ce685576c3b7"
+      },
+      {
+        "id": "union-ec46910f90",
+        "path": "patches/common/ec46910f90-framework-privacy-and-health-cleanup.patch",
+        "source_commit": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
+        "source_parent": "c463a16bdc83d538024da9ddab4ba250c2f77475",
+        "sha256": "bc828ef8cc9edfd64c57ab5ec2be11b30f27298df97009b6641a2cfd4187d1c1"
+      },
+      {
+        "id": "union-2e098cde62",
+        "path": "patches/common/2e098cde62-configurable-dsa-host-reserve.patch",
+        "source_commit": "2e098cde62d22c3afc19e25923fd8a53578360de",
+        "source_parent": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
+        "sha256": "681c8aa99490b1c071ed931c842c369edb9cd69595bd1cff6f922aaf07f3e0c5"
+      }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],

@@ -190,7 +190,7 @@ def main():
 
     verification = {
         "schema": "phala.sglang.selector-verification.v3",
-        "as_of": "2026-09-22",
+        "as_of": document.get("as_of", "2026-09-22"),
         "source_repository": "https://github.com/Phala-Network/sglang",
         "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
         "frozen_base_replay_tree": base_tree,
