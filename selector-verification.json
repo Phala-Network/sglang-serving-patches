@@ -110,6 +110,18 @@
       "status": "selected_in_complete_engine_428",
       "validation_boundary": "GLM CPU/Gloo evidence exists; no new GPU/Governor-on-GLM acceptance"
     },
+    "glm53-flash-v0520-qualified-20260923": {
+      "passed": true,
+      "identity_verified": true,
+      "fork_commit": "73d11045c72664819f98fd09a95e9e1500dd22ba",
+      "fork_tree": "7d06ef4ac4c74417b34ff8d308645762f7c84490",
+      "fork_branch": "codex/glm53-flash-v0520-correctness-20260922",
+      "patch_count": 16,
+      "replay_mode": "exact",
+      "status": "qualified_source_candidate_nvfp4_quality_complete_final_image_pending",
+      "validation_boundary": "Frozen GLM-5.3-Flash source and NVFP4 quality wave; final-image, publication, Governor-on-GLM, and production acceptance remain separate",
+      "replay_tree": "7d06ef4ac4c74417b34ff8d308645762f7c84490"
+    },
     "qwen3-family-v0520": {
       "passed": null,
       "identity_verified": true,

@@ -1,0 +1,607 @@
+diff --git a/python/sglang/srt/mem_cache/pool_host/mla.py b/python/sglang/srt/mem_cache/pool_host/mla.py
+index c77e989de4c2a68a6d2b3631c96bb5aa28e4ebec..63e9945cb072a4a3931508024b3cc12c71ec1873 100644
+--- a/python/sglang/srt/mem_cache/pool_host/mla.py
++++ b/python/sglang/srt/mem_cache/pool_host/mla.py
+@@ -20,7 +20,7 @@ from sglang.kernels.ops.kvcache.hicache import (
+     transfer_hicache_one_layer_mla as jit_transfer_hicache_one_layer_mla,
+ )
+ from sglang.srt.layers.dcp.layout import maybe_dcp_kernel_indices
+-from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
++from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool, MLATokenToKVPoolFP4
+ from sglang.srt.mem_cache.pool_host.base import (
+     _WRITE_BACK_STAGING_PAGE_CHUNK,
+     HostKVCache,
+@@ -228,6 +228,15 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
+         therefore match the target's row, and every packed draft pool must
+         have the target's row geometry. Runs before any host allocation.
+         """
++        # FP4 retains a logical kv_cache_dim but packs two values per byte and
++        # stores scales separately. Neither buffer follows this host layout.
++        if any(
++            isinstance(pool, MLATokenToKVPoolFP4)
++            for pool in (device_pool, *self.mtp_draft_device_pools)
++        ):
++            raise NotImplementedError(
++                "HiCache does not support FP4 MLA KV rows and their separate scale buffers."
++            )
+         host_dim = self._host_kv_cache_dim(device_pool)
+         target_dtype = device_pool.store_dtype
+         # MLATokenToKVPool and its subclasses always set kv_cache_dim (a packed
+diff --git a/python/sglang/srt/speculative/base_spec_worker.py b/python/sglang/srt/speculative/base_spec_worker.py
+index 2e9a9fafc5e650dcfbf8e4d9bc78ff768a29e163..4d4713294523d6cf63ffd0e9cbfd4b57d63c80ee 100644
+--- a/python/sglang/srt/speculative/base_spec_worker.py
++++ b/python/sglang/srt/speculative/base_spec_worker.py
+@@ -57,6 +57,36 @@ def _can_pack_hicache_mtp(
+     return is_nextn_mtp or is_dspark_dsv4
+ 
+ 
++def _hicache_mla_rows_match(target_pool, draft_pools) -> bool:
++    from sglang.srt.mem_cache.memory_pool import (
++        HybridLinearKVPool,
++        MLATokenToKVPool,
++        MLATokenToKVPoolFP4,
++    )
++
++    def unwrap(pool):
++        return pool.full_kv_pool if isinstance(pool, HybridLinearKVPool) else pool
++
++    target_pool = unwrap(target_pool)
++    draft_pools = tuple(map(unwrap, draft_pools))
++    if any(
++        isinstance(pool, MLATokenToKVPoolFP4) for pool in (target_pool, *draft_pools)
++    ):
++        raise NotImplementedError(
++            "HiCache does not support FP4 MLA KV rows and their separate scale buffers."
++        )
++    if not isinstance(target_pool, MLATokenToKVPool):
++        return True
++    # Packed MLA host layers share one element type and row stride. Separate
++    # draft KV precision can change both, even for the model's own MTP layer.
++    return all(
++        isinstance(pool, MLATokenToKVPool)
++        and pool.store_dtype == target_pool.store_dtype
++        and pool.kv_cache_dim == target_pool.kv_cache_dim
++        for pool in draft_pools
++    )
++
++
+ class EagleDraftWorkerBase(ABC):
+     # topk=1 chain constants for draft_forward's fast path; None when topk > 1.
+     _topk1_parents_prealloc: Optional[torch.Tensor] = None
+@@ -271,11 +301,22 @@ class BaseSpecWorker(ABC):
+             )
+ 
+         if _can_pack_hicache_mtp(spec_algorithm, draft_runners):
+-            target_model_runner.mtp_draft_device_pools = draft_pools
+-            return HiCacheDraftPlan(
+-                mode=HiCacheDraftMode.PACKED,
+-                device_pools=draft_pools,
+-            )
++            if _hicache_mla_rows_match(
++                target_model_runner.token_to_kv_pool, draft_pools
++            ):
++                target_model_runner.mtp_draft_device_pools = draft_pools
++                return HiCacheDraftPlan(
++                    mode=HiCacheDraftMode.PACKED,
++                    device_pools=draft_pools,
++                )
++            if len(draft_pools) > 1:
++                # The sidecar builder supports one runner. Do not silently
++                # omit later MTP depths through the legacy first-runner plan.
++                raise NotImplementedError(
++                    "HiCache with multiple MTP draft runners requires matching "
++                    "target and draft MLA KV row dimensions and storage dtypes. "
++                    "The sidecar fallback supports one draft runner."
++                )
+ 
+         if get_memory().enable_unified_cache_external_linker:
+             raise NotImplementedError(
+diff --git a/test/manual/test_hicache_draft_sidecar_gpu.py b/test/manual/test_hicache_draft_sidecar_gpu.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..a875ff38c764326b7ae53ed3f2ca1b783b45982c
+--- /dev/null
++++ b/test/manual/test_hicache_draft_sidecar_gpu.py
+@@ -0,0 +1,264 @@
++#!/usr/bin/env python3
++"""Byte-exact mixed-geometry HiCache fallback test; run on an isolated GPU.
++
++Uses real DSA device/host pools, the draft planner and sidecar assembler, and
++the controller's transfer lists and asynchronous L2 engine. Backs up in two
++pieces, poisons device storage, then restores onto shuffled physical pages.
++"""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch
++
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _build_mha_mla_host_pool,
++    build_hicache_draft_sidecars,
++    build_pool_entry,
++)
++from sglang.srt.mem_cache.l2_transfer import L2TransferEngine
++from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool, HybridLinearKVPool
++from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, HiCacheDraftMode
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++
++
++def make_pool(dtype, dim, live, compress):
++    return DSATokenToKVPool(
++        size=1024,
++        page_size=64,
++        kv_lora_rank=512,
++        qk_rope_head_dim=64,
++        kv_cache_dim=dim,
++        dtype=dtype,
++        layer_num=len(live),
++        device="cuda",
++        index_head_dim=128,
++        enable_memory_saver=False,
++        index_kpool=4 if compress else 1,
++        index_kpool_compress=compress,
++        max_running_requests=4,
++        skip_topk_layers=[not x for x in live],
++    )
++
++
++def wrap(pool, hybrid):
++    if not hybrid:
++        return pool
++    result = object.__new__(HybridLinearKVPool)
++    result.full_kv_pool = pool
++    return result
++
++
++def tokens(pages):
++    return (pages[:, None] * 64 + torch.arange(64, device=pages.device)).flatten()
++
++
++def run_case(layout, backend, target_geometry, draft_geometry, hybrid, live, compress):
++    publish(
++        ServerArgs(
++            model_path="dummy",
++            enable_hierarchical_cache=True,
++            hicache_mem_layout=layout,
++            hicache_io_backend=backend,
++        ),
++        role="scheduler",
++    )
++    target = make_pool(*target_geometry, (True, False, True), compress)
++    draft = make_pool(*draft_geometry, (live,), compress)
++    target_runner = SimpleNamespace(
++        token_to_kv_pool=wrap(target, hybrid), spec_algorithm=SpeculativeAlgorithm.EAGLE
++    )
++    runner = SimpleNamespace(
++        token_to_kv_pool=wrap(draft, hybrid),
++        model_config=SimpleNamespace(
++            num_nextn_predict_layers=1,
++            hf_config=SimpleNamespace(architectures=["Glm5NextForCausalLMMTP"]),
++        ),
++    )
++    worker = SimpleNamespace(
++        target_worker=SimpleNamespace(model_runner=target_runner),
++        _draft_model_runners=lambda: (runner,),
++    )
++    plan = BaseSpecWorker._build_hicache_draft_plan(worker)
++    assert plan.mode == HiCacheDraftMode.SIDECAR
++    assert target_runner.mtp_draft_device_pools == ()
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    with patch(prefix + "_get_allocator_type", return_value="default"):
++        host = _build_mha_mla_host_pool(
++            pool=target,
++            host_to_device_ratio=2,
++            page_size=64,
++            layout=layout,
++            allocator_type="default",
++            pool_label="target",
++        )
++        mapping = dict(enumerate(range(target.layer_num)))
++        anchor = build_pool_entry(
++            name=PoolName.KV,
++            host_pool=host,
++            device_pool=target,
++            layer_mapping=mapping,
++            transfer_layer_num=target.layer_num,
++            is_anchor=True,
++        )
++        index = _build_hybrid_dsa_index_entry(
++            kv_pool=target,
++            kv_host_pool=host,
++            layer_mapping=mapping,
++            transfer_layer_num=target.layer_num,
++        )
++        group = HostPoolGroup([anchor, index])
++        controller = object.__new__(HybridCacheController)
++        controller.mem_pool_host = group
++        controller.page_size = 64
++        controller.layer_num = target.layer_num
++        specs, entries = build_hicache_draft_sidecars(
++            draft_device_pools=plan.device_pools,
++            tree_cache=SimpleNamespace(cache_controller=controller),
++        )
++        for entry in entries:
++            group.add_entry(entry)
++    assert group.get_pool(PoolName.DRAFT).dtype == draft.store_dtype
++    assert (
++        group.get_pool(PoolName.DRAFT)._host_kv_cache_dim(draft) == draft.kv_cache_dim
++    )
++    assert (PoolName.DRAFT_INDEXER in group.entry_map) == live
++    assert all(spec.indices_from_pool == PoolName.KV for spec in specs)
++
++    generator = torch.Generator().manual_seed(38212)
++    originals = []
++    for pool in (target, draft):
++        for buffer in pool.kv_buffer:
++            view = buffer.view(torch.uint8)
++            expected = torch.randint(
++                0, 256, view.shape, dtype=torch.uint8, generator=generator
++            )
++            view.copy_(expected)
++            originals.append((view, expected, False))
++        for buffer in pool.index_k_with_scale_buffer:
++            if not buffer.numel():
++                continue
++            expected = torch.randint(
++                0, 256, buffer.shape, dtype=torch.uint8, generator=generator
++            )
++            buffer.copy_(expected)
++            originals.append((buffer, expected, True))
++    source_pages = torch.tensor([0, 1, 2, 3, 8, 9, 10, 11])
++    host_pages = torch.tensor([16, 17, 18, 19, 4, 5, 6, 7])
++    dest_pages = torch.tensor([12, 13, 14, 15, 4, 5, 6, 7])
++    index_device = "cuda" if backend == "kernel" else "cpu"
++    src, cached, dst = [
++        tokens(p.to(index_device)) for p in (source_pages, host_pages, dest_pages)
++    ]
++    engine = L2TransferEngine(backend)
++
++    def transfers(host_indices, device_indices, backup):
++        aux = [
++            PoolTransfer(
++                name,
++                host_indices=host_indices,
++                device_indices=device_indices,
++                indices_from_pool=PoolName.KV,
++            )
++            for name in group.entry_map
++            if name != PoolName.KV
++        ]
++        result = controller._l2_load_transfers(host_indices, device_indices, aux)
++        if backup:
++            result = [
++                t._replace(host_indices=t.host_indices.cpu())
++                if t.host_pool.can_use_write_back_jit
++                else t
++                for t in result
++            ]
++        return result
++
++    for start in (0, 256):
++        completion = engine.submit_device_to_host(
++            transfers(cached[start : start + 256], src[start : start + 256], True)
++        )
++    torch.cuda.current_stream().wait_event(completion.finish_event)
++    for buffer, _, _ in originals:
++        buffer.fill_(173)
++    restored = engine.submit_host_to_device(
++        transfers(cached, dst, False), layer_num=target.layer_num
++    )
++    restored.finish_event.synchronize()
++    compared = 0
++    for buffer, expected, is_index in originals:
++        actual = buffer.cpu()[dest_pages if is_index else tokens(dest_pages)]
++        expected = expected[source_pages if is_index else tokens(source_pages)]
++        assert torch.equal(actual, expected), (
++            layout,
++            backend,
++            target_geometry,
++            draft_geometry,
++            is_index,
++        )
++        compared += actual.numel()
++    for entry in group.entries:
++        entry.host_pool.destroy()
++    reset_context()
++    print(
++        json.dumps(
++            dict(
++                layout=layout,
++                backend=backend,
++                target=str(target_geometry),
++                draft=str(draft_geometry),
++                hybrid=hybrid,
++                index_live=live,
++                compressed=compress,
++                bytes_compared=compared,
++                passed=True,
++            )
++        ),
++        flush=True,
++    )
++
++
++def main():
++    assert torch.cuda.is_available(), "requires an isolated CUDA test environment"
++    print(
++        json.dumps(
++            dict(
++                gpu=torch.cuda.get_device_name(),
++                capability=torch.cuda.get_device_capability(),
++            )
++        ),
++        flush=True,
++    )
++    fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
++    cases = 0
++    with torch.inference_mode():
++        for layout, backend in (
++            ("page_first", "kernel"),
++            ("layer_first", "kernel"),
++            ("layer_first", "direct"),
++            ("page_first_direct", "direct"),
++        ):
++            for target, draft in (
++                ((fp8, 656), (fp8, 528)),
++                ((fp8, 656), (bf16, 576)),
++                ((bf16, 576), (fp8, 576)),
++            ):
++                for hybrid in (False, True):
++                    for live in (False, True):
++                        run_case(layout, backend, target, draft, hybrid, live, True)
++                        cases += 1
++            run_case(layout, backend, (fp8, 656), (bf16, 576), False, True, False)
++            cases += 1
++    print(f"HiCache draft sidecar GPU byte oracle: {cases}/{cases} passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/test/registered/unit/mem_cache/test_hicache_draft_plan.py b/test/registered/unit/mem_cache/test_hicache_draft_plan.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b061392b4f70825c9231e52dfefd25c931102b6b
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hicache_draft_plan.py
+@@ -0,0 +1,182 @@
++"""HiCache must select separate host rows before allocating incompatible MTP KV."""
++
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch
++
++from sglang.srt.mem_cache.memory_pool import (
++    HybridLinearKVPool,
++    MLATokenToKVPool,
++    MLATokenToKVPoolFP4,
++)
++from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, HiCacheDraftMode
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=1, suite="base-a-test-cpu")
++
++
++def mla_pool(dtype=torch.uint8, dim=656, *, hybrid=False):
++    pool = object.__new__(MLATokenToKVPool)
++    pool.store_dtype = dtype
++    pool.kv_cache_dim = dim
++    if hybrid:
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = pool
++        return wrapper
++    return pool
++
++
++def build_plan(
++    target_pool,
++    draft_pools,
++    *,
++    algorithm=SpeculativeAlgorithm.EAGLE,
++    nextn=1,
++    enabled=True,
++    backup="none",
++    architecture="Glm5NextForCausalLMMTP",
++):
++    target = SimpleNamespace(
++        token_to_kv_pool=target_pool,
++        spec_algorithm=algorithm,
++        mtp_draft_device_pools=("stale",),
++    )
++    runners = tuple(
++        SimpleNamespace(
++            token_to_kv_pool=pool,
++            model_config=SimpleNamespace(
++                num_nextn_predict_layers=nextn,
++                hf_config=SimpleNamespace(architectures=[architecture]),
++            ),
++        )
++        for pool in draft_pools
++    )
++    worker = SimpleNamespace(
++        target_worker=SimpleNamespace(model_runner=target),
++        _draft_model_runners=lambda: runners,
++    )
++    prefix = "sglang.srt.speculative.base_spec_worker."
++    with (
++        patch(
++            prefix + "get_memory",
++            return_value=SimpleNamespace(enable_hierarchical_cache=enabled),
++        ),
++        patch(
++            prefix + "get_disagg",
++            return_value=SimpleNamespace(
++                disaggregation_decode_retraction_backup=backup
++            ),
++        ),
++    ):
++        plan = BaseSpecWorker._build_hicache_draft_plan(worker)
++    return plan, target
++
++
++class TestHiCacheDraftPlan(unittest.TestCase):
++    def test_fp4_target_or_draft_is_rejected_before_selecting_a_plan(self):
++        fp4 = object.__new__(MLATokenToKVPoolFP4)
++        fp4.store_dtype = torch.uint8
++        fp4.kv_cache_dim = 656
++        for target, draft in (
++            (fp4, mla_pool(torch.bfloat16, 576)),
++            (mla_pool(torch.bfloat16, 576), fp4),
++            (fp4, mla_pool()),
++            (mla_pool(), fp4),
++        ):
++            for hybrid in (False, True):
++                with self.subTest(
++                    target_fp4=target is fp4,
++                    hybrid=hybrid,
++                    draft_dtype=draft.store_dtype,
++                ):
++                    if hybrid:
++                        wrapper = object.__new__(HybridLinearKVPool)
++                        wrapper.full_kv_pool = target
++                        target_pool = wrapper
++                    else:
++                        target_pool = target
++                    with self.assertRaisesRegex(NotImplementedError, "FP4 MLA KV"):
++                        build_plan(target_pool, (draft,))
++
++    def test_mismatched_mla_uses_sidecar(self):
++        for target_hybrid in (False, True):
++            for draft_hybrid in (False, True):
++                for dtype, dim in (
++                    (torch.uint8, 528),
++                    (torch.bfloat16, 656),
++                    (torch.bfloat16, 576),
++                    (torch.bfloat16, 328),
++                ):
++                    with self.subTest(
++                        target_hybrid=target_hybrid,
++                        draft_hybrid=draft_hybrid,
++                        dtype=dtype,
++                        dim=dim,
++                    ):
++                        draft = mla_pool(dtype, dim, hybrid=draft_hybrid)
++                        plan, target = build_plan(
++                            mla_pool(hybrid=target_hybrid), (draft,)
++                        )
++                        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++                        self.assertEqual(plan.device_pools, (draft,))
++                        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_matching_mla_keeps_all_packed_depths(self):
++        for hybrid in (False, True):
++            for count in (1, 3):
++                with self.subTest(hybrid=hybrid, count=count):
++                    drafts = tuple(mla_pool(hybrid=hybrid) for _ in range(count))
++                    plan, target = build_plan(mla_pool(hybrid=hybrid), drafts)
++                    self.assertEqual(plan.mode, HiCacheDraftMode.PACKED)
++                    self.assertEqual(plan.device_pools, drafts)
++                    self.assertEqual(target.mtp_draft_device_pools, drafts)
++
++    def test_later_mtp_depth_cannot_be_silently_dropped(self):
++        drafts = (mla_pool(), mla_pool(torch.bfloat16, 576))
++        with self.assertRaisesRegex(
++            NotImplementedError, "sidecar fallback supports one"
++        ):
++            build_plan(mla_pool(), drafts)
++
++    def test_disabled_cache_and_no_draft_clear_packed_state(self):
++        for drafts, enabled in (((mla_pool(),), False), ((), True)):
++            with self.subTest(enabled=enabled):
++                plan, target = build_plan(mla_pool(), drafts, enabled=enabled)
++                self.assertEqual(plan.mode, HiCacheDraftMode.NONE)
++                self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_host_retraction_backup_also_uses_fallback(self):
++        plan, target = build_plan(
++            mla_pool(),
++            (mla_pool(torch.bfloat16, 576),),
++            enabled=False,
++            backup="host_pool",
++        )
++        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_non_mtp_eagle_keeps_legacy_sidecar(self):
++        drafts = (mla_pool(), mla_pool())
++        plan, target = build_plan(mla_pool(), drafts, nextn=0)
++        self.assertEqual(plan.mode, HiCacheDraftMode.SIDECAR)
++        self.assertEqual(plan.device_pools, drafts[:1])
++        self.assertEqual(target.mtp_draft_device_pools, ())
++
++    def test_non_mla_dspark_packing_is_unchanged(self):
++        drafts = (object(),)
++        plan, target = build_plan(
++            object(),
++            drafts,
++            algorithm=SpeculativeAlgorithm.DSPARK,
++            nextn=0,
++            architecture="DeepseekV4ForCausalLMDSpark",
++        )
++        self.assertEqual(plan.mode, HiCacheDraftMode.PACKED)
++        self.assertEqual(target.mtp_draft_device_pools, drafts)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+index 49ccb33b40d793e0c738b977822f41c2563989eb..a122128d64db4bd60889845b032e0e4bb05fb696 100644
+--- a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
++++ b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+@@ -15,7 +15,7 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+     build_full_draft_pools,
+     build_hybrid_mamba_stack,
+ )
+-from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
++from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, MLATokenToKVPoolFP4
+ from sglang.srt.mem_cache.pool_host.common import alloc_with_host_register
+ from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+ from sglang.test.ci.ci_register import register_cpu_ci
+@@ -351,6 +351,37 @@ class TestMLAHostPoolRowGeometry(_PackedRowGeometryFixtures, CustomTestCase):
+                 **kwargs,
+             )
+ 
++    def test_fp4_rows_are_rejected_before_host_allocation(self):
++        fp4 = object.__new__(MLATokenToKVPoolFP4)
++        fp4.__dict__.update(self._fake_packed_device_pool(layer_num=1).__dict__)
++        # The logical dimension agrees, but the physical values use half a
++        # byte per element and scales live in a different buffer.
++        fp4.kv_buffer = [torch.zeros((68, 1, 8), dtype=torch.uint8)]
++        fp4.kv_scale_buffer = [torch.zeros((68, 1, 1), dtype=torch.uint8)]
++        ordinary = self._fake_packed_device_pool(layer_num=1)
++        for target, drafts in ((fp4, ()), (ordinary, (fp4,))):
++            with self.subTest(target_fp4=target is fp4):
++                allocate = MagicMock(side_effect=self._alloc_unpinned)
++                with (
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++                        {"cpu": allocate},
++                    ),
++                    self.assertRaisesRegex(NotImplementedError, "FP4 MLA KV"),
++                ):
++                    MLATokenToKVPoolHost(
++                        target,
++                        host_to_device_ratio=2,
++                        host_size=0,
++                        page_size=self.PAGE_SIZE,
++                        layout="layer_first",
++                        pin_memory=False,
++                        device="cpu",
++                        override_kv_cache_dim=target.kv_cache_dim,
++                        mtp_draft_device_pools=drafts,
++                    )
++                allocate.assert_not_called()
++
+     def test_packed_device_pool_without_override_is_rejected(self):
+         kv_pool = self._fake_packed_device_pool()
+ 

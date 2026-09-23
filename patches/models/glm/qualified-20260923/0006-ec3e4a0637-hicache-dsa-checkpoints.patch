@@ -1,0 +1,1604 @@
+diff --git a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+index 7e9f85aef60a32b2fe7646f3d43f7606068a0ecd..6b2f97d5e0669d4103a280977afd560540b8c257 100644
+--- a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
++++ b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+@@ -60,10 +60,15 @@ class DecodeKVCacheOffloadManager:
+         kv_cache = self.token_to_kv_pool_allocator.get_kvcache()
+         if not isinstance(kv_cache, (MHATokenToKVPool, MLATokenToKVPool)):
+             raise ValueError("Unsupported KV cache type for decode offload")
++        use_mla = isinstance(kv_cache, MLATokenToKVPool)
+         self.decode_host_mem_pool = build_kv_host_pool(
+             kv_pool=kv_cache,
+             page_size=self.page_size,
+-            use_mla=isinstance(kv_cache, MLATokenToKVPool),
++            use_mla=use_mla,
++            # Host rows must have the device pool's row geometry; a packed DSA
++            # row is wider than the width the MLA host pool assumes without
++            # the override.
++            override_kv_cache_dim=kv_cache.kv_cache_dim if use_mla else None,
+         )
+ 
+         self.tp_group = tp_group
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+index ed925fe11a89f1c51ed2ed070e514cb902c3be57..5775c0749846aca133db8bb37c86447906cc49ba 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+@@ -833,6 +833,65 @@ def build_deepseek_v4_hicache_stack(
+     return host_pool_group, cache_controller
+ 
+ 
++def _hybrid_dsa_index_buffers(kv_pool, draft_pools=()):
++    """Keep index buffers layer-aligned, including empty shared-topk layers."""
++    from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
++
++    if not isinstance(kv_pool, DSATokenToKVPool):
++        return []
++    return [
++        buffer
++        for pool in (kv_pool, *draft_pools)
++        for buffer in pool.index_k_with_scale_buffer
++    ]
++
++
++def _build_hybrid_dsa_index_entry(
++    *,
++    kv_pool,
++    kv_host_pool,
++    layer_mapping,
++    transfer_layer_num,
++    draft_pools=(),
++    pool_name=PoolName.INDEXER,
++):
++    buffers = _hybrid_dsa_index_buffers(kv_pool, draft_pools)
++    live_layers = [i for i, buffer in enumerate(buffers) if buffer.numel()]
++    if not live_layers:
++        return None
++    compact_layers = {layer: i for i, layer in enumerate(live_layers)}
++    live_buffers = [buffers[i] for i in live_layers]
++    item_bytes = live_buffers[0].shape[1] * live_buffers[0].element_size()
++    if any(b.shape[1] * b.element_size() != item_bytes for b in live_buffers):
++        raise ValueError("Hybrid DSA index buffers must have the same page row width.")
++    # The paged pool transfers explicit byte rows, so shared-topk layers with
++    # zero-row placeholders can be omitted without dereferencing a null pointer.
++    # KV-derived physical page indices remain valid for compressed index rows
++    # when the radix tree only shares complete compression groups.
++    host_pool = DeepSeekV4PagedHostPool(
++        pool_name=str(pool_name),
++        device_buffers=live_buffers,
++        item_bytes=item_bytes,
++        num_host_pages=kv_host_pool.page_num,
++        slot_page_size=kv_pool.page_size,
++        layout=get_memory().hicache_mem_layout,
++        allocator_type=_get_allocator_type(),
++        page_aligned_only=True,
++    )
++    return build_pool_entry(
++        name=pool_name,
++        host_pool=host_pool,
++        device_pool=kv_pool,
++        layer_mapping={
++            global_layer: compact_layers[local_layer]
++            for global_layer, local_layer in layer_mapping.items()
++            if local_layer in compact_layers
++        },
++        transfer_layer_num=transfer_layer_num,
++        packed_draft_device_pools=draft_pools,
++    )
++
++
+ def build_hybrid_mamba_stack(
+     *,
+     params: CacheInitParams,
+@@ -863,10 +922,30 @@ def build_hybrid_mamba_stack(
+         kv_host_size, mamba_host_size = _split_hicache_size(
+             get_memory().hicache_size, (kv_pool, mamba_pool)
+         )
++        index_buffers = _hybrid_dsa_index_buffers(kv_pool, mtp_draft_device_pools)
++        if index_buffers:
++            kv_bytes_per_token = sum(
++                pool.kv_cache_dim * pool.store_dtype.itemsize * pool.layer_num
++                for pool in (kv_pool, *mtp_draft_device_pools)
++            )
++            index_bytes_per_token = sum(
++                b.shape[1] * b.element_size() / kv_pool.page_size
++                for b in index_buffers
++                if b.numel()
++            )
++            # The KV and index host pools share a token capacity and together
++            # consume the KV share of --hicache-size, not two separate budgets.
++            kv_host_size *= kv_bytes_per_token / (
++                kv_bytes_per_token + index_bytes_per_token
++            )
+     kv_host_pool = build_kv_host_pool(
+         kv_pool=kv_pool,
+         page_size=params.page_size,
+         use_mla=use_mla,
++        # Host rows must have the device pool's row geometry. A packed DSA
++        # row is wider than kv_lora_rank + qk_rope_head_dim, the width the
++        # MLA host pool assumes without the override.
++        override_kv_cache_dim=kv_pool.kv_cache_dim if use_mla else None,
+         host_size=kv_host_size,
+         mtp_draft_device_pools=mtp_draft_device_pools,
+     )
+@@ -906,6 +985,15 @@ def build_hybrid_mamba_stack(
+             device_free_fn=mamba_allocator.free,
+         ),
+     ]
++    index_entry = _build_hybrid_dsa_index_entry(
++        kv_pool=kv_pool,
++        kv_host_pool=kv_host_pool,
++        layer_mapping=full_layer_mapping,
++        transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
++        draft_pools=mtp_draft_device_pools,
++    )
++    if index_entry is not None:
++        entries.append(index_entry)
+     host_pool_group = HostPoolGroup(entries)
+     cache_controller = HybridCacheController(
+         params.token_to_kv_pool_allocator,
+@@ -1051,6 +1139,7 @@ def build_anchor_sidecar_stack(
+     use_mla: bool,
+     override_kv_cache_dim: Optional[int] = None,
+     sidecar_host_pool_factory: Callable[[Any], Any],
++    sidecar_entry_factory: Optional[Callable[..., Optional[PoolEntry]]] = None,
+     prefetch_threshold: int = 256,
+     model_name: Optional[str] = None,
+     storage_backend_extra_config: Optional[dict] = None,
+@@ -1094,15 +1183,27 @@ def build_anchor_sidecar_stack(
+             is_anchor=True,
+             packed_draft_device_pools=mtp_draft_device_pools,
+         ),
+-        build_pool_entry(
++    ]
++    if sidecar_entry_factory is not None:
++        sidecar_entry = sidecar_entry_factory(
++            kv_pool=kv_pool,
++            kv_host_pool=kv_host_pool,
++            layer_mapping=full_layer_mapping,
++            transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
++            draft_pools=mtp_draft_device_pools,
++            pool_name=sidecar_pool_name,
++        )
++    else:
++        sidecar_entry = build_pool_entry(
+             name=sidecar_pool_name,
+-            host_pool=sidecar_host_pool,
++            host_pool=sidecar_host_pool_factory(kv_host_pool),
+             device_pool=kv_pool,
+             layer_mapping=full_layer_mapping,
+             transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
+             packed_draft_device_pools=mtp_draft_device_pools,
+-        ),
+-    ]
++        )
++    if sidecar_entry is not None:
++        entries.append(sidecar_entry)
+     host_pool_group = HostPoolGroup(entries)
+     cache_controller = HybridCacheController(
+         params.token_to_kv_pool_allocator,
+@@ -1201,6 +1302,25 @@ def build_full_draft_pools(
+     ]
+ 
+     if isinstance(pool, DSATokenToKVPool) and pool.index_k_with_scale_buffer:
++        if pool.kpool_use_compress:
++            # As on the target, transfer actual page rows and omit empty
++            # shared-topk layers. The draft keeps its own host KV geometry.
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=pool,
++                kv_host_pool=draft_host_pool,
++                layer_mapping=draft_layer_mapping,
++                transfer_layer_num=draft_host_pool.layer_num,
++                pool_name=PoolName.DRAFT_INDEXER,
++            )
++            if entry is not None:
++                specs.append(
++                    SidecarPoolSpec(
++                        pool_name=PoolName.DRAFT_INDEXER,
++                        indices_from_pool=PoolName.KV,
++                    )
++                )
++                entries.append(entry)
++            return specs, entries
+         indexer_host_pool = DSAIndexerPoolHost(
+             pool,
+             draft_host_pool,
+@@ -1505,6 +1625,7 @@ class _MambaStrategy(StackStrategy):
+             storage_backend_extra_config=storage_backend_extra_config,
+             enable_storage_metrics=enable_storage_metrics,
+         )
++        has_indexer = PoolName.INDEXER in host_pool_group.entry_map
+         return StackBuildResult(
+             host_pool_group=host_pool_group,
+             cache_controller=cache_controller,
+@@ -1514,7 +1635,16 @@ class _MambaStrategy(StackStrategy):
+             },
+             register_req_to_token_counter=True,
+             transfer_layer_num=len(full_layer_mapping | mamba_layer_mapping),
+-            pools_desc="KV + MAMBA",
++            sidecars=(
++                [
++                    SidecarPoolSpec(
++                        pool_name=PoolName.INDEXER, indices_from_pool=PoolName.KV
++                    )
++                ]
++                if has_indexer
++                else []
++            ),
++            pools_desc="KV + MAMBA + INDEXER" if has_indexer else "KV + MAMBA",
+         )
+ 
+ 
+@@ -1695,6 +1825,11 @@ class _DsaStrategy(StackStrategy):
+             storage_backend=storage_backend,
+             use_mla=use_mla,
+             override_kv_cache_dim=full_kv_pool.kv_cache_dim,
++            sidecar_entry_factory=(
++                _build_hybrid_dsa_index_entry
++                if full_kv_pool.kpool_use_compress
++                else None
++            ),
+             sidecar_host_pool_factory=lambda kv_host_pool: DSAIndexerPoolHost(
+                 full_kv_pool,
+                 kv_host_pool,
+@@ -1717,7 +1852,9 @@ class _DsaStrategy(StackStrategy):
+                     pool_name=PoolName.INDEXER,
+                     indices_from_pool=PoolName.KV,
+                 ),
+-            ],
++            ]
++            if PoolName.INDEXER in host_pool_group.entry_map
++            else [],
+             transfer_layer_num=len(full_layer_mapping),
+             pools_desc="KV + INDEXER",
+         )
+diff --git a/python/sglang/srt/mem_cache/pool_host/mla.py b/python/sglang/srt/mem_cache/pool_host/mla.py
+index b63ca9723a65cadd5d9e0734b037b32355283606..c77e989de4c2a68a6d2b3631c96bb5aa28e4ebec 100644
+--- a/python/sglang/srt/mem_cache/pool_host/mla.py
++++ b/python/sglang/srt/mem_cache/pool_host/mla.py
+@@ -87,6 +87,7 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
+     ):
+         self.override_kv_cache_dim = override_kv_cache_dim
+         self.mtp_draft_device_pools = tuple(mtp_draft_device_pools)
++        self._check_host_row_geometry(device_pool, pool_label)
+         self._is_dummy = is_dummy
+ 
+         if is_dummy:
+@@ -211,6 +212,51 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
+         self.lock = threading.RLock()
+         self.clear()
+ 
++    def _host_kv_cache_dim(self, device_pool) -> int:
++        """Row width, in store dtype elements, of every host row."""
++        return self.override_kv_cache_dim or (
++            device_pool.kv_lora_rank + device_pool.qk_rope_head_dim
++        )
++
++    def _check_host_row_geometry(self, device_pool, pool_label: str) -> None:
++        """Reject a host row geometry that differs from the device rows.
++
++        The host buffer has a single row width and dtype for every layer, and
++        the transfer paths address the target and packed MTP draft device
++        rows with that same geometry (the kernel paths use the host stride
++        for both sides, the direct path copies row slices). The host row must
++        therefore match the target's row, and every packed draft pool must
++        have the target's row geometry. Runs before any host allocation.
++        """
++        host_dim = self._host_kv_cache_dim(device_pool)
++        target_dtype = device_pool.store_dtype
++        # MLATokenToKVPool and its subclasses always set kv_cache_dim (a packed
++        # DSA row is wider than kv_lora_rank + qk_rope_head_dim). Duck-typed
++        # device pools that do not model row packing, such as lightweight test
++        # doubles, may omit it; only then is the host width taken on trust.
++        target_dim = getattr(device_pool, "kv_cache_dim", host_dim)
++        if host_dim != target_dim:
++            raise ValueError(
++                f"HiCache {pool_label} host pool rows must have the device "
++                f"pool's row geometry, but the host row is kv_cache_dim="
++                f"{host_dim} while the device pool has kv_cache_dim="
++                f"{target_dim}. Construct the host pool with "
++                "override_kv_cache_dim=device_pool.kv_cache_dim."
++            )
++        for draft_id, draft_pool in enumerate(self.mtp_draft_device_pools):
++            draft_dtype = draft_pool.store_dtype
++            draft_dim = draft_pool.kv_cache_dim
++            if draft_dtype != target_dtype or draft_dim != target_dim:
++                raise ValueError(
++                    f"HiCache {pool_label} host pool packs MTP draft KV layers "
++                    "next to the target layers, so every draft pool must have "
++                    f"the target's row geometry; draft pool {draft_id} has "
++                    f"store_dtype={draft_dtype}, kv_cache_dim={draft_dim} but "
++                    f"the target has store_dtype={target_dtype}, "
++                    f"kv_cache_dim={target_dim}. Use the same --kv-cache-dtype "
++                    "and --speculative-draft-kv-cache-dtype."
++                )
++
+     def get_contiguous_buf_infos(self):
+         """Return (data_ptrs, data_lens, item_lens) in the same format as device pool,
+         for registering host memory with the disaggregation transfer engine."""
+@@ -237,9 +283,7 @@ class MLATokenToKVPoolHost(HiSparseHostPoolMixin, HostKVCache):
+         )
+         self.target_layer_num = self._effective_host_layer_num()
+         self.layer_num = self.target_layer_num + len(self.mtp_draft_device_pools)
+-        self.kv_cache_dim = self.override_kv_cache_dim or (
+-            self.kv_lora_rank + self.qk_rope_head_dim
+-        )
++        self.kv_cache_dim = self._host_kv_cache_dim(self.device_pool)
+         size_per_token = self.kv_cache_dim * self.dtype.itemsize * self.layer_num
+         if (
+             self.layout == "page_first_kv_split"
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index b61fcfbbc8907dcf69710a6545f90736260ea718..a1551cb2b2722439def9e7978b277bce6d963012 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import atexit
+ import logging
++import math
+ import threading
+ import time
+ from dataclasses import replace
+@@ -137,6 +138,25 @@ COMPONENT_REGISTRY: dict[ComponentType, type[TreeComponent]] = {
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _compressed_index_tree_params(params: CacheInitParams) -> CacheInitParams:
++    """Separate compressed-index ownership from physical KV transfer pages."""
++    from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool, HybridLinearKVPool
++
++    if params.disable or params.token_to_kv_pool_allocator is None:
++        return params
++    pool = params.token_to_kv_pool_allocator.get_kvcache()
++    if isinstance(pool, HybridLinearKVPool):
++        pool = pool.full_kv_pool
++    if not isinstance(pool, DSATokenToKVPool) or not pool.kpool_use_compress:
++        return params
++    # One compressed index row contains page_size pooled keys, stored in the
++    # first physical KV page of page_size * index_kpool logical tokens. A split
++    # inside that group would let children overwrite their parent's index row,
++    # including after that row has already been backed up to host memory.
++    tree_page = math.lcm(params.page_size, pool.page_size * pool.index_kpool)
++    return replace(params, page_size=tree_page)
++
++
+ class _OngoingWriteThrough(NamedTuple):
+     """Tracks an in-flight D→H write-through operation."""
+ 
+@@ -169,6 +189,11 @@ class UnifiedRadixCache(BasePrefixCache):
+         self,
+         params: CacheInitParams,
+     ):
++        # Only tree/component ownership is widened. init_hicache receives the
++        # original params, so host copies and the allocator still use physical
++        # KV pages, which need not be contiguous across a compression group.
++        self._transfer_page_size = params.page_size
++        params = _compressed_index_tree_params(params)
+         self.req_to_token_pool = params.req_to_token_pool
+         self.token_to_kv_pool_allocator = params.token_to_kv_pool_allocator
+         self.disable = params.disable
+@@ -396,6 +421,10 @@ class UnifiedRadixCache(BasePrefixCache):
+     def init_cache_linker(self, cache_linker: UnifiedCacheLinker) -> None:
+         """Attach an external KV store directly to the device pools."""
+         self._drain_pending_ready_counts()
++        if self.page_size != self._transfer_page_size:
++            raise ValueError(
++                "Compressed DSA does not support the external cache linker."
++            )
+         self.linker = UnifiedCacheLinkerWrapper(self, cache_linker)
+ 
+     def reset(self) -> None:
+@@ -462,6 +491,11 @@ class UnifiedRadixCache(BasePrefixCache):
+ 
+         # Parse storage config once, share with assembler and tree
+         storage_backend = get_memory().hicache_storage_backend
++        if storage_backend is not None and self.page_size != params.page_size:
++            raise ValueError(
++                "Compressed DSA currently supports L2 HiCache only; "
++                "storage hashes and transfers require matching page sizes."
++            )
+         storage_extra_config = None
+         storage_prefetch_threshold = 256
+         prefetch_timeout_base = 1.0
+@@ -3069,6 +3103,8 @@ class UnifiedRadixCache(BasePrefixCache):
+                 "HiCache is not initialized; launch with "
+                 "--enable-hierarchical-cache to attach a storage backend.",
+             )
++        if self.page_size != self.cache_controller.page_size:
++            return False, "Compressed DSA currently supports L2 HiCache only."
+         return self._storage_attachment.attach(
+             storage_backend=storage_backend,
+             storage_backend_extra_config_json=storage_backend_extra_config_json,
+diff --git a/test/manual/test_hybrid_dsa_hicache_gpu.py b/test/manual/test_hybrid_dsa_hicache_gpu.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..df1718938c49a61d1ac7e9f8f69ed559dd1112cf
+--- /dev/null
++++ b/test/manual/test_hybrid_dsa_hicache_gpu.py
+@@ -0,0 +1,296 @@
++#!/usr/bin/env python3
++"""Exact-image GPU byte oracle. Run only in an isolated qualification Job.
++
++Exercises the real index sidecar builder and unmodified CPU/GPU copy paths,
++including noncontiguous physical pages, incremental backup, draft layers,
++and restoration onto different physical pages after poisoning device memory.
++"""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _DsaStrategy,
++    build_hybrid_mamba_stack,
++)
++from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
++from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
++
++
++def check_derived_slot_lifecycle():
++    """The INDEXER borrows KV addresses; it must never allocate/free its own."""
++    pools = {
++        name: MagicMock() for name in (PoolName.KV, PoolName.MAMBA, PoolName.INDEXER)
++    }
++    group = HostPoolGroup(
++        [
++            PoolEntry(
++                name=name,
++                host_pool=pool,
++                device_pool=None,
++                layer_mapper=lambda layer: layer,
++                is_primary_index_anchor=name == PoolName.KV,
++            )
++            for name, pool in pools.items()
++        ]
++    )
++    controller = object.__new__(HybridCacheController)
++    controller.mem_pool_host = group
++    controller.write_queue = []
++    controller.start_writing = MagicMock()
++    for iteration in range(100):
++        # Reuse a bounded host range after each prior operation was released.
++        size = 512 if iteration % 2 == 0 else 256
++        host = torch.arange(size, dtype=torch.int64)
++        device = host + 1024
++        pools[PoolName.KV].alloc.return_value = host
++        pools[PoolName.MAMBA].alloc.return_value = torch.tensor([iteration % 4])
++        pools[PoolName.MAMBA].free.return_value = 1
++        result = controller.write(
++            device,
++            node_id=iteration,
++            extra_pools=[
++                PoolTransfer(PoolName.INDEXER, indices_from_pool=PoolName.KV),
++                PoolTransfer(PoolName.MAMBA, device_indices=torch.tensor([3])),
++            ],
++        )
++        assert result is host
++        operation = controller.write_queue.pop()
++        derived = next(
++            t for t in operation.pool_transfers if t.name == PoolName.INDEXER
++        )
++        assert derived.host_indices is host
++        assert derived.device_indices is device
++        assert group.release_transfers(operation.pool_transfers) == 1
++        # A published node may split only at a whole compression group.
++        for child in host.split(256):
++            group.free(child)
++    pools[PoolName.INDEXER].alloc.assert_not_called()
++    pools[PoolName.INDEXER].free.assert_not_called()
++    assert pools[PoolName.MAMBA].free.call_count == 100
++    assert pools[PoolName.KV].free.call_count == 150
++    print("Derived INDEXER controller lifecycle: 100/100 passed", flush=True)
++
++
++def check_ratio_mode():
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    target = make_pool((True, True))
++    target.kv_cache_dim = 656
++    memory = SimpleNamespace(
++        hicache_size=0,
++        hicache_ratio=2.5,
++        hicache_mem_layout="page_first",
++        hicache_write_policy="write_through",
++        hicache_io_backend="kernel",
++        hicache_host_memory_mode=None,
++    )
++    params = SimpleNamespace(
++        page_size=64,
++        mtp_draft_device_pools=(),
++        req_to_token_pool=SimpleNamespace(mamba_allocator=MagicMock()),
++        token_to_kv_pool_allocator=MagicMock(),
++        tp_cache_group=None,
++        attn_cp_cache_group=None,
++        attn_tp_cache_group=None,
++        pp_cache_group=None,
++    )
++    with (
++        patch(prefix + "get_memory", return_value=memory),
++        patch(prefix + "_get_allocator_type", return_value="default"),
++        patch(prefix + "_split_hicache_size") as split,
++        patch(prefix + "build_kv_host_pool") as build_kv,
++        patch(prefix + "MambaPoolHost"),
++        patch(prefix + "DeepSeekV4PagedHostPool") as index_host,
++        patch(prefix + "HybridCacheController"),
++    ):
++        build_kv.return_value.page_num = 20
++        group, _ = build_hybrid_mamba_stack(
++            params=params,
++            kv_pool=target,
++            mamba_pool=MagicMock(),
++            full_layer_mapping={0: 0, 3: 1},
++            mamba_layer_mapping={1: 0, 2: 1},
++            load_cache_event=None,
++            storage_backend=None,
++            use_mla=True,
++        )
++        split.assert_not_called()
++        assert build_kv.call_args.kwargs["host_size"] is None
++        assert index_host.call_args.kwargs["num_host_pages"] == 20
++        assert PoolName.INDEXER in group.entry_map
++    print("Hybrid DSA ratio-mode assembly: passed", flush=True)
++
++
++def make_pool(live_layers):
++    pool = object.__new__(DSATokenToKVPool)
++    pool.page_size = 64
++    pool.index_kpool = 4
++    pool.kpool_use_compress = True
++    pool.layer_num = len(live_layers)
++    pool.index_key_cache = SimpleNamespace(
++        buffer=[
++            torch.zeros((8 if live else 0, 64 * 132), dtype=torch.uint8, device="cuda")
++            for live in live_layers
++        ]
++    )
++    return pool
++
++
++def tokens(pages):
++    return (pages[:, None] * 64 + torch.arange(64, device=pages.device)).flatten()
++
++
++def run_case(layout, backend, trial, *, standalone=False):
++    target = make_pool((True, False, True))
++    draft = make_pool((True,))
++    prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++    memory = SimpleNamespace(
++        hicache_mem_layout=layout,
++        hicache_write_policy="write_through",
++        hicache_io_backend=backend,
++        hicache_host_memory_mode=None,
++    )
++    with (
++        patch(prefix + "get_memory", return_value=memory),
++        patch(prefix + "_get_allocator_type", return_value="default"),
++    ):
++        if standalone:
++            target.kv_cache_dim = 656
++            params = SimpleNamespace(
++                mtp_draft_device_pools=(draft,),
++                page_size=64,
++                token_to_kv_pool_allocator=MagicMock(),
++                tp_cache_group=None,
++                attn_cp_cache_group=None,
++                attn_tp_cache_group=None,
++                pp_cache_group=None,
++            )
++            with (
++                patch(prefix + "build_kv_host_pool") as anchor,
++                patch(prefix + "HybridCacheController"),
++            ):
++                anchor.return_value.page_num = 16
++                result = _DsaStrategy().build(
++                    cache=MagicMock(),
++                    kvcache=target,
++                    params=params,
++                    server_args=None,
++                    load_cache_event=None,
++                )
++            entry = result.host_pool_group.get_entry(PoolName.INDEXER)
++            assert entry.layer_mapper(1) is None
++            assert entry.layer_mapper(3) == 2
++        else:
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=target,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping={0: 0, 4: 1, 8: 2, 45: 3},
++                transfer_layer_num=46,
++                draft_pools=(draft,),
++            )
++            assert entry.layer_mapper(4) is None
++            assert entry.layer_mapper(45) == 2
++    host = entry.host_pool
++    assert len(host.device_buffers) == 3
++    assert host.item_bytes == 8448
++    generator = torch.Generator(device="cpu").manual_seed(37625 + trial)
++    originals = []
++    for buffer in host.device_buffers:
++        original = torch.randint(
++            0, 256, buffer.shape, dtype=torch.uint8, generator=generator
++        )
++        buffer.copy_(original)
++        originals.append(original)
++    source_pages = torch.randperm(8, generator=generator)
++    host_pages = torch.randperm(16, generator=generator)[:8]
++    dest_pages = torch.randperm(8, generator=generator)
++    index_device = "cuda" if backend == "kernel" else "cpu"
++    src = tokens(source_pages.to(index_device))
++    dst = tokens(dest_pages.to(index_device))
++    cached = tokens(host_pages.to(index_device))
++    # The staged page-first D2H path consumes CPU destination indices,
++    # exactly as HybridCacheController._move_write_operation supplies them.
++    backup_cached = cached.cpu() if host.can_use_write_back_jit else cached
++    # Explicit dependencies model asynchronous transfers without relying on
++    # the default stream's implicit ordering.
++    backup_stream = torch.cuda.Stream()
++    restore_stream = torch.cuda.Stream()
++    backup_stream.wait_stream(torch.cuda.current_stream())
++    with torch.cuda.stream(backup_stream):
++        for start in (0, 256):
++            host.backup_from_device_all_layer(
++                target,
++                backup_cached[start : start + 256],
++                src[start : start + 256],
++                backend,
++            )
++        backed_up = backup_stream.record_event()
++    torch.cuda.current_stream().wait_event(backed_up)
++    for buffer in host.device_buffers:
++        buffer.fill_(173)
++    restore_stream.wait_stream(torch.cuda.current_stream())
++    with torch.cuda.stream(restore_stream):
++        for layer in range(3):
++            host.load_to_device_per_layer(target, cached, dst, layer, backend)
++        restored = restore_stream.record_event()
++    restored.synchronize()
++    for layer, buffer in enumerate(host.device_buffers):
++        actual = buffer.cpu()[dest_pages]
++        expected = originals[layer][source_pages]
++        assert torch.equal(actual, expected), (layout, backend, trial, layer)
++    # Each trial owns a registered host buffer. Release its registration before
++    # a later trial can reuse that address for a new host allocation.
++    host.destroy()
++    print(
++        json.dumps(
++            {
++                "layout": layout,
++                "backend": backend,
++                "trial": trial,
++                "standalone": standalone,
++                "layers": 3,
++                "pages": 8,
++                "bytes_compared": 3 * 8 * 8448,
++                "passed": True,
++            }
++        ),
++        flush=True,
++    )
++
++
++def main():
++    assert torch.cuda.is_available(), "requires an isolated CUDA Job"
++    print(
++        json.dumps(
++            {
++                "gpu": torch.cuda.get_device_name(),
++                "capability": torch.cuda.get_device_capability(),
++            }
++        ),
++        flush=True,
++    )
++    with torch.inference_mode():
++        check_derived_slot_lifecycle()
++        check_ratio_mode()
++        for layout, backend in (
++            ("page_first", "kernel"),
++            ("layer_first", "kernel"),
++            ("layer_first", "direct"),
++            ("page_first_direct", "direct"),
++        ):
++            for trial in range(5):
++                for standalone in (False, True):
++                    run_case(layout, backend, trial, standalone=standalone)
++    print("Hybrid DSA HiCache GPU byte oracle: 40/40 passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py b/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cbbd2736fbbe1b4193ccf6256d3cb3ade851ee6
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
+@@ -0,0 +1,574 @@
++"""CPU regressions for hybrid DSA index ownership and HiCache assembly."""
++
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.mem_cache.base_prefix_cache import InsertParams, MatchPrefixParams
++from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++    HybridCacheController,
++)
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    _build_hybrid_dsa_index_entry,
++    _DsaStrategy,
++    _MambaStrategy,
++    build_full_draft_pools,
++    build_hybrid_mamba_stack,
++    build_pool_entry,
++)
++from sglang.srt.mem_cache.memory_pool import (
++    DSATokenToKVPool,
++    HybridLinearKVPool,
++    HybridReqToTokenPool,
++)
++from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.unified_cache.components import ComponentType, MambaComponent
++from sglang.srt.mem_cache.unified_radix_cache import (
++    UnifiedRadixCache,
++    _compressed_index_tree_params,
++)
++from sglang.srt.runtime_context import publish, reset_context
++from sglang.srt.server_args import ServerArgs
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++def dsa_pool(*, live_layers=(True, True), compress=True, kpool=4):
++    pool = object.__new__(DSATokenToKVPool)
++    pool.page_size = 64
++    pool.index_kpool = kpool
++    pool.kpool_use_compress = compress
++    pool.layer_num = len(live_layers)
++    pool.index_key_cache = SimpleNamespace(
++        buffer=[
++            torch.zeros((8 if live else 0, 64 * 132), dtype=torch.uint8)
++            for live in live_layers
++        ]
++    )
++    return pool
++
++
++def cache_params(pool, *, page_size=64, hybrid=True):
++    if hybrid:
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = pool
++        pool = wrapper
++    return CacheInitParams(
++        disable=False,
++        req_to_token_pool=SimpleNamespace(),
++        token_to_kv_pool_allocator=SimpleNamespace(
++            get_kvcache=lambda: pool,
++            device=torch.device("cpu"),
++            size=2048,
++            free=MagicMock(),
++            free_segment=MagicMock(),
++        ),
++        page_size=page_size,
++        tree_components=(ComponentType.FULL,),
++    )
++
++
++class TestCompressedIndexOwnership(unittest.TestCase):
++    def setUp(self):
++        server_args = ServerArgs(model_path="dummy")
++        server_args._mamba_cache_chunk_size = 64
++        publish(server_args, role="scheduler")
++        self.addCleanup(reset_context)
++
++    def test_tree_alignment_does_not_change_transfer_params(self):
++        for hybrid in (False, True):
++            with self.subTest(hybrid=hybrid):
++                params = cache_params(dsa_pool(), hybrid=hybrid)
++                tree_params = _compressed_index_tree_params(params)
++                self.assertEqual(tree_params.page_size, 256)
++                self.assertEqual(params.page_size, 64)
++                self.assertIs(
++                    tree_params.token_to_kv_pool_allocator,
++                    params.token_to_kv_pool_allocator,
++                )
++                self.assertEqual(
++                    _compressed_index_tree_params(
++                        cache_params(dsa_pool(), page_size=512, hybrid=hybrid)
++                    ).page_size,
++                    512,
++                )
++
++    def test_uncompressed_and_non_dsa_pools_are_unchanged(self):
++        for hybrid in (False, True):
++            for pool in (dsa_pool(compress=False), SimpleNamespace()):
++                with self.subTest(hybrid=hybrid, pool=type(pool).__name__):
++                    params = cache_params(pool, hybrid=hybrid)
++                    self.assertIs(_compressed_index_tree_params(params), params)
++
++    def test_mamba_checkpoint_grid_follows_index_ownership_not_transfer_pages(self):
++        params = cache_params(dsa_pool())
++        params.req_to_token_pool = object.__new__(HybridReqToTokenPool)
++        params.enable_mamba_extra_buffer = True
++        tree_params = _compressed_index_tree_params(params)
++        component = MambaComponent(MagicMock(), tree_params)
++        self.assertEqual(component.mamba_cache_chunk_size, 64)
++        self.assertEqual(component.mamba_checkpoint_grid, 256)
++        self.assertEqual(params.page_size, 64)
++
++    def test_branch_inside_group_cannot_share_first_index_page(self):
++        for hybrid, common in (
++            (hybrid, common)
++            for hybrid in (False, True)
++            for common in (64, 128, 192, 320, 384, 448)
++        ):
++            with self.subTest(hybrid=hybrid, common=common):
++                cache = UnifiedRadixCache(cache_params(dsa_pool(), hybrid=hybrid))
++                a = [1] * 512
++                cache.insert(InsertParams(key=RadixKey(a), value=torch.arange(64, 576)))
++                b = [1] * common + [2] * (512 - common)
++                match = cache.match_prefix(MatchPrefixParams(key=RadixKey(b)))
++                self.assertEqual(len(match.device_indices), common // 256 * 256)
++                # Neither matching nor inserting the branch may create a node
++                # that divides one compressed index row between two children.
++                cache.insert(
++                    InsertParams(key=RadixKey(b), value=torch.arange(640, 1152))
++                )
++                for node in cache.tree_core._node_arena.values():
++                    self.assertEqual(len(node.key) % 256, 0)
++
++    def test_partial_group_is_not_published_then_extended_in_place(self):
++        for hybrid in (False, True):
++            with self.subTest(hybrid=hybrid):
++                cache = UnifiedRadixCache(cache_params(dsa_pool(), hybrid=hybrid))
++                for length in (64, 128, 192):
++                    key = RadixKey([1] * length)
++                    cache.insert(
++                        InsertParams(key=key, value=torch.arange(64, 64 + length))
++                    )
++                    match = cache.match_prefix(MatchPrefixParams(key=key))
++                    self.assertEqual(len(match.device_indices), 0)
++                cache.insert(
++                    InsertParams(key=RadixKey([1] * 256), value=torch.arange(64, 320))
++                )
++                match = cache.match_prefix(MatchPrefixParams(key=RadixKey([1] * 320)))
++                self.assertEqual(len(match.device_indices), 256)
++
++    def test_runtime_storage_attach_rejects_different_hash_page_size(self):
++        cache = UnifiedRadixCache(cache_params(dsa_pool()))
++        cache.cache_controller = SimpleNamespace(page_size=64)
++        cache._storage_attachment = MagicMock()
++        success, message = cache.attach_storage_backend("file")
++        self.assertFalse(success)
++        self.assertIn("L2 HiCache only", message)
++        cache._storage_attachment.attach.assert_not_called()
++
++    def test_external_linker_rejects_different_hash_page_size(self):
++        cache = UnifiedRadixCache(cache_params(dsa_pool()))
++        with self.assertRaisesRegex(ValueError, "external cache linker"):
++            cache.init_cache_linker(MagicMock())
++
++    def test_startup_storage_rejects_different_hash_page_size(self):
++        params = cache_params(dsa_pool())
++        cache = UnifiedRadixCache(params)
++        with (
++            patch(
++                "sglang.srt.mem_cache.unified_radix_cache.get_memory",
++                return_value=SimpleNamespace(
++                    hicache_host_memory_mode="cache", hicache_storage_backend="file"
++                ),
++            ),
++            self.assertRaisesRegex(ValueError, "L2 HiCache only"),
++        ):
++            cache.init_hicache(ServerArgs(model_path="dummy"), params)
++
++
++class TestHybridIndexSidecar(unittest.TestCase):
++    def setUp(self):
++        self.prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++        self.memory = SimpleNamespace(hicache_mem_layout="layer_first")
++
++    def test_standalone_compressed_stack_roundtrip_with_skipped_layers(self):
++        from collections import defaultdict
++
++        def allocate(shape, *, dtype, device, **_):
++            return torch.empty(shape, dtype=dtype, device=device)
++
++        def copy_pages(*, src_layers, dst_layers, src_indices, dst_indices, page_size):
++            self.assertEqual(page_size, 1)
++            for src, dst in zip(src_layers, dst_layers, strict=True):
++                dst[dst_indices] = src[src_indices]
++
++        for live, with_draft in (
++            ((True, False, True), False),
++            ((True, False, True), True),
++            ((False, False), False),
++        ):
++            with self.subTest(live=live, with_draft=with_draft):
++                pool = dsa_pool(live_layers=live)
++                drafts = (dsa_pool(live_layers=(True,)),) if with_draft else ()
++                for p in (pool, *drafts):
++                    p.kv_cache_dim = 656
++                    p.store_dtype = torch.uint8
++                    p.device = "cpu"
++                    p.start_layer, p.end_layer = 0, p.layer_num
++                    p.index_head_dim, p.quant_block_size = 128, 128
++                params = cache_params(pool, hybrid=False)
++                params.mtp_draft_device_pools = drafts
++                memory = SimpleNamespace(
++                    hicache_mem_layout="layer_first",
++                    hicache_write_policy="write_through",
++                    hicache_io_backend="direct",
++                    hicache_host_memory_mode=None,
++                )
++                with (
++                    patch(self.prefix + "get_memory", return_value=memory),
++                    patch(self.prefix + "_get_allocator_type", return_value="default"),
++                    patch(self.prefix + "build_kv_host_pool") as build_kv,
++                    patch(self.prefix + "HybridCacheController"),
++                    patch(
++                        "sglang.srt.mem_cache.memory_pool_host.ALLOC_MEMORY_FUNCS",
++                        defaultdict(lambda: allocate),
++                    ),
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.dsa.ALLOC_MEMORY_FUNCS",
++                        defaultdict(lambda: allocate),
++                    ),
++                ):
++                    build_kv.return_value = SimpleNamespace(
++                        page_num=16,
++                        size=1024,
++                        page_size=64,
++                        device="cpu",
++                        logical_size=1024,
++                        can_use_write_back_jit=False,
++                        mtp_draft_device_pools=drafts,
++                        layout="layer_first",
++                    )
++                    result = _DsaStrategy().build(
++                        cache=MagicMock(),
++                        kvcache=pool,
++                        params=params,
++                        server_args=None,
++                        load_cache_event=None,
++                    )
++                group = result.host_pool_group
++                if not any(live) and not with_draft:
++                    self.assertEqual(result.sidecars, [])
++                    self.assertNotIn(PoolName.INDEXER, group.entry_map)
++                    continue
++                entry = group.get_entry(PoolName.INDEXER)
++                buffers = [
++                    b for p in (pool, *drafts) for b in p.index_k_with_scale_buffer
++                ]
++                originals = []
++                for i, buffer in enumerate(buffers):
++                    buffer.copy_(torch.arange(buffer.numel()).reshape_as(buffer) + i)
++                    originals.append(buffer.clone())
++                src_pages = torch.tensor([5, 1, 7, 3])
++                host_pages = torch.tensor([9, 4, 13, 1])
++                dst_pages = torch.tensor([2, 6, 4, 0])
++
++                def tokens(pages):
++                    return (pages[:, None] * 64 + torch.arange(64)).flatten()
++
++                # Real host pools and index conversion; only the CUDA copy is
++                # replaced. An attempted copy from an empty layer fails here.
++                with (
++                    patch(
++                        "sglang.srt.mem_cache.memory_pool_host.transfer_kv_direct",
++                        side_effect=copy_pages,
++                        create=True,
++                    ),
++                    patch(
++                        "sglang.srt.mem_cache.pool_host.dsa.transfer_kv_direct",
++                        side_effect=copy_pages,
++                        create=True,
++                    ),
++                ):
++                    entry.host_pool.backup_from_device_all_layer(
++                        pool, tokens(host_pages), tokens(src_pages), "direct"
++                    )
++                    for buffer in buffers:
++                        buffer.fill_(173)
++                    for layer, buffer in enumerate(buffers):
++                        mapped = entry.layer_mapper(layer)
++                        if not buffer.numel():
++                            self.assertIsNone(mapped)
++                            continue
++                        entry.host_pool.load_to_device_per_layer(
++                            pool,
++                            tokens(host_pages),
++                            tokens(dst_pages),
++                            mapped,
++                            "direct",
++                        )
++                        self.assertTrue(
++                            torch.equal(buffer[dst_pages], originals[layer][src_pages])
++                        )
++
++    def test_draft_sidecar_omits_empty_index_layers(self):
++        for live in ((True, False, True), (False, False)):
++            with self.subTest(live=live):
++                pool = dsa_pool(live_layers=live)
++                pool.size = 512
++                draft_host = SimpleNamespace(layer_num=len(live), page_num=16)
++                cache = SimpleNamespace(
++                    cache_controller=SimpleNamespace(
++                        page_size=64, mem_pool_host=SimpleNamespace(logical_size=1024)
++                    )
++                )
++                with (
++                    patch(self.prefix + "get_memory", return_value=self.memory),
++                    patch(self.prefix + "_get_allocator_type", return_value="default"),
++                    patch(
++                        self.prefix + "_build_mha_mla_host_pool",
++                        return_value=draft_host,
++                    ),
++                    patch(self.prefix + "DeepSeekV4PagedHostPool") as host_cls,
++                    patch(self.prefix + "DSAIndexerPoolHost") as legacy,
++                ):
++                    specs, entries = build_full_draft_pools(
++                        draft_kv_pool=pool, tree_cache=cache
++                    )
++                legacy.assert_not_called()
++                expected = [PoolName.DRAFT] + (
++                    [PoolName.DRAFT_INDEXER] if any(live) else []
++                )
++                self.assertEqual([s.pool_name for s in specs], expected)
++                self.assertEqual([e.name for e in entries], expected)
++                self.assertTrue(all(s.indices_from_pool == PoolName.KV for s in specs))
++                if any(live):
++                    self.assertEqual(
++                        host_cls.call_args.kwargs["pool_name"],
++                        str(PoolName.DRAFT_INDEXER),
++                    )
++                    self.assertEqual(host_cls.call_args.kwargs["item_bytes"], 8448)
++                    self.assertEqual(
++                        len(host_cls.call_args.kwargs["device_buffers"]), 2
++                    )
++                    self.assertEqual(entries[-1].layer_mapper(0), 0)
++                    self.assertIsNone(entries[-1].layer_mapper(1))
++                    self.assertEqual(entries[-1].layer_mapper(2), 1)
++                else:
++                    host_cls.assert_not_called()
++
++    def build_entry(self, pool, *, drafts=(), mapping=None, layer_num=6):
++        if mapping is None:
++            mapping = {0: 0, 3: 1}
++        with (
++            patch(self.prefix + "get_memory", return_value=self.memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(self.prefix + "DeepSeekV4PagedHostPool") as host_cls,
++        ):
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=pool,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping=mapping,
++                transfer_layer_num=layer_num + len(drafts),
++                draft_pools=drafts,
++            )
++        return entry, host_cls
++
++    def test_non_dsa_has_no_sidecar(self):
++        entry, host_cls = self.build_entry(SimpleNamespace())
++        self.assertIsNone(entry)
++        host_cls.assert_not_called()
++
++    def test_real_stack_registers_indexer_within_fixed_host_budget(self):
++        pool = dsa_pool()
++        draft = dsa_pool(live_layers=(True,))
++        for item in (pool, draft):
++            item.kv_cache_dim = 656
++            item.store_dtype = torch.uint8
++        wrapper = object.__new__(HybridLinearKVPool)
++        wrapper.full_kv_pool = draft
++        params = cache_params(pool)
++        params.req_to_token_pool.mamba_allocator = MagicMock()
++        params.mtp_draft_device_pools = (wrapper,)
++        memory = SimpleNamespace(
++            hicache_size=32,
++            hicache_ratio=2.0,
++            hicache_mem_layout="layer_first",
++            hicache_write_policy="write_through",
++            hicache_io_backend="direct",
++            hicache_host_memory_mode=None,
++        )
++        with (
++            patch(self.prefix + "get_memory", return_value=memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(self.prefix + "_split_hicache_size", return_value=(20.0, 12.0)),
++            patch(self.prefix + "build_kv_host_pool") as build_kv,
++            patch(self.prefix + "MambaPoolHost"),
++            patch(self.prefix + "DeepSeekV4PagedHostPool"),
++            patch(self.prefix + "HybridCacheController"),
++        ):
++            build_kv.return_value.page_num = 16
++            group, _ = build_hybrid_mamba_stack(
++                params=params,
++                kv_pool=pool,
++                mamba_pool=MagicMock(),
++                full_layer_mapping={0: 0, 3: 1},
++                mamba_layer_mapping={1: 0, 2: 1},
++                load_cache_event=None,
++                storage_backend=None,
++                use_mla=True,
++            )
++        self.assertIn(PoolName.INDEXER, group.entry_map)
++        self.assertEqual(build_kv.call_args.kwargs["page_size"], 64)
++        kv_budget = build_kv.call_args.kwargs["host_size"]
++        self.assertAlmostEqual(kv_budget, 20.0 * 656 / (656 + 132))
++        self.assertAlmostEqual(kv_budget * (1 + 132 / 656), 20.0)
++        self.assertEqual(group.get_entry(PoolName.INDEXER).layer_mapper(4), 2)
++
++    def test_complete_group_roundtrip_with_noncontiguous_pages(self):
++        # Exercise the real host pool and physical-page index conversion. Only
++        # the CUDA copy primitive is replaced by an equivalent CPU byte copy.
++        def allocate(shape, *, dtype, device, **_):
++            return torch.empty(shape, dtype=dtype, device=device)
++
++        def copy_pages(*, src_layers, dst_layers, src_indices, dst_indices, page_size):
++            self.assertEqual(page_size, 1)
++            for src, dst in zip(src_layers, dst_layers, strict=True):
++                dst[dst_indices] = src[src_indices]
++
++        from collections import defaultdict
++
++        from sglang.srt.layers.attention.dsa.kpool_fp8_index import (
++            compute_pooled_write_locs,
++        )
++
++        pool = dsa_pool()
++        draft = dsa_pool(live_layers=(True,))
++        with (
++            patch(self.prefix + "get_memory", return_value=self.memory),
++            patch(self.prefix + "_get_allocator_type", return_value="default"),
++            patch(
++                "sglang.srt.mem_cache.memory_pool_host.ALLOC_MEMORY_FUNCS",
++                defaultdict(lambda: allocate),
++            ),
++        ):
++            entry = _build_hybrid_dsa_index_entry(
++                kv_pool=pool,
++                kv_host_pool=SimpleNamespace(page_num=16),
++                layer_mapping={0: 0, 3: 1, 6: 2},
++                transfer_layer_num=7,
++                draft_pools=(draft,),
++            )
++        host = entry.host_pool
++        originals = []
++        for layer, buffer in enumerate(host.device_buffers):
++            buffer.copy_(torch.arange(buffer.numel()).reshape_as(buffer) + layer)
++            originals.append(buffer.clone())
++        src_pages = torch.tensor([5, 1, 7, 3, 0, 6, 2, 4])
++        host_pages = torch.tensor([9, 4, 13, 1, 8, 14, 3, 7])
++        dst_pages = torch.tensor([2, 6, 4, 0, 7, 3, 5, 1])
++
++        def tokens(pages):
++            return (pages[:, None] * 64 + torch.arange(64)[None, :]).flatten()
++
++        with patch(
++            "sglang.srt.mem_cache.memory_pool_host.transfer_kv_direct",
++            side_effect=copy_pages,
++            create=True,
++        ):
++            # Backup prefix, then its extension without revisiting the prefix.
++            for start in (0, 4):
++                host.backup_from_device_all_layer(
++                    pool,
++                    tokens(host_pages[start : start + 4]),
++                    tokens(src_pages[start : start + 4]),
++                    "direct",
++                )
++            for buffer in host.device_buffers:
++                buffer.fill_(173)
++            for layer in range(len(host.device_buffers)):
++                host.load_to_device_per_layer(
++                    pool, tokens(host_pages), tokens(dst_pages), layer, "direct"
++                )
++                self.assertTrue(
++                    torch.equal(
++                        host.device_buffers[layer][dst_pages],
++                        originals[layer][src_pages],
++                    )
++                )
++            # The pooled-key reader selects each restored group's first page.
++            locs = compute_pooled_write_locs(dst_pages, torch.arange(128), 4)
++            self.assertTrue(torch.equal(locs[:64], 2 * 64 + torch.arange(64)))
++            self.assertTrue(torch.equal(locs[64:], 7 * 64 + torch.arange(64)))
++
++    def test_skipped_target_layers_and_packed_draft_are_layer_mapped(self):
++        pool = dsa_pool(live_layers=(True, False, True))
++        draft = dsa_pool(live_layers=(True,))
++        entry, host_cls = self.build_entry(
++            pool, drafts=(draft,), mapping={0: 0, 2: 1, 4: 2, 6: 3}
++        )
++        buffers = host_cls.call_args.kwargs["device_buffers"]
++        self.assertEqual(len(buffers), 3)
++        self.assertIs(buffers[0], pool.index_k_with_scale_buffer[0])
++        self.assertIs(buffers[1], pool.index_k_with_scale_buffer[2])
++        self.assertIs(buffers[2], draft.index_k_with_scale_buffer[0])
++        self.assertEqual(entry.layer_mapper(0), 0)
++        self.assertIsNone(entry.layer_mapper(2))
++        self.assertEqual(entry.layer_mapper(4), 1)
++        self.assertEqual(entry.layer_mapper(6), 2)
++        self.assertEqual(host_cls.call_args.kwargs["slot_page_size"], 64)
++        self.assertTrue(host_cls.call_args.kwargs["page_aligned_only"])
++
++        # Exercise the actual load-transfer builder: the draft's index must
++        # restore on its first transfer layer, not the target's last layer.
++        anchor = build_pool_entry(
++            name=PoolName.KV,
++            host_pool=MagicMock(layout="layer_first"),
++            device_pool=pool,
++            layer_mapping={0: 0},
++            transfer_layer_num=6,
++            is_anchor=True,
++        )
++        controller = object.__new__(HybridCacheController)
++        controller.mem_pool_host = HostPoolGroup([anchor, entry])
++        controller.layer_num = 6
++        indices = torch.arange(64)
++        transfers = controller._l2_load_transfers(
++            indices,
++            indices,
++            [
++                PoolTransfer(
++                    PoolName.INDEXER, host_indices=indices, device_indices=indices
++                )
++            ],
++        )
++        draft_transfers = [t for t in transfers if t.is_draft]
++        self.assertEqual(len(draft_transfers), 1)
++        self.assertEqual(draft_transfers[0].layer_mapper(0), 2)
++        self.assertIsNone(draft_transfers[0].layer_mapper(1))
++
++    def test_strategy_registers_the_index_transfer_spec(self):
++        pool = dsa_pool()
++        entry, _ = self.build_entry(pool)
++        group = MagicMock()
++        group.entry_map = {PoolName.INDEXER: entry}
++        params = MagicMock()
++        params.req_to_token_pool.mamba_map = {1: 0, 2: 1}
++        kvcache = SimpleNamespace(
++            full_attention_layer_id_mapping={0: 0, 3: 1},
++            full_kv_pool=pool,
++            use_mla=True,
++        )
++        with patch(
++            self.prefix + "build_hybrid_mamba_stack", return_value=(group, MagicMock())
++        ):
++            result = _MambaStrategy().build(
++                cache=MagicMock(),
++                kvcache=kvcache,
++                params=params,
++                server_args=MagicMock(),
++                load_cache_event=None,
++            )
++        self.assertEqual(len(result.sidecars), 1)
++        self.assertEqual(result.sidecars[0].pool_name, PoolName.INDEXER)
++        self.assertEqual(result.sidecars[0].indices_from_pool, PoolName.KV)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+index 8d203fc7a96908ca329899c8a2a0f7d3045bb0a0..49ccb33b40d793e0c738b977822f41c2563989eb 100644
+--- a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
++++ b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+@@ -1,17 +1,23 @@
+ """Unit tests for hybrid HiCache pool assembly."""
+ 
+ import unittest
++from contextlib import ExitStack
+ from types import SimpleNamespace
+ from unittest.mock import MagicMock, patch
+ 
++import torch
++
+ from sglang.srt.mem_cache.base_prefix_cache import EvictParams
+ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+     _evict_mamba_for_device_alloc,
+     _evict_swa_for_device_alloc,
+     _split_hicache_size,
+     build_full_draft_pools,
++    build_hybrid_mamba_stack,
+ )
+ from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
++from sglang.srt.mem_cache.pool_host.common import alloc_with_host_register
++from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+ 
+@@ -128,5 +134,268 @@ class TestDraftSidecarPoolDispatch(CustomTestCase):
+         self.assertIs(entries[0].host_pool, draft_host_pool)
+ 
+ 
++class _PackedRowGeometryFixtures:
++    """Fake MLA device pools with nominal-width and packed (wider) rows.
++
++    DSA device pools store packed rows wider than kv_lora_rank +
++    qk_rope_head_dim, the width the MLA host pool assumes without an
++    override.
++    """
++
++    KV_LORA_RANK = 8
++    QK_ROPE_HEAD_DIM = 4
++    NOMINAL_KV_CACHE_DIM = KV_LORA_RANK + QK_ROPE_HEAD_DIM
++    PACKED_KV_CACHE_DIM = 16  # > NOMINAL_KV_CACHE_DIM
++    PAGE_SIZE = 4
++    LAYER_NUM = 2
++
++    def _fake_device_pool(self, *, store_dtype, kv_cache_dim, layer_num=LAYER_NUM):
++        return SimpleNamespace(
++            size=64,
++            store_dtype=store_dtype,
++            kv_lora_rank=self.KV_LORA_RANK,
++            qk_rope_head_dim=self.QK_ROPE_HEAD_DIM,
++            kv_cache_dim=kv_cache_dim,
++            layer_num=layer_num,
++            start_layer=0,
++            end_layer=layer_num,
++            device="cpu",
++            layers_to_capture=None,
++            layer_shard_enabled=False,
++            data_ptrs=torch.zeros(layer_num, dtype=torch.uint64),
++            kv_buffer=[torch.empty(0, dtype=store_dtype) for _ in range(layer_num)],
++        )
++
++    def _fake_packed_device_pool(self, layer_num=LAYER_NUM):
++        return self._fake_device_pool(
++            store_dtype=torch.uint8,
++            kv_cache_dim=self.PACKED_KV_CACHE_DIM,
++            layer_num=layer_num,
++        )
++
++    def _fake_nominal_device_pool(self, layer_num=LAYER_NUM):
++        return self._fake_device_pool(
++            store_dtype=torch.bfloat16,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=layer_num,
++        )
++
++    @staticmethod
++    def _alloc_unpinned(dims, dtype, device, pin_memory, allocator, **kwargs):
++        # Host rows are allocated without pinning so no CUDA context is needed.
++        return alloc_with_host_register(dims, dtype, device, False, allocator, **kwargs)
++
++
++class TestHybridMambaStackHostRowWidth(_PackedRowGeometryFixtures, CustomTestCase):
++    """The hybrid Mamba stack's MLA host pool must mirror the device rows.
++
++    Packed MTP draft layers share the target's host rows, so a draft pool
++    with a different row geometry must be rejected.
++    """
++
++    def _build_stack(self, kv_pool, *, use_mla, draft_pools=(), extra_patches=()):
++        """Build the hybrid Mamba stack with the real KV host pool class.
++
++        Patched: the published memory/parallel config and allocator lookup,
++        the MLA host pool's allocator (unpinned), plus the Mamba host pool,
++        host pool group, and cache controller, which are not under test.
++        Returns the HostPoolGroup constructor mock.
++        """
++        params = MagicMock()
++        params.page_size = self.PAGE_SIZE
++        wrapped_draft_pools = []
++        for pool in draft_pools:
++            wrapper = object.__new__(HybridLinearKVPool)
++            wrapper.full_kv_pool = pool
++            wrapped_draft_pools.append(wrapper)
++        params.mtp_draft_device_pools = tuple(wrapped_draft_pools)
++        memory = SimpleNamespace(
++            hicache_size=0,
++            hicache_ratio=2.0,
++            hicache_mem_layout="layer_first",
++            hicache_write_policy="write_through",
++            hicache_io_backend="direct",
++            hicache_host_memory_mode=None,
++        )
++        parallel = SimpleNamespace(dcp_enabled=False)
++        prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++
++        with ExitStack() as stack:
++            stack.enter_context(patch(prefix + "get_memory", return_value=memory))
++            stack.enter_context(patch(prefix + "get_parallel", return_value=parallel))
++            stack.enter_context(
++                patch(prefix + "_get_allocator_type", return_value="default")
++            )
++            stack.enter_context(
++                patch(
++                    "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++                    {"cpu": self._alloc_unpinned},
++                )
++            )
++            stack.enter_context(patch(prefix + "MambaPoolHost"))
++            host_pool_group = stack.enter_context(patch(prefix + "HostPoolGroup"))
++            stack.enter_context(patch(prefix + "HybridCacheController"))
++            for extra_patch in extra_patches:
++                stack.enter_context(extra_patch)
++            build_hybrid_mamba_stack(
++                params=params,
++                kv_pool=kv_pool,
++                mamba_pool=MagicMock(),
++                full_layer_mapping={i: i for i in range(kv_pool.layer_num)},
++                mamba_layer_mapping={kv_pool.layer_num: kv_pool.layer_num},
++                load_cache_event=None,
++                storage_backend=None,
++                use_mla=use_mla,
++            )
++        return host_pool_group
++
++    def _kv_host_pool(self, host_pool_group):
++        entries = host_pool_group.call_args.args[0]
++        return entries[0].host_pool
++
++    def test_mla_host_pool_row_width_matches_packed_device_rows(self):
++        kv_pool = self._fake_packed_device_pool()
++        self.assertGreater(kv_pool.kv_cache_dim, self.NOMINAL_KV_CACHE_DIM)
++
++        kv_host_pool = self._kv_host_pool(self._build_stack(kv_pool, use_mla=True))
++
++        self.assertIsInstance(kv_host_pool, MLATokenToKVPoolHost)
++        self.assertEqual(kv_host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(
++            kv_host_pool.token_stride_size,
++            kv_pool.kv_cache_dim * kv_pool.store_dtype.itemsize,
++        )
++        self.assertEqual(kv_host_pool.kv_buffer.shape[-1], kv_pool.kv_cache_dim)
++
++    def test_non_mla_pool_exposing_kv_cache_dim_gets_no_override(self):
++        # MHA host pool constructors take no override_kv_cache_dim; a non-MLA
++        # pool that happens to expose kv_cache_dim must not trigger one.
++        kv_pool = self._fake_packed_device_pool()
++        mha_host_cls = MagicMock(name="MHAHostPool")
++        prefix = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++
++        self._build_stack(
++            kv_pool,
++            use_mla=False,
++            extra_patches=(
++                patch(prefix + "get_mha_host_pool_cls", return_value=mha_host_cls),
++            ),
++        )
++
++        mha_host_cls.assert_called_once()
++        self.assertNotIn("override_kv_cache_dim", mha_host_cls.call_args.kwargs)
++
++    def test_packed_draft_pool_with_target_geometry_is_accepted(self):
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        kv_host_pool = self._kv_host_pool(
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++        )
++
++        self.assertEqual(kv_host_pool.layer_num, kv_pool.layer_num + 1)
++        self.assertEqual(kv_host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(kv_host_pool.kv_buffer.shape[0], kv_pool.layer_num + 1)
++
++    def test_packed_draft_pool_with_narrower_rows_is_rejected(self):
++        # fp8 packed target, bf16 nominal-width draft.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_nominal_device_pool(layer_num=1)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++    def test_packed_draft_pool_with_wider_rows_is_rejected(self):
++        # bf16 nominal-width target, fp8 packed draft.
++        kv_pool = self._fake_nominal_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++    def test_same_dtype_draft_pool_with_different_width_is_rejected(self):
++        # Same store dtype, so only the row width differs: fp8 packed target,
++        # fp8 nominal-width draft.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_device_pool(
++            store_dtype=torch.uint8,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=1,
++        )
++        self.assertEqual(draft_pool.store_dtype, kv_pool.store_dtype)
++
++        with self.assertRaisesRegex(ValueError, "draft pool 0"):
++            self._build_stack(kv_pool, use_mla=True, draft_pools=(draft_pool,))
++
++
++class TestMLAHostPoolRowGeometry(_PackedRowGeometryFixtures, CustomTestCase):
++    """MLATokenToKVPoolHost itself must refuse rows narrower than the device's.
++
++    Exercises the constructor directly so the check does not depend on a
++    builder passing the override.
++    """
++
++    def _host_pool(self, kv_pool, **kwargs):
++        with patch(
++            "sglang.srt.mem_cache.pool_host.mla.ALLOC_MEMORY_FUNCS",
++            {"cpu": self._alloc_unpinned},
++        ):
++            return MLATokenToKVPoolHost(
++                kv_pool,
++                host_to_device_ratio=2.0,
++                host_size=0,
++                page_size=self.PAGE_SIZE,
++                layout="layer_first",
++                pin_memory=False,
++                device="cpu",
++                **kwargs,
++            )
++
++    def test_packed_device_pool_without_override_is_rejected(self):
++        kv_pool = self._fake_packed_device_pool()
++
++        with self.assertRaisesRegex(ValueError, "override_kv_cache_dim"):
++            self._host_pool(kv_pool)
++
++    def test_packed_device_pool_without_override_and_nominal_draft_is_rejected(self):
++        # Without the override the assumed host width equals the nominal
++        # width, so a same-dtype nominal-width draft matches the assumed
++        # width while both differ from the packed device rows. The draft
++        # must be compared against the device pool's kv_cache_dim, not the
++        # assumed width.
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_device_pool(
++            store_dtype=kv_pool.store_dtype,
++            kv_cache_dim=self.NOMINAL_KV_CACHE_DIM,
++            layer_num=1,
++        )
++
++        with self.assertRaisesRegex(ValueError, "row geometry"):
++            self._host_pool(kv_pool, mtp_draft_device_pools=(draft_pool,))
++
++    def test_packed_device_pool_with_override_and_matching_draft(self):
++        kv_pool = self._fake_packed_device_pool()
++        draft_pool = self._fake_packed_device_pool(layer_num=1)
++
++        host_pool = self._host_pool(
++            kv_pool,
++            override_kv_cache_dim=kv_pool.kv_cache_dim,
++            mtp_draft_device_pools=(draft_pool,),
++        )
++
++        self.assertEqual(host_pool.kv_cache_dim, kv_pool.kv_cache_dim)
++        self.assertEqual(host_pool.layer_num, kv_pool.layer_num + 1)
++        self.assertEqual(host_pool.kv_buffer.shape[-1], kv_pool.kv_cache_dim)
++
++    def test_nominal_device_pool_needs_no_override(self):
++        # Flat MLA callers pass no override; a nominal-width pool must still
++        # construct because its kv_cache_dim equals the assumed width.
++        kv_pool = self._fake_nominal_device_pool()
++
++        host_pool = self._host_pool(kv_pool)
++
++        self.assertEqual(host_pool.kv_cache_dim, self.NOMINAL_KV_CACHE_DIM)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/test/registered/unit/mem_cache/test_unified_cache_linker.py b/test/registered/unit/mem_cache/test_unified_cache_linker.py
+index fe6ba8ce9b0b0032e7c72bb90de33c42153267f6..7e29e17106e8850f8a4844049b35296589b48249 100644
+--- a/test/registered/unit/mem_cache/test_unified_cache_linker.py
++++ b/test/registered/unit/mem_cache/test_unified_cache_linker.py
+@@ -170,8 +170,10 @@ def test_cache_linker_attachment_is_backend_independent():
+     cache.tree_core = SimpleNamespace(
+         enable_external_cache_linker=False,
+         write_through_threshold=256,
++        page_size=64,
+     )
+     cache.tree_components = (ComponentType.FULL,)
++    cache._transfer_page_size = 64
+     cache.linker = None
+     cache._components_tuple = ()
+     cache.components = {}

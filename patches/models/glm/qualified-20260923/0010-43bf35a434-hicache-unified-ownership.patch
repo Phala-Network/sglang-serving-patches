@@ -1,0 +1,154 @@
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+index 5775c0749846aca133db8bb37c86447906cc49ba..b36117b7409aacae3a377f3442236814bd36d838 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+@@ -1149,6 +1149,13 @@ def build_anchor_sidecar_stack(
+     mtp_draft_device_pools = tuple(
+         pool for pool in params.mtp_draft_device_pools if pool.index_k_with_scale_buffer
+     )
++    if mtp_draft_device_pools:
++        full_layer_mapping = _with_mtp_layer_mapping(
++            full_layer_mapping,
++            transfer_layer_start=transfer_layer_num,
++            target_device_layer_num=kv_pool.layer_num,
++            draft_layer_num=len(mtp_draft_device_pools),
++        )
+     # One collective entry/exit for this whole stack, never one per pool.
+     # The controller (and its storage threads) is created only after all ranks
+     # have either completed both physical buffers or rolled back together.
+@@ -1164,15 +1171,24 @@ def build_anchor_sidecar_stack(
+             override_kv_cache_dim=override_kv_cache_dim,
+             mtp_draft_device_pools=mtp_draft_device_pools,
+         )
+-        sidecar_host_pool = sidecar_host_pool_factory(kv_host_pool)
+-    # Expose packed MTP tail layers to the controller's flat transfer builder.
+-    if mtp_draft_device_pools:
+-        full_layer_mapping = _with_mtp_layer_mapping(
+-            full_layer_mapping,
+-            transfer_layer_start=transfer_layer_num,
+-            target_device_layer_num=kv_pool.layer_num,
+-            draft_layer_num=len(mtp_draft_device_pools),
+-        )
++        if sidecar_entry_factory is not None:
++            sidecar_entry = sidecar_entry_factory(
++                kv_pool=kv_pool,
++                kv_host_pool=kv_host_pool,
++                layer_mapping=full_layer_mapping,
++                transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
++                draft_pools=mtp_draft_device_pools,
++                pool_name=sidecar_pool_name,
++            )
++        else:
++            sidecar_entry = build_pool_entry(
++                name=sidecar_pool_name,
++                host_pool=sidecar_host_pool_factory(kv_host_pool),
++                device_pool=kv_pool,
++                layer_mapping=full_layer_mapping,
++                transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
++                packed_draft_device_pools=mtp_draft_device_pools,
++            )
+     entries = [
+         build_pool_entry(
+             name=PoolName.KV,
+@@ -1184,24 +1200,6 @@ def build_anchor_sidecar_stack(
+             packed_draft_device_pools=mtp_draft_device_pools,
+         ),
+     ]
+-    if sidecar_entry_factory is not None:
+-        sidecar_entry = sidecar_entry_factory(
+-            kv_pool=kv_pool,
+-            kv_host_pool=kv_host_pool,
+-            layer_mapping=full_layer_mapping,
+-            transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
+-            draft_pools=mtp_draft_device_pools,
+-            pool_name=sidecar_pool_name,
+-        )
+-    else:
+-        sidecar_entry = build_pool_entry(
+-            name=sidecar_pool_name,
+-            host_pool=sidecar_host_pool_factory(kv_host_pool),
+-            device_pool=kv_pool,
+-            layer_mapping=full_layer_mapping,
+-            transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
+-            packed_draft_device_pools=mtp_draft_device_pools,
+-        )
+     if sidecar_entry is not None:
+         entries.append(sidecar_entry)
+     host_pool_group = HostPoolGroup(entries)
+diff --git a/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
+index d9f42e3dc8f9b61ea29f0626b4705637e5bbda2c..f08c5a871d43f9af105f7d779ff8e35f6fd84f0b 100644
+--- a/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
++++ b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
+@@ -457,18 +457,19 @@ class TestCompressedDsaCheckpointRoundtrip(unittest.TestCase):
+                 )
+                 if finished:
+                     cache.cache_finished_req(other, kv_len_to_handle=64)
+-                # The newly saved state is for 64 tokens. It cannot be
+-                # attached to the SWA-limited 32-token key or leaked.
++                # The unified baseline leaves insertion length to Mamba for
++                # hybrid caches (bd45cd50ca). Retain the exact 64-token state,
++                # never attach it to the SWA-only 32-token branch.
+                 match = cache.match_prefix(
+                     MatchPrefixParams(key=RadixKey(other.origin_input_ids))
+                 )
+                 self._assert_cached_state_matches_prefix(
+                     cache, req_pool, other.origin_input_ids, len(match.device_indices)
+                 )
+-                self.assertEqual(len(match.device_indices), 0)
++                self.assertEqual(len(match.device_indices), 64)
+                 self.assertEqual(
+                     req_pool.mamba_allocator.available_size(),
+-                    available if finished else before,
++                    (available if finished else before) - 1,
+                 )
+                 self._assert_cached_state_matches_prefix(
+                     cache, req_pool, first.origin_input_ids, 64
+diff --git a/test/registered/unit/mem_cache/test_hicache_draft_plan.py b/test/registered/unit/mem_cache/test_hicache_draft_plan.py
+index b061392b4f70825c9231e52dfefd25c931102b6b..f8f7965861f3d3d45eb73378b506cc4f9c4f8cfb 100644
+--- a/test/registered/unit/mem_cache/test_hicache_draft_plan.py
++++ b/test/registered/unit/mem_cache/test_hicache_draft_plan.py
+@@ -62,7 +62,10 @@ def build_plan(
+     with (
+         patch(
+             prefix + "get_memory",
+-            return_value=SimpleNamespace(enable_hierarchical_cache=enabled),
++            return_value=SimpleNamespace(
++                enable_hierarchical_cache=enabled,
++                enable_unified_cache_external_linker=False,
++            ),
+         ),
+         patch(
+             prefix + "get_disagg",
+diff --git a/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py b/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
+index 6c636b6983ac945be2f7d0529ad8bf1e867f831f..f1fbde0e3d3ee9e48f59d481294f8974fd88a09f 100644
+--- a/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
++++ b/test/registered/unit/mem_cache/test_hybrid_dsa_hicache.py
+@@ -25,6 +25,7 @@ from sglang.srt.mem_cache.memory_pool import (
+     HybridLinearKVPool,
+ )
+ from sglang.srt.mem_cache.pool_host import HostPoolGroup
++from sglang.srt.mem_cache.pool_host.dsa import DSAIndexerPoolHost
+ from sglang.srt.mem_cache.radix_cache import RadixKey
+ from sglang.srt.mem_cache.unified_cache.components import ComponentType
+ from sglang.srt.mem_cache.unified_radix_cache import (
+@@ -215,6 +216,10 @@ class TestHybridIndexSidecar(unittest.TestCase):
+                     patch(self.prefix + "_get_allocator_type", return_value="default"),
+                     patch(self.prefix + "build_kv_host_pool") as build_kv,
+                     patch(self.prefix + "HybridCacheController"),
++                    patch(
++                        self.prefix + "DSAIndexerPoolHost",
++                        wraps=DSAIndexerPoolHost,
++                    ) as index_pool_factory,
+                     patch(
+                         "sglang.srt.mem_cache.memory_pool_host.ALLOC_MEMORY_FUNCS",
+                         defaultdict(lambda: allocate),
+@@ -241,6 +246,9 @@ class TestHybridIndexSidecar(unittest.TestCase):
+                         server_args=None,
+                         load_cache_event=None,
+                     )
++                    # Compressed indexes use DeepSeekV4PagedHostPool; the legacy
++                    # factory would allocate an unowned, registered duplicate.
++                    index_pool_factory.assert_not_called()
+                 group = result.host_pool_group
+                 if not any(live) and not with_draft:
+                     self.assertEqual(result.sidecars, [])

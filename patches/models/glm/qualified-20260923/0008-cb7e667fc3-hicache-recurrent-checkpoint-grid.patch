@@ -1,0 +1,938 @@
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 1a97807a965b4b09f90d50eddc91f0a481b4161c..55733ee604295058a9490e1eef7db91f64182157 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -2931,7 +2931,16 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+             # to force the math calculation to retrieve the correct mamba state from h.
+             return i + 1
+ 
+-        mask = req.extend_range.length >= checkpoint_grid
++        prefix_len = len(req.prefix_indices)
++        extend_end = prefix_len + req.extend_range.length
++        checkpoint = extend_end // checkpoint_grid * checkpoint_grid
++        # Continuing chunks need not start on the widened tree grid. Select an
++        # absolute tree boundary, and only save a state available on this
++        # extend's kernel snapshot grid. A short extend can cross that boundary.
++        mask = (
++            checkpoint > prefix_len
++            and (checkpoint - prefix_len) % cache_chunk_size == 0
++        )
+         track_index = req.kv.mamba_ping_pong_track_buffer[
+             req.kv.mamba_next_track_idx
+         ].item()
+@@ -2948,10 +2957,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+ 
+             # mamba_track_seqlen_aligned/mamba_last_track_seqlen is actual tracked seqlen. Used to pass to
+             # mamba radix cache to track which seqlen this mamba state should store at.
+-            mamba_track_seqlen_aligned = (
+-                len(req.prefix_indices)
+-                + (req.extend_range.length // checkpoint_grid) * checkpoint_grid
+-            )
++            mamba_track_seqlen_aligned = checkpoint
+ 
+             # A coarser checkpoint grid may not be a model-state boundary, so
+             # force retrieval from the intermediate h state in that case.
+@@ -2984,6 +2990,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+                     req.mamba_branching_seqlen > len(req.prefix_indices)
+                     and req.mamba_branching_seqlen < mamba_track_seqlen
+                     and branching_seqlen_aligned_mask
++                    and req.mamba_branching_seqlen % checkpoint_grid == 0
+                 ):
+                     # We want to track mamba_track_seqlen_aligned, and it's not the last position,
+                     # so we need to add 1 to the seqlen to retrieve the correct mamba state from h.
+diff --git a/python/sglang/srt/mem_cache/unified_cache/components/mamba.py b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py
+index 3c18cee301fc5f2c9db8a4218676c3fcddd475b9..272d73ff43f6ea2ed8f1862808446e35cea0cf7f 100644
+--- a/python/sglang/srt/mem_cache/unified_cache/components/mamba.py
++++ b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py
+@@ -531,6 +531,16 @@ class MambaComponent(TreeComponent):
+     ) -> Optional[int]:
+         if self.cache.enable_mamba_extra_buffer:
+             cache_len = req.kv.mamba_last_track_seqlen
++            # A recurrent state cannot be shortened when its key is truncated
++            # or page-aligned. Keep ownership with the request if no exact
++            # checkpoint can be published; cleanup will release it on finish.
++            if (
++                cache_len is None
++                or cache_len <= 0
++                or cache_len > token_ids_len
++                or cache_len % self.cache.page_size != 0
++            ):
++                return 0
+         else:
+             cache_len = token_ids_len
+             # ReplaySSM (no_buffer): `temporal[slot]` lags the live state by the
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index a1551cb2b2722439def9e7978b277bce6d963012..4bf9468c6123d269229720a7c0875efe08415cc9 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -1048,17 +1048,9 @@ class UnifiedRadixCache(BasePrefixCache):
+                 rotation_base=req.kv_rotation_base,
+             )
+ 
+-            # components prepare insert data + return effective cache_len
+-            effective_cache_len = len(token_ids)
+-            for comp in self._components_tuple:
+-                cl = comp.prepare_for_caching_req(
+-                    req=req,
+-                    insert_params=insert_params,
+-                    token_ids_len=len(token_ids),
+-                    is_finished=True,
+-                )
+-                if cl is not None:
+-                    effective_cache_len = min(effective_cache_len, cl)
++            effective_cache_len = self._prepare_for_caching_req(
++                req, insert_params, len(token_ids), is_finished=True
++            )
+ 
+             # Truncate if needed; the tail free is deferred and batched with
+             # the unaligned tail below so a shared boundary page is emitted once.
+@@ -1184,16 +1176,9 @@ class UnifiedRadixCache(BasePrefixCache):
+             session_id=req.session_id,
+             rotation_base=req.kv_rotation_base,
+         )
+-        effective_cache_len = len(token_ids)
+-        for comp in self._components_tuple:
+-            cl = comp.prepare_for_caching_req(
+-                req=req,
+-                insert_params=insert_params,
+-                token_ids_len=len(token_ids),
+-                is_finished=False,
+-            )
+-            if cl is not None:
+-                effective_cache_len = min(effective_cache_len, cl)
++        effective_cache_len = self._prepare_for_caching_req(
++            req, insert_params, len(token_ids), is_finished=False
++        )
+ 
+         radix_key = RadixKey(
+             token_ids[:effective_cache_len],
+@@ -1321,6 +1306,51 @@ class UnifiedRadixCache(BasePrefixCache):
+ 
+     # ---- Internal Helpers ----
+ 
++    def _prepare_for_caching_req(
++        self,
++        req: Req,
++        insert_params: InsertParams,
++        token_ids_len: int,
++        *,
++        is_finished: bool,
++    ) -> int:
++        effective_cache_len = token_ids_len
++        checkpoint_component = None
++        for comp in self._components_tuple:
++            if comp.component_type == ComponentType.MAMBA:
++                checkpoint_component = comp
++                continue
++            cl = comp.prepare_for_caching_req(
++                req=req,
++                insert_params=insert_params,
++                token_ids_len=token_ids_len,
++                is_finished=is_finished,
++            )
++            if cl is not None:
++                effective_cache_len = min(effective_cache_len, cl)
++
++        # Resolve every other key cap before validating or donating an immutable
++        # recurrent checkpoint. An SWA branch may be shorter than the input and
++        # fall between available recurrent snapshots; its key cannot own a
++        # later state. This ordering must not depend on tree_components order.
++        if checkpoint_component is not None:
++            if (
++                not self.enable_mamba_extra_buffer
++                and effective_cache_len < token_ids_len
++            ):
++                # The no-buffer state belongs to the full processed prefix.
++                # Passing a shorter length would relabel it, not rewind it.
++                return 0
++            cl = checkpoint_component.prepare_for_caching_req(
++                req=req,
++                insert_params=insert_params,
++                token_ids_len=effective_cache_len,
++                is_finished=is_finished,
++            )
++            if cl is not None:
++                effective_cache_len = min(effective_cache_len, cl)
++        return effective_cache_len
++
+     def _apply_cache_actions(
+         self, actions: list[CacheAction | ComponentAction]
+     ) -> None:
+diff --git a/test/manual/test_hicache_chunked_prefix.py b/test/manual/test_hicache_chunked_prefix.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..79a057b55bffb770caba65d4ed76f1cfeffc8d95
+--- /dev/null
++++ b/test/manual/test_hicache_chunked_prefix.py
+@@ -0,0 +1,339 @@
++#!/usr/bin/env python3
++"""Exercise chunked-prefix reuse and host restoration through a running server.
++
++Use an isolated GLM-5.3-Flash server with page_size=64, index_kpool=4,
++chunked_prefill_size=max_prefill_tokens=320, HiCache write-through, cache
++reporting, metrics, and the glm47 tool parser enabled. Set device KV capacity to
++twice --pressure-tokens (8192 with the default). Host capacity must be larger.
++Run this client with CUDA hidden. It never imports SGLang or executes kernels.
++
++Cold repeats establish the numerical comparison. Different requests then reuse
++512- and 768-token prefixes, both on device and after counters prove a host hit.
++Only the last 64 prompt tokens are scored, avoiding a full-prompt logits buffer.
++Scored requests generate one token; the primer generates 32 to reach a checkpoint.
++A separate coding request must complete valid read_file tool calls naturally,
++including after device eviction and confirmed host restoration.
++The numerical smoke check does not establish exact checkpoint correctness;
++test_compressed_dsa_checkpoint_roundtrip.py checks the saved state contents.
++"""
++
++import argparse
++import json
++import math
++import os
++import re
++import statistics
++import time
++import urllib.request
++import uuid
++from pathlib import Path
++
++CORPUS = """This is a code review of a small job queue. The queue stores immutable
++job descriptions and a separate status record. A worker claims a queued job,
++executes it once, and records either success or a retryable failure. Duplicate
++notifications must not execute a completed job again. The API must validate
++inputs before writing a job. Tests should cover two workers racing to claim
++the same job, retries after a timeout, and a process restarting between claim
++and completion. A completed job's result must survive a restart. The cache is
++only an optimization: evicting it must not change which job the worker sees.
++The implementation lives in src/queue.py and tests live in tests/test_queue.py.
++"""
++
++
++def request(base, path, body=None):
++    headers = {"Content-Type": "application/json"}
++    if os.environ.get("SGLANG_API_KEY"):
++        headers["Authorization"] = "Bearer " + os.environ["SGLANG_API_KEY"]
++    req = urllib.request.Request(
++        base + path,
++        data=None if body is None else json.dumps(body).encode(),
++        headers=headers,
++    )
++    with urllib.request.urlopen(req, timeout=1800) as response:
++        return response.read()
++
++
++def metrics(base):
++    result = {}
++    for line in request(base, "/metrics").decode().splitlines():
++        if not line.startswith("sglang:prefill_effective_tokens_total{"):
++            continue
++        labels = dict(re.findall(r'(\w+)="([^"]*)"', line))
++        if labels.get("tp_rank") not in (None, "0"):
++            continue
++        mode = labels.get("mode")
++        result[mode] = result.get(mode, 0) + float(line.rsplit(" ", 1)[1])
++    if not result:
++        raise AssertionError("Host-hit metrics are required to prove restoration")
++    result.setdefault("host_hit", 0)
++    result.setdefault("device_hit", 0)
++    return result
++
++
++def generate(base, ids, salt, *, score=False, max_new_tokens=1):
++    body = {
++        "input_ids": ids,
++        "cache_salt": salt,
++        "sampling_params": {"temperature": 0, "max_new_tokens": max_new_tokens},
++    }
++    if score:
++        body.update(return_logprob=True, logprob_start_len=len(ids) - 64)
++    return json.loads(request(base, "/generate", body))
++
++
++def scores(response):
++    values = response["meta_info"]["input_token_logprobs"]
++    return [(float(lp), token) for lp, token, *_ in values if lp is not None]
++
++
++def compare(reference, actual):
++    a, b = scores(reference), scores(actual)
++    assert len(a) >= 60 and len(a) == len(b), (len(a), len(b))
++    assert [x[1] for x in a] == [x[1] for x in b]
++    delta = [abs(x[0] - y[0]) for x, y in zip(a, b, strict=True)]
++    assert all(math.isfinite(d) for d in delta)
++    return {
++        "tokens": len(delta),
++        "mean_abs_logprob_delta": statistics.mean(delta),
++        "max_abs_logprob_delta": max(delta),
++    }
++
++
++def valid_tool_response(response):
++    choice = response["choices"][0]
++    calls = choice["message"].get("tool_calls") or []
++    if choice["finish_reason"] == "length" or not calls:
++        return False
++    paths = []
++    for call in calls:
++        try:
++            function = call["function"]
++            arguments = json.loads(function["arguments"])
++            if (
++                function["name"] != "read_file"
++                or not isinstance(arguments, dict)
++                or set(arguments) != {"path"}
++                or arguments["path"] not in ("src/queue.py", "tests/test_queue.py")
++            ):
++                return False
++            paths.append(arguments["path"])
++        except (KeyError, TypeError, ValueError):
++            return False
++    # Reading the referenced tests is a valid extra action. Require the source
++    # read and well-formed calls, without demanding identical generated text.
++    return "src/queue.py" in paths and len(paths) == len(set(paths))
++
++
++def coding_tool_request(base, salt):
++    body = {
++        "model": "glm-5.3-flash",
++        "messages": [
++            {"role": "system", "content": "You are a careful programming assistant."},
++            {
++                "role": "user",
++                "content": CORPUS
++                * 12
++                + "\nReview src/queue.py for concurrency bugs. Begin by reading that file. "
++                "Do not infer its implementation from the design notes above.",
++            },
++        ],
++        "tools": [
++            {
++                "type": "function",
++                "function": {
++                    "name": "read_file",
++                    "description": "Read a source file before reviewing its implementation.",
++                    "parameters": {
++                        "type": "object",
++                        "properties": {"path": {"type": "string"}},
++                        "required": ["path"],
++                        "additionalProperties": False,
++                    },
++                },
++            }
++        ],
++        "cache_salt": salt,
++        "temperature": 0,
++        "max_tokens": 2048,
++    }
++    response = json.loads(request(base, "/v1/chat/completions", body))
++    return {"response": response, "passed": valid_tool_response(response)}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--base-url", default="http://127.0.0.1:18000")
++    parser.add_argument("--tokenizer", required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--pressure-tokens", type=int, default=4096)
++    parser.add_argument("--cycles", type=int, default=2)
++    args = parser.parse_args()
++    from transformers import AutoTokenizer
++
++    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
++    template = tokenizer.apply_chat_template(
++        [
++            {"role": "system", "content": "You are a careful programming assistant."},
++            {"role": "user", "content": "DOCUMENT_PLACEHOLDER"},
++        ],
++        tokenize=False,
++        add_generation_prompt=True,
++    )
++    lead, tail = template.split("DOCUMENT_PLACEHOLDER")
++
++    def encode(text):
++        return tokenizer.encode(text, add_special_tokens=False)
++
++    lead_ids, tail_ids = encode(lead), encode(tail)
++    corpus_ids = encode(CORPUS * 100)
++
++    def prompt(length, heading="Review this design.\n"):
++        front = lead_ids + encode(heading)
++        needed = length - len(front) - len(tail_ids)
++        assert 0 < needed <= len(corpus_ids)
++        return front + corpus_ids[:needed] + tail_ids
++
++    primer = prompt(1000)
++    results = {"definition": __doc__, "cases": [], "tool_cases": [], "passed": True}
++    nonce = uuid.uuid4().hex
++    for shared in (512, 768):
++        # The second request has genuinely different content after the shared
++        # prefix, so its state must not include the primer's following tokens.
++        branch = (
++            primer[:shared]
++            + encode(
++                "\n\nThe excerpt above ends here. A different review now follows. "
++                "Please explain why two workers cannot both own one queue job. "
++                "Discuss atomic claims, idempotency keys and recovery after a "
++                "worker crashes. A status cache may disappear at any time. "
++                "The durable job record is authoritative. A database transaction "
++                "must make the claim conditional on the queued status. "
++                "How should a regression reproduce a crash between recording "
++                "a successful result and acknowledging the notification?"
++            )
++            + tail_ids
++        )
++        common = next(
++            (i for i, (a, b) in enumerate(zip(primer, branch)) if a != b),
++            min(len(primer), len(branch)),
++        )
++        assert common // 256 * 256 == shared, common
++        salt = f"{nonce}-{shared}-shared"
++        cold = generate(args.base_url, branch, f"{salt}-cold-a", score=True)
++        repeat = generate(args.base_url, branch, f"{salt}-cold-b", score=True)
++        assert cold["meta_info"]["cached_tokens"] == 0
++        assert repeat["meta_info"]["cached_tokens"] == 0
++        control = compare(cold, repeat)
++        # Chunked insertions alone do not initiate write-through. Let normal
++        # decoding cross 1024 so finishing publishes this path to host too.
++        primed = generate(args.base_url, primer, salt, max_new_tokens=32)
++        assert primed["meta_info"]["completion_tokens"] >= 25
++        time.sleep(1)  # allow write-through completion before inducing eviction
++        row = {
++            "shared_tokens": shared,
++            "primer_tokens": len(primer),
++            "branch_tokens": len(branch),
++            "primer_ids": primer,
++            "branch_ids": branch,
++            "cold_repeat": control,
++            "cold_scores": scores(cold),
++            "repeat_scores": scores(repeat),
++            "replays": [],
++        }
++        # BF16 state / FP8 KV can differ slightly with prefill partitioning.
++        # Keep the same bounds for the broken and repaired revisions.
++        mean_limit = max(0.05, 5 * control["mean_abs_logprob_delta"])
++        max_limit = max(0.5, 5 * control["max_abs_logprob_delta"])
++        row["limits"] = {"mean": mean_limit, "max": max_limit}
++        results["cases"].append(row)
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++        print(
++            json.dumps(
++                {
++                    "shared_tokens": shared,
++                    "cold_repeat": control,
++                    "limits": row["limits"],
++                }
++            ),
++            flush=True,
++        )
++        for cycle in range(args.cycles + 1):
++            if cycle:
++                # Do not replay between pressure requests: doing so refreshes
++                # this entry's LRU position and can prevent its eviction.
++                for pressure_round in range(2):
++                    pressure = prompt(
++                        args.pressure_tokens,
++                        f"Independent queue audit {nonce} {shared} {cycle} {pressure_round}.\n",
++                    )
++                    generate(
++                        args.base_url,
++                        pressure,
++                        f"{salt}-pressure-{cycle}-{pressure_round}",
++                    )
++                time.sleep(1)
++            before = metrics(args.base_url)
++            replay = generate(args.base_url, branch, salt, score=True)
++            after = metrics(args.base_url)
++            delta = compare(cold, replay)
++            cached = replay["meta_info"]["cached_tokens"]
++            hit = {k: after.get(k, 0) - before.get(k, 0) for k in after}
++            passed = (
++                delta["mean_abs_logprob_delta"] <= mean_limit
++                and delta["max_abs_logprob_delta"] <= max_limit
++                and cached >= shared
++                and (
++                    hit["host_hit"] >= shared
++                    if cycle
++                    else hit["device_hit"] >= shared and hit["host_hit"] == 0
++                )
++            )
++            row["replays"].append(
++                {
++                    "path": "host" if cycle else "device",
++                    "cycle": cycle,
++                    "cached_tokens": cached,
++                    "hit_tokens": hit,
++                    "scores": scores(replay),
++                    **delta,
++                    "passed": passed,
++                }
++            )
++            results["passed"] &= passed
++            args.output.write_text(json.dumps(results, indent=2) + "\n")
++            print(
++                json.dumps(
++                    {k: v for k, v in row["replays"][-1].items() if k != "scores"}
++                ),
++                flush=True,
++            )
++    tool_salt = f"{nonce}-coding-tool"
++    for cycle in range(args.cycles + 2):
++        if cycle >= 2:
++            for pressure_round in range(2):
++                generate(
++                    args.base_url,
++                    prompt(args.pressure_tokens),
++                    f"{tool_salt}-pressure-{cycle}-{pressure_round}",
++                )
++            time.sleep(1)
++        before = metrics(args.base_url)
++        row = coding_tool_request(args.base_url, tool_salt)
++        after = metrics(args.base_url)
++        hit = {k: after.get(k, 0) - before.get(k, 0) for k in after}
++        row.update(cycle=cycle, hit_tokens=hit)
++        if cycle == 0:
++            row["passed"] &= hit["device_hit"] == hit["host_hit"] == 0
++        elif cycle == 1:
++            row["passed"] &= hit["device_hit"] >= 256 and hit["host_hit"] == 0
++        else:
++            row["passed"] &= hit["host_hit"] >= 256
++        results["passed"] &= row["passed"]
++        results["tool_cases"].append(row)
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++        print(json.dumps({k: v for k, v in row.items() if k != "response"}), flush=True)
++    raise SystemExit(0 if results["passed"] else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1364d83a901cbfe2e5122541429528337649850b
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_compressed_dsa_checkpoint_roundtrip.py
+@@ -0,0 +1,401 @@
++"""A cached recurrent state must describe exactly the prefix that owns it."""
++
++import unittest
++from array import array
++from itertools import product
++from types import SimpleNamespace
++
++import torch
++
++from sglang.srt.configs.mamba_utils import Mamba2CacheParams, Mamba2StateShape
++from sglang.srt.layers.attention.hybrid_linear_attn_backend import MambaAttnBackendBase
++from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
++from sglang.srt.managers.schedule_policy import match_prefix_for_req
++from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
++from sglang.srt.mem_cache.allocator.swa import SWATokenToKVPoolAllocator
++from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
++from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.mem_cache.memory_pool import (
++    DSATokenToKVPool,
++    HybridLinearKVPool,
++    HybridReqToTokenPool,
++)
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
++from sglang.srt.mem_cache.unified_cache.components import ComponentType
++from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
++from sglang.srt.runtime_context import get_exec, publish, reset_context
++from sglang.srt.sampling.sampling_params import SamplingParams
++from sglang.srt.server_args import ServerArgs
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++class TestCompressedDsaCheckpointRoundtrip(unittest.TestCase):
++    def tearDown(self):
++        reset_context()
++
++    def _fixture(self, *, lazy=False, swa=False, mamba_first=False, no_buffer=False):
++        page_size = 1 if swa else 64
++        args = ServerArgs(
++            model_path="dummy",
++            page_size=page_size,
++            mamba_radix_cache_strategy=(
++                "no_buffer"
++                if no_buffer
++                else "extra_buffer_lazy"
++                if lazy
++                else "extra_buffer"
++            ),
++        )
++        args._mamba_cache_chunk_size = 64
++        publish(args, role="scheduler")
++        self.assertEqual(get_exec().mamba.enable_mamba_extra_buffer_lazy, lazy)
++        shape = Mamba2StateShape.create(
++            tp_world_size=1,
++            intermediate_size=16,
++            n_groups=1,
++            num_heads=1,
++            head_dim=16,
++            state_size=2,
++            conv_kernel=4,
++        )
++        req_pool = HybridReqToTokenPool(
++            size=4,
++            mamba_size=32,
++            mamba_spec_state_size=4,
++            max_context_len=2048,
++            device="cpu",
++            enable_memory_saver=False,
++            cache_params=Mamba2CacheParams(shape=shape, layers=[0]),
++            mamba_layer_ids=[0],
++            enable_mamba_extra_buffer=not no_buffer,
++            enable_mamba_extra_buffer_lazy=lazy,
++        )
++        # No attention kernel runs here; the real DSA pool type supplies the
++        # ownership geometry while real CPU pools own KV indices and SSM slots.
++        dsa = object.__new__(DSATokenToKVPool)
++        dsa.page_size = 64
++        dsa.index_kpool = 4
++        dsa.kpool_use_compress = True
++        kv_pool = object.__new__(HybridLinearKVPool)
++        kv_pool.full_kv_pool = dsa
++        allocator = TokenToKVPoolAllocator(
++            size=4096,
++            dtype=torch.bfloat16,
++            device="cpu",
++            kvcache=kv_pool,
++            need_sort=False,
++        )
++        components = (ComponentType.FULL, ComponentType.MAMBA)
++        if swa:
++            kv_pool = SWAKVPool(
++                size=4096,
++                size_swa=4096,
++                page_size=1,
++                dtype=torch.bfloat16,
++                head_num=1,
++                head_dim=16,
++                swa_attention_layer_ids=[1],
++                full_attention_layer_ids=[0],
++                device="cpu",
++            )
++            allocator = SWATokenToKVPoolAllocator(
++                size=4096,
++                size_swa=4096,
++                page_size=1,
++                dtype=torch.bfloat16,
++                device="cpu",
++                kvcache=kv_pool,
++                need_sort=False,
++            )
++            components = (ComponentType.FULL, ComponentType.SWA, ComponentType.MAMBA)
++            if mamba_first:
++                components = (
++                    ComponentType.FULL,
++                    ComponentType.MAMBA,
++                    ComponentType.SWA,
++                )
++        cache = UnifiedRadixCache(
++            CacheInitParams(
++                disable=False,
++                req_to_token_pool=req_pool,
++                token_to_kv_pool_allocator=allocator,
++                page_size=page_size,
++                tree_components=components,
++                sliding_window_size=64 if swa else None,
++                enable_mamba_extra_buffer=not no_buffer,
++                enable_mamba_extra_buffer_lazy=lazy,
++            )
++        )
++        return cache, allocator, req_pool
++
++    def _request(self, cache, allocator, req_pool, *, length=1000):
++        sampling = SamplingParams(max_new_tokens=1)
++        sampling.normalize(None)
++        req = Req(
++            rid="chunked",
++            origin_input_text="",
++            origin_input_ids=array("q", [1] * length),
++            sampling_params=sampling,
++            vocab_size=128,
++        )
++        req_pool.alloc([req])
++        req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
++        values = allocator.alloc(length)
++        req_pool.write((req.kv.req_pool_idx, slice(0, length)), values)
++        req.kv.kv_allocated_len = length
++        req.last_node = cache.root_node_handle()
++        req.prefix_indices = torch.empty(0, dtype=torch.int64)
++        return req
++
++    def _run_chunk(self, cache, req_pool, req, end, *, publish_checkpoint=True):
++        prefix = len(req.prefix_indices)
++        req.set_extend_range(prefix, end)
++        req.kv.kv_committed_len = end
++        if not cache.enable_mamba_extra_buffer:
++            # This strategy keeps the live state instead of selecting a saved
++            # intermediate snapshot. Give that state its actual prefix depth.
++            states = req_pool.mamba_pool.mamba_cache.temporal
++            states[:, req.kv.mamba_pool_idx].fill_(end)
++            for conv in req_pool.mamba_pool.mamba_cache.conv:
++                conv[:, req.kv.mamba_pool_idx] = (
++                    torch.arange(conv.shape[-1]) + end - conv.shape[-1] + 1
++                ).to(conv.dtype)
++            if publish_checkpoint:
++                cache.cache_unfinished_req(req, chunked=True)
++            return end, None
++        batch = ScheduleBatch(reqs=[req])
++        batch.model_config = SimpleNamespace(
++            hf_text_config=SimpleNamespace(mamba_chunk_size=64)
++        )
++        batch.tree_cache = cache
++        batch.req_to_token_pool = req_pool
++        entry = batch._mamba_radix_cache_v2_req_prepare_for_extend(req)
++
++        # Distinct state markers represent s[n] = n. Let the real backend
++        # select the marker to save, so a wrong h/final-state index is visible.
++        forward = SimpleNamespace(
++            extend_seq_lens=torch.tensor([end - prefix]),
++            extend_prefix_lens=torch.tensor([prefix]),
++            mamba_track_seqlens=torch.tensor([entry.track_seqlen]),
++            mamba_track_mask=torch.tensor([entry.track_mask]),
++            mamba_track_indices=torch.tensor([entry.track_index]),
++        )
++        indices = MambaAttnBackendBase._init_track_ssm_indices(
++            SimpleNamespace(device="cpu", mamba_chunk_size=64),
++            req.kv.mamba_pool_idx.unsqueeze(0),
++            forward,
++        )
++        h_src, h_dst, final_src, final_dst = indices[:4]
++        states = req_pool.mamba_pool.mamba_cache.temporal
++        states[:, req.kv.mamba_pool_idx].fill_(end)
++        for src, dst in zip(h_src.tolist(), h_dst.tolist()):
++            states[:, dst].fill_(prefix + src * 64)
++        for src, dst in zip(final_src.tolist(), final_dst.tolist()):
++            states[:, dst].copy_(states[:, src])
++        for conv in req_pool.mamba_pool.mamba_cache.conv:
++            positions = MambaAttnBackendBase._init_track_conv_indices(
++                SimpleNamespace(device="cpu", conv_states_shape=conv.shape[2:]),
++                torch.tensor([0, end - prefix]),
++                forward,
++            )
++            if entry.track_mask:
++                conv[:, entry.track_index] = (prefix + positions[0] + 1).to(conv.dtype)
++        checkpoint = req.kv.mamba_last_track_seqlen
++        if publish_checkpoint:
++            cache.cache_unfinished_req(req, chunked=True)
++        return checkpoint, entry
++
++    def _assert_cached_state_matches_prefix(self, cache, req_pool, tokens, expected):
++        match = cache.match_prefix(MatchPrefixParams(key=RadixKey(tokens)))
++        self.assertEqual(len(match.device_indices), expected)
++        if expected:
++            slot = cache.tree_core.get_component_device_value(
++                match.best_match_node, ComponentType.MAMBA
++            )
++            self.assertIsNotNone(slot)
++            state = req_pool.mamba_pool.mamba_cache.temporal[:, slot]
++            self.assertTrue(
++                torch.all(state == expected).item(),
++                f"prefix {expected} owns recurrent state {state.flatten()[0].item()}",
++            )
++            for conv in req_pool.mamba_pool.mamba_cache.conv:
++                expected_window = (
++                    torch.arange(conv.shape[-1]) + expected - conv.shape[-1] + 1
++                ).to(conv.dtype)
++                self.assertTrue(torch.all(conv[:, slot] == expected_window).item())
++
++    def test_successive_320_token_chunks_publish_the_matching_state(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                req = self._request(cache, allocator, req_pool)
++                for end, expected in [(320, 256), (640, 512), (960, 768), (1000, 768)]:
++                    with self.subTest(end=end):
++                        self._run_chunk(cache, req_pool, req, end)
++                        self.assertEqual(len(req.prefix_indices), end)
++                        self._assert_cached_state_matches_prefix(
++                            cache, req_pool, req.origin_input_ids[:end], expected
++                        )
++
++    def test_short_chunks_track_when_they_cross_an_absolute_boundary(self):
++        cache, allocator, req_pool = self._fixture()
++        req = self._request(cache, allocator, req_pool)
++        for end in range(64, 961, 64):
++            with self.subTest(end=end):
++                self._run_chunk(cache, req_pool, req, end)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:end], end // 256 * 256
++                )
++
++    def test_second_request_copies_the_state_at_its_matched_prefix(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                self._run_chunk(cache, req_pool, req, 640)
++                other = self._request(cache, allocator, req_pool, length=700)
++                other.origin_input_ids[512:] = array("q", [2] * 188)
++                match = cache.match_prefix(
++                    MatchPrefixParams(
++                        key=RadixKey(other.origin_input_ids), req=other, cow_mamba=True
++                    )
++                )
++                self.assertEqual(len(match.device_indices), 512)
++                batch = ScheduleBatch(reqs=[other])
++                batch._collect_deferred_mamba_cow_and_clear([other])
++                self.assertIsNotNone(batch.mamba_cow_src_indices)
++                req_pool.mamba_pool.copy_from(
++                    batch.mamba_cow_src_indices, batch.mamba_cow_dst_indices
++                )
++                state = req_pool.mamba_pool.mamba_cache.temporal[
++                    :, other.kv.mamba_pool_idx
++                ]
++                self.assertTrue(torch.all(state == 512).item())
++                # Copy-on-write must leave the tree's checkpoint independent.
++                state.fill_(-1)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, other.origin_input_ids, 512
++                )
++
++    def test_branch_checkpoint_must_be_on_the_absolute_tree_grid(self):
++        for branch, expected in ((448, 768), (512, 512)):
++            with self.subTest(branch=branch):
++                cache, allocator, req_pool = self._fixture()
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                req.mamba_branching_seqlen = branch
++                checkpoint, _ = self._run_chunk(cache, req_pool, req, 960)
++                self.assertEqual(checkpoint, expected)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:960], expected
++                )
++
++    def test_unrepresentable_snapshot_is_not_published(self):
++        cache, allocator, req_pool = self._fixture()
++        req = self._request(cache, allocator, req_pool)
++        self._run_chunk(cache, req_pool, req, 324)
++        checkpoint, entry = self._run_chunk(cache, req_pool, req, 644)
++        self.assertFalse(entry.track_mask)
++        self.assertIsNone(checkpoint)
++        self._assert_cached_state_matches_prefix(
++            cache, req_pool, req.origin_input_ids[:644], 256
++        )
++
++    def test_finished_request_donates_exact_checkpoint_and_frees_other_slots(self):
++        for lazy in (False, True):
++            with self.subTest(lazy=lazy):
++                cache, allocator, req_pool = self._fixture(lazy=lazy)
++                available = req_pool.mamba_allocator.available_size()
++                req = self._request(cache, allocator, req_pool)
++                self._run_chunk(cache, req_pool, req, 320)
++                self._run_chunk(cache, req_pool, req, 640, publish_checkpoint=False)
++                cache.cache_finished_req(req, kv_len_to_handle=640)
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, req.origin_input_ids[:640], 512
++                )
++                self.assertEqual(
++                    req_pool.mamba_allocator.available_size(), available - 2
++                )
++
++    def test_invalid_checkpoint_is_not_rounded_to_a_different_prefix(self):
++        for finished in (False, True):
++            for checkpoint, token_count in ((576, 640), (768, 640), (None, 640)):
++                with self.subTest(finished=finished, checkpoint=checkpoint):
++                    cache, allocator, req_pool = self._fixture()
++                    available = req_pool.mamba_allocator.available_size()
++                    req = self._request(cache, allocator, req_pool)
++                    req.set_extend_range(0, token_count)
++                    req.kv.kv_committed_len = token_count
++                    req.kv.mamba_last_track_seqlen = checkpoint
++                    before = req_pool.mamba_allocator.available_size()
++                    if finished:
++                        cache.cache_finished_req(req, kv_len_to_handle=token_count)
++                        self.assertEqual(
++                            req_pool.mamba_allocator.available_size(), available
++                        )
++                    else:
++                        cache.cache_unfinished_req(req, chunked=True)
++                        self.assertEqual(
++                            req_pool.mamba_allocator.available_size(), before
++                        )
++                    self._assert_cached_state_matches_prefix(
++                        cache, req_pool, req.origin_input_ids[:token_count], 0
++                    )
++
++    def test_swa_branch_cannot_shorten_a_recurrent_checkpoint(self):
++        for strategy, finished, mamba_first in product(
++            ("extra_buffer", "extra_buffer_lazy", "no_buffer"),
++            (False, True),
++            (False, True),
++        ):
++            with self.subTest(
++                strategy=strategy, finished=finished, mamba_first=mamba_first
++            ):
++                cache, allocator, req_pool = self._fixture(
++                    lazy=strategy == "extra_buffer_lazy",
++                    swa=True,
++                    mamba_first=mamba_first,
++                    no_buffer=strategy == "no_buffer",
++                )
++                first = self._request(cache, allocator, req_pool, length=128)
++                self._run_chunk(cache, req_pool, first, 64)
++                available = req_pool.mamba_allocator.available_size()
++                other = self._request(cache, allocator, req_pool, length=96)
++                other.origin_input_ids[32:] = array("q", [2] * 64)
++                other.full_untruncated_fill_ids = array("q", other.origin_input_ids)
++                # Real matching splits the old 64-token node at 32. SWA
++                # can branch there, but no recurrent state exists at 32.
++                match_prefix_for_req(cache, other)
++                self.assertEqual(other.swa_branching_seqlen, 32)
++                self.assertIsNone(other.mamba_branching_seqlen)
++                self.assertEqual(len(other.prefix_indices), 0)
++                before = req_pool.mamba_allocator.available_size()
++                self._run_chunk(
++                    cache, req_pool, other, 64, publish_checkpoint=not finished
++                )
++                if finished:
++                    cache.cache_finished_req(other, kv_len_to_handle=64)
++                # The newly saved state is for 64 tokens. It cannot be
++                # attached to the SWA-limited 32-token key or leaked.
++                match = cache.match_prefix(
++                    MatchPrefixParams(key=RadixKey(other.origin_input_ids))
++                )
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, other.origin_input_ids, len(match.device_indices)
++                )
++                self.assertEqual(len(match.device_indices), 0)
++                self.assertEqual(
++                    req_pool.mamba_allocator.available_size(),
++                    available if finished else before,
++                )
++                self._assert_cached_state_matches_prefix(
++                    cache, req_pool, first.origin_input_ids, 64
++                )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py b/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+index b2194679debf185acb4839393c7d6518be48ea07..5f8b014c8e9e7e3546bbf01a67ce51b5e673f4d0 100644
+--- a/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
++++ b/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+@@ -1743,6 +1743,10 @@ class UnifiedRadixCacheSuite:
+             )
+ 
+         prompt_aligned = (len(prompt_ids) // ps) * ps
++        # A checkpoint taken after the stripped output cannot describe the
++        # shorter prompt. It must be freed instead of donated under that key.
++        if self.cfg.has_mamba and self.cfg.enable_mamba_extra_buffer:
++            prompt_aligned = 0
+         # Thinking+answer must not be reachable past the prompt.
+         m = cache.match_prefix(
+             MatchPrefixParams(key=RadixKey(array("q", prompt_ids + output_ids)))
+@@ -1949,7 +1953,9 @@ class UnifiedRadixCacheSuite:
+             len(req.prefix_indices), len(req.full_untruncated_fill_ids)
+         )
+         if self.cfg.has_mamba:
+-            req.kv.mamba_last_track_seqlen = kv_len
++            # The real producer checkpoints at an aligned boundary, not at
++            # the end of the partial page whose KV is about to be freed.
++            req.kv.mamba_last_track_seqlen = kv_len // ps * ps
+ 
+         avail_before = allocator.available_size()
+         cache.cache_finished_req(

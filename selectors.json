@@ -751,6 +751,121 @@
       "status": "selected_in_complete_engine_428",
       "validation_boundary": "GLM CPU/Gloo evidence exists; no new GPU/Governor-on-GLM acceptance"
     },
+    "glm53-flash-v0520-qualified-20260923": {
+      "model_family": "glm-5.3-flash",
+      "version": "v0.5.20",
+      "topology": [
+        "NVFP4",
+        "TP8",
+        "TP4",
+        "L2-guarded"
+      ],
+      "fork_commit": "73d11045c72664819f98fd09a95e9e1500dd22ba",
+      "fork_tree": "7d06ef4ac4c74417b34ff8d308645762f7c84490",
+      "fork_branch": "codex/glm53-flash-v0520-correctness-20260922",
+      "source_parent": "4281309187007db579a2195f40adfd4baa538528",
+      "replay_mode": "exact",
+      "patches": [
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        },
+        {
+          "id": "glm53-flash-qualified-0001-dsa-counter-lifetime",
+          "path": "patches/models/glm/qualified-20260923/0001-99507b1676-dsa-counter-lifetime.patch",
+          "source_commit": "99507b167620776a0a012be10b6319da41cedcc6",
+          "sha256": "2a7eb9212d6b92b5e89a9475625733333977e395696a77eff9222fd7b0069844"
+        },
+        {
+          "id": "glm53-flash-qualified-0002-nextn-mamba-layer-list",
+          "path": "patches/models/glm/qualified-20260923/0002-a3170980c6-nextn-mamba-layer-list.patch",
+          "source_commit": "a3170980c65c9026bb966bb180c5258ce09e2551",
+          "sha256": "71672d998b1a3a986a1cd2735a2b836b3d765a1736f821eb7733fccf4f98f586"
+        },
+        {
+          "id": "glm53-flash-qualified-0003-vision-precompile",
+          "path": "patches/models/glm/qualified-20260923/0003-7e1cb17a34-vision-precompile.patch",
+          "source_commit": "7e1cb17a3494fc19d1b115279b5bd49d0d8d42f7",
+          "sha256": "dbebe51a000a1d371677c15439cd43118e115628536b1d72b5f9073eb083015f"
+        },
+        {
+          "id": "glm53-flash-qualified-0004-vision-ci-fixtures",
+          "path": "patches/models/glm/qualified-20260923/0004-00d54471f9-vision-ci-fixtures.patch",
+          "source_commit": "00d54471f92526aa31ae5e36755af55d6ee9d5c1",
+          "sha256": "d8487f456194bf8f3ce3a8633d6268687c71211cd8e73548b475b82666f823e3"
+        },
+        {
+          "id": "glm53-flash-qualified-0005-vision-encoder-fixtures",
+          "path": "patches/models/glm/qualified-20260923/0005-c1a3d3022c-vision-encoder-fixtures.patch",
+          "source_commit": "c1a3d3022c99e49cd8904171b9c3b8620d3860bb",
+          "sha256": "9860a0456cbd30f482157c7378bf08449ddbd489e2ff8e5d73865bafb1d7cbfc"
+        },
+        {
+          "id": "glm53-flash-qualified-0006-hicache-dsa-checkpoints",
+          "path": "patches/models/glm/qualified-20260923/0006-ec3e4a0637-hicache-dsa-checkpoints.patch",
+          "source_commit": "ec3e4a063739f5d74040ab9c14aff247a6048388",
+          "sha256": "7351affe57ff331b49b3c96027e46cf61ab459078af9d97988f722fc395fb709"
+        },
+        {
+          "id": "glm53-flash-qualified-0007-hicache-mla-draft-sidecars",
+          "path": "patches/models/glm/qualified-20260923/0007-263e6898c2-hicache-mla-draft-sidecars.patch",
+          "source_commit": "263e6898c2cb3fd85abba54c76a0973b23e934b9",
+          "sha256": "19b36f3740b338a1e440ace5d056f465f23edba61991472d9de51508357951a2"
+        },
+        {
+          "id": "glm53-flash-qualified-0008-hicache-recurrent-checkpoint-grid",
+          "path": "patches/models/glm/qualified-20260923/0008-cb7e667fc3-hicache-recurrent-checkpoint-grid.patch",
+          "source_commit": "cb7e667fc3c09ea4c9a7a7e360e5eab89f9a7bde",
+          "sha256": "59196f1a97f5c5b0d734fa28a5a51e008daf25394caaf0862f9e1de3be3d12cf"
+        },
+        {
+          "id": "glm53-flash-qualified-0009-hicache-dsa-host-lifetime",
+          "path": "patches/models/glm/qualified-20260923/0009-f41ba5c0c-hicache-dsa-host-lifetime.patch",
+          "source_commit": "f41ba5c0ce2f5791486f617755ad64967a841706",
+          "sha256": "83d07fcb7bcc2ea873844a9b5a8277f7ef7f3b0cf77f0ea7223a2fc1cfdf07f0"
+        },
+        {
+          "id": "glm53-flash-qualified-0010-hicache-unified-ownership",
+          "path": "patches/models/glm/qualified-20260923/0010-43bf35a434-hicache-unified-ownership.patch",
+          "source_commit": "43bf35a4345a4fb6f3bdc820783ca7662ee240e5",
+          "sha256": "f7865f50d48bb11fe6003230011128d2a92f35baf5144b3bfb6c51e07f31986f"
+        },
+        {
+          "id": "glm53-flash-qualified-0011-always-on-reasoning-disable",
+          "path": "patches/models/glm/qualified-20260923/0011-e4d734e4a2-always-on-reasoning-disable.patch",
+          "source_commit": "e4d734e4a24ac38cd3f421eece74a32dff308f30",
+          "sha256": "24703e20d30e1af348460761a8d41b5311bc4a57787e9d578bd97eac040c989c"
+        },
+        {
+          "id": "glm53-flash-qualified-0012-ignore-eos-length-control",
+          "path": "patches/models/glm/qualified-20260923/0012-9280783f93-ignore-eos-length-control.patch",
+          "source_commit": "9280783f93ecfdd661414ab2058dee4e7aa62b7b",
+          "sha256": "da00767e6c3e323910439fceaed65e42e3bd5e268e521bac491f2050b8df1bc7"
+        },
+        {
+          "id": "common-health-generation-task-drain",
+          "path": "patches/common/73d11045c7-drain-health-generation-task.patch",
+          "source_commit": "73d11045c72664819f98fd09a95e9e1500dd22ba",
+          "sha256": "f81b96e313c4cc5e7972abf02339dbbe717226f0efb42f71f390b3ed97cea6ae"
+        }
+      ],
+      "status": "qualified_source_candidate_nvfp4_quality_complete_final_image_pending",
+      "validation_boundary": "Frozen GLM-5.3-Flash source and NVFP4 quality wave; final-image, publication, Governor-on-GLM, and production acceptance remain separate"
+    },
     "qwen3-family-v0520": {
       "model_family": "qwen3-family",
       "version": "v0.5.20",

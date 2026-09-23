@@ -1,0 +1,63 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 171c00e5e5240d8e5376e5336f765f9e0447eed0..f5a0c1cf172271c05196c749587a2b38d06c8eb6 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1279,6 +1279,17 @@ class OpenAIServingChat(OpenAIServingBase):
+         if request.return_sampling_mask and not request.return_meta_info:
+             return "return_sampling_mask requires return_meta_info=true."
+ 
++        reasoning_config = self.template_manager.reasoning_config
++        if (
++            reasoning_config is not None
++            and reasoning_config.special_case == "always"
++            and request.reasoning_effort == "none"
++        ):
++            return (
++                "This model's chat template requires reasoning; "
++                "reasoning_effort cannot disable reasoning for this model."
++            )
++
+         media_error = self._validate_media_content(request)
+         if media_error:
+             return media_error
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 453700300f67c69460832d628e120c0e61ae51a4..cf29c73751dad37149dab9213b9610eb9ed4c87a 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -1265,6 +1265,36 @@ class ServingChatTestCase(unittest.TestCase):
+             "return_sampling_mask requires return_meta_info=true.",
+         )
+ 
++    def test_validate_request_always_reasoning_rejects_disable_effort(self):
++        self.template_manager.reasoning_config = ReasoningToggleConfig(
++            special_case="always"
++        )
++        req = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "Return JSON."}],
++            reasoning_effort="none",
++        )
++        self.assertIn("requires reasoning", self.chat._validate_request(req))
++        for effort in (None, "low", "medium", "high"):
++            with self.subTest(effort=effort):
++                req = ChatCompletionRequest(
++                    model="x",
++                    messages=[{"role": "user", "content": "Hi"}],
++                    reasoning_effort=effort,
++                )
++                self.assertIsNone(self.chat._validate_request(req))
++
++    def test_validate_request_toggle_reasoning_allows_none_effort(self):
++        self.template_manager.reasoning_config = ReasoningToggleConfig(
++            toggle_param="enable_thinking", default_enabled=True
++        )
++        req = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "Hi"}],
++            reasoning_effort="none",
++        )
++        self.assertIsNone(self.chat._validate_request(req))
++
+     def test_convert_to_internal_request_rejects_stream_return_meta_info(self):
+         req = ChatCompletionRequest(
+             model="x",
