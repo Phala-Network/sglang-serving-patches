@@ -1,0 +1,1152 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 14a34201725d24a6330379ad13c4bdaa357d1005..47db80d4113e749c3607704dd39322e7c2771c5a 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -58,6 +58,7 @@ jobs:
+           python test/manual/test_glm53_dsa_host_budget.py
+           python test/manual/phala/test_srt_log_transform.py
+           python test/manual/phala/test_srt_privacy_contract_cpu.py
++          python test/manual/phala/test_kv_backend_cpu.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+           python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+diff --git a/python/sglang/kernels/aot/python/sgl_kernel/kvcacheio.py b/python/sglang/kernels/aot/python/sgl_kernel/kvcacheio.py
+index abf4a8b514fe72d02b674e565450bdc90563a633..bdc36e187311dbb1f8f5738a0dfa6c7fc0a7565d 100644
+--- a/python/sglang/kernels/aot/python/sgl_kernel/kvcacheio.py
++++ b/python/sglang/kernels/aot/python/sgl_kernel/kvcacheio.py
+@@ -1,4 +1,5 @@
+ import os
++from functools import lru_cache
+ from typing import List, Optional
+ 
+ import torch
+@@ -9,11 +10,46 @@ def is_hip() -> bool:
+ 
+ 
+ _is_hip = is_hip()
++_PHALA_TRANSFER_CAPABILITIES = {(9, 0), (10, 0), (10, 3)}
++
++
++@lru_cache(maxsize=None)
++def _device_transfer_ops(device_index: int):
++    if (
++        not _is_hip
++        and torch.version.cuda is not None
++        and torch.cuda.is_available()
++        and torch.cuda.get_device_capability(device_index)
++        in _PHALA_TRANSFER_CAPABILITIES
++    ):
++        from phala_kvcache_incremental import op_namespace
++
++        return op_namespace()
++    return torch.ops.sgl_kernel
++
++
++def _transfer_ops(*tensor_groups):
++    if not _is_hip and torch.version.cuda is not None:
++        for group in tensor_groups:
++            tensors = group if isinstance(group, (list, tuple)) else (group,)
++            for tensor in tensors:
++                if tensor.device.type == "cuda":
++                    return _device_transfer_ops(tensor.device.index)
++    return torch.ops.sgl_kernel
+ 
+ 
+ def get_device_accessible_ptr(tensor: torch.Tensor, device_index: int) -> int:
+     """Return the address a kernel on ``device_index`` must use for ``tensor``."""
+-    return torch.ops.sgl_kernel.get_device_accessible_ptr.default(tensor, device_index)
++    if device_index < 0:
++        raise RuntimeError("Target device index must be non-negative")
++    namespace = _device_transfer_ops(device_index)
++    try:
++        pointer_op = namespace.get_device_accessible_ptr.default
++    except AttributeError as error:
++        raise ImportError(
++            "Registered host-memory pointer resolution is required"
++        ) from error
++    return pointer_op(tensor, device_index)
+ 
+ 
+ def _default_mla_block_quota() -> int:
+@@ -44,7 +80,7 @@ def transfer_kv_per_layer(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_per_layer.default(
++    _transfer_ops(src_indices).transfer_kv_per_layer.default(
+         src_k,
+         dst_k,
+         src_v,
+@@ -70,7 +106,7 @@ def transfer_kv_per_layer_pf_lf(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_per_layer_pf_lf.default(
++    _transfer_ops(src_indices).transfer_kv_per_layer_pf_lf.default(
+         src_k,
+         dst_k,
+         src_v,
+@@ -100,7 +136,7 @@ def transfer_kv_per_layer_ph_lf(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_per_layer_ph_lf.default(
++    _transfer_ops(src_indices).transfer_kv_per_layer_ph_lf.default(
+         src_k,
+         dst_k,
+         src_v,
+@@ -129,7 +165,7 @@ def transfer_kv_all_layer(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer.default(
++    _transfer_ops(src_indices).transfer_kv_all_layer.default(
+         src_k_layers,
+         dst_k_layers,
+         src_v_layers,
+@@ -156,7 +192,7 @@ def transfer_kv_all_layer_lf_pf(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer_lf_pf.default(
++    _transfer_ops(src_indices).transfer_kv_all_layer_lf_pf.default(
+         src_k_layers,
+         dst_k,
+         src_v_layers,
+@@ -186,7 +222,7 @@ def transfer_kv_all_layer_lf_ph(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer_lf_ph.default(
++    _transfer_ops(src_indices).transfer_kv_all_layer_lf_ph.default(
+         src_k_layers,
+         dst_k,
+         src_v_layers,
+@@ -210,7 +246,7 @@ def transfer_kv_direct(
+     dst_indices: torch.Tensor,
+     page_size: int,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_direct.default(
++    _transfer_ops(src_layers, dst_layers).transfer_kv_direct.default(
+         src_layers, dst_layers, src_indices, dst_indices, page_size
+     )
+ 
+@@ -223,7 +259,7 @@ def transfer_embedding_ranges_direct(
+     lengths: List[int],
+ ) -> None:
+     """Copy embedding ranges between host and CUDA tensors."""
+-    torch.ops.sgl_kernel.transfer_embedding_ranges_direct.default(
++    _transfer_ops(src, dst).transfer_embedding_ranges_direct.default(
+         src, dst, src_starts, dst_starts, lengths
+     )
+ 
+@@ -236,7 +272,7 @@ def transfer_kv_per_layer_direct_pf_lf(
+     layer_id: int,
+     page_size: int,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_per_layer_direct_pf_lf.default(
++    _transfer_ops(src_ptrs, dst_ptrs).transfer_kv_per_layer_direct_pf_lf.default(
+         src_ptrs, dst_ptrs, src_indices, dst_indices, layer_id, page_size
+     )
+ 
+@@ -248,7 +284,7 @@ def transfer_kv_all_layer_direct_lf_pf(
+     dst_indices: torch.Tensor,
+     page_size: int,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer_direct_lf_pf.default(
++    _transfer_ops(src_ptrs, dst_ptrs).transfer_kv_all_layer_direct_lf_pf.default(
+         src_ptrs, dst_ptrs, src_indices, dst_indices, page_size
+     )
+ 
+@@ -264,7 +300,7 @@ def transfer_kv_per_layer_mla(
+ ):
+     if block_quota is None:
+         block_quota = _default_mla_block_quota()
+-    torch.ops.sgl_kernel.transfer_kv_per_layer_mla.default(
++    _transfer_ops(src_indices).transfer_kv_per_layer_mla.default(
+         src,
+         dst,
+         src_indices,
+@@ -288,7 +324,7 @@ def transfer_kv_per_layer_mla_pf_lf(
+ ):
+     if block_quota is None:
+         block_quota = _default_mla_block_quota()
+-    torch.ops.sgl_kernel.transfer_kv_per_layer_mla_pf_lf.default(
++    _transfer_ops(src_indices).transfer_kv_per_layer_mla_pf_lf.default(
+         src,
+         dst,
+         src_indices,
+@@ -311,7 +347,7 @@ def transfer_kv_all_layer_mla(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer_mla.default(
++    _transfer_ops(src_indices).transfer_kv_all_layer_mla.default(
+         src_layers,
+         dst_layers,
+         src_indices,
+@@ -334,7 +370,7 @@ def transfer_kv_all_layer_mla_lf_pf(
+     block_quota: int = 2,
+     num_warps_per_block: int = 16 if _is_hip else 32,
+ ):
+-    torch.ops.sgl_kernel.transfer_kv_all_layer_mla_lf_pf.default(
++    _transfer_ops(src_indices).transfer_kv_all_layer_mla_lf_pf.default(
+         src_layers,
+         dst,
+         src_indices,
+diff --git a/python/sglang/kernels/kvcache_incremental/CMakeLists.txt b/python/sglang/kernels/kvcache_incremental/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..105e84c3eaef13590a59be1d9e4c7dd1b09f27a4
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/CMakeLists.txt
+@@ -0,0 +1,76 @@
++cmake_minimum_required(VERSION 3.26 FATAL_ERROR)
++project(phala_kvcache_incremental LANGUAGES CXX CUDA)
++
++find_package(Python3 COMPONENTS Interpreter REQUIRED)
++find_package(CUDAToolkit 12.9 REQUIRED)
++find_package(Torch REQUIRED)
++
++# Torch's legacy CMake package injects a broad auto-detected architecture list
++# into CMAKE_CUDA_FLAGS when no GPU is visible. CUDA 13 no longer accepts some
++# of those targets (for example sm_50). This extension supplies its explicit
++# Hopper/Blackwell targets below, so remove only Torch's injected gencode pairs.
++string(
++  REGEX REPLACE " -gencode arch=[^ ]+" ""
++  CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}"
++)
++
++set(PHALA_FIXED_AOT_ROOT "" CACHE PATH "Pinned sgl-kernel AOT source root")
++if(NOT PHALA_FIXED_AOT_ROOT)
++  message(FATAL_ERROR "Set PHALA_FIXED_AOT_ROOT to the pinned kernel-aot-source directory")
++endif()
++
++set(TRANSFER_SOURCE "${PHALA_FIXED_AOT_ROOT}/csrc/kvcacheio/transfer.cu")
++set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
++set(GENERATED_BINDING "${GENERATED_DIR}/phala_kvcache_binding.cu")
++file(MAKE_DIRECTORY "${GENERATED_DIR}")
++
++execute_process(
++  COMMAND
++    "${Python3_EXECUTABLE}"
++    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_binding.py"
++    --source "${TRANSFER_SOURCE}"
++    --lock "${CMAKE_CURRENT_SOURCE_DIR}/source-lock.json"
++    --output "${GENERATED_BINDING}"
++  RESULT_VARIABLE GENERATE_RESULT
++  OUTPUT_VARIABLE GENERATE_STDOUT
++  ERROR_VARIABLE GENERATE_STDERR
++)
++if(NOT GENERATE_RESULT EQUAL 0)
++  message(FATAL_ERROR "binding generation failed: ${GENERATE_STDOUT}\n${GENERATE_STDERR}")
++endif()
++
++execute_process(
++  COMMAND "${Python3_EXECUTABLE}" -c
++          "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))"
++  OUTPUT_VARIABLE TORCH_CXX11_ABI
++  OUTPUT_STRIP_TRAILING_WHITESPACE
++  COMMAND_ERROR_IS_FATAL ANY
++)
++
++add_library(phala_kvcache_ops SHARED "${GENERATED_BINDING}")
++set_target_properties(phala_kvcache_ops PROPERTIES
++  PREFIX ""
++  OUTPUT_NAME "phala_kvcache_ops"
++  POSITION_INDEPENDENT_CODE ON
++  CUDA_ARCHITECTURES OFF
++  CXX_STANDARD 17
++  CUDA_STANDARD 17
++)
++target_compile_definitions(phala_kvcache_ops PRIVATE
++  _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX11_ABI}
++)
++target_compile_options(phala_kvcache_ops PRIVATE
++  $<$<COMPILE_LANGUAGE:CXX>:-O3>
++  $<$<COMPILE_LANGUAGE:CUDA>:-O3;-DNDEBUG;-Xcompiler=-fPIC;-gencode=arch=compute_90,code=sm_90;-gencode=arch=compute_100f,code=sm_100f>
++)
++target_include_directories(phala_kvcache_ops PRIVATE ${TORCH_INCLUDE_DIRS})
++target_link_libraries(phala_kvcache_ops PRIVATE
++  ${TORCH_LIBRARIES}
++  CUDA::cudart
++  CUDA::cuda_driver
++)
++
++install(
++  TARGETS phala_kvcache_ops
++  LIBRARY DESTINATION phala_kvcache_incremental/_native
++)
+diff --git a/python/sglang/kernels/kvcache_incremental/README.md b/python/sglang/kernels/kvcache_incremental/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9421e09dfd70f2a0b88c199b6fdcc6e3b7a86f6d
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/README.md
+@@ -0,0 +1,44 @@
++# Shared Hopper/Blackwell KV-transfer extension
++
++This narrow build compiles the fixed sibling `../aot/csrc/kvcacheio/transfer.cu`
++and its device-address helper without rebuilding common_ops or FlashMLA.
++It registers its 15 APIs under `phala_kvcache_incremental`. The sibling
++sgl_kernel wrappers select this backend lazily for CUDA capabilities 9.0,
++10.0 and 10.3, using the tensors' actual device (or the explicit pointer
++target). Importing a wrapper does not load the extension or initialize CUDA.
++HIP, non-CUDA and other capabilities retain the original operator namespace.
++The CPU cache-copy operation is not replaced.
++
++Build in the target image's exact PyTorch/CUDA environment:
++
++```sh
++python -m pip wheel --no-deps --no-build-isolation \
++  -Ccmake.define.PHALA_FIXED_AOT_ROOT=/sgl-workspace/sglang/python/sglang/kernels/aot \
++  -w /build/wheels /sgl-workspace/sglang/python/sglang/kernels/kvcache_incremental
++```
++
++The single wheel contains `sm_90` and `sm_100f` code, not model-specific wheels.
++The selected capabilities and both code targets must be checked together when
++changing the build. This is a source/build contract, not GPU qualification.
++Use the exact target PyTorch/CUDA ABI; no cross-version ABI compatibility is
++implied. Native compilation, code-object inspection and CPU operator loading
++do not establish numeric correctness, registration, streams or CUDA Graphs.
++`source-lock.json` pins the transfer source in `sources`; `donor_preimages`
++retains historical audit hashes, not current wrapper/allocator inputs.
++The complete engine commit binds the current wrapper, host-pointer integration
++and generator. The generator uses only the transfer-source entry during
++compilation. Final-image checks must verify the installed wrapper against that
++complete engine, not merely check that the private wheel is present.
++
++The address helper follows the fixed CUDA implementation. Host allocation
++performs and checks explicit `cudaHostRegister` calls. An ordinary CPU
++allocation returning an address is not itself a registration failure.
++Qualification must verify real registered transfers and reject a missing
++pointer implementation rather than silently selecting raw addresses. A missing
++private backend on a selected CUDA device is an error, not a fallback to older
++operators. Run `tests/qualify_registered_transfer.py` plus the registered MHA/MLA
++and graph tests on each applicable device family before release acceptance.
++
++The final image must install the AOT wheel and the corresponding wrapper.
++There is no startup JIT compilation, package download or source mount.
++The surrounding SGLang repository license and source notices apply.
+diff --git a/python/sglang/kernels/kvcache_incremental/pyproject.toml b/python/sglang/kernels/kvcache_incremental/pyproject.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..16e20a541a2d53fbd2b374f20890e3e63a259855
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/pyproject.toml
+@@ -0,0 +1,16 @@
++[build-system]
++requires = ["scikit-build-core>=0.10", "torch==2.13.0", "wheel"]
++build-backend = "scikit_build_core.build"
++
++[project]
++name = "phala-kvcache-incremental"
++version = "0.2.0"
++description = "Shared registered-host-pointer and KV transfer extension for Hopper and Blackwell"
++requires-python = ">=3.10"
++dependencies = ["torch==2.13.0"]
++
++[tool.scikit-build]
++cmake.build-type = "Release"
++wheel.py-api = "cp310"
++wheel.packages = ["python/phala_kvcache_incremental"]
++wheel.license-files = []
+diff --git a/python/sglang/kernels/kvcache_incremental/python/phala_kvcache_incremental/__init__.py b/python/sglang/kernels/kvcache_incremental/python/phala_kvcache_incremental/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5f352fb1cd195a1ea49e975a28ee727cad481df
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/python/phala_kvcache_incremental/__init__.py
+@@ -0,0 +1,57 @@
++from __future__ import annotations
++
++from pathlib import Path
++import threading
++
++import torch
++
++
++_LOCK = threading.Lock()
++_LOADED = False
++_NAMESPACE = "phala_kvcache_incremental"
++_REQUIRED_OPS = (
++    "get_device_accessible_ptr",
++    "transfer_kv_per_layer",
++    "transfer_kv_per_layer_pf_lf",
++    "transfer_kv_per_layer_ph_lf",
++    "transfer_kv_all_layer",
++    "transfer_kv_all_layer_lf_pf",
++    "transfer_kv_all_layer_lf_ph",
++    "transfer_kv_per_layer_mla",
++    "transfer_kv_per_layer_mla_pf_lf",
++    "transfer_kv_all_layer_mla",
++    "transfer_kv_all_layer_mla_lf_pf",
++    "transfer_kv_direct",
++    "transfer_embedding_ranges_direct",
++    "transfer_kv_per_layer_direct_pf_lf",
++    "transfer_kv_all_layer_direct_lf_pf",
++)
++
++
++def ensure_loaded() -> None:
++    global _LOADED
++    if _LOADED:
++        return
++    with _LOCK:
++        if _LOADED:
++            return
++        native_dir = Path(__file__).resolve().parent / "_native"
++        candidates = sorted(native_dir.glob("phala_kvcache_ops*.so"))
++        if len(candidates) != 1:
++            raise ImportError(
++                f"expected exactly one phala_kvcache_ops shared library, found {candidates}"
++            )
++        torch.ops.load_library(str(candidates[0]))
++        namespace = getattr(torch.ops, _NAMESPACE)
++        missing = [name for name in _REQUIRED_OPS if not hasattr(namespace, name)]
++        if missing:
++            raise ImportError(f"focused KV extension did not register: {missing}")
++        _LOADED = True
++
++
++def op_namespace():
++    ensure_loaded()
++    return getattr(torch.ops, _NAMESPACE)
++
++
++__all__ = ["ensure_loaded", "op_namespace"]
+diff --git a/python/sglang/kernels/kvcache_incremental/scripts/generate_binding.py b/python/sglang/kernels/kvcache_incremental/scripts/generate_binding.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..83a29c882ad107591fab909cbc91a7eaa1451d16
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/scripts/generate_binding.py
+@@ -0,0 +1,97 @@
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++
++PRIVATE_NAMESPACE = "phala_kvcache_incremental"
++CPP_NAMESPACE = "phala_kvcache_incremental_impl"
++
++
++REGISTRATION = r"""
++
++TORCH_LIBRARY_FRAGMENT(phala_kvcache_incremental, m) {
++  m.def("get_device_accessible_ptr(Tensor tensor, int device_index) -> int", &phala_kvcache_incremental_impl::get_device_accessible_ptr);
++  m.def("transfer_kv_per_layer(Tensor src_k, Tensor dst_k, Tensor src_v, Tensor dst_v, Tensor src_indices, Tensor dst_indices, int item_size, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_per_layer", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer);
++  m.def("transfer_kv_per_layer_pf_lf(Tensor src_k, Tensor dst_k, Tensor src_v, Tensor dst_v, Tensor src_indices, Tensor dst_indices, int layer_id, int item_size, int src_layout_dim, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_per_layer_pf_lf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer_pf_lf);
++  m.def("transfer_kv_per_layer_ph_lf(Tensor src_k, Tensor dst_k, Tensor src_v, Tensor dst_v, Tensor src_indices, Tensor dst_indices, int layer_id, int item_size, int src_layout_dim, int page_size, int head_num, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_per_layer_ph_lf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer_ph_lf);
++  m.def("transfer_kv_all_layer(Tensor src_k_layers, Tensor dst_k_layers, Tensor src_v_layers, Tensor dst_v_layers, Tensor src_indices, Tensor dst_indices, int item_size, int num_layers, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_all_layer", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer);
++  m.def("transfer_kv_all_layer_lf_pf(Tensor src_k_layers, Tensor dst_k, Tensor src_v_layers, Tensor dst_v, Tensor src_indices, Tensor dst_indices, int item_size, int dst_layout_dim, int num_layers, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_all_layer_lf_pf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer_lf_pf);
++  m.def("transfer_kv_all_layer_lf_ph(Tensor src_k_layers, Tensor dst_k, Tensor src_v_layers, Tensor dst_v, Tensor src_indices, Tensor dst_indices, int item_size, int dst_layout_dim, int num_layers, int page_size, int head_num, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_all_layer_lf_ph", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer_lf_ph);
++  m.def("transfer_kv_per_layer_mla(Tensor src, Tensor dst, Tensor src_indices, Tensor dst_indices, int item_size, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_per_layer_mla", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer_mla);
++  m.def("transfer_kv_per_layer_mla_pf_lf(Tensor src, Tensor dst, Tensor src_indices, Tensor dst_indices, int layer_id, int item_size, int src_layout_dim, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_per_layer_mla_pf_lf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer_mla_pf_lf);
++  m.def("transfer_kv_all_layer_mla(Tensor src_layers, Tensor dst_layers, Tensor src_indices, Tensor dst_indices, int item_size, int num_layers, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_all_layer_mla", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer_mla);
++  m.def("transfer_kv_all_layer_mla_lf_pf(Tensor src_layers, Tensor dst, Tensor src_indices, Tensor dst_indices, int item_size, int dst_layout_dim, int num_layers, int block_quota, int num_warps_per_block) -> ()");
++  m.impl("transfer_kv_all_layer_mla_lf_pf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer_mla_lf_pf);
++  m.def("transfer_kv_direct(Tensor[] src_layers, Tensor[] dst_layers, Tensor src_indices, Tensor dst_indices, int page_size) -> ()");
++  m.impl("transfer_kv_direct", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_direct);
++  m.def("transfer_embedding_ranges_direct(Tensor src, Tensor! dst, int[] src_starts, int[] dst_starts, int[] lengths) -> ()");
++  m.impl("transfer_embedding_ranges_direct", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_embedding_ranges_direct);
++  m.def("transfer_kv_per_layer_direct_pf_lf(Tensor[] src_ptrs, Tensor[] dst_ptrs, Tensor src_indices, Tensor dst_indices, int layer_id, int page_size) -> ()");
++  m.impl("transfer_kv_per_layer_direct_pf_lf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_per_layer_direct_pf_lf);
++  m.def("transfer_kv_all_layer_direct_lf_pf(Tensor[] src_ptrs, Tensor[] dst_ptrs, Tensor src_indices, Tensor dst_indices, int page_size) -> ()");
++  m.impl("transfer_kv_all_layer_direct_lf_pf", c10::DispatchKey::CUDA, &phala_kvcache_incremental_impl::transfer_kv_all_layer_direct_lf_pf);
++}
++"""
++
++
++def digest(raw: bytes) -> str:
++    return hashlib.sha256(raw).hexdigest()
++
++
++def generate(source: Path, lock_path: Path) -> bytes:
++    lock = json.loads(lock_path.read_text(encoding="utf-8"))
++    expected = lock["sources"]["csrc/kvcacheio/transfer.cu"]
++    raw = source.read_bytes()
++    if digest(raw) != expected:
++        raise RuntimeError("transfer.cu hash does not match source-lock.json")
++    text = raw.decode("utf-8")
++    include = '#include "pytorch_extension_utils.h"\n'
++    if text.count(include) != 1:
++        raise RuntimeError("unexpected pytorch_extension_utils include shape")
++    text = text.replace(
++        include,
++        "// pytorch_extension_utils.h is unused by this translation unit.\n",
++    )
++    anchor = "inline void* resolve_device_accessible_ptr"
++    offset = text.find(anchor)
++    if offset < 0 or text.find(anchor, offset + 1) >= 0:
++        raise RuntimeError("unable to locate unique namespace insertion anchor")
++    prefix = text[:offset]
++    body = text[offset:]
++    return (
++        prefix
++        + "#include <torch/library.h>\n\n"
++        + f"namespace {CPP_NAMESPACE} {{\n\n"
++        + body
++        + f"\n}}  // namespace {CPP_NAMESPACE}\n"
++        + REGISTRATION
++    ).encode("utf-8")
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--source", type=Path, required=True)
++    parser.add_argument("--lock", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    generated = generate(args.source, args.lock)
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_bytes(generated)
++    print(json.dumps({"output": str(args.output), "sha256": digest(generated)}))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/python/sglang/kernels/kvcache_incremental/source-lock.json b/python/sglang/kernels/kvcache_incremental/source-lock.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ada564bac24467194cc566ce0c83430133672667
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/source-lock.json
+@@ -0,0 +1,14 @@
++{
++  "schema": "phala.kvcache-incremental-source-lock.v2",
++  "date": "2026-09-22",
++  "namespace": "phala_kvcache_incremental",
++  "sources": {
++    "csrc/kvcacheio/transfer.cu": "b46994b2a5b0eb83a1b9e48689582d903cfd32f538322f903141229433ed4406"
++  },
++  "donor_commit": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
++  "donor_preimages": {
++    "python/sgl_kernel/kvcacheio.py": "40fc71ba400fb8d70a2673bfbbf9c9d38d76b18092be2c3aeb6f15f918be610d",
++    "python/sglang/srt/mem_cache/pool_host/common.py": "7b05da6ae2453c0af8dc040d12ffa84043d0e087c9ad52cec0063f9f42daa303"
++  },
++  "integration_binding": "Current wrapper, host-pointer code and generator are bound by the complete engine commit, not by donor preimage hashes."
++}
+diff --git a/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py b/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc85f353e23f14a669f0e217150a05647f1471df
+--- /dev/null
++++ b/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py
+@@ -0,0 +1,223 @@
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++from unittest.mock import patch
++
++import torch
++
++from phala_kvcache_incremental import ensure_loaded
++
++
++def require(value: bool, message: str) -> None:
++    if not value:
++        raise RuntimeError(message)
++
++
++def require_missing_private_pointer_fails_closed() -> None:
++    probe = r"""
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import torch
++from sglang.srt.mem_cache.pool_host import common
++
++common._resolve_device_accessible_ptr_fn.cache_clear()
++try:
++    with patch.object(
++        common.torch.ops,
++        "phala_kvcache_incremental",
++        SimpleNamespace(),
++    ):
++        try:
++            resolve = common._resolve_device_accessible_ptr_fn()
++            resolve(torch.empty(1, device="cpu"), 0)
++        except (ImportError, AttributeError):
++            pass
++        else:
++            raise RuntimeError("missing private pointer op did not fail closed")
++finally:
++    common._resolve_device_accessible_ptr_fn.cache_clear()
++"""
++    result = subprocess.run(
++        [sys.executable, "-c", probe],
++        check=False,
++        capture_output=True,
++        text=True,
++        env=os.environ.copy(),
++    )
++    if result.returncode != 0:
++        raise RuntimeError(
++            "missing-private-pointer subprocess failed: "
++            f"stdout={result.stdout!r} stderr={result.stderr!r}"
++        )
++
++
++def main() -> int:
++    require(torch.cuda.is_available(), "real CUDA device is required")
++    require(
++        torch.cuda.get_device_capability(0) in {(9, 0), (10, 0), (10, 3)},
++        "A configured Hopper/Blackwell GPU is required",
++    )
++    ensure_loaded()
++
++    from sgl_kernel import kvcacheio
++    from sgl_kernel.kvcacheio import (
++        get_device_accessible_ptr,
++        transfer_kv_all_layer_mla_lf_pf,
++        transfer_kv_per_layer_mla_pf_lf,
++    )
++    from sglang.srt.mem_cache.pool_host.common import (
++        _CUDA_HOST_REGISTERED_RANGES_ATTR,
++        HostTensorAllocator,
++        _cuda_host_unregister,
++        alloc_with_host_register,
++        make_kernel_ptr_table,
++    )
++
++    namespace = torch.ops.phala_kvcache_incremental
++    require(
++        hasattr(namespace, "get_device_accessible_ptr"), "private pointer op missing"
++    )
++    require(
++        hasattr(kvcacheio, "_device_transfer_ops"),
++        "Installed sgl_kernel wrapper does not implement unified device dispatch",
++    )
++    require(
++        kvcacheio._device_transfer_ops(0) is namespace,
++        "Installed wrapper does not select the qualified private backend",
++    )
++
++    pageable = torch.empty(4096, dtype=torch.uint8, device="cpu")
++    try:
++        pageable_alias = get_device_accessible_ptr(pageable, 0)
++        pageable_probe = {
++            "resolved": True,
++            "same_address": pageable_alias == pageable.data_ptr(),
++        }
++    except RuntimeError as error:
++        pageable_probe = {"resolved": False, "error": str(error)}
++
++    try:
++        get_device_accessible_ptr(pageable, -1)
++    except RuntimeError:
++        invalid_device_rejected = True
++    else:
++        raise RuntimeError("negative target device index unexpectedly passed")
++
++    require_missing_private_pointer_fails_closed()
++
++    pages, layers, width = 4, 3, 64
++    dtype = torch.bfloat16
++    item_size = width * dtype.itemsize
++    page_dim = layers * item_size
++    host = alloc_with_host_register(
++        (pages, layers, 1, width),
++        dtype,
++        "cpu",
++        True,
++        HostTensorAllocator(),
++        registration_granularity_bytes=page_dim,
++    )
++    try:
++        registered_ranges = getattr(host, _CUDA_HOST_REGISTERED_RANGES_ATTR)
++        expected_start = host.data_ptr()
++        expected_end = expected_start + host.numel() * host.element_size()
++        cursor = expected_start
++        for start, size in registered_ranges:
++            require(start == cursor, "registered host ranges are not contiguous")
++            require(size > 0, "registered host range is empty")
++            cursor += size
++        require(
++            cursor == expected_end, "registered host ranges do not cover the tensor"
++        )
++
++        values = torch.arange(host.numel(), dtype=torch.float32).reshape(host.shape)
++        host.copy_(values.to(dtype))
++        alias = get_device_accessible_ptr(host, 0)
++        table = make_kernel_ptr_table([host], "cuda:0", host_memory_registered=True)
++        require(
++            table.cpu().tolist() == [alias], "pointer table did not use qualified alias"
++        )
++
++        src_indices = torch.tensor([0, 2], dtype=torch.int64, device="cuda:0")
++        dst_indices = torch.tensor([1, 3], dtype=torch.int64, device="cuda:0")
++        per_layer = torch.zeros((pages, 1, width), dtype=dtype, device="cuda:0")
++        packet = namespace.transfer_kv_per_layer_mla_pf_lf
++        with patch.object(packet, "default", wraps=packet.default) as per_layer_call:
++            transfer_kv_per_layer_mla_pf_lf(
++                host,
++                per_layer,
++                src_indices,
++                dst_indices,
++                layer_id=1,
++                item_size=item_size,
++                src_layout_dim=page_dim,
++            )
++            require(
++                per_layer_call.call_count == 1, "Per-layer copy bypassed private op"
++            )
++        torch.cuda.synchronize()
++        torch.testing.assert_close(per_layer[1].cpu(), host[0, 1])
++        torch.testing.assert_close(per_layer[3].cpu(), host[2, 1])
++
++        source_layers = [
++            torch.full((pages, 1, width), layer + 11, dtype=dtype, device="cuda:0")
++            for layer in range(layers)
++        ]
++        source_ptrs = torch.tensor(
++            [tensor.data_ptr() for tensor in source_layers],
++            dtype=torch.uint64,
++            device="cuda:0",
++        )
++        all_src_indices = torch.tensor([1, 3], dtype=torch.int64, device="cuda:0")
++        all_dst_indices = torch.tensor([0, 2], dtype=torch.int64, device="cuda:0")
++        host.zero_()
++        packet = namespace.transfer_kv_all_layer_mla_lf_pf
++        with patch.object(packet, "default", wraps=packet.default) as all_layer_call:
++            transfer_kv_all_layer_mla_lf_pf(
++                source_ptrs,
++                host,
++                all_src_indices,
++                all_dst_indices,
++                item_size=item_size,
++                dst_layout_dim=page_dim,
++                num_layers=layers,
++            )
++            require(
++                all_layer_call.call_count == 1, "All-layer copy bypassed private op"
++            )
++        torch.cuda.synchronize()
++        for layer in range(layers):
++            torch.testing.assert_close(host[0, layer], source_layers[layer][1].cpu())
++            torch.testing.assert_close(host[2, layer], source_layers[layer][3].cpu())
++    finally:
++        _cuda_host_unregister(host)
++
++    print(
++        json.dumps(
++            {
++                "pass": True,
++                "device": torch.cuda.get_device_name(0),
++                "namespace": "phala_kvcache_incremental",
++                "pageable_pointer_probe": pageable_probe,
++                "invalid_device_rejected": invalid_device_rejected,
++                "missing_private_pointer_failed_closed": True,
++                "registered_range_count": len(registered_ranges),
++                "registered_ranges_cover_tensor": True,
++                "registered_pointer_table": True,
++                "per_layer_pf_lf": True,
++                "all_layer_lf_pf": True,
++                "installed_wrapper_selected_private_backend": True,
++                "private_transfer_calls": 2,
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/python/sglang/srt/mem_cache/pool_host/common.py b/python/sglang/srt/mem_cache/pool_host/common.py
+index 5c87696a8b418dbea4bcd83036033f5cf425fe3e..605339aeed939d0c7e90b6479541f09293a3195d 100644
+--- a/python/sglang/srt/mem_cache/pool_host/common.py
++++ b/python/sglang/srt/mem_cache/pool_host/common.py
+@@ -17,12 +17,9 @@ from sglang.srt.mem_cache.pool_host.allocation_budget import (
+ from sglang.srt.mem_cache.storage.mmap import alloc_mmap
+ from sglang.srt.mem_cache.storage.mmap.mmap_allocator import requested_hugepage_bytes
+ from sglang.srt.runtime_context import get_memory
+-from sglang.srt.utils import is_hip
+ 
+ logger = logging.getLogger(__name__)
+ 
+-_is_hip = is_hip()
+-
+ _CUDA_HOST_REGISTERED_RANGES_ATTR = "_sglang_cuda_host_registered_ranges"
+ 
+ 
+@@ -291,23 +288,10 @@ def _resolve_device_accessible_ptr_fn():
+         from sgl_kernel.kvcacheio import get_device_accessible_ptr
+     except ImportError:
+         get_device_accessible_ptr = None
+-    else:
+-        if not hasattr(torch.ops.sgl_kernel, "get_device_accessible_ptr"):
+-            get_device_accessible_ptr = None
+-
+-    if get_device_accessible_ptr is None:
+-        # CUDA's UVA makes host and device addresses equal; on HIP they differ.
+-        if _is_hip:
+-            raise ImportError(
+-                "sgl_kernel.kvcacheio.get_device_accessible_ptr is missing from the "
+-                "installed sglang-kernel. It is required on ROCm, where registered "
+-                "host memory carries a distinct device address. Rebuild sglang-kernel "
+-                "from python/sglang/kernels/aot (setup_rocm.py)."
+-            )
+-        logger.warning(
+-            "sgl_kernel.kvcacheio.get_device_accessible_ptr is missing from the "
+-            "installed sglang-kernel; using raw host addresses for kernel pointer "
+-            "tables. Build sglang-kernel from python/sglang/kernels/aot to enable it."
++    if not callable(get_device_accessible_ptr):
++        raise ImportError(
++            "sgl_kernel.kvcacheio.get_device_accessible_ptr is required for "
++            "registered host-memory pointer tables; raw-address fallback is disabled"
+         )
+     return get_device_accessible_ptr
+ 
+@@ -324,6 +308,12 @@ def make_kernel_ptr_table(
+         if host_memory_registered and device.type == "cuda"
+         else None
+     )
++    if (
++        host_memory_registered
++        and device.type == "cuda"
++        and get_device_accessible_ptr is None
++    ):
++        raise ImportError("Registered host-memory pointer resolution is required")
+     if get_device_accessible_ptr is not None:
+         if device.index is None:
+             device_index = torch.cuda.current_device()
+diff --git a/test/manual/phala/test_kv_backend_cpu.py b/test/manual/phala/test_kv_backend_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..caf7f0b8ade74f020ddebe3487011c4f0401a73f
+--- /dev/null
++++ b/test/manual/phala/test_kv_backend_cpu.py
+@@ -0,0 +1,280 @@
++"""Source contracts for device-scoped KV dispatch; no GPU emulation claim."""
++
++import ast
++from concurrent.futures import ThreadPoolExecutor
++from functools import lru_cache
++import importlib.util
++import inspect
++from pathlib import Path
++import sys
++import tempfile
++from types import ModuleType, SimpleNamespace
++from typing import List
++import unittest
++from unittest.mock import patch
++
++
++ROOT = Path(__file__).resolve().parents[3]
++EXTENSION = ROOT / "python/sglang/kernels/kvcache_incremental"
++WRAPPER = ROOT / "python/sglang/kernels/aot/python/sgl_kernel/kvcacheio.py"
++HOST = ROOT / "python/sglang/srt/mem_cache/pool_host/common.py"
++
++
++class Tensor:
++    def __init__(self, device="cuda", index=1):
++        self.device = SimpleNamespace(type=device, index=index)
++
++    def data_ptr(self):
++        return 11
++
++
++class Operator:
++    def __init__(self, owner, name):
++        self.owner, self.name = owner, name
++        self.default = self
++
++    def __call__(self, *args):
++        self.owner.calls.append((self.name, args))
++        return self.owner.pointer
++
++
++class Namespace:
++    def __init__(self, pointer):
++        self.pointer, self.calls = pointer, []
++
++    def __getattr__(self, name):
++        return Operator(self, name)
++
++
++def load(path, name):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++class KvBackendTests(unittest.TestCase):
++    def setUp(self):
++        self.public, self.private = Namespace(17), Namespace(29)
++        self.caps = {0: (8, 9), 1: (9, 0), 2: (10, 0), 3: (10, 3)}
++        self.probed, self.loaded, self.libraries = [], [], []
++        self.torch = ModuleType("torch")
++        self.torch.Tensor = Tensor
++        self.torch.uint64 = "uint64"
++        self.torch.version = SimpleNamespace(hip=None, cuda="13.0")
++        self.torch.cuda = SimpleNamespace(
++            is_available=lambda: True,
++            get_device_capability=self.capability,
++            current_device=lambda: 0,
++        )
++        self.torch.ops = SimpleNamespace(
++            sgl_kernel=self.public,
++            phala_kvcache_incremental=self.private,
++            load_library=self.libraries.append,
++        )
++        self.provider = ModuleType("phala_kvcache_incremental")
++        self.provider.op_namespace = self.namespace
++        context = patch.dict(
++            sys.modules,
++            {"torch": self.torch, "phala_kvcache_incremental": self.provider},
++        )
++        context.start()
++        self.addCleanup(context.stop)
++        self.wrapper = load(WRAPPER, "tested_kv_wrapper")
++
++    def capability(self, index):
++        self.probed.append(index)
++        return self.caps[index]
++
++    def namespace(self):
++        self.loaded.append(True)
++        return self.private
++
++    def test_import_does_not_probe_or_load_cuda(self):
++        self.assertEqual(self.probed, [])
++        self.assertEqual(self.loaded, [])
++
++    def test_each_supported_device_is_selected_and_cached_independently(self):
++        for index in (1, 2, 3):
++            for _ in range(2):
++                self.assertIs(
++                    self.wrapper._transfer_ops(Tensor(index=index)), self.private
++                )
++        self.assertEqual(self.probed, [1, 2, 3])
++        self.assertEqual(len(self.loaded), 3)
++        self.assertIs(self.wrapper._transfer_ops(Tensor(index=0)), self.public)
++
++    def test_cpu_hip_and_unavailable_cuda_keep_public_ops(self):
++        self.assertIs(self.wrapper._transfer_ops(Tensor("cpu", None)), self.public)
++        self.wrapper._is_hip = True
++        self.assertIs(self.wrapper._transfer_ops(Tensor()), self.public)
++        self.wrapper._is_hip = False
++        self.torch.cuda.is_available = lambda: False
++        self.assertIs(self.wrapper._transfer_ops(Tensor()), self.public)
++        self.assertEqual(self.probed, [])
++        self.assertEqual(self.loaded, [])
++
++    def test_all_transfer_wrappers_preserve_arguments_and_actual_device(self):
++        functions = {
++            name: function
++            for name, function in vars(self.wrapper).items()
++            if name.startswith("transfer_") and callable(function)
++        }
++        self.assertEqual(len(functions), 14)
++        for name, function in functions.items():
++            args = []
++            for param in inspect.signature(function).parameters.values():
++                if param.annotation is Tensor:
++                    args.append(Tensor())
++                elif param.annotation == List[Tensor]:
++                    args.append([Tensor()])
++                elif param.annotation == List[int]:
++                    args.append([8])
++                else:
++                    args.append(8)
++            with self.subTest(operation=name):
++                function(*args)
++                self.assertEqual(self.private.calls[-1], (name, tuple(args)))
++        self.assertEqual(self.public.calls, [])
++        self.assertEqual(self.probed, [1])
++
++    def test_direct_transfers_find_cuda_in_either_tensor_group(self):
++        for src, dst in (
++            (Tensor("cpu", None), Tensor()),
++            (Tensor(), Tensor("cpu", None)),
++        ):
++            self.wrapper.transfer_kv_direct(
++                [src], [dst], Tensor("cpu"), Tensor("cpu"), 1
++            )
++            self.assertEqual(self.private.calls[-1][0], "transfer_kv_direct")
++            self.wrapper.transfer_embedding_ranges_direct(src, dst, [0], [0], [1])
++            self.assertEqual(
++                self.private.calls[-1][0], "transfer_embedding_ranges_direct"
++            )
++        self.assertEqual(self.probed, [1])
++
++    def test_cpu_cache_copy_is_not_replaced(self):
++        values = [Tensor("cpu", None) for _ in range(4)]
++        self.wrapper.copy_all_layer_kv_cache_cpu(*values)
++        self.assertEqual(
++            self.public.calls, [("copy_all_layer_kv_cache_cpu", tuple(values))]
++        )
++        self.assertEqual(self.loaded, [])
++
++    def test_pointer_resolution_uses_explicit_target_and_rejects_negative(self):
++        tensor = Tensor("cpu", None)
++        self.assertEqual(self.wrapper.get_device_accessible_ptr(tensor, 2), 29)
++        self.assertEqual(
++            self.private.calls[-1], ("get_device_accessible_ptr", (tensor, 2))
++        )
++        with self.assertRaisesRegex(RuntimeError, "non-negative"):
++            self.wrapper.get_device_accessible_ptr(tensor, -1)
++        self.assertEqual(self.probed, [2])
++
++    def test_missing_selected_backend_does_not_fall_back(self):
++        with patch.object(
++            self.provider, "op_namespace", side_effect=ImportError("missing native")
++        ):
++            with self.assertRaisesRegex(ImportError, "missing native"):
++                self.wrapper.get_device_accessible_ptr(Tensor("cpu"), 1)
++        self.assertEqual(self.public.calls, [])
++
++    def test_missing_pointer_operator_cannot_return_raw_address(self):
++        self.torch.ops.sgl_kernel = SimpleNamespace()
++        with self.assertRaisesRegex(ImportError, "pointer resolution is required"):
++            self.wrapper.get_device_accessible_ptr(Tensor("cpu"), 0)
++
++    def host_functions(self):
++        names = {"_resolve_device_accessible_ptr_fn", "make_kernel_ptr_table"}
++        tree = ast.parse(HOST.read_text())
++        body = [
++            node
++            for node in tree.body
++            if (isinstance(node, ast.FunctionDef) and node.name in names)
++            or (isinstance(node, ast.ImportFrom) and node.module == "__future__")
++        ]
++        self.assertEqual(sum(isinstance(node, ast.FunctionDef) for node in body), 2)
++        namespace = {"torch": self.torch, "lru_cache": lru_cache}
++        self.torch.device = lambda value: SimpleNamespace(type="cuda", index=1)
++        self.torch.tensor = lambda values, **kwargs: values
++        exec(
++            compile(ast.Module(body=body, type_ignores=[]), str(HOST), "exec"),
++            namespace,
++        )
++        return namespace
++
++    def test_host_pointer_table_requires_alias_for_registered_cuda(self):
++        functions = self.host_functions()
++        package = ModuleType("sgl_kernel")
++        package.__path__ = []
++        with patch.dict(
++            sys.modules,
++            {"sgl_kernel": package, "sgl_kernel.kvcacheio": self.wrapper},
++        ):
++            table = functions["make_kernel_ptr_table"](
++                [Tensor("cpu")], "cuda:1", host_memory_registered=True
++            )
++            self.assertEqual(table, [29])
++        functions["_resolve_device_accessible_ptr_fn"] = lambda: None
++        with self.assertRaisesRegex(ImportError, "pointer resolution is required"):
++            functions["make_kernel_ptr_table"](
++                [Tensor("cpu")], "cuda:1", host_memory_registered=True
++            )
++        self.assertEqual(
++            functions["make_kernel_ptr_table"](
++                [Tensor("cpu")], "cuda:1", host_memory_registered=False
++            ),
++            [11],
++        )
++
++    def test_missing_wrapper_pointer_function_fails_closed(self):
++        functions = self.host_functions()
++        with patch.dict(sys.modules, {"sgl_kernel.kvcacheio": SimpleNamespace()}):
++            with self.assertRaisesRegex(ImportError, "fallback is disabled"):
++                functions["_resolve_device_accessible_ptr_fn"]()
++
++    def test_native_loader_checks_library_count_and_all_required_ops(self):
++        loader = load(
++            EXTENSION / "python/phala_kvcache_incremental/__init__.py",
++            "tested_private_loader",
++        )
++        self.assertEqual(len(loader._REQUIRED_OPS), 15)
++        for files in ([], [Path("one.so"), Path("two.so")]):
++            with patch.object(Path, "glob", return_value=files):
++                with self.assertRaisesRegex(ImportError, "exactly one"):
++                    loader.ensure_loaded()
++        self.torch.ops.phala_kvcache_incremental = SimpleNamespace()
++        with patch.object(Path, "glob", return_value=[Path("one.so")]):
++            with self.assertRaisesRegex(ImportError, "did not register"):
++                loader.ensure_loaded()
++        self.assertFalse(loader._LOADED)
++
++    def test_native_loader_runs_once_under_concurrency(self):
++        loader = load(
++            EXTENSION / "python/phala_kvcache_incremental/__init__.py",
++            "tested_concurrent_loader",
++        )
++        with patch.object(Path, "glob", return_value=[Path("one.so")]):
++            with ThreadPoolExecutor(max_workers=4) as executor:
++                list(executor.map(lambda _: loader.ensure_loaded(), range(20)))
++        self.assertTrue(loader._LOADED)
++        self.assertEqual(self.libraries, ["one.so"])
++
++    def test_binding_generator_requires_exact_transfer_source(self):
++        generator = load(
++            EXTENSION / "scripts/generate_binding.py", "tested_binding_generator"
++        )
++        source = ROOT / "python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu"
++        lock = EXTENSION / "source-lock.json"
++        output = generator.generate(source, lock)
++        self.assertIn(b"namespace phala_kvcache_incremental_impl", output)
++        self.assertEqual(output.count(b'm.def("'), 15)
++        with tempfile.TemporaryDirectory() as directory:
++            altered = Path(directory) / "transfer.cu"
++            altered.write_bytes(source.read_bytes() + b"\n")
++            with self.assertRaisesRegex(RuntimeError, "hash does not match"):
++                generator.generate(altered, lock)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernels/ops/kvcache/test_hicache_page_first_write_back.py b/test/registered/kernels/ops/kvcache/test_hicache_page_first_write_back.py
+index 73499e35c5305dc468a779ca27c74bfd4e1c3e9b..a0656522058e8e7843f1be49f79df4406bc7efe3 100644
+--- a/test/registered/kernels/ops/kvcache/test_hicache_page_first_write_back.py
++++ b/test/registered/kernels/ops/kvcache/test_hicache_page_first_write_back.py
+@@ -273,20 +273,11 @@ def test_page_first_staged_write_back_mla(element_dim: int, page_count: int) ->
+     _run_mla(element_dim, page_count)
+ 
+ 
+-@pytest.mark.skipif(
+-    is_hip(),
+-    reason="ROCm maps registered host memory at a distinct device address.",
+-)
+-def test_registered_mmap_kernel_ptr_table_fallback_matches_device_alias(
++def test_registered_mmap_kernel_ptr_table_missing_resolver_fails_closed(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    """CUDA maps registered host memory at the host address itself;
+-    ``make_kernel_ptr_table``'s raw-host-address fallback depends on it."""
+-    if _resolve_device_accessible_ptr_fn() is None:
+-        pytest.skip(
+-            "installed sglang-kernel has no get_device_accessible_ptr; "
+-            "build it from python/sglang/kernels/aot to run this test"
+-        )
++    """Registered memory requires a qualified alias, never a guessed raw address."""
++    resolve = _resolve_device_accessible_ptr_fn()
+ 
+     buffer = alloc_with_host_register(
+         (PAGE_SIZE * 4, 128),
+@@ -297,11 +288,12 @@ def test_registered_mmap_kernel_ptr_table_fallback_matches_device_alias(
+     )
+     try:
+         aliased = make_kernel_ptr_table([buffer], DEVICE, host_memory_registered=True)
++        assert aliased.cpu().tolist() == [resolve(buffer, torch.cuda.current_device())]
+         monkeypatch.setattr(
+             pool_host_common, "_resolve_device_accessible_ptr_fn", lambda: None
+         )
+-        raw = make_kernel_ptr_table([buffer], DEVICE, host_memory_registered=True)
+-        assert torch.equal(aliased, raw)
++        with pytest.raises(ImportError, match="pointer resolution is required"):
++            make_kernel_ptr_table([buffer], DEVICE, host_memory_registered=True)
+     finally:
+         _cuda_host_unregister(buffer)
+ 

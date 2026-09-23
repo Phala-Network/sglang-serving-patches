@@ -39,6 +39,10 @@
       {
         "name": "srt-parser-privacy",
         "path": "test/manual/phala/test_srt_parser_privacy_gate.py"
+      },
+      {
+        "name": "kv-backend",
+        "path": "test/manual/phala/test_kv_backend_cpu.py"
       }
     ],
     "model-fixtures": [

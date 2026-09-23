@@ -1,0 +1,126 @@
+diff --git a/python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu b/python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu
+index 434a409cce9e2a9b3d591c528eec725118d5c241..8cd18b752448850bbf35786cd054c7d398d362c3 100644
+--- a/python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu
++++ b/python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu
+@@ -366,13 +366,22 @@ void transfer_kv_launcher(
+   TORCH_CHECK(dst_indices.scalar_type() == at::kLong, "Destination indices must be of type long");
+   TORCH_CHECK(src_indices.numel() == dst_indices.numel(), "Source and destination indices must have the same length");
+   TORCH_CHECK(item_size % 8 == 0, "Item byte size must be divisible by 8");
++  TORCH_CHECK(block_quota > 0, "Block quota must be positive");
++  TORCH_CHECK(num_warps_per_block > 0, "Warp count must be positive");
++  TORCH_CHECK(
++      block_quota <= std::numeric_limits<int64_t>::max() / num_warps_per_block,
++      "Launch quota product exceeds int64 range");
++
++  const int64_t num_items = src_indices.numel();
++  if (num_items == 0) {
++    return;
++  }
+ 
+ #if !defined(USE_MUSA)
+   const at::cuda::OptionalCUDAGuard device_guard(src_indices.device());
+ #endif
+ 
+-  auto div_up = [](int64_t x, int64_t y) { return (x + y - 1) / y; };
+-  const int64_t num_items = src_indices.numel();
++  auto div_up = [](int64_t x, int64_t y) { return x / y + (x % y != 0); };
+   const int64_t items_per_warp = div_up(num_items, block_quota * num_warps_per_block);
+   const int32_t num_blocks = div_up(num_items, items_per_warp * num_warps_per_block);
+   dim3 grid_dim(num_blocks, 1, 1);
+diff --git a/python/sglang/kernels/kvcache_incremental/source-lock.json b/python/sglang/kernels/kvcache_incremental/source-lock.json
+index ada564bac24467194cc566ce0c83430133672667..f736e0d277385b149775ee45292a806a61ab8eac 100644
+--- a/python/sglang/kernels/kvcache_incremental/source-lock.json
++++ b/python/sglang/kernels/kvcache_incremental/source-lock.json
+@@ -3,10 +3,11 @@
+   "date": "2026-09-22",
+   "namespace": "phala_kvcache_incremental",
+   "sources": {
+-    "csrc/kvcacheio/transfer.cu": "b46994b2a5b0eb83a1b9e48689582d903cfd32f538322f903141229433ed4406"
++    "csrc/kvcacheio/transfer.cu": "42cba36179cd0a8de93ba7be40b7d5eb29418ead04a7ff0d81a5223d4388547e"
+   },
+   "donor_commit": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
+   "donor_preimages": {
++    "csrc/kvcacheio/transfer.cu": "b46994b2a5b0eb83a1b9e48689582d903cfd32f538322f903141229433ed4406",
+     "python/sgl_kernel/kvcacheio.py": "40fc71ba400fb8d70a2673bfbbf9c9d38d76b18092be2c3aeb6f15f918be610d",
+     "python/sglang/srt/mem_cache/pool_host/common.py": "7b05da6ae2453c0af8dc040d12ffa84043d0e087c9ad52cec0063f9f42daa303"
+   },
+diff --git a/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py b/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py
+index fc85f353e23f14a669f0e217150a05647f1471df..98495338bbaa319dc54813800bc394a220e736ab 100644
+--- a/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py
++++ b/python/sglang/kernels/kvcache_incremental/tests/qualify_registered_transfer.py
+@@ -162,6 +162,38 @@ def main() -> int:
+         torch.cuda.synchronize()
+         torch.testing.assert_close(per_layer[1].cpu(), host[0, 1])
+         torch.testing.assert_close(per_layer[3].cpu(), host[2, 1])
++        before_empty = per_layer.clone()
++        empty_indices = torch.empty(0, dtype=torch.int64, device="cuda:0")
++        transfer_kv_per_layer_mla_pf_lf(
++            host,
++            per_layer,
++            empty_indices,
++            empty_indices,
++            layer_id=1,
++            item_size=item_size,
++            src_layout_dim=page_dim,
++        )
++        torch.cuda.synchronize()
++        torch.testing.assert_close(per_layer, before_empty)
++        for quota in (0, -1):
++            try:
++                transfer_kv_per_layer_mla_pf_lf(
++                    host,
++                    per_layer,
++                    src_indices,
++                    dst_indices,
++                    layer_id=1,
++                    item_size=item_size,
++                    src_layout_dim=page_dim,
++                    block_quota=quota,
++                )
++            except RuntimeError as error:
++                require(
++                    "Block quota must be positive" in str(error),
++                    "Unexpected quota error",
++                )
++            else:
++                raise RuntimeError("Invalid block quota unexpectedly passed")
+ 
+         source_layers = [
+             torch.full((pages, 1, width), layer + 11, dtype=dtype, device="cuda:0")
+@@ -211,7 +243,9 @@ def main() -> int:
+                 "per_layer_pf_lf": True,
+                 "all_layer_lf_pf": True,
+                 "installed_wrapper_selected_private_backend": True,
+-                "private_transfer_calls": 2,
++                "private_roundtrip_transfer_calls": 2,
++                "empty_transfer_preserved_output": True,
++                "invalid_block_quota_rejected": True,
+             },
+             sort_keys=True,
+         )
+diff --git a/test/manual/phala/test_kv_backend_cpu.py b/test/manual/phala/test_kv_backend_cpu.py
+index caf7f0b8ade74f020ddebe3487011c4f0401a73f..269e9422f2d266de92beb65a35ac73822634622d 100644
+--- a/test/manual/phala/test_kv_backend_cpu.py
++++ b/test/manual/phala/test_kv_backend_cpu.py
+@@ -275,6 +275,21 @@ class KvBackendTests(unittest.TestCase):
+             with self.assertRaisesRegex(RuntimeError, "hash does not match"):
+                 generator.generate(altered, lock)
+ 
++    def test_zero_work_and_invalid_quota_are_guarded_before_launch_arithmetic(self):
++        source = (
++            ROOT / "python/sglang/kernels/aot/csrc/kvcacheio/transfer.cu"
++        ).read_text(encoding="utf-8")
++        body = source.split("void transfer_kv_launcher(", 1)[1].split(
++            "\nvoid transfer_kv_per_layer(", 1
++        )[0]
++        empty = body.index("if (num_items == 0)")
++        self.assertLess(empty, body.index("OptionalCUDAGuard"))
++        self.assertLess(empty, body.index("resolve_device_accessible_ptr(src_k)"))
++        self.assertLess(body.index("Block quota must be positive"), empty)
++        self.assertLess(body.index("Warp count must be positive"), empty)
++        self.assertLess(body.index("Launch quota product exceeds int64 range"), empty)
++        self.assertIn("return x / y + (x % y != 0);", body)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

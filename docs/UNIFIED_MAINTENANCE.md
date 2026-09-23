@@ -9,16 +9,26 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `5a3634cab912a98f2ecdacc24c29c05e3c09a09d`.
-- Engine tree: `54a0dcd3bb47aae7159a794e4ffcdb6532a8b5d2`.
-- Ordered engine stack: 31 protected steps plus 63 successor steps.
+- Active engine: `6f0768294b04f4333cc12ff6c7eb4bf7caadf761`.
+- Engine tree: `daae7edd1feeb0af9be5c5e4a68e72505829ae78`.
+- Ordered engine stack: 31 protected steps plus 65 successor steps.
 - New increments: framework log privacy/health cleanup and configurable DSA
   ordinary-memory reserve, with its original 128 GiB default; shared HugeTLB
   accounting for staggered Kimi allocations without changing the DSA ledger;
   reviewed SRT privacy migration preserving log controls, required evaluations,
-  request decoding, scheduler time gates and business CLI output.
+  request decoding, scheduler time gates and business CLI output; one
+  registered-KV extension with Hopper/Blackwell code targets and device-scoped
+  lazy dispatch, without a raw-address fallback for registered host memory;
+  empty-transfer and invalid-quota guards before launch arithmetic.
 - These are source candidates. Native dependencies, every target configuration,
   the final image and production deployment are not qualified by replay.
+
+The new KV integration requires both its compiled private wheel and the
+matching `sgl_kernel.kvcacheio` wrapper from this engine in the final image.
+Installing the private wheel alone does not update the separate `sgl_kernel`
+package. The image builder must install and verify that wrapper at build time;
+no startup patching or source mounts qualify the final installed image.
+CPU compilation and SDK-stub-linked registration are not GPU execution evidence.
 
 Real implementation changes belong in the Phala SGLang fork. The patch files
 remain deterministic exports of those immutable changes. Governor-owned hook
