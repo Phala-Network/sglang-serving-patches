@@ -19,6 +19,14 @@
         "name": "host-reserve",
         "path": "test/manual/unit/mem_cache/test_hicache_host_allocation_budget.py",
         "simulator_hooks": true
+      },
+      {
+        "name": "hugetlb-accounting",
+        "path": "test/manual/phala/test_hugetlb_shared_accounting_cpu.py"
+      },
+      {
+        "name": "dsa-allocation-ledger",
+        "path": "test/manual/test_glm53_dsa_host_budget.py"
       }
     ],
     "model-fixtures": [

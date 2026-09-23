@@ -1,0 +1,369 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 63ef595be72b9a14d178a351168f75e808d4a1dc..c8ae2df0e9f6a33d0a11e39d0a7384d43d278496 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -54,6 +54,8 @@ jobs:
+           python test/manual/phala/test_initial_stream_error_cpu.py
+           python test/manual/phala/test_framework_log_privacy_cpu.py
+           python test/manual/phala/test_health_task_cleanup_cpu.py
++          python test/manual/phala/test_hugetlb_shared_accounting_cpu.py
++          python test/manual/test_glm53_dsa_host_budget.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+           python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+diff --git a/python/sglang/srt/mem_cache/pool_host/allocation_budget.py b/python/sglang/srt/mem_cache/pool_host/allocation_budget.py
+index 726f645731156922c209cff472890f9b487f3622..2923d75968663991437b21cb257e5977c68833e1 100644
+--- a/python/sglang/srt/mem_cache/pool_host/allocation_budget.py
++++ b/python/sglang/srt/mem_cache/pool_host/allocation_budget.py
+@@ -97,20 +97,22 @@ def _parse_nodes(value: str) -> set[int]:
+     return nodes
+ 
+ 
+-def _resource_snapshot(hugepage_bytes: int) -> tuple[int, int]:
+-    ordinary = int(psutil.virtual_memory().available)
+-    cgroup = _cgroup_headroom("memory")
+-    if cgroup is not None:
+-        ordinary = min(ordinary, cgroup)
+-    ordinary = max(0, ordinary - host_memory_reserve_bytes())
+-    if not hugepage_bytes:
+-        return ordinary, 0
++def available_hugepage_bytes(hugepage_bytes: int) -> int:
++    """Unreserved pages in the explicit pool, constrained by allowed NUMA nodes."""
++    if hugepage_bytes not in (2 * 1024**2, 1024**3):
++        raise ValueError("HugeTLB accounting requires an explicit 2 MiB or 1 GiB pool")
++
++    def read_count(path: Path) -> int:
++        value = path.read_text().strip()
++        if not value.isascii() or not value.isdecimal():
++            raise ValueError(f"Invalid HugeTLB page count in {path}")
++        return int(value)
+ 
+     size_kb = hugepage_bytes // 1024
+     name = f"hugepages-{size_kb}kB"
+     directory = Path("/sys/kernel/mm/hugepages") / name
+-    free = int((directory / "free_hugepages").read_text())
+-    reserved = int((directory / "resv_hugepages").read_text())
++    free = read_count(directory / "free_hugepages")
++    reserved = read_count(directory / "resv_hugepages")
+     status = Path("/proc/self/status").read_text().splitlines()
+     allowed = _parse_nodes(
+         next(
+@@ -126,18 +128,28 @@ def _resource_snapshot(hugepage_bytes: int) -> tuple[int, int]:
+         free = min(
+             free,
+             sum(
+-                int(
+-                    (
+-                        Path(f"/sys/devices/system/node/node{node}")
+-                        / "hugepages"
+-                        / name
+-                        / "free_hugepages"
+-                    ).read_text()
++                read_count(
++                    Path(f"/sys/devices/system/node/node{node}")
++                    / "hugepages"
++                    / name
++                    / "free_hugepages"
+                 )
+                 for node in allowed
+             ),
+         )
+-    huge = max(0, free - reserved) * hugepage_bytes
++    return max(0, free - reserved) * hugepage_bytes
++
++
++def _resource_snapshot(hugepage_bytes: int) -> tuple[int, int]:
++    ordinary = int(psutil.virtual_memory().available)
++    cgroup = _cgroup_headroom("memory")
++    if cgroup is not None:
++        ordinary = min(ordinary, cgroup)
++    ordinary = max(0, ordinary - host_memory_reserve_bytes())
++    if not hugepage_bytes:
++        return ordinary, 0
++
++    huge = available_hugepage_bytes(hugepage_bytes)
+     size_label = "2MB" if hugepage_bytes == 2 * 1024**2 else "1GB"
+     for resource in (f"hugetlb.{size_label}", f"hugetlb.{size_label}.rsvd"):
+         limit = _cgroup_headroom(resource)
+diff --git a/python/sglang/srt/mem_cache/pool_host/base.py b/python/sglang/srt/mem_cache/pool_host/base.py
+index a9ea96b4d607fdf79bc82065969f6a8d863cfa8e..f3a47723d98127744f724531b849535fe979c7e0 100644
+--- a/python/sglang/srt/mem_cache/pool_host/base.py
++++ b/python/sglang/srt/mem_cache/pool_host/base.py
+@@ -13,12 +13,14 @@ from sglang.srt.distributed.parallel_state import get_world_group
+ from sglang.srt.mem_cache.memory_pool import KVCache
+ from sglang.srt.mem_cache.pool_host.allocation_budget import (
+     active_host_allocation_budget,
++    available_hugepage_bytes,
+     host_slot_metadata_bytes,
+ )
+ from sglang.srt.mem_cache.pool_host.common import (
+     _cuda_host_unregister,
+     get_allocator_from_storage,
+ )
++from sglang.srt.mem_cache.storage.mmap.mmap_allocator import requested_hugepage_bytes
+ from sglang.srt.runtime_context import get_parallel
+ from sglang.srt.utils import is_cuda, is_hip
+ 
+@@ -53,12 +55,17 @@ def ranks_per_host() -> int:
+ 
+ 
+ def host_memory_budget_bytes() -> int:
+-    """Host RAM this rank may claim for a HiCache pool.
++    """Advisory availability check outside a coordinated allocation transaction.
+ 
+-    psutil reports the whole machine, so co-located ranks each see the same free
+-    memory; without the split every rank sizes its pool against all of it and
+-    the host is oversubscribed by the number of ranks it holds.
++    Ordinary-memory estimates retain their reserve and rank split. Explicit
++    1 GiB mappings use remaining HugeTLB pages, which exclude ordinary RAM.
+     """
++    hugepage_bytes = requested_hugepage_bytes()
++    if hugepage_bytes == 1024**3:
++        # Earlier ranks/pools may already own their pages. Splitting the
++        # remaining pool again rejects valid staggered allocations. This is
++        # not a reservation: strict mmap still enforces actual global limits.
++        return available_hugepage_bytes(hugepage_bytes)
+     free = psutil.virtual_memory().available - HICACHE_HOST_MEMORY_RESERVE_BYTES
+     return free // ranks_per_host()
+ 
+diff --git a/test/manual/phala/test_hugetlb_shared_accounting_cpu.py b/test/manual/phala/test_hugetlb_shared_accounting_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2e9967b94ed8765534325386519fed475c8a2bff
+--- /dev/null
++++ b/test/manual/phala/test_hugetlb_shared_accounting_cpu.py
+@@ -0,0 +1,186 @@
++"""Real source functions with small proc/sys fixtures; no mmap or GPU allocation."""
++
++import ast
++import math
++import os
++from pathlib import Path
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest.mock import Mock
++
++SOURCE = Path(
++    os.environ.get(
++        "SGLANG_TEST_SOURCE_ROOT",
++        str(Path(__file__).resolve().parents[3] / "python/sglang/srt"),
++    )
++)
++GIB = 1024**3
++MIB = 1024**2
++
++
++def functions(relative, names, namespace):
++    path = SOURCE / relative
++    nodes = [
++        node
++        for node in ast.parse(path.read_text(encoding="utf-8")).body
++        if isinstance(node, ast.FunctionDef) and node.name in names
++    ]
++    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
++    return namespace
++
++
++class HugeTLBAccountingTests(unittest.TestCase):
++    def setUp(self):
++        self.temporary = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temporary.cleanup)
++        self.root = Path(self.temporary.name)
++        self.page = GIB
++        self.normal = Mock(return_value=SimpleNamespace(available=268 * GIB))
++        self.ranks = Mock(return_value=8)
++        self.limits = {}
++        self.headroom = Mock(side_effect=lambda resource: self.limits.get(resource))
++        self.budget = functions(
++            "mem_cache/pool_host/allocation_budget.py",
++            {"_parse_nodes", "available_hugepage_bytes", "_resource_snapshot"},
++            {
++                "Path": lambda value: self.root / str(value).lstrip("/"),
++                "psutil": SimpleNamespace(virtual_memory=self.normal),
++                "_cgroup_headroom": self.headroom,
++                "host_memory_reserve_bytes": lambda: 128 * GIB,
++            },
++        )
++        self.available = Mock(
++            side_effect=lambda size: self.budget["available_hugepage_bytes"](size)
++        )
++        self.base = functions(
++            "mem_cache/pool_host/base.py",
++            {"host_memory_budget_bytes"},
++            {
++                "psutil": SimpleNamespace(virtual_memory=self.normal),
++                "ranks_per_host": self.ranks,
++                "HICACHE_HOST_MEMORY_RESERVE_BYTES": 10 * GIB,
++                "requested_hugepage_bytes": lambda: self.page,
++                "available_hugepage_bytes": self.available,
++            },
++        )
++        self.put("/proc/self/status", "Mems_allowed_list:\t0-1\n")
++        self.put("/sys/devices/system/node/online", "0-1\n")
++        self.pages(2680)
++
++    def put(self, name, value):
++        path = self.root / name.lstrip("/")
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(str(value), encoding="utf-8")
++
++    def pages(self, free, reserved=0, size=GIB):
++        directory = f"/sys/kernel/mm/hugepages/hugepages-{size // 1024}kB"
++        self.put(directory + "/free_hugepages", free)
++        self.put(directory + "/resv_hugepages", reserved)
++
++    def budget_bytes(self):
++        return self.base["host_memory_budget_bytes"]()
++
++    def test_observed_late_rank_is_not_rejected_by_a_second_split(self):
++        self.pages(1728)
++        request = 254_490_000_000
++        self.assertLess(1728 * GIB // 8, request)
++        self.assertGreaterEqual(self.budget_bytes(), request)
++        self.normal.assert_not_called()
++        self.ranks.assert_not_called()
++
++    def test_eight_staggered_kv_and_mamba_pools_fit(self):
++        pools = [254_490_000_000, 33_530_000_000]
++        for sequence in (pools * 8, [pools[0]] * 8 + [pools[1]] * 8):
++            free = 2680
++            for request in sequence:
++                self.pages(free)
++                self.assertGreaterEqual(self.budget_bytes(), request)
++                free -= math.ceil(request / GIB)
++            self.assertGreaterEqual(free, 0)
++
++    def test_reserved_and_exhausted_pages_are_not_available(self):
++        self.pages(237)
++        self.assertLess(self.budget_bytes(), 254_490_000_000)
++        self.pages(2680, 2679)
++        self.assertEqual(self.budget_bytes(), GIB)
++        self.pages(1, 2)
++        self.assertEqual(self.budget_bytes(), 0)
++
++    def test_explicit_pool_does_not_depend_on_meminfo_default_page_size(self):
++        self.put("/proc/meminfo", "Hugepagesize: 2048 kB\nHugePages_Free: 0\n")
++        self.pages(7, 2)
++        self.assertEqual(self.budget_bytes(), 5 * GIB)
++
++    def test_numa_restriction_deducts_global_reservations_conservatively(self):
++        self.put("/sys/devices/system/node/online", "0-3\n")
++        self.pages(100, 5)
++        for node, free in ((0, 8), (1, 7)):
++            self.put(
++                f"/sys/devices/system/node/node{node}/hugepages/"
++                "hugepages-1048576kB/free_hugepages",
++                free,
++            )
++        self.assertEqual(self.budget_bytes(), 10 * GIB)
++        self.pages(100, 16)
++        self.assertEqual(self.budget_bytes(), 0)
++
++    def test_invalid_or_missing_pool_accounting_fails_closed(self):
++        directory = "/sys/kernel/mm/hugepages/hugepages-1048576kB/"
++        for name in ("free_hugepages", "resv_hugepages"):
++            for value in ("-1", "not-a-number", "+1", "1.0"):
++                with self.subTest(name=name, value=value):
++                    self.pages(10, 0)
++                    self.put(directory + name, value)
++                    with self.assertRaises(ValueError):
++                        self.budget_bytes()
++        (self.root / (directory + "resv_hugepages").lstrip("/")).unlink()
++        with self.assertRaises(OSError):
++            self.budget_bytes()
++        self.normal.assert_not_called()
++
++    def test_invalid_numa_counter_cannot_inflate_available_pages(self):
++        self.put("/proc/self/status", "Mems_allowed_list:\t0\n")
++        self.put(
++            "/sys/devices/system/node/node0/hugepages/hugepages-1048576kB/free_hugepages",
++            -2,
++        )
++        with self.assertRaises(ValueError):
++            self.budget_bytes()
++
++    def test_plain_and_two_mib_preserve_legacy_rank_split_and_reserve(self):
++        for page in (0, 2 * MIB):
++            self.page = page
++            self.assertEqual(self.budget_bytes(), 258 * GIB // 8)
++        self.available.assert_not_called()
++
++    def test_dsa_snapshot_keeps_ordinary_reserve_and_cgroup_caps(self):
++        self.normal.return_value = SimpleNamespace(available=320 * GIB)
++        self.pages(1728, 28)
++        self.limits.update(
++            {
++                "memory": 248 * GIB,
++                "hugetlb.1GB": 500 * GIB,
++                "hugetlb.1GB.rsvd": 400 * GIB,
++            }
++        )
++        self.assertEqual(self.budget["_resource_snapshot"](GIB), (120 * GIB, 400 * GIB))
++        self.assertEqual(self.ranks.call_count, 0)
++
++    def test_dsa_two_mib_and_plain_controls(self):
++        self.normal.return_value = SimpleNamespace(available=320 * GIB)
++        self.pages(20, 4, size=2 * MIB)
++        self.limits.update({"memory": 248 * GIB, "hugetlb.2MB.rsvd": 18 * MIB})
++        self.assertEqual(
++            self.budget["_resource_snapshot"](2 * MIB), (120 * GIB, 18 * MIB)
++        )
++        self.assertEqual(self.budget["_resource_snapshot"](0), (120 * GIB, 0))
++
++    def test_unknown_hugepage_size_is_rejected(self):
++        for size in (0, -1, 1024, 3 * GIB):
++            with self.subTest(size=size), self.assertRaises(ValueError):
++                self.budget["available_hugepage_bytes"](size)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/manual/test_glm53_dsa_host_budget.py b/test/manual/test_glm53_dsa_host_budget.py
+index 051a391e162a25dd53b3372d731ff005e041d752..2bf8628637489cd246ce0e5803b8edf6d042f520 100644
+--- a/test/manual/test_glm53_dsa_host_budget.py
++++ b/test/manual/test_glm53_dsa_host_budget.py
+@@ -138,7 +138,7 @@ class Cuda:
+ 
+ 
+ def fixture(world_size=1, rank=0, transport=None):
+-    env = NS(value="", enabled=True)
++    env = NS(value="", enabled=True, reserve=128)
+     cuda = Cuda()
+     events = []
+     torch = install("torch")
+@@ -180,6 +180,7 @@ def fixture(world_size=1, rank=0, transport=None):
+         SGLANG_HUGEPAGE_SIZE=NS(get=lambda: env.value),
+         SGLANG_HICACHE_DSA_STARTUP_BUDGET=NS(get=lambda: env.enabled),
+         SGLANG_HICACHE_HOST_REGISTER_CHUNK_GB=NS(get=lambda: 256),
++        SGLANG_HICACHE_HOST_MEMORY_RESERVE_GB=NS(get=lambda: env.reserve),
+     )
+     install("sglang.srt.environ").envs = envs
+     mmap_stub = NS(PAGESIZE=4096, MAP_SHARED=1, MAP_ANONYMOUS=0x20, mmap=object)
+@@ -261,7 +262,8 @@ def fixture(world_size=1, rank=0, transport=None):
+             get_parallel=runtime.get_parallel,
+             get_allocator_from_storage=common.get_allocator_from_storage,
+             _cuda_host_unregister=common._cuda_host_unregister,
+-            HICACHE_HOST_MEMORY_RESERVE_BYTES=budget.HICACHE_HOST_MEMORY_RESERVE_BYTES,
++            requested_hugepage_bytes=mmap_module.requested_hugepage_bytes,
++            available_hugepage_bytes=budget.available_hugepage_bytes,
+             host_slot_metadata_bytes=budget.host_slot_metadata_bytes,
+             active_host_allocation_budget=budget.active_host_allocation_budget,
+             is_cuda=lambda: True,
+@@ -355,7 +357,7 @@ def worker(rank, shared, barrier, output, mode, fail_rank):
+         ordinary = 3000 * GB if mode == "ordinary" else 1000 * GB
+         if mode == "oversubscribed":
+             ordinary = 2100 * GB
+-        ordinary -= f.budget.HICACHE_HOST_MEMORY_RESERVE_BYTES
++        ordinary -= f.budget.host_memory_reserve_bytes()
+         f.budget._resource_snapshot = lambda size: (ordinary, total_huge if size else 0)
+         if mode == "huge_short":
+             f.budget._resource_snapshot = lambda size: (ordinary, total_huge - PAGE)
+@@ -700,7 +702,7 @@ class CandidateTests(unittest.TestCase):
+         f = self.f
+         f.env.enabled = False
+         self.assertEqual(f.base.HICACHE_HOST_MEMORY_RESERVE_BYTES, 10 * GIB)
+-        self.assertEqual(f.budget.HICACHE_HOST_MEMORY_RESERVE_BYTES, 128 * GIB)
++        self.assertEqual(f.budget.host_memory_reserve_bytes(), 128 * GIB)
+         f.psutil.virtual_memory = lambda: NS(available=100 * GIB)
+         with f.budget.dsa_host_allocation_budget(NS(pp_size=1)) as b:
+             self.assertIsNone(b)

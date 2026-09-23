@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "2e098cde62d22c3afc19e25923fd8a53578360de",
-      "fork_tree": "9cd0b572048fd7d75b4a158ff7af567f55b5ded9",
+      "fork_commit": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+      "fork_tree": "93fba1f82c9298c0d16aa192d0e2e312eb77f36d",
       "fork_branch": "codex/sglang-image-unification-20260923",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..2e098cde62d22c3afc19e25923fd8a53578360de",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
       "replay_mode": "exact",
       "patches": [
         {
@@ -420,6 +420,13 @@
         "source_commit": "2e098cde62d22c3afc19e25923fd8a53578360de",
         "source_parent": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
         "sha256": "681c8aa99490b1c071ed931c842c369edb9cd69595bd1cff6f922aaf07f3e0c5"
+      },
+      {
+        "id": "union-db0a9f1ec4",
+        "path": "patches/common/db0a9f1ec4-hugetlb-shared-accounting.patch",
+        "source_commit": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+        "source_parent": "2e098cde62d22c3afc19e25923fd8a53578360de",
+        "sha256": "8083e2a40b8c8ad8b7d74b95cd158b3528d60542498116446a668eb684f00762"
       }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

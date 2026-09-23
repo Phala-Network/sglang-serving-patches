@@ -9,11 +9,12 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `2e098cde62d22c3afc19e25923fd8a53578360de`.
-- Engine tree: `9cd0b572048fd7d75b4a158ff7af567f55b5ded9`.
-- Ordered engine stack: 31 protected steps plus 61 successor steps.
+- Active engine: `db0a9f1ec46a3d417d7be190ebc0ce654dad9abd`.
+- Engine tree: `93fba1f82c9298c0d16aa192d0e2e312eb77f36d`.
+- Ordered engine stack: 31 protected steps plus 62 successor steps.
 - New increments: framework log privacy/health cleanup and configurable DSA
-  ordinary-memory reserve, with its original 128 GiB default.
+  ordinary-memory reserve, with its original 128 GiB default; shared HugeTLB
+  accounting for staggered Kimi allocations without changing the DSA ledger.
 - These are source candidates. Native dependencies, every target configuration,
   the final image and production deployment are not qualified by replay.
 
@@ -98,7 +99,8 @@ downloads, but is not a network sandbox itself.
 
 `regressions.json` owns the one set of test selections:
 
-- `cpu`: shared privacy, health, initial SSE status and host-reserve contracts.
+- `cpu`: shared privacy, health, initial SSE status, host-reserve, HugeTLB
+  accounting and eight-process DSA allocation/rollback contracts.
 - `model-fixtures`: existing model protocol fixtures. Supply their required
   tokenizer/template artifacts; missing fixture skips are not a pass.
 - `simulator`: upstream paged decode, cache tiers, HTTP/trace replay and prefix
