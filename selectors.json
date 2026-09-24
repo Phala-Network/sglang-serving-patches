@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
-      "fork_tree": "10f752fd9ddf75cb338e41e777c99fe3f52e7b3b",
-      "fork_branch": "codex/sglang-image-unification-20260924-qwen35-gguf",
+      "fork_commit": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
+      "fork_tree": "17ddb77cbd6d1281825a6fe4022e906eff2ecc8a",
+      "fork_branch": "codex/sglang-image-unification-20260924-qwen35-gguf-r2",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..10eb02827e0da41c75ce700065b0725cf3a89fe3",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
       "replay_mode": "exact",
       "patches": [
         {
@@ -481,6 +481,13 @@
         "source_commit": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
         "source_parent": "63d209bbc5352d6bdc19613b50ef1e50c16898a5",
         "sha256": "f84afc69e6d5e76b622a56048479570c5ec2156afe3be3a5e62b74324c7e58b9"
+      },
+      {
+        "id": "qwen35-gguf-multimodal-config-2afeb58",
+        "path": "patches/models/qwen/2afeb586b2-populate-gguf-multimodal-config-tokens.patch",
+        "source_commit": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
+        "source_parent": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
+        "sha256": "53fd600e848fd95339839f4ec8d4fae3942d9bda3742d4240190beb05a968225"
       }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
