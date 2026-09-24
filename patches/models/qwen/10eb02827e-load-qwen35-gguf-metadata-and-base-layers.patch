@@ -1,0 +1,527 @@
+diff --git a/python/sglang/srt/arg_groups/model_path_hook.py b/python/sglang/srt/arg_groups/model_path_hook.py
+index 0093fac3151556cf7589ad56f7073f80927c5aed..f5755fcff02b4c07d8350d35fe6f70fde5f1cd01 100644
+--- a/python/sglang/srt/arg_groups/model_path_hook.py
++++ b/python/sglang/srt/arg_groups/model_path_hook.py
+@@ -43,11 +43,16 @@ def handle_model_source_paths(server_args: Any):
+ 
+ 
+ def resolve_hf_gguf_model_path(server_args: Any):
+-    """Turn a Hub reference to a .gguf into a local file path."""
++    """Turn a Hub reference or local GGUF directory into a file path."""
+     cfg = resolving_view(server_args)
+-    from sglang.srt.utils.hf_transformers_utils import resolve_hf_gguf_reference
++    from sglang.srt.utils.hf_transformers_utils import (
++        resolve_hf_gguf_reference,
++        resolve_local_gguf_directory,
++    )
+ 
+-    resolved = resolve_hf_gguf_reference(cfg.model_path, revision=cfg.revision)
++    resolved = resolve_local_gguf_directory(cfg.model_path)
++    if resolved is None:
++        resolved = resolve_hf_gguf_reference(cfg.model_path, revision=cfg.revision)
+     if resolved is not None:
+         logger.info("Resolved GGUF %s -> %s", cfg.model_path, resolved)
+         if cfg.tokenizer_path == cfg.model_path:
+@@ -65,10 +70,12 @@ def resolve_hf_gguf_model_path(server_args: Any):
+     # A speculative draft can be a .gguf too, and it is loaded by path, so it
+     # needs the same Hub-reference resolution as the target.
+     if cfg.speculative_draft_model_path:
+-        resolved_draft = resolve_hf_gguf_reference(
+-            cfg.speculative_draft_model_path,
+-            revision=cfg.speculative_draft_model_revision,
+-        )
++        resolved_draft = resolve_local_gguf_directory(cfg.speculative_draft_model_path)
++        if resolved_draft is None:
++            resolved_draft = resolve_hf_gguf_reference(
++                cfg.speculative_draft_model_path,
++                revision=cfg.speculative_draft_model_revision,
++            )
+         if resolved_draft is not None:
+             logger.info(
+                 "Resolved draft GGUF %s -> %s",
+diff --git a/python/sglang/srt/utils/hf_transformers/__init__.py b/python/sglang/srt/utils/hf_transformers/__init__.py
+index 56d1c150ed806dc669ceab878f7c8ee8a67456b1..1242605784034d469d0cdf8462935bfa874cfad6 100644
+--- a/python/sglang/srt/utils/hf_transformers/__init__.py
++++ b/python/sglang/srt/utils/hf_transformers/__init__.py
+@@ -36,6 +36,7 @@ from .common import (
+     get_sparse_attention_config,
+     get_tokenizer_from_processor,
+     resolve_hf_gguf_reference,
++    resolve_local_gguf_directory,
+ )
+ from .config import get_config
+ from .processor import get_processor, resolve_image_processor_backend
+@@ -53,6 +54,7 @@ __all__ = [
+     "attach_additional_stop_token_ids",
+     "check_gguf_file",
+     "resolve_hf_gguf_reference",
++    "resolve_local_gguf_directory",
+     "download_from_hf",
+     "get_config",
+     "get_context_length",
+diff --git a/python/sglang/srt/utils/hf_transformers/common.py b/python/sglang/srt/utils/hf_transformers/common.py
+index f45f7426af5c4b31d39203c867bd257caf0f01ec..9973a77279ec2fbf5ccc0dd0189cc8e69fbab5da 100644
+--- a/python/sglang/srt/utils/hf_transformers/common.py
++++ b/python/sglang/srt/utils/hf_transformers/common.py
+@@ -376,6 +376,23 @@ def check_gguf_file(model: Union[str, os.PathLike]) -> bool:
+     return header == b"GGUF"
+ 
+ 
++def resolve_local_gguf_directory(model: Union[str, os.PathLike]) -> Optional[str]:
++    """Select a local GGUF weight file, ignoring a neighboring vision projector."""
++    directory = Path(model)
++    if not directory.is_dir() or (directory / "config.json").is_file():
++        return None
++    files = sorted(directory.glob("*.gguf"))
++    if not files:
++        return None
++    weights = [file for file in files if not file.name.startswith("mmproj-")]
++    if len(weights) != 1:
++        raise ValueError(
++            f"Expected exactly one model GGUF in {directory}, found {len(weights)}: "
++            f"{[file.name for file in weights]}"
++        )
++    return str(weights[0])
++
++
+ def resolve_hf_gguf_reference(
+     model: str, revision: Optional[str] = None
+ ) -> Optional[str]:
+diff --git a/python/sglang/srt/utils/hf_transformers/config.py b/python/sglang/srt/utils/hf_transformers/config.py
+index 73f963d134af41741d82fab89ed0e6f75004cf55..d5c7ebb38d69691121933b7f2866558d12322323 100644
+--- a/python/sglang/srt/utils/hf_transformers/config.py
++++ b/python/sglang/srt/utils/hf_transformers/config.py
+@@ -42,6 +42,7 @@ from .common import (
+     check_gguf_file,
+     get_hf_text_config,
+     gguf_sidecar_dir,
++    resolve_local_gguf_directory,
+     resolve_runai_obj_uri,
+ )
+ from .gguf_native import build_gguf_config, has_native_gguf_support
+@@ -282,6 +283,7 @@ def get_config(
+     model_config_parser: str = "auto",
+     **kwargs,
+ ):
++    model = resolve_local_gguf_directory(model) or model
+     is_gguf = check_gguf_file(model)
+     gguf_has_sidecar_config = False
+     if is_gguf:
+diff --git a/python/sglang/srt/utils/hf_transformers/gguf_native.py b/python/sglang/srt/utils/hf_transformers/gguf_native.py
+index a9a95b6cd1c6f2b593b86e7ee0f54e40f60d0073..c2b9ddcf32312639d8c1af5d38eab8f923360f03 100644
+--- a/python/sglang/srt/utils/hf_transformers/gguf_native.py
++++ b/python/sglang/srt/utils/hf_transformers/gguf_native.py
+@@ -30,6 +30,7 @@ Reaching for these is a last resort: a config.json next to the .gguf still wins,
+ because the checkpoint author's own config outranks anything reconstructed.
+ """
+ 
++from pathlib import Path
+ from typing import Any, Callable, Dict, Optional
+ 
+ from transformers import PretrainedConfig
+@@ -38,6 +39,7 @@ from sglang.srt.configs.muse_glimmer import MuseGlimmerConfig
+ 
+ GGUF_NATIVE_CONFIG_BUILDERS: Dict[str, Callable[[str], PretrainedConfig]] = {
+     "muse-glimmer": MuseGlimmerConfig.from_gguf,
++    "qwen35": lambda path: build_qwen3_5_gguf_config(path),
+ }
+ 
+ 
+@@ -65,6 +67,135 @@ def build_gguf_config(gguf_path: str) -> PretrainedConfig:
+     return GGUF_NATIVE_CONFIG_BUILDERS[arch](gguf_path)
+ 
+ 
++def build_qwen3_5_gguf_config(gguf_path: str) -> PretrainedConfig:
++    """Reconstruct the Qwen3.5 text/vision config from llama.cpp GGUF metadata."""
++    from gguf import GGUFReader
++
++    from sglang.srt.configs.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig
++
++    reader = GGUFReader(gguf_path)
++    meta = {key: field.contents() for key, field in reader.fields.items()}
++    if meta.get("general.architecture") != "qwen35":
++        raise ValueError("Qwen3.5 GGUF requires general.architecture=qwen35")
++    tensors = {tensor.name: tensor for tensor in reader.tensors}
++
++    def required(key):
++        if key not in meta:
++            raise ValueError(f"Qwen3.5 GGUF is missing {key}")
++        return meta[key]
++
++    def integer(key):
++        value = int(required(f"qwen35.{key}"))
++        if value <= 0:
++            raise ValueError(f"Qwen3.5 GGUF requires positive qwen35.{key}")
++        return value
++
++    if "token_embd.weight" not in tensors:
++        raise ValueError("Qwen3.5 GGUF is missing token_embd.weight")
++    vocab_size = int(tensors["token_embd.weight"].shape[1])
++    total_layers = integer("block_count")
++    mtp_layers = int(meta.get("qwen35.nextn_predict_layers", 0))
++    if mtp_layers < 0 or mtp_layers >= total_layers:
++        raise ValueError("Qwen3.5 GGUF has invalid nextn_predict_layers")
++    layers = total_layers - mtp_layers
++    interval = integer("full_attention_interval")
++    key_dim = integer("ssm.state_size")
++    inner_size = integer("ssm.inner_size")
++    if inner_size % key_dim:
++        raise ValueError("Qwen3.5 GGUF ssm.inner_size must divide by ssm.state_size")
++    rope_dim = integer("rope.dimension_count")
++    head_dim = integer("attention.key_length")
++    if rope_dim > head_dim:
++        raise ValueError(
++            "Qwen3.5 GGUF rope.dimension_count exceeds attention.key_length"
++        )
++    rope_parameters = {
++        "rope_theta": float(required("qwen35.rope.freq_base")),
++        "partial_rotary_factor": rope_dim / head_dim,
++        "rope_type": "default",
++    }
++    sections = meta.get("qwen35.rope.dimension_sections")
++    if sections is not None:
++        sections = [int(section) for section in sections]
++        while sections and sections[-1] == 0:
++            sections.pop()
++        if len(sections) != 3 or sum(sections) * 2 != rope_dim:
++            raise ValueError("Qwen3.5 GGUF has invalid rope.dimension_sections")
++        rope_parameters.update(
++            mrope_section=sections,
++            mrope_interleaved=True,
++        )
++
++    text_kwargs = dict(
++        vocab_size=vocab_size,
++        hidden_size=integer("embedding_length"),
++        intermediate_size=integer("feed_forward_length"),
++        num_hidden_layers=layers,
++        num_attention_heads=integer("attention.head_count"),
++        num_key_value_heads=integer("attention.head_count_kv"),
++        head_dim=head_dim,
++        max_position_embeddings=integer("context_length"),
++        rms_norm_eps=float(required("qwen35.attention.layer_norm_rms_epsilon")),
++        rope_theta=rope_parameters["rope_theta"],
++        rope_parameters=rope_parameters,
++        partial_rotary_factor=rope_dim / head_dim,
++        linear_conv_kernel_dim=integer("ssm.conv_kernel"),
++        linear_key_head_dim=key_dim,
++        linear_value_head_dim=key_dim,
++        linear_num_key_heads=integer("ssm.group_count"),
++        linear_num_value_heads=inner_size // key_dim,
++        full_attention_interval=interval,
++        layer_types=[
++            "full_attention" if (i + 1) % interval == 0 else "linear_attention"
++            for i in range(layers)
++        ],
++        bos_token_id=meta.get("tokenizer.ggml.bos_token_id"),
++        eos_token_id=meta.get("tokenizer.ggml.eos_token_id"),
++        dtype="bfloat16",
++    )
++    projector_files = sorted(Path(gguf_path).parent.glob("mmproj-*.gguf"))
++    if not projector_files:
++        return Qwen3_5TextConfig(**text_kwargs, architectures=["Qwen3_5ForCausalLM"])
++    if len(projector_files) != 1:
++        raise ValueError("Qwen3.5 GGUF requires exactly one mmproj-*.gguf")
++
++    projector = GGUFReader(str(projector_files[0]))
++    vision_meta = {key: field.contents() for key, field in projector.fields.items()}
++    vision_tensors = {tensor.name: tensor for tensor in projector.tensors}
++    if (
++        vision_meta.get("general.architecture"),
++        vision_meta.get("clip.projector_type"),
++    ) != (
++        "clip",
++        "qwen3vl_merger",
++    ):
++        raise ValueError("Qwen3.5 GGUF has an unsupported vision projector")
++    try:
++        patch_shape = vision_tensors["v.patch_embd.weight"].shape
++        position_shape = vision_tensors["v.position_embd.weight"].shape
++        vision_kwargs = dict(
++            depth=int(vision_meta["clip.vision.block_count"]),
++            hidden_size=int(vision_meta["clip.vision.embedding_length"]),
++            intermediate_size=int(vision_meta["clip.vision.feed_forward_length"]),
++            num_heads=int(vision_meta["clip.vision.attention.head_count"]),
++            patch_size=int(vision_meta["clip.vision.patch_size"]),
++            spatial_merge_size=int(vision_meta["clip.vision.spatial_merge_size"]),
++            out_hidden_size=int(vision_meta["clip.vision.projection_dim"]),
++            in_channels=int(patch_shape[2]),
++            num_position_embeddings=int(position_shape[1]),
++            temporal_patch_size=2,
++            deepstack_visual_indexes=[],
++        )
++    except (KeyError, IndexError) as exc:
++        raise ValueError(f"Qwen3.5 GGUF vision metadata is incomplete: {exc}") from exc
++    return Qwen3_5Config(
++        text_config=text_kwargs,
++        vision_config=vision_kwargs,
++        architectures=["Qwen3_5ForConditionalGeneration"],
++        rope_scaling=rope_parameters,
++    )
++
++
+ _GPT4O_SPLIT_REGEX = (
+     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*"
+     r"[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|"
+diff --git a/test/manual/unit/test_qwen35_gguf_config_cpu.py b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdf597bc198b9440d7ca69ebe8f28e9a0bbaea00
+--- /dev/null
++++ b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+@@ -0,0 +1,256 @@
++"""CPU contracts for local Qwen3.5 GGUF selection and native config loading."""
++
++import ast
++import logging
++import sys
++import tempfile
++import types
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def source_function(relative, name, namespace):
++    tree = ast.parse((SRT / relative).read_text(encoding="utf-8"))
++    node = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.FunctionDef) and node.name == name
++    )
++    node.decorator_list = []
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias(name="annotations")], level=0
++    )
++    module = ast.fix_missing_locations(ast.Module(body=[future, node], type_ignores=[]))
++    exec(compile(module, str(relative), "exec"), namespace)
++    return namespace[name]
++
++
++class FakeConfig:
++    model_type = "qwen3_5_text"
++
++    def __init__(self, **kwargs):
++        self.__dict__.update(kwargs)
++
++
++class FakeMultiConfig(FakeConfig):
++    model_type = "qwen3_5"
++
++    def __init__(self, text_config, vision_config, **kwargs):
++        super().__init__(
++            text_config=FakeConfig(**text_config),
++            vision_config=FakeConfig(**vision_config),
++            **kwargs,
++        )
++
++
++class FakeReader:
++    records = {}
++
++    def __init__(self, path):
++        meta, shapes = self.records[str(path)]
++        self.fields = {
++            key: SimpleNamespace(contents=lambda value=value: value)
++            for key, value in meta.items()
++        }
++        self.tensors = [
++            SimpleNamespace(name=name, shape=shape) for name, shape in shapes.items()
++        ]
++
++
++def text_metadata():
++    return {
++        "general.architecture": "qwen35",
++        "qwen35.block_count": 4,
++        "qwen35.full_attention_interval": 2,
++        "qwen35.ssm.state_size": 32,
++        "qwen35.ssm.inner_size": 192,
++        "qwen35.ssm.group_count": 2,
++        "qwen35.ssm.conv_kernel": 4,
++        "qwen35.rope.dimension_count": 16,
++        "qwen35.rope.freq_base": 1000000.0,
++        "qwen35.attention.key_length": 64,
++        "qwen35.attention.head_count": 8,
++        "qwen35.attention.head_count_kv": 2,
++        "qwen35.attention.layer_norm_rms_epsilon": 1e-6,
++        "qwen35.embedding_length": 512,
++        "qwen35.feed_forward_length": 1536,
++        "qwen35.context_length": 8192,
++        "tokenizer.ggml.eos_token_id": 42,
++    }
++
++
++def vision_metadata():
++    return {
++        "general.architecture": "clip",
++        "clip.projector_type": "qwen3vl_merger",
++        "clip.vision.block_count": 2,
++        "clip.vision.embedding_length": 128,
++        "clip.vision.feed_forward_length": 384,
++        "clip.vision.attention.head_count": 4,
++        "clip.vision.patch_size": 16,
++        "clip.vision.spatial_merge_size": 2,
++        "clip.vision.projection_dim": 512,
++    }
++
++
++class TestQwenGGUFConfig(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.directory = Path(self.temp.name)
++        self.weight = self.directory / "qwen35-Q8_0.gguf"
++        self.weight.write_bytes(b"GGUF")
++        self.mmproj = self.directory / "mmproj-model-f16.gguf"
++        self.reader_modules = {
++            "gguf": types.SimpleNamespace(GGUFReader=FakeReader),
++            "sglang.srt.configs.qwen3_5": types.SimpleNamespace(
++                Qwen3_5Config=FakeMultiConfig,
++                Qwen3_5TextConfig=FakeConfig,
++            ),
++        }
++        FakeReader.records = {
++            str(self.weight): (
++                text_metadata(),
++                {"token_embd.weight": (512, 8192)},
++            )
++        }
++        self.resolve = source_function(
++            "utils/hf_transformers/common.py",
++            "resolve_local_gguf_directory",
++            {"Path": Path},
++        )
++        self.build = source_function(
++            "utils/hf_transformers/gguf_native.py",
++            "build_qwen3_5_gguf_config",
++            {"Path": Path, "PretrainedConfig": FakeConfig},
++        )
++
++    def build_config(self):
++        with patch.dict(sys.modules, self.reader_modules):
++            return self.build(str(self.weight))
++
++    def test_directory_selects_model_not_projector(self):
++        self.mmproj.write_bytes(b"GGUF")
++        self.assertEqual(self.resolve(self.directory), str(self.weight))
++        (self.directory / "config.json").write_text("{}", encoding="utf-8")
++        self.assertIsNone(self.resolve(self.directory))
++
++    def test_argument_hook_rewrites_model_and_tokenizer_paths(self):
++        args = SimpleNamespace(
++            model_path=str(self.directory),
++            tokenizer_path=str(self.directory),
++            revision=None,
++            speculative_draft_model_path=None,
++        )
++        shim = types.SimpleNamespace(
++            resolve_local_gguf_directory=self.resolve,
++            resolve_hf_gguf_reference=lambda *args, **kwargs: None,
++        )
++        resolve_hook = source_function(
++            "arg_groups/model_path_hook.py",
++            "resolve_hf_gguf_model_path",
++            {
++                "resolving_view": lambda server_args: server_args,
++                "declare_resolution": lambda server_args, _, **changes: (
++                    server_args.__dict__.update(changes)
++                ),
++                "logger": logging.getLogger(__name__),
++            },
++        )
++        with patch.dict(sys.modules, {"sglang.srt.utils.hf_transformers_utils": shim}):
++            resolve_hook(args)
++        self.assertEqual(args.model_path, str(self.weight))
++        self.assertEqual(args.tokenizer_path, str(self.weight))
++
++    def test_ambiguous_and_projector_only_directories_fail(self):
++        other = self.directory / "qwen35-Q4.gguf"
++        other.write_bytes(b"GGUF")
++        with self.assertRaisesRegex(ValueError, "exactly one model GGUF"):
++            self.resolve(self.directory)
++        other.unlink()
++        self.weight.unlink()
++        self.mmproj.write_bytes(b"GGUF")
++        with self.assertRaisesRegex(ValueError, "found 0"):
++            self.resolve(self.directory)
++
++    def test_text_config_uses_metadata_and_weight_shape(self):
++        config = self.build_config()
++        self.assertEqual(config.model_type, "qwen3_5_text")
++        self.assertEqual(config.vocab_size, 8192)
++        self.assertEqual(config.linear_num_key_heads, 2)
++        self.assertEqual(config.linear_num_value_heads, 6)
++        self.assertEqual(config.partial_rotary_factor, 0.25)
++        self.assertEqual(config.dtype, "bfloat16")
++        self.assertEqual(config.layer_types, ["linear_attention", "full_attention"] * 2)
++        self.assertEqual(config.architectures, ["Qwen3_5ForCausalLM"])
++
++    def test_live_27b_block_count_excludes_mtp_layer(self):
++        meta = FakeReader.records[str(self.weight)][0]
++        meta.update(
++            {
++                "qwen35.block_count": 65,
++                "qwen35.nextn_predict_layers": 1,
++                "qwen35.full_attention_interval": 4,
++                "qwen35.rope.dimension_count": 64,
++                "qwen35.attention.key_length": 256,
++                "qwen35.rope.freq_base": 10000000.0,
++                "qwen35.rope.dimension_sections": [11, 11, 10, 0],
++                "qwen35.ssm.state_size": 128,
++                "qwen35.ssm.inner_size": 6144,
++                "qwen35.ssm.group_count": 16,
++            }
++        )
++        config = self.build_config()
++        self.assertEqual(config.num_hidden_layers, 64)
++        self.assertEqual(len(config.layer_types), 64)
++        self.assertEqual(config.layer_types[-1], "full_attention")
++        self.assertEqual(config.linear_num_value_heads, 48)
++        self.assertEqual(config.rope_parameters["mrope_section"], [11, 11, 10])
++        self.assertEqual(config.rope_parameters["partial_rotary_factor"], 0.25)
++        self.assertEqual(config.rope_parameters["rope_type"], "default")
++
++    def test_invalid_mtp_count_fails_closed(self):
++        meta = FakeReader.records[str(self.weight)][0]
++        meta["qwen35.nextn_predict_layers"] = meta["qwen35.block_count"]
++        with self.assertRaisesRegex(ValueError, "nextn_predict_layers"):
++            self.build_config()
++
++    def test_vision_projector_builds_multimodal_config(self):
++        self.mmproj.write_bytes(b"GGUF")
++        FakeReader.records[str(self.weight)][0]["qwen35.rope.dimension_sections"] = [
++            2,
++            2,
++            4,
++            0,
++        ]
++        FakeReader.records[str(self.mmproj)] = (
++            vision_metadata(),
++            {
++                "v.patch_embd.weight": (16, 16, 3, 128),
++                "v.position_embd.weight": (128, 256),
++            },
++        )
++        config = self.build_config()
++        self.assertEqual(config.model_type, "qwen3_5")
++        self.assertEqual(config.text_config.hidden_size, 512)
++        self.assertEqual(config.vision_config.num_position_embeddings, 256)
++        self.assertEqual(config.vision_config.deepstack_visual_indexes, [])
++        self.assertEqual(config.rope_scaling["mrope_section"], [2, 2, 4])
++        self.assertTrue(config.rope_scaling["mrope_interleaved"])
++        self.assertEqual(config.architectures, ["Qwen3_5ForConditionalGeneration"])
++
++    def test_missing_geometry_fails_closed(self):
++        del FakeReader.records[str(self.weight)][0]["qwen35.ssm.group_count"]
++        with self.assertRaisesRegex(ValueError, "qwen35.ssm.group_count"):
++            self.build_config()
++        self.assertIsNone(self.resolve(self.directory / "does-not-exist"))
++
++
++if __name__ == "__main__":
++    unittest.main()
