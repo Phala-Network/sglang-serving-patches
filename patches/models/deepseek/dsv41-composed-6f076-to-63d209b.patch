@@ -1,0 +1,2917 @@
+diff --git a/python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py b/python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py
+index 9cac53e3859d982f9c831ffa056a910c40291e52..8fcd5e6b516f29efbfbff9533e802aae3f205f87 100644
+--- a/python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py
++++ b/python/sglang/kernels/ops/attention/dsv4/fp4_indexer.py
+@@ -329,8 +329,6 @@ def index_k_rope_pack(
+             num_warps=4,
+         )
+     return (payload, scale) if cache is None else None
+-
+-
+ @triton.jit
+ def _e2m1_decode(code):
+     # code: uint 0..15 -> e2m1 value. exp = bits 2..1, mantissa = bit 0, sign = bit 3.
+diff --git a/python/sglang/srt/entrypoints/openai/encoding_dsv41.py b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+index 20f7a70e283d9d809e2b28d8725a502f9a4f5e7d..f7f99e888646726b6113798267219db8f79493d1 100644
+--- a/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
++++ b/python/sglang/srt/entrypoints/openai/encoding_dsv41.py
+@@ -732,3 +732,13 @@ def encode_messages(
+     if return_multi_modal_data:
+         return prompt, {"images": images}
+     return prompt
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_reasoning_effort as _phala_compat_0
++_phala_compat_0.apply(_phala_sys.modules[__name__])
++del _phala_compat_0
++from sglang.srt.phala_compat import dsv41_message_roles as _phala_compat_1
++_phala_compat_1._patch_encoding(_phala_sys.modules[__name__])
++del _phala_compat_1
++del _phala_sys
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index ec65cbbed56af6e883e356eca96fe4b4280058bf..dc408a8b70ec38460967bb9b75ac0fa9499c8299 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -2332,3 +2332,13 @@ class TranscriptionStreamResponse(BaseModel):
+     model: str
+     choices: List[TranscriptionStreamChoice]
+     usage: Optional[UsageInfo] = None
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_protocol_compat as _phala_compat_0
++_phala_compat_0._patch_reasoning_inputs(_phala_sys.modules[__name__])
++del _phala_compat_0
++from sglang.srt.phala_compat import dsv41_protocol_compat as _phala_compat_1
++_phala_compat_1._patch_usage_details(_phala_sys.modules[__name__])
++del _phala_compat_1
++del _phala_sys
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index dc63395e8a9ba06d19913636a9b279f6463612d4..951c4b657964b9879a5e8c3e9ad99d020a11edcc 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -3823,3 +3823,20 @@ class OpenAIServingChat(OpenAIServingBase):
+             return f"data: {chunk.model_dump_json()}\n\n"
+ 
+         return None
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++
++from sglang.srt.phala_compat import dsv41_tool_choice_none as _phala_compat_0
++
++_phala_compat_0.apply(_phala_sys.modules[__name__])
++del _phala_compat_0
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_1
++
++_phala_compat_1._patch_serving_chat(_phala_sys.modules[__name__])
++del _phala_compat_1
++from sglang.srt.phala_compat import dsv41_protocol_compat as _phala_compat_2
++
++_phala_compat_2._patch_reasoning_exclude(_phala_sys.modules[__name__])
++del _phala_compat_2
++del _phala_sys
+diff --git a/python/sglang/srt/entrypoints/openai/usage_processor.py b/python/sglang/srt/entrypoints/openai/usage_processor.py
+index 1f50fcbb12b7caf4ac59c046bdc42905a463d72e..baebf16269182a245ffeff57e0af27982342bbdd 100644
+--- a/python/sglang/srt/entrypoints/openai/usage_processor.py
++++ b/python/sglang/srt/entrypoints/openai/usage_processor.py
+@@ -135,3 +135,10 @@ class UsageProcessor:
+             completion_tokens_details=completion_details,
+             reasoning_tokens=reasoning_tokens,
+         )
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_protocol_compat as _phala_compat_0
++_phala_compat_0._patch_usage_processor(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py b/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
+index 81466f86526ff2995a95e7ca0b6ae282399f37ea..7e4cc54b78fd69acb758be921844f0a3052c3899 100644
+--- a/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
++++ b/python/sglang/srt/layers/attention/dsv4/candidate_indexer.py
+@@ -81,8 +81,6 @@ class PrefillCandidateBlocks(CandidateMetadata, msgspec.Struct):
+                 for blocks, length in zip(self.request_blocks, lengths)
+             ]
+         )
+-
+-
+ def published_masks(candidate) -> CandidateMasks:
+     assert isinstance(candidate, CandidateMasks), "candidate masks missing"
+     return candidate
+diff --git a/python/sglang/srt/multimodal/processors/base_processor.py b/python/sglang/srt/multimodal/processors/base_processor.py
+index fd95e733cb77df1e8a661d6eba30dfa5c34d0e06..a695ac090ff9e775aa743d9157b633c86638db04 100644
+--- a/python/sglang/srt/multimodal/processors/base_processor.py
++++ b/python/sglang/srt/multimodal/processors/base_processor.py
+@@ -2009,3 +2009,10 @@ class BaseMultimodalProcessor(ABC):
+             mm_tokens,
+             **kwargs,
+         )
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/python/sglang/srt/phala_compat/__init__.py b/python/sglang/srt/phala_compat/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5fb7d130cc3901db5ae7ee6294b551972c7d3a64
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/__init__.py
+@@ -0,0 +1 @@
++"""Explicit source-integrated DeepSeek V4.1 compatibility helpers."""
+diff --git a/python/sglang/srt/phala_compat/dsv41_media_hardening.py b/python/sglang/srt/phala_compat/dsv41_media_hardening.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9ef851fc43d1156ac53966f5f1729a01d51878b
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_media_hardening.py
+@@ -0,0 +1,180 @@
++"""Source-integrated adapter, converted from dsv41_media_hardening.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import sys
++
++
++import traceback
++
++
++_COMMON = "sglang.srt.utils.common"
++
++
++_UTILS_PACKAGE = "sglang.srt.utils"
++
++
++_BASE_PROCESSOR = "sglang.srt.multimodal.processors.base_processor"
++
++
++_SERVING_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
++
++
++_MARK = "_dsv41_media_hardening"
++
++
++_warned = False
++
++
++_ALLOWED_URL_SCHEMES = ("data:", "http://", "https://")
++
++
++_MEDIA_PART_MODALITY = {
++    "image_url": "image",
++    "video_url": "video",
++    "audio_url": "audio",
++    "input_audio": "audio",
++}
++
++
++def _widen_client_media_exceptions(module) -> None:
++    from PIL import Image  # already imported by the time either target loads
++
++    current = tuple(getattr(module, "CLIENT_MEDIA_EXCEPTIONS", ()))
++    if not current:
++        raise AttributeError(f"{module.__name__}.CLIENT_MEDIA_EXCEPTIONS is missing")
++    extra = tuple(
++        exc for exc in (OSError, Image.DecompressionBombError) if exc not in current
++    )
++    module.CLIENT_MEDIA_EXCEPTIONS = current + extra
++
++
++def _part_type(part):
++    if isinstance(part, dict):
++        return part.get("type")
++    return getattr(part, "type", None)
++
++
++def _part_url(part, part_type):
++    holder = (
++        part.get(part_type) if isinstance(part, dict) else getattr(part, part_type, None)
++    )
++    if isinstance(holder, str):
++        return holder
++    if isinstance(holder, dict):
++        return holder.get("url")
++    return getattr(holder, "url", None)
++
++
++def _iter_media_parts(request):
++    for message in getattr(request, "messages", None) or []:
++        content = (
++            message.get("content")
++            if isinstance(message, dict)
++            else getattr(message, "content", None)
++        )
++        if not isinstance(content, list):
++            continue
++        for part in content:
++            part_type = _part_type(part)
++            modality = _MEDIA_PART_MODALITY.get(part_type)
++            if modality is not None:
++                yield part, part_type, modality
++
++
++def _data_uri_size(url):
++    """Decoded payload size of a ``data:`` URI, without decoding it."""
++    head, separator, payload = url.partition(",")
++    if not separator:
++        return None  # malformed data URI; the loader reports it as a 400 now
++    if ";base64" not in head.lower():
++        return len(payload)
++    return (len(payload) * 3) // 4 - payload[-2:].count("=")
++
++
++def _supported_modalities(serving):
++    tokenizer_manager = getattr(serving, "tokenizer_manager", None)
++    model_config = getattr(tokenizer_manager, "model_config", None)
++    mm_tokens = getattr(
++        getattr(tokenizer_manager, "mm_processor", None), "mm_tokens", None
++    )
++    video = True
++    if mm_tokens is not None:
++        video = bool(
++            getattr(mm_tokens, "video_token", None)
++            or getattr(mm_tokens, "video_token_id", None)
++        )
++    return {
++        "image": bool(getattr(model_config, "is_image_understandable_model", True)),
++        "audio": bool(getattr(model_config, "is_audio_understandable_model", True)),
++        "video": video,
++    }
++
++
++def _validate_media_parts(serving, request):
++    supported = None
++    max_bytes = 0
++    for part, part_type, modality in _iter_media_parts(request):
++        if supported is None:  # resolved once, and only for requests with media
++            supported = _supported_modalities(serving)
++            server_args = getattr(
++                getattr(serving, "tokenizer_manager", None), "server_args", None
++            )
++            limit_mb = getattr(server_args, "media_url_max_file_size_mb", 0) or 0
++            max_bytes = int(limit_mb) * 1024 * 1024
++
++        if not supported.get(modality, True):
++            return f"{modality} input is not supported by this model."
++
++        url = _part_url(part, part_type)
++        if not isinstance(url, str):
++            continue
++        if not url.startswith(_ALLOWED_URL_SCHEMES):
++            return (
++                f"Invalid {part_type}.url: expected a data: URI or an "
++                "http(s):// URL. Bare base64 payloads and local paths are not "
++                "accepted."
++            )
++        if max_bytes and url.startswith("data:"):
++            size = _data_uri_size(url)
++            if size is not None and size > max_bytes:
++                return (
++                    f"{part_type} data URI decodes to {size} bytes, over the "
++                    f"{max_bytes} byte media size limit "
++                    "(--media-url-max-file-size-mb)."
++                )
++    return None
++
++
++def _patch_serving_chat(module) -> None:
++    serving_class = module.OpenAIServingChat
++    original = serving_class._validate_media_content
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def _validate_media_content(self, request):
++        error = original(self, request)
++        if error:
++            return error
++        # Fail open on the request path too: a bug in the added checks must not
++        # turn every media request into the 500 this module exists to remove.
++        try:
++            return _validate_media_parts(self, request)
++        except Exception:  # noqa: BLE001
++            global _warned
++            if not _warned:
++                _warned = True
++                print(
++                    "[dsv41-patches] media validation raised; skipping the added "
++                    "checks for this and later requests' extra validation",
++                    file=sys.stderr,
++                )
++                traceback.print_exc()
++            return None
++
++    setattr(_validate_media_content, _MARK, True)
++    serving_class._validate_media_content = _validate_media_content
+diff --git a/python/sglang/srt/phala_compat/dsv41_message_roles.py b/python/sglang/srt/phala_compat/dsv41_message_roles.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0fbb2520f9826b666d0ce0dd8b41985d924b9ff2
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_message_roles.py
+@@ -0,0 +1,102 @@
++"""Source-integrated adapter, converted from dsv41_message_roles.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import os
++
++
++import sys
++
++
++import traceback
++
++
++_ENCODING = "sglang.srt.entrypoints.openai.encoding_dsv41"
++
++
++_MARK = "_dsv41_message_roles"
++
++
++_warned = False
++
++
++def _system_only_user_turn_enabled():
++    # Read per call: the value is fixed for the life of the process (env changes
++    # need a container recreate anyway), and this keeps the flag testable.
++    return os.environ.get("DSV41_SYSTEM_ONLY_USER_TURN", "").strip().lower() in {
++        "1",
++        "true",
++        "yes",
++        "on",
++    }
++
++
++def _needs_user_turn(messages):
++    """True for the one shape the format has no generation point for.
++
++    `render_message` emits the assistant header for a user/developer turn, for a
++    system message at index > 0 (the documented mid-conversation system message),
++    and for assistant continuations. A lone system message at index 0 matches
++    none of them; every other trailing role does (a `tool` message is merged into
++    the preceding user turn by `merge_tool_messages` before rendering).
++    """
++    return (
++        len(messages) == 1
++        and isinstance(messages[0], dict)
++        and messages[0].get("role") == "system"
++    )
++
++
++def _prepare_messages(messages):
++    if not isinstance(messages, list) or not messages:
++        return messages
++
++    out = messages
++    last = len(out) - 1
++    for index, message in enumerate(messages):
++        if not isinstance(message, dict) or message.get("role") != "developer":
++            continue
++        # A developer message that is the whole conversation is the message that
++        # carries the assistant generation header. Mapping it to a system message
++        # at index 0 would take that header away, so it is left alone and keeps
++        # rendering exactly as it does today. Every other position maps cleanly.
++        if index == 0 and index == last:
++            continue
++        if out is messages:
++            out = list(messages)
++        out[index] = dict(message, role="system")
++
++    if _system_only_user_turn_enabled() and _needs_user_turn(out):
++        out = list(out) + [{"role": "user", "content": ""}]
++    return out
++
++
++def _patch_encoding(module) -> None:
++    original = module.encode_messages
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def encode_messages(*args, **kwargs):
++        try:
++            if args:
++                args = (_prepare_messages(args[0]),) + args[1:]
++            elif "messages" in kwargs:
++                kwargs["messages"] = _prepare_messages(kwargs["messages"])
++        except Exception:  # noqa: BLE001 -- fail open: encode what upstream got
++            global _warned
++            if not _warned:
++                _warned = True
++                print(
++                    "[dsv41-patches] message-role preparation raised; encoding the "
++                    "messages unchanged",
++                    file=sys.stderr,
++                )
++                traceback.print_exc()
++        return original(*args, **kwargs)
++
++    setattr(encode_messages, _MARK, True)
++    module.encode_messages = encode_messages
+diff --git a/python/sglang/srt/phala_compat/dsv41_protocol_compat.py b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e2031961ed460175d122fec737ad40c8c27a511
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+@@ -0,0 +1,295 @@
++"""Source-integrated adapter, converted from dsv41_protocol_compat.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import sys
++
++
++import traceback
++
++
++from typing import Dict, Optional
++
++
++_PROTOCOL = "sglang.srt.entrypoints.openai.protocol"
++
++
++_USAGE_PROCESSOR = "sglang.srt.entrypoints.openai.usage_processor"
++
++
++_SERVING_CHAT = "sglang.srt.entrypoints.openai.serving_chat"
++
++
++_MARK = "_dsv41_protocol_compat"
++
++
++_warned = False
++
++
++_DEFAULT_ALIASES = {"default"}
++
++
++_TRUE_STRINGS = {"1", "true", "yes", "y", "on"}
++
++
++def _int_budget(value):
++    """Return ``value`` as a 1-100 reasoning budget, or None if it is not one.
++
++    Only a JSON integer is read as a budget: a float is sglang's documented
++    fine-grained effort in [0.0, 0.99] and must keep that meaning, and ``0``
++    stays a float effort too (``0.0`` already validates today).  An integer
++    outside the encoder's range is a 400 with a message that says so, instead of
++    upstream's "input should be less than or equal to 0.99".
++    """
++    if isinstance(value, bool) or not isinstance(value, int) or value == 0:
++        return None
++    if not 1 <= value <= 100:
++        raise ValueError(
++            f"invalid reasoning_effort {value}: an integer budget must be in [1, 100]"
++        )
++    return value
++
++
++def _is_false(value):
++    """True only when ``value`` is an explicit false, not when it is absent."""
++    if value is None:
++        return False
++    if isinstance(value, str):
++        return value.strip().lower() not in _TRUE_STRINGS
++    return not value
++
++
++def _force_continuous_usage(out):
++    """(6) Force per-chunk cumulative usage onto every streaming request.
++
++    ``out`` is already a shallow copy of the request dict (the caller's
++    ``dict(values)``); this mutates and returns it plus whether it changed
++    anything, so the caller's existing ``changed`` bookkeeping stays correct
++    and a client that changes nothing about usage gets the exact original
++    dict back (no spurious copies).
++
++    Only acts when ``stream`` is truthy -- a non-streaming request is
++    untouched. ``include_usage``/``continuous_usage_stats`` are set ``True``
++    whenever either is missing or falsy; an already-``True`` value is left
++    alone (nothing to downgrade -- the only value this ever writes is
++    ``True``). ``stream_options`` is created from scratch if absent, or if it
++    was sent as something other than a JSON object (pydantic would reject
++    that anyway; replacing it here just means the 400 for a malformed
++    ``stream_options`` looks like the 400 for a missing one).
++    """
++    if not out.get("stream"):
++        return out, False
++    stream_options = out.get("stream_options")
++    stream_options = dict(stream_options) if isinstance(stream_options, dict) else {}
++    if stream_options.get("include_usage") is True and stream_options.get("continuous_usage_stats") is True:
++        return out, False
++    stream_options["include_usage"] = True
++    stream_options["continuous_usage_stats"] = True
++    out["stream_options"] = stream_options
++    return out, True
++
++
++def _normalize_reasoning_inputs(values):
++    """Fail-open entry point: our own ValueErrors are 400s, anything else is a bug
++    and must leave the request exactly as upstream would have seen it."""
++    try:
++        return _normalize(values)
++    except ValueError:
++        raise
++    except Exception:  # noqa: BLE001
++        global _warned
++        if not _warned:
++            _warned = True
++            print("[dsv41-patches] reasoning-input normalization raised; "
++                  "passing the request through unchanged", file=sys.stderr)
++            traceback.print_exc()
++        return values
++
++
++def _normalize(values):
++    if not isinstance(values, dict):
++        return values
++
++    reasoning = values.get("reasoning")
++    reasoning = dict(reasoning) if isinstance(reasoning, dict) else None
++    out = dict(values)
++    changed = False
++
++    # (6) Every streaming request gets both usage flags forced on, regardless
++    # of what the client sent -- see the module docstring, point 6.
++    out, usage_changed = _force_continuous_usage(out)
++    changed = changed or usage_changed
++
++    # (2) "default" means "whatever the server defaults to" -> drop the field.
++    for holder, keys in ((out, ("reasoning_effort",)), (reasoning, ("effort", "reasoning_effort"))):
++        if holder is None:
++            continue
++        for key in keys:
++            value = holder.get(key)
++            if isinstance(value, str) and value.strip().lower() in _DEFAULT_ALIASES:
++                holder.pop(key)
++                changed = True
++
++    # (1) OpenRouter's off-switch. The flat OpenAI field still wins if both are
++    # present, which is upstream's existing precedence (protocol.py:1029-1030).
++    if reasoning is not None and (
++        "enabled" in reasoning or "enable" in reasoning
++    ):
++        enabled = reasoning.get("enabled")
++        if enabled is None:
++            enabled = reasoning.get("enable")
++        if _is_false(enabled):
++            reasoning.pop("effort", None)
++            reasoning.pop("reasoning_effort", None)
++            if out.get("reasoning_effort") is None:
++                out["reasoning_effort"] = "none"
++            changed = True
++
++    # (4) Integer budget -> chat_template_kwargs, the only path that reaches the
++    # encoder's 1-100 scale. Thinking is turned on with it, mirroring what
++    # upstream does for any non-"none" effort.
++    budget = _int_budget(out.get("reasoning_effort"))
++    if budget is not None:
++        out.pop("reasoning_effort")
++    elif reasoning is not None:
++        nested = reasoning.get("effort")
++        if nested is None:
++            nested = reasoning.get("reasoning_effort")
++        budget = _int_budget(nested)
++        if budget is not None:
++            reasoning.pop("effort", None)
++            reasoning.pop("reasoning_effort", None)
++    if budget is not None:
++        template_kwargs = dict(out.get("chat_template_kwargs") or {})
++        template_kwargs.setdefault("reasoning_effort", budget)
++        template_kwargs.setdefault("thinking", True)
++        template_kwargs.setdefault("enable_thinking", True)
++        out["chat_template_kwargs"] = template_kwargs
++        changed = True
++
++    # (3) Record reasoning.exclude for the response side.
++    if reasoning is not None and "exclude" in reasoning and "reasoning_exclude" not in out:
++        exclude = reasoning.get("exclude")
++        if isinstance(exclude, str):
++            exclude = exclude.strip().lower() in _TRUE_STRINGS
++        out["reasoning_exclude"] = bool(exclude)
++        changed = True
++
++    if not changed:
++        return values
++    if reasoning is not None:
++        out["reasoning"] = reasoning
++    return out
++
++
++def _add_field(model_class, name, annotation, default) -> None:
++    """Add one field to an already-built pydantic model. Caller rebuilds."""
++    from pydantic.fields import FieldInfo
++
++    if name in model_class.__pydantic_fields__:
++        return
++    model_class.__annotations__[name] = annotation
++    model_class.__pydantic_fields__[name] = FieldInfo(
++        annotation=annotation, default=default
++    )
++
++
++def _patch_reasoning_inputs(module) -> None:
++    request_class = module.ChatCompletionRequest
++    decorator = request_class.__pydantic_decorators__.model_validators[
++        "normalize_reasoning_inputs"
++    ]
++    original = decorator.func
++    if getattr(original, _MARK, False):
++        return
++
++    if getattr(original, "__self__", None) is not None:
++        # pydantic 2.13 stores the classmethod already bound to the class.
++        @functools.wraps(original)
++        def normalize_reasoning_inputs(values, *args, **kwargs):
++            return original(_normalize_reasoning_inputs(values), *args, **kwargs)
++
++    else:
++
++        @functools.wraps(original)
++        def normalize_reasoning_inputs(cls, values, *args, **kwargs):
++            return original(cls, _normalize_reasoning_inputs(values), *args, **kwargs)
++
++    setattr(normalize_reasoning_inputs, _MARK, True)
++    decorator.func = normalize_reasoning_inputs
++    _add_field(request_class, "reasoning_exclude", bool, False)
++    request_class.model_rebuild(force=True)
++
++
++def _patch_usage_details(module) -> None:
++    _add_field(
++        module.UsageInfo,
++        "completion_tokens_details",
++        Optional[Dict[str, int]],
++        None,
++    )
++    module.UsageInfo.model_rebuild(force=True)
++    # Parents inlined UsageInfo's old schema when they were built; only the chat
++    # surfaces are rebuilt, so no other endpoint's usage shape moves.
++    for name in ("ChatCompletionResponse", "ChatCompletionStreamResponse"):
++        getattr(module, name).model_rebuild(force=True)
++
++
++def _patch_usage_processor(module) -> None:
++    usage_class = module.UsageProcessor
++    original = usage_class.calculate_token_usage
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def calculate_token_usage(*args, **kwargs):
++        usage = original(*args, **kwargs)
++        reasoning_tokens = getattr(usage, "reasoning_tokens", None)
++        if reasoning_tokens is not None and "completion_tokens_details" in type(
++            usage
++        ).model_fields:
++            usage.completion_tokens_details = {"reasoning_tokens": int(reasoning_tokens)}
++        return usage
++
++    # The single funnel for chat (streaming and not) and /v1/completions usage;
++    # both callers reach it by class attribute, so the wrapper is picked up.
++    # Embeddings/score build UsageInfo directly and stay on the old shape.
++    setattr(calculate_token_usage, _MARK, True)
++    usage_class.calculate_token_usage = staticmethod(calculate_token_usage)
++
++
++def _patch_reasoning_exclude(module) -> None:
++    serving_class = module.OpenAIServingChat
++    build_original = serving_class._build_chat_response
++    stream_original = serving_class._process_reasoning_stream
++    if getattr(build_original, _MARK, False):
++        return
++
++    @functools.wraps(build_original)
++    def _build_chat_response(self, request, *args, **kwargs):
++        response = build_original(self, request, *args, **kwargs)
++        if getattr(request, "reasoning_exclude", False):
++            for choice in getattr(response, "choices", None) or []:
++                message = getattr(choice, "message", None)
++                if getattr(message, "reasoning_content", None):
++                    message.reasoning_content = None
++        return response
++
++    @functools.wraps(stream_original)
++    def _process_reasoning_stream(
++        self, index, delta, reasoning_parser_dict, content, request, *args, **kwargs
++    ):
++        reasoning_text, normal_text = stream_original(
++            self, index, delta, reasoning_parser_dict, content, request, *args, **kwargs
++        )
++        if getattr(request, "reasoning_exclude", False):
++            return None, normal_text
++        return reasoning_text, normal_text
++
++    setattr(_build_chat_response, _MARK, True)
++    setattr(_process_reasoning_stream, _MARK, True)
++    serving_class._build_chat_response = _build_chat_response
++    serving_class._process_reasoning_stream = _process_reasoning_stream
+diff --git a/python/sglang/srt/phala_compat/dsv41_reasoning_effort.py b/python/sglang/srt/phala_compat/dsv41_reasoning_effort.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f9ee6cf114ae3dd6419ceca00412892d783d4d1
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_reasoning_effort.py
+@@ -0,0 +1,30 @@
++"""Source-integrated adapter, converted from dsv41_reasoning_effort.py.
++No import hooks or external runtime code paths.
++"""
++
++import importlib.abc
++
++
++import importlib.machinery
++
++
++import sys
++
++
++_TARGET = "sglang.srt.entrypoints.openai.encoding_dsv41"
++
++
++REASONING_EFFORT_MAPPINGS = {
++    "minimal": 25,
++    "low": 50,
++    "medium": 62,
++    "high": 75,
++    "xhigh": 90,
++    "max": 100,
++}
++
++
++def apply(module) -> None:
++    module.REASONING_EFFORT_MAPPINGS.clear()
++    module.REASONING_EFFORT_MAPPINGS.update(REASONING_EFFORT_MAPPINGS)
++    module.DEFAULT_REASONING_EFFORT = "high"
+diff --git a/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py b/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f2fc3653bb7f63ad8d7d7f7241c321f1eb31ba8
+--- /dev/null
++++ b/python/sglang/srt/phala_compat/dsv41_tool_choice_none.py
+@@ -0,0 +1,52 @@
++"""Source-integrated adapter, converted from dsv41_tool_choice_none.py.
++No import hooks or external runtime code paths.
++"""
++
++import functools
++
++
++import importlib.abc
++
++
++import importlib.machinery
++
++
++import sys
++
++
++_TARGET = "sglang.srt.entrypoints.openai.serving_chat"
++
++
++_MARK = "_dsv41_tool_choice_none"
++
++
++def drop_tool_definitions(request) -> bool:
++    """Remove tool *definitions* from ``request`` when tool_choice is "none".
++
++    Covers both carriers SGLang's encoder reads: the top-level ``tools`` array
++    and the per-message ``tools`` field of a system/developer message.
++    """
++    if getattr(request, "tool_choice", None) != "none":
++        return False
++    dropped = bool(getattr(request, "tools", None))
++    request.tools = None
++    for message in getattr(request, "messages", None) or []:
++        if getattr(message, "tools", None):
++            message.tools = None
++            dropped = True
++    return dropped
++
++
++def apply(module) -> None:
++    cls = module.OpenAIServingChat
++    original = cls._process_messages
++    if getattr(original, _MARK, False):
++        return
++
++    @functools.wraps(original)
++    def _process_messages(self, request, *args, **kwargs):
++        drop_tool_definitions(request)
++        return original(self, request, *args, **kwargs)
++
++    setattr(_process_messages, _MARK, True)
++    cls._process_messages = _process_messages
+diff --git a/python/sglang/srt/utils/__init__.py b/python/sglang/srt/utils/__init__.py
+index 38e2c43fe32c2f0ef6c052a69f093f87725068c4..8e30ab8d6963ff91047ad66a0650811190443ef2 100644
+--- a/python/sglang/srt/utils/__init__.py
++++ b/python/sglang/srt/utils/__init__.py
+@@ -1,3 +1,10 @@
+ # Temporarily do this to avoid changing all imports in the repo
+ from sglang.srt.utils.common import *
+ from sglang.srt.utils.network import is_port_available  # noqa: F401
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/python/sglang/srt/utils/common.py b/python/sglang/srt/utils/common.py
+index 81c4b8fec7a5223816b8efbd2cd3a932ca406acd..ece0aaf6cb01b514561c74cefeebd39d2a4284b2 100644
+--- a/python/sglang/srt/utils/common.py
++++ b/python/sglang/srt/utils/common.py
+@@ -4852,3 +4852,10 @@ def init_cublas():
+     b = torch.ones((16, 16), dtype=dtype, device=device)
+     c = a @ b
+     return c
++
++# Phala source-integrated compatibility (no runtime source overlays).
++import sys as _phala_sys
++from sglang.srt.phala_compat import dsv41_media_hardening as _phala_compat_0
++_phala_compat_0._widen_client_media_exceptions(_phala_sys.modules[__name__])
++del _phala_compat_0
++del _phala_sys
+diff --git a/test/phala_deepseek_v41/audit_v0520_source.py b/test/phala_deepseek_v41/audit_v0520_source.py
+index 0016f1debb8418de492920fab235060ad0231b0b..28c169353d188878032a35266bd7820f1dc499db 100644
+--- a/test/phala_deepseek_v41/audit_v0520_source.py
++++ b/test/phala_deepseek_v41/audit_v0520_source.py
+@@ -100,6 +100,10 @@ for relative in changed:
+ protected = [
+     "python/sglang/srt/entrypoints/openai/serving_chat.py",
+     "python/sglang/srt/constrained/xgrammar_backend.py",
++    "python/sglang/srt/mem_cache/unified_cache/components/swa.py",
++    "python/sglang/srt/model_executor/runner_utils/pool.py",
++    "python/sglang/srt/runtime_context.py",
++    "python/sglang/srt/managers/scheduler.py",
+ ]
+ unexpected = subprocess.check_output(
+     ["git", "diff", "--name-only", BASE, "--", *protected], cwd=ROOT, text=True
+diff --git a/test/phala_deepseek_v41/selftest.py b/test/phala_deepseek_v41/selftest.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e143625a1070d80b2331982757086d1fcd2b5ad4
+--- /dev/null
++++ b/test/phala_deepseek_v41/selftest.py
+@@ -0,0 +1,439 @@
++"""Tests against installed source-integrated adapters; no runtime package mounts."""
++
++import sys
++from types import SimpleNamespace
++
++_failures = []
++_checks = 0
++
++
++def check(label, got, want):
++    global _checks
++    _checks += 1
++    ok = got == want
++    print(f"{'ok  ' if ok else 'FAIL'}  {label}\n        got {got!r}" + ("" if ok else f"\n        want {want!r}"))
++    if not ok:
++        _failures.append(label)
++
++
++def check_true(label, got):
++    check(label, bool(got), True)
++
++
++def section(name):
++    print(f"\n--- {name} " + "-" * max(0, 60 - len(name)))
++
++
++# ==========================================================================
++section("1: patch layer loaded, and all four patch modules composed")
++# ==========================================================================
++from sglang.srt.entrypoints.openai import protocol as P  # noqa: E402
++from sglang.srt.entrypoints.openai import serving_chat as SC  # noqa: E402
++from sglang.srt.entrypoints.openai import usage_processor as UP  # noqa: E402
++from sglang.srt.entrypoints.openai import encoding_dsv41 as ENC  # noqa: E402
++from sglang.srt.multimodal.processors import base_processor as BP  # noqa: E402
++from sglang.srt.managers.schedule_batch import Modality  # noqa: E402
++
++from sglang.srt.phala_compat import dsv41_protocol_compat as PC  # noqa: E402
++
++check("reasoning-effort table re-anchored (dsv41_reasoning_effort)",
++      ENC.REASONING_EFFORT_MAPPINGS,
++      {"minimal": 25, "low": 50, "medium": 62, "high": 75, "xhigh": 90, "max": 100})
++check_true("tool_choice-none wrapper survived (dsv41_tool_choice_none)",
++           getattr(SC.OpenAIServingChat._process_messages, "_dsv41_tool_choice_none", False))
++check_true("media-hardening wrapper installed on the same class",
++           getattr(SC.OpenAIServingChat._validate_media_content, "_dsv41_media_hardening", False))
++check_true("reasoning-exclude wrappers installed on the same class",
++           getattr(SC.OpenAIServingChat._build_chat_response, "_dsv41_protocol_compat", False)
++           and getattr(SC.OpenAIServingChat._process_reasoning_stream, "_dsv41_protocol_compat", False))
++
++# ==========================================================================
++section("A/B: client media failures classify as 400, not 500")
++# ==========================================================================
++import base64  # noqa: E402
++import struct  # noqa: E402
++import zlib  # noqa: E402
++from PIL import Image  # noqa: E402
++
++
++def png(width, height):
++    """1-bit grayscale PNG of the given size; a few KB whatever the pixel count."""
++    def chunk(tag, data):
++        return (struct.pack(">I", len(data)) + tag + data
++                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
++
++    compressor = zlib.compressobj(9)
++    row = b"\x00" + b"\x00" * ((width + 7) // 8)
++    body = [compressor.compress(row) for _ in range(height)]
++    body.append(compressor.flush())
++    return (b"\x89PNG\r\n\x1a\n"
++            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
++            + chunk(b"IDAT", b"".join(body)) + chunk(b"IEND", b""))
++
++
++def data_uri(raw, mime="image/png"):
++    return f"data:{mime};base64," + base64.b64encode(raw).decode()
++
++
++check_true("base_processor.CLIENT_MEDIA_EXCEPTIONS covers OSError",
++           OSError in BP.CLIENT_MEDIA_EXCEPTIONS)
++check_true("base_processor.CLIENT_MEDIA_EXCEPTIONS covers DecompressionBombError",
++           Image.DecompressionBombError in BP.CLIENT_MEDIA_EXCEPTIONS)
++
++# PIL raises above 2x MAX_IMAGE_PIXELS; >89.5 MP only warns and still decodes.
++bomb = png(14000, 13000)
++check_true("bomb fixture is over PIL's hard limit",
++           14000 * 13000 > 2 * Image.MAX_IMAGE_PIXELS)
++
++
++def classify(data):
++    try:
++        BP.BaseMultimodalProcessor._load_single_item(data, Modality.IMAGE)
++        return "loaded"
++    except Exception as exc:  # noqa: BLE001
++        return type(exc).__name__
++
++
++# ValueError is what fast_load_mm_data re-raises as a 400; RuntimeError is the 500.
++check("bare base64 JPEG -> 400 class",
++      classify("/9j/4AAQSkZJRgABAQAAAQABAAD//gA7Q1JFQVRPUg=="), "ValueError")
++check("decompression bomb data URI -> 400 class", classify(data_uri(bomb)), "ValueError")
++check("truncated data URI -> 400 class",
++      classify(data_uri(b"\x89PNG\r\n\x1a\nbroken")), "ValueError")
++check("unreachable http URL -> 400 class",
++      classify("https://127.0.0.1:9/nope.png"), "ValueError")
++check("valid tiny PNG data URI still loads", classify(data_uri(png(8, 8))), "loaded")
++
++# ==========================================================================
++section("A/C: request validation rejects unreadable and unsupported media")
++# ==========================================================================
++# Stand-in for the serving object, carrying the same capability flags the live
++# replica reports at /get_model_info (image yes, audio no, no video token) and
++# the same --media-url-max-file-size-mb as compose.yaml.
++FAKE_CHAT = SimpleNamespace(
++    tokenizer_manager=SimpleNamespace(
++        model_config=SimpleNamespace(
++            is_multimodal=True,
++            is_image_understandable_model=True,
++            is_audio_understandable_model=False,
++        ),
++        mm_processor=SimpleNamespace(
++            mm_tokens=SimpleNamespace(video_token=None, video_token_id=None)
++        ),
++        server_args=SimpleNamespace(media_url_max_file_size_mb=32),
++    )
++)
++validate = SC.OpenAIServingChat._validate_media_content
++
++
++def request(content, **extra):
++    return P.ChatCompletionRequest(
++        model="m", messages=[{"role": "user", "content": content}], **extra
++    )
++
++
++def media_error(content):
++    return validate(FAKE_CHAT, request(content))
++
++
++text_part = {"type": "text", "text": "what is this"}
++good_png = data_uri(png(8, 8))
++
++check("text only -> no error", media_error([text_part]), None)
++check("data: URI image -> no error",
++      media_error([text_part, {"type": "image_url", "image_url": {"url": good_png}}]), None)
++check("https image -> no error",
++      media_error([{"type": "image_url", "image_url": {"url": "https://example.com/a.jpg"}}]), None)
++check("bare base64 image -> 400",
++      media_error([{"type": "image_url", "image_url": {"url": "/9j/4AAQSkZJRg=="}}]),
++      "Invalid image_url.url: expected a data: URI or an http(s):// URL. "
++      "Bare base64 payloads and local paths are not accepted.")
++check("file:// image -> 400",
++      media_error([{"type": "image_url", "image_url": {"url": "file:///etc/passwd"}}]),
++      "Invalid image_url.url: expected a data: URI or an http(s):// URL. "
++      "Bare base64 payloads and local paths are not accepted.")
++check("video_url -> 400",
++      media_error([{"type": "video_url", "video_url": {"url": "https://example.com/nope.mp4"}}]),
++      "video input is not supported by this model.")
++check("audio_url -> 400",
++      media_error([{"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}}]),
++      "audio input is not supported by this model.")
++check("input_audio -> 400",
++      media_error([{"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}]),
++      "audio input is not supported by this model.")
++
++oversized = "data:image/png;base64," + "A" * (45 * 1024 * 1024)
++check_true("data URI over --media-url-max-file-size-mb -> 400",
++           str(media_error([{"type": "image_url", "image_url": {"url": oversized}}])
++               ).endswith("byte media size limit (--media-url-max-file-size-mb)."))
++under = "data:image/png;base64," + "A" * (30 * 1024 * 1024)  # ~22.5 MB decoded
++check("30 MB base64 data URI still allowed (under the 32 MB limit)",
++      media_error([{"type": "image_url", "image_url": {"url": under}}]), None)
++
++# ==========================================================================
++section("D: reasoning protocol translation")
++# ==========================================================================
++def build(**extra):
++    try:
++        r = P.ChatCompletionRequest(model="m", messages=[{"role": "user", "content": "hi"}], **extra)
++    except Exception as exc:  # noqa: BLE001
++        return ("error", str(exc))
++    return (r.reasoning_effort, r.chat_template_kwargs, r.reasoning_exclude)
++
++
++OFF = ("none", {"thinking": False, "enable_thinking": False}, False)
++ON_HIGH = ("high", {"thinking": True, "enable_thinking": True}, False)
++ABSENT = (None, None, False)
++
++check("reasoning.enabled=false disables thinking", build(reasoning={"enabled": False}), OFF)
++check("reasoning.enable='false' disables thinking", build(reasoning={"enable": "false"}), OFF)
++check("reasoning.enabled=false with nested effort still disables",
++      build(reasoning={"enabled": False, "effort": "high"}), OFF)
++check("reasoning.enabled=true unchanged",
++      build(reasoning={"enabled": True}), (None, {"thinking": True, "enable_thinking": True}, False))
++check("reasoning_effort='default' is treated as absent", build(reasoning_effort="default"), ABSENT)
++check("reasoning.effort='default' is treated as absent", build(reasoning={"effort": "default"}), ABSENT)
++check("reasoning_effort=50 routes to chat_template_kwargs",
++      build(reasoning_effort=50),
++      (None, {"reasoning_effort": 50, "thinking": True, "enable_thinking": True}, False))
++check("reasoning.effort=50 routes to chat_template_kwargs",
++      build(reasoning={"effort": 50}),
++      (None, {"reasoning_effort": 50, "thinking": True, "enable_thinking": True}, False))
++check("reasoning_effort=100 accepted",
++      build(reasoning_effort=100),
++      (None, {"reasoning_effort": 100, "thinking": True, "enable_thinking": True}, False))
++check_true("reasoning_effort=101 is a 400 naming the range",
++           "[1, 100]" in str(build(reasoning_effort=101)[1]))
++check_true("reasoning_effort=-1 is a 400 naming the range",
++           "[1, 100]" in str(build(reasoning_effort=-1)[1]))
++check("reasoning.exclude is recorded",
++      build(reasoning={"exclude": True, "effort": "high"}), ("high", {"thinking": True, "enable_thinking": True}, True))
++# Regressions: everything that worked before must still work, unchanged.
++check("reasoning_effort='high' unchanged", build(reasoning_effort="high"), ON_HIGH)
++check("reasoning_effort='none' unchanged", build(reasoning_effort="none"), OFF)
++check("reasoning_effort=0.5 float unchanged",
++      build(reasoning_effort=0.5), (0.5, {"thinking": True, "enable_thinking": True}, False))
++check("reasoning_effort=0 stays a float effort",
++      build(reasoning_effort=0), (0.0, {"thinking": True, "enable_thinking": True}, False))
++check("no reasoning fields at all unchanged", build(), ABSENT)
++check("chat_template_kwargs budget still passes through untouched",
++      build(chat_template_kwargs={"reasoning_effort": 50}), (None, {"reasoning_effort": 50}, False))
++check("explicit chat_template_kwargs wins over a routed budget",
++      build(reasoning_effort=50, chat_template_kwargs={"reasoning_effort": 7}),
++      (None, {"reasoning_effort": 7, "thinking": True, "enable_thinking": True}, False))
++
++# The encoder must accept what we route to it.
++from sglang.srt.entrypoints.openai import chat_encoding  # noqa: E402
++
++check("encoder accepts the routed budget", chat_encoding.parse_dsv41_reasoning_effort(50), 50)
++check("encoder preserves both integer budget boundaries",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (1, 100)], [1, 100])
++check("encoder preserves legal OpenAI fractional efforts",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (0.0, 0.5, 0.99)],
++      [1, 50, 99])
++check("invalid budget values do not become an accepted effort",
++      [chat_encoding.parse_dsv41_reasoning_effort(value) for value in (True, 0, 101, -0.1, 1.0)],
++      [None, None, None, None, None])
++check("serving resolver uses the parsed integer instead of the deployment default",
++      SC.OpenAIServingChat._resolve_dsv41_reasoning_effort(
++          SimpleNamespace(_dsv41_default_reasoning_effort="high"), 50), 50)
++check("serving resolver retains the deployment default when effort is absent",
++      SC.OpenAIServingChat._resolve_dsv41_reasoning_effort(
++          SimpleNamespace(_dsv41_default_reasoning_effort="high"), None), "high")
++
++# ==========================================================================
++section("D3: reasoning.exclude withholds reasoning_content")
++# ==========================================================================
++class _StubChat:
++    """Stand-in for OpenAIServingChat carrying only the two patched methods."""
++
++    def _build_chat_response(self, request, *args, **kwargs):
++        return P.ChatCompletionResponse(
++            id="x", created=1, model="m",
++            choices=[P.ChatCompletionResponseChoice(
++                index=0,
++                message=P.ChatMessage(role="assistant", content="answer",
++                                      reasoning_content="secret"),
++                finish_reason="stop")],
++            usage=P.UsageInfo(prompt_tokens=1, completion_tokens=1, total_tokens=2),
++        )
++
++    def _process_reasoning_stream(self, index, delta, parsers, content, request, *a, **kw):
++        return "secret", "answer"
++
++
++PC._patch_reasoning_exclude(SimpleNamespace(OpenAIServingChat=_StubChat))
++stub = _StubChat()
++for label, excluded, want_reasoning in (("excluded", True, None), ("kept", False, "secret")):
++    req = P.ChatCompletionRequest(model="m", messages=[{"role": "user", "content": "hi"}],
++                                  reasoning={"exclude": excluded})
++    response = stub._build_chat_response(req, [], 0)
++    check(f"non-stream reasoning_content {label}",
++          response.choices[0].message.reasoning_content, want_reasoning)
++    check(f"non-stream content intact when {label}", response.choices[0].message.content, "answer")
++    check(f"stream reasoning delta {label}",
++          stub._process_reasoning_stream(0, "d", {}, {}, req), (want_reasoning, "answer"))
++
++# ==========================================================================
++section("D4: continuous usage forced on every streaming request")
++# ==========================================================================
++def stream_opts(**extra):
++    r = P.ChatCompletionRequest(model="m", messages=[{"role": "user", "content": "hi"}], **extra)
++    so = r.stream_options
++    return (so.include_usage, so.continuous_usage_stats) if so is not None else None
++
++
++check("stream, no stream_options at all -> both forced true",
++      stream_opts(stream=True), (True, True))
++check("stream, stream_options={include_usage: true} only -> continuous_usage_stats added",
++      stream_opts(stream=True, stream_options={"include_usage": True}), (True, True))
++check("stream, stream_options={continuous_usage_stats: true} only -> include_usage added",
++      stream_opts(stream=True, stream_options={"continuous_usage_stats": True}), (True, True))
++check("stream, both already true -> left true, not re-created",
++      stream_opts(stream=True,
++                  stream_options={"include_usage": True, "continuous_usage_stats": True}),
++      (True, True))
++check("stream, both explicitly false -> forced true anyway (deployment policy, not client choice)",
++      stream_opts(stream=True,
++                  stream_options={"include_usage": False, "continuous_usage_stats": False}),
++      (True, True))
++check("non-stream request, no stream_options -> left absent",
++      stream_opts(stream=False), None)
++check("non-stream request with explicit stream_options -> left exactly as sent",
++      stream_opts(stream=False, stream_options={"include_usage": False}), (False, False))
++check("stream defaults to false when omitted -> stream_options left absent",
++      stream_opts(), None)
++
++# ==========================================================================
++section("E: usage.completion_tokens_details.reasoning_tokens")
++# ==========================================================================
++usage = UP.UsageProcessor.calculate_token_usage(
++    prompt_tokens=11, completion_tokens=9, reasoning_tokens=4
++)
++check("flat reasoning_tokens kept", usage.reasoning_tokens, 4)
++check("nested details built", usage.completion_tokens_details, {"reasoning_tokens": 4})
++check("continuous-usage stream dict carries the nested details",
++      usage.model_dump()["completion_tokens_details"], {"reasoning_tokens": 4})
++
++non_stream = P.ChatCompletionResponse(id="x", created=1, model="m", choices=[], usage=usage)
++check("non-stream response keeps the nested details after serialization",
++      non_stream.model_dump()["usage"]["completion_tokens_details"], {"reasoning_tokens": 4})
++stream = P.ChatCompletionStreamResponse(id="x", created=1, model="m", choices=[], usage=usage)
++check("final stream chunk keeps the nested details after serialization",
++      stream.model_dump()["usage"]["completion_tokens_details"], {"reasoning_tokens": 4})
++check("a non-reasoning response reports zero, not null",
++      UP.UsageProcessor.calculate_token_usage(prompt_tokens=1, completion_tokens=1).model_dump()[
++          "completion_tokens_details"], {"reasoning_tokens": 0})
++completion = P.CompletionResponse(id="x", created=1, model="m", choices=[], usage=usage)
++check("/v1/completions usage shape deliberately unchanged",
++      "completion_tokens_details" in completion.model_dump()["usage"], False)
++
++# ==========================================================================
++section("F/G: message roles in the native V4.1 encoder")
++# ==========================================================================
++# Expected prompts are DeepSeek's own reference encoder's output
++# (checkpoint encoding/encoding.py) for the equivalent message lists.
++import os  # noqa: E402
++
++EFFORT_PREFIX = ("<\uff5cbegin\u2581of\u2581sentence\uff5c><\uff5cSystem\uff5c>Reasoning Effort: 75 "
++                 "(range 1-100, the higher the value, the more thorough the reasoning)\n\n")
++DEV_MESSAGES = [
++    {"role": "user", "content": "I need help identifying where this came from."},
++    {"role": "assistant", "content": "Sure, please send me the full text."},
++    {"role": "developer", "content": "You must start your response with AFFIRMATIVE"},
++    {"role": "user", "content": "Whats my name?"},
++]
++SYS_MESSAGES = [{"role": "system", "content": "You are a helpful assistant."}]
++
++
++def render(messages, mode="thinking"):
++    return ENC.encode_messages(messages, thinking_mode=mode, reasoning_effort=75)
++
++
++check_true("message-roles wrapper installed on encode_messages",
++           getattr(ENC.encode_messages, "_dsv41_message_roles", False))
++check("mid-conversation developer renders as a <System> block (reference-identical)",
++      render(DEV_MESSAGES),
++      EFFORT_PREFIX
++      + "<\uff5cUser\uff5c>I need help identifying where this came from."
++        "<\uff5cAssistant\uff5c></think>Sure, please send me the full text."
++        "<\uff5cend\u2581of\u2581sentence\uff5c>"
++        "<\uff5cSystem\uff5c>You must start your response with AFFIRMATIVE"
++        "<\uff5cUser\uff5c>Whats my name?<\uff5cAssistant\uff5c><think>")
++check("the caller's message list is not mutated",
++      [m["role"] for m in DEV_MESSAGES], ["user", "assistant", "developer", "user"])
++check("a leading developer message also becomes the system prompt",
++      render([{"role": "developer", "content": "Be terse."}, {"role": "user", "content": "hi"}]),
++      EFFORT_PREFIX.replace("\n\n", "\n\n") + "Be terse."
++      + "<\uff5cUser\uff5c>hi<\uff5cAssistant\uff5c><think>")
++sole = render([{"role": "developer", "content": "Be terse."}])
++check("a developer-only conversation keeps its generation header",
++      sole.endswith("<\uff5cAssistant\uff5c><think>") and "Be terse." in sole, True)
++
++os.environ.pop("DSV41_SYSTEM_ONLY_USER_TURN", None)
++check("system-only conversation has no generation point by default (as upstream)",
++      render(SYS_MESSAGES),
++      EFFORT_PREFIX + "You are a helpful assistant.")
++os.environ["DSV41_SYSTEM_ONLY_USER_TURN"] = "1"
++check("DSV41_SYSTEM_ONLY_USER_TURN=1 adds the empty user turn (reference-identical)",
++      render(SYS_MESSAGES),
++      EFFORT_PREFIX + "You are a helpful assistant."
++      + "<\uff5cUser\uff5c><\uff5cAssistant\uff5c><think>")
++check("the opt-in does not touch a conversation that already has a user turn",
++      render(SYS_MESSAGES + [{"role": "user", "content": "hi"}]),
++      EFFORT_PREFIX + "You are a helpful assistant."
++      + "<\uff5cUser\uff5c>hi<\uff5cAssistant\uff5c><think>")
++os.environ.pop("DSV41_SYSTEM_ONLY_USER_TURN", None)
++
++# ==========================================================================
++section("F: the real FastAPI app builds and validates with the rebuilt models")
++# ==========================================================================
++# Strongest pre-restart check: registering /v1/chat/completions makes FastAPI build
++# its own body field from ChatCompletionRequest, which is the path a live request
++# takes. Costs ~20 s (imports the whole server module; still no GPU).
++import sglang.srt.entrypoints.http_server as H  # noqa: E402
++from fastapi.routing import APIRoute  # noqa: E402
++
++chat_route = [r for r in H.app.routes
++              if isinstance(r, APIRoute) and r.path == "/v1/chat/completions"][0]
++body_field = chat_route.body_field
++check("chat route body field is the patched model",
++      "reasoning_exclude" in body_field.field_info.annotation.model_fields, True)
++
++
++def validate_body(**extra):
++    value, errors = body_field.validate(
++        {"model": "m", "messages": [{"role": "user", "content": "hi"}], **extra}, {}, loc=("body",))
++    return "errors" if errors else (value.reasoning_effort, value.chat_template_kwargs)
++
++
++check("through FastAPI: reasoning_effort='default'",
++      validate_body(reasoning_effort="default"), (None, None))
++check("through FastAPI: reasoning.enabled=false",
++      validate_body(reasoning={"enabled": False}), ("none", {"thinking": False, "enable_thinking": False}))
++check("through FastAPI: integer budget",
++      validate_body(reasoning_effort=50),
++      (None, {"reasoning_effort": 50, "thinking": True, "enable_thinking": True}))
++
++
++def validate_stream_options(**extra):
++    value, errors = body_field.validate(
++        {"model": "m", "messages": [{"role": "user", "content": "hi"}], **extra}, {}, loc=("body",))
++    if errors:
++        return "errors"
++    so = value.stream_options
++    return (so.include_usage, so.continuous_usage_stats) if so is not None else None
++
++
++check("through FastAPI: stream with no stream_options -> both forced true",
++      validate_stream_options(stream=True), (True, True))
++check("through FastAPI: non-stream request -> stream_options untouched",
++      validate_stream_options(stream=False), None)
++
++# ==========================================================================
++print(f"\n{_checks} checks, {len(_failures)} failed")
++if _failures:
++    for label in _failures:
++        print(f"  FAILED: {label}")
++    sys.exit(1)
++print("all patches verified")
+diff --git a/test/phala_deepseek_v41/test_candidate_bitmap_boundary_gpu.py b/test/phala_deepseek_v41/test_candidate_bitmap_boundary_gpu.py
+index 75dbcd80ea135cb560f36c974d56e19c45227cc3..6058b8e8a196c06cb6989eb25d47d5aafa8443ae 100644
+--- a/test/phala_deepseek_v41/test_candidate_bitmap_boundary_gpu.py
++++ b/test/phala_deepseek_v41/test_candidate_bitmap_boundary_gpu.py
+@@ -3,7 +3,6 @@
+ Run each arm in a new process. Old arm stops BEFORE unsafe bitmap sort or sparse
+ metadata when actual producer IDs violate its contract. No CPU skip behavior.
+ """
+-
+ import argparse
+ import json
+ import sys
+@@ -28,64 +27,40 @@ def production_lengths(data, ratio, arm):
+     image; if the backend still publishes oversized lengths, its real producer
+     fails our pre-sort invariant and the dangerous downstream calls are withheld.
+     """
+-    core = data["backend"].make_core_attn_metadata(
+-        req_to_token=data["req_to_token"],
+-        req_pool_indices_repeated=data["request_ids"].long(),
+-        seq_lens_casual=data["raw"],
+-        max_seq_len=TABLE_TOKENS,
+-        out_loc=(data["raw"].long() - 1).clamp_min(0),
+-        need_compress=True,
++    core = data['backend'].make_core_attn_metadata(
++        req_to_token=data['req_to_token'],
++        req_pool_indices_repeated=data['request_ids'].long(),
++        seq_lens_casual=data['raw'], max_seq_len=TABLE_TOKENS,
++        out_loc=(data['raw'].long() - 1).clamp_min(0), need_compress=True,
+     )
+     return core.c1_topk_lengths_clamp1 if ratio == 1 else core.c2_topk_lengths_clamp1
+ 
+ 
+ def inputs(ratio, mixed):
+     from sglang.kernels.ops.attention.dsv4.fp4_indexer import (
+-        quantize_fp4_indexer_tensor,
+-        store_fp4_index_k_cache,
++        quantize_fp4_indexer_tensor, store_fp4_index_k_cache,
+     )
+     from sglang.srt.layers.attention.deepseek_v4_backend import DeepseekV4AttnBackend
+-
+     torch.manual_seed(20260920 + ratio)
+     rows = 18 if mixed else VERIFY
+     # Keep the incident logical stride16392 even for ratio2; no tiny alias table.
+     pages = TABLE_TOKENS // INDEX_PAGE
+-    cache2d = torch.empty_strided(
+-        (pages, INDEX_PAGE * 68),
+-        ((INDEX_PAGE * 68 + 511) // 512 * 512, 1),
+-        dtype=torch.uint8,
+-        device="cuda",
+-    )
++    cache2d = torch.empty_strided((pages, INDEX_PAGE * 68),
++        ((INDEX_PAGE * 68 + 511) // 512 * 512, 1), dtype=torch.uint8, device='cuda')
+     # Real FP4 store layout, repeated physical pages. Every logical page has
+     # allocated backing; identical page contents merely bound initialization cost.
+     one_page = torch.zeros_like(cache2d[:1])
+-    keys = torch.randn((INDEX_PAGE, 128), device="cuda", dtype=torch.bfloat16)
+-    store_fp4_index_k_cache(
+-        keys,
+-        one_page,
+-        torch.arange(INDEX_PAGE, device="cuda"),
+-        page_size=INDEX_PAGE,
+-        rne=True,
+-    )
++    keys = torch.randn((INDEX_PAGE, 128), device='cuda', dtype=torch.bfloat16)
++    store_fp4_index_k_cache(keys, one_page, torch.arange(INDEX_PAGE, device='cuda'), page_size=INDEX_PAGE, rne=True)
+     cache2d.copy_(one_page.expand_as(cache2d))
+     cache = cache2d.view(pages, INDEX_PAGE, 1, 68)
+-    table = (
+-        torch.arange(pages, dtype=torch.int32, device="cuda")
+-        .expand(rows, -1)
+-        .contiguous()
+-    )
+-    query = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device="cuda")
++    table = torch.arange(pages, dtype=torch.int32, device='cuda').expand(rows, -1).contiguous()
++    query = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device='cuda')
+     q, sf = quantize_fp4_indexer_tensor(query.flatten(0, 1), rne=True)
+     q, sf = q.view(rows, 1, 32, 64), sf.view(rows, 1, 32)
+-    weights = torch.rand((rows, 32), device="cuda", dtype=torch.float32) / 32
+-    request_ids = torch.arange(
+-        rows // VERIFY, device="cuda", dtype=torch.int32
+-    ).repeat_interleave(VERIFY)
+-    req_to_token = (
+-        torch.arange(TABLE_TOKENS, dtype=torch.int32, device="cuda")
+-        .expand(rows // VERIFY, -1)
+-        .contiguous()
+-    )
++    weights = torch.rand((rows, 32), device='cuda', dtype=torch.float32) / 32
++    request_ids = torch.arange(rows // VERIFY, device='cuda', dtype=torch.int32).repeat_interleave(VERIFY)
++    req_to_token = torch.arange(TABLE_TOKENS, dtype=torch.int32, device='cuda').expand(rows // VERIFY, -1).contiguous()
+     # Construct only metadata operands/state. No production method is patched,
+     # and no model runner/weights are initialized. This is the real backend type
+     # so any helper methods called by the correction resolve to production code.
+@@ -98,28 +73,16 @@ def inputs(ratio, mixed):
+     backend.low_ratios = (1, 2)
+     backend.present_ratios = (1, 2)
+     backend.index_topk = 512
+-    backend.cuda_int32_kwargs = dict(device="cuda", dtype=torch.int32)
++    backend.cuda_int32_kwargs = dict(device='cuda', dtype=torch.int32)
+     backend.trtllm_attn = False
+     backend.is_dsv41 = True
+     backend.is_dspark_draft = False
+     backend.encoder_replay = False
+-    backend.token_to_kv_pool = SimpleNamespace(
+-        request_window=None,
+-        full_to_swa_index_mapping=torch.arange(
+-            TABLE_TOKENS, dtype=torch.int32, device="cuda"
+-        ),
+-    )
+-    return dict(
+-        q=q,
+-        sf=sf,
+-        cache=cache,
+-        page_table=table,
+-        weights=weights,
+-        request_ids=request_ids,
+-        req_to_token=req_to_token,
+-        backend=backend,
+-        raw=torch.zeros(rows, device="cuda", dtype=torch.int32),
+-    )
++    backend.token_to_kv_pool = SimpleNamespace(request_window=None,
++        full_to_swa_index_mapping=torch.arange(TABLE_TOKENS, dtype=torch.int32, device='cuda'))
++    return dict(q=q, sf=sf, cache=cache, page_table=table, weights=weights,
++        request_ids=request_ids, req_to_token=req_to_token, backend=backend,
++        raw=torch.zeros(rows, device='cuda', dtype=torch.int32))
+ 
+ 
+ def raw_lengths(generated, mixed):
+@@ -132,25 +95,14 @@ def raw_lengths(generated, mixed):
+ 
+ def producer(data, ratio, arm):
+     import deep_gemm
+-
+     from sglang.kernels.ops.attention.dsv4.candidate_blocks import candidate_row_lens
+-    from sglang.srt.layers.attention.dsv4.candidate_indexer_deep_gemm import (
+-        amax_topk_blocks,
+-    )
++    from sglang.srt.layers.attention.dsv4.candidate_indexer_deep_gemm import amax_topk_blocks
+     from sglang.srt.layers.attention.dsv4.indexer import deep_gemm_fp4_paged_mqa_logits
+-
+     lengths = production_lengths(data, ratio, arm)
+-    schedule = deep_gemm.get_paged_mqa_logits_metadata(
+-        lengths.unsqueeze(-1), INDEX_PAGE, deep_gemm.get_num_sms()
+-    )
++    schedule = deep_gemm.get_paged_mqa_logits_metadata(lengths.unsqueeze(-1), INDEX_PAGE, deep_gemm.get_num_sms())
+     dense = deep_gemm_fp4_paged_mqa_logits(
+-        (data["q"], data["sf"]),
+-        data["cache"],
+-        data["weights"],
+-        lengths,
+-        data["page_table"],
+-        schedule,
+-        TABLE_TOKENS,
++        (data['q'], data['sf']), data['cache'], data['weights'], lengths,
++        data['page_table'], schedule, TABLE_TOKENS,
+     )
+     nblocks, valid = candidate_row_lens(lengths, TOPK)
+     blocks = amax_topk_blocks(dense, lengths, nblocks, TOPK)
+@@ -159,7 +111,7 @@ def producer(data, ratio, arm):
+ 
+ def producer_invariant(lengths, blocks, capacity=BITMAP_BLOCKS):
+     count = ((lengths + BLOCK - 1) // BLOCK).clamp_max(TOPK)
+-    live = torch.arange(TOPK, device="cuda")[None, :] < count[:, None]
++    live = torch.arange(TOPK, device='cuda')[None, :] < count[:, None]
+     values = blocks[live]
+     return bool(((values >= 0) & (values < capacity)).all().item())
+ 
+@@ -167,33 +119,17 @@ def producer_invariant(lengths, blocks, capacity=BITMAP_BLOCKS):
+ def chain(data, ratio):
+     from sglang.kernels.ops.attention.dsv4.candidate_table import sort_candidate_blocks
+     from sglang.srt.layers.attention.dsv4.candidate_indexer_deep_gemm import (
+-        SparseBlockTable,
+-        build_sparse_indexer_schedule,
+-        sparse_logits,
++        SparseBlockTable, build_sparse_indexer_schedule, sparse_logits,
+     )
+-
+-    lengths, dense, blocks, valid = producer(data, ratio, "fixed")
++    lengths, dense, blocks, valid = producer(data, ratio, 'fixed')
+     # This chain is single-stream. SparseBlockTable.ready is intentionally unused
+     # by sparse_logits; no imitation of production's alt-stream/event lifetime.
+-    physical = sort_candidate_blocks(blocks, lengths, data["page_table"], INDEX_PAGE)
+-    schedule = build_sparse_indexer_schedule(
+-        blocks,
+-        lengths,
+-        data["page_table"],
+-        INDEX_PAGE,
+-        data["q"].dtype,
+-        data["request_ids"],
+-    )
+-    table = SparseBlockTable(
+-        blocks=blocks,
+-        schedule=schedule,
+-        phys_blocks=physical,
+-        valid_lens=valid,
+-        ready=None,
+-    )
+-    sparse = sparse_logits(
+-        data["q"], data["sf"], data["cache"], data["weights"].to(torch.bfloat16), table
+-    )
++    physical = sort_candidate_blocks(blocks, lengths, data['page_table'], INDEX_PAGE)
++    schedule = build_sparse_indexer_schedule(blocks, lengths, data['page_table'],
++        INDEX_PAGE, data['q'].dtype, data['request_ids'])
++    table = SparseBlockTable(blocks=blocks, schedule=schedule,
++        phys_blocks=physical, valid_lens=valid, ready=None)
++    sparse = sparse_logits(data['q'], data['sf'], data['cache'], data['weights'].to(torch.bfloat16), table)
+     return lengths, dense, blocks, valid, physical, sparse
+ 
+ 
+@@ -202,31 +138,25 @@ def validate(data, outputs, ratio, mixed):
+     # Oracle only: production_lengths itself must use the actual patched layout.
+     # Internal speculative lookahead is valid beyond the semantic context.
+     # A repair must preserve it rather than silently change attention inputs.
+-    expected_lens = (data["raw"] // ratio).clamp_min(1)
++    expected_lens = (data['raw'] // ratio).clamp_min(1)
+     torch.testing.assert_close(lengths, expected_lens, rtol=0, atol=0)
+     assert producer_invariant(lengths, blocks, TABLE_TOKENS // BLOCK)
+     counts = ((lengths + 7) // 8).clamp_max(TOPK)
+-    live_blocks = torch.arange(TOPK, device="cuda")[None, :] < counts[:, None]
+-    assert (
+-        blocks[live_blocks] < (lengths[:, None].expand_as(blocks)[live_blocks] + 7) // 8
+-    ).all()
++    live_blocks = torch.arange(TOPK, device='cuda')[None, :] < counts[:, None]
++    assert (blocks[live_blocks] < (lengths[:, None].expand_as(blocks)[live_blocks] + 7) // 8).all()
+     assert (physical[live_blocks] >= 0).all()
+     # Identity logical→physical table means the transform must preserve block ID.
+     torch.testing.assert_close(physical[live_blocks], blocks[live_blocks])
+     assert (blocks[~live_blocks] == torch.iinfo(torch.int32).max).all()
+-    columns = (
+-        blocks.long()[:, :, None] * 8 + torch.arange(8, device="cuda")[None, None, :]
+-    )
++    columns = blocks.long()[:, :, None] * 8 + torch.arange(8, device='cuda')[None, None, :]
+     columns = columns.reshape(lengths.numel(), TOPK * 8)
+-    active = torch.arange(TOPK * 8, device="cuda")[None, :] < valid[:, None]
++    active = torch.arange(TOPK * 8, device='cuda')[None, :] < valid[:, None]
+     assert (columns[active] < lengths[:, None].expand_as(columns)[active]).all()
+     # BF16 sparse logits and FP32 dense logits are two native implementations
+     # on the same packed KV. Compare only causally valid sparse output columns.
+     expected = dense.gather(1, columns.clamp(0, dense.shape[1] - 1))
+     assert torch.isfinite(sparse[active]).all()
+-    torch.testing.assert_close(
+-        sparse[active].float(), expected[active], rtol=0.03, atol=0.03
+-    )
++    torch.testing.assert_close(sparse[active].float(), expected[active], rtol=0.03, atol=0.03)
+     if mixed:
+         assert lengths[-VERIFY:].tolist() == [1] * VERIFY
+         assert valid[-VERIFY:].tolist() == [1] * VERIFY
+@@ -235,78 +165,53 @@ def validate(data, outputs, ratio, mixed):
+ def sort_controls():
+     """Compare both bitmap specializations against an independent torch oracle."""
+     from sglang.kernels.ops.attention.dsv4.candidate_table import sort_candidate_blocks
+-
+     for extent in (CONTEXT, TABLE_TOKENS, 2 * CONTEXT):
+-        lengths = torch.tensor(
+-            [1, 16383, 16384, extent - 1, extent], dtype=torch.int32, device="cuda"
+-        )
+-        table = (
+-            torch.arange(extent // INDEX_PAGE, dtype=torch.int32, device="cuda")
+-            .expand(5, -1)
+-            .contiguous()
+-        )
+-        selected = torch.full((5, TOPK), -1, device="cuda", dtype=torch.int32)
++        lengths = torch.tensor([1, 16383, 16384, extent - 1, extent],
++                               dtype=torch.int32, device='cuda')
++        table = torch.arange(extent // INDEX_PAGE, dtype=torch.int32,
++                             device='cuda').expand(5, -1).contiguous()
++        selected = torch.full((5, TOPK), -1, device='cuda', dtype=torch.int32)
+         expected = torch.full_like(selected, torch.iinfo(torch.int32).max)
+         for row, length in enumerate(lengths.tolist()):
+             n = (length + BLOCK - 1) // BLOCK
+             if n <= TOPK:
+                 # Identity branch must ignore uninitialized/padded input.
+-                expected[row, :n] = torch.arange(n, device="cuda")
++                expected[row, :n] = torch.arange(n, device='cuda')
+             else:
+-                ids = torch.cat(
+-                    (
+-                        torch.arange(TOPK - 1, device="cuda"),
+-                        torch.tensor([n - 1], device="cuda"),
+-                    )
+-                ).int()
+-                selected[row] = ids[torch.randperm(TOPK, device="cuda")]
++                ids = torch.cat((torch.arange(TOPK - 1, device='cuda'),
++                                 torch.tensor([n - 1], device='cuda'))).int()
++                selected[row] = ids[torch.randperm(TOPK, device='cuda')]
+                 expected[row] = ids.sort().values
+         physical = sort_candidate_blocks(selected, lengths, table, INDEX_PAGE)
+         torch.cuda.synchronize()
+         torch.testing.assert_close(selected, expected, rtol=0, atol=0)
+         torch.testing.assert_close(physical, expected, rtol=0, atol=0)
+-    print("SORT_CONTROLS_PASS old_extent scratch_extent two_million_extent", flush=True)
++    print('SORT_CONTROLS_PASS old_extent scratch_extent two_million_extent', flush=True)
+ 
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument("--arm", choices=("legacy-producer", "fixed"), required=True)
++    parser.add_argument('--arm', choices=('legacy-producer', 'fixed'), required=True)
+     args = parser.parse_args()
+-    assert torch.cuda.is_available(), "GPU test NOT RUN: CUDA required"
+-    assert torch.cuda.get_device_capability()[0] == 10, "SM10x required"
++    assert torch.cuda.is_available(), 'GPU test NOT RUN: CUDA required'
++    assert torch.cuda.get_device_capability()[0] == 10, 'SM10x required'
+     # Publish the single-process configuration through the runtime's test API;
+     # production metadata reads parallel configuration even without weights.
+     from sglang.srt.runtime_context import get_context
+-
+     runtime_config = get_context().override_server_args(tp_size=1)
+     runtime_config.install()
+     import deep_gemm
+-
+-    assert hasattr(deep_gemm, "get_paged_sparse_mqa_logits_metadata")
+-    assert hasattr(deep_gemm, "fp8_fp4_paged_sparse_mqa_logits")
+-    if args.arm == "legacy-producer":
++    assert hasattr(deep_gemm, 'get_paged_sparse_mqa_logits_metadata')
++    assert hasattr(deep_gemm, 'fp8_fp4_paged_sparse_mqa_logits')
++    if args.arm == 'legacy-producer':
+         data = inputs(1, False)
+-        data["raw"].copy_(
+-            torch.tensor(raw_lengths(31, False), device="cuda", dtype=torch.int32)
+-        )
++        data['raw'].copy_(torch.tensor(raw_lengths(31, False), device='cuda', dtype=torch.int32))
+         lengths, dense, blocks, valid = producer(data, 1, args.arm)
+         torch.cuda.synchronize()
+-        assert not producer_invariant(lengths, blocks), (
+-            "legacy producer did not reproduce invalid block: inspect fixture/source"
+-        )
+-        print(
+-            json.dumps(
+-                {
+-                    "arm": args.arm,
+-                    "status": "EXPECTED_PRODUCER_INVARIANT_FAILURE",
+-                    "lengths": lengths.tolist(),
+-                    "max_block": int(blocks.max()),
+-                    "bitmap_blocks": BITMAP_BLOCKS,
+-                    "unsafe_sort_and_sparse_metadata_executed": False,
+-                }
+-            ),
+-            flush=True,
+-        )
++        assert not producer_invariant(lengths, blocks), 'legacy producer did not reproduce invalid block: inspect fixture/source'
++        print(json.dumps({'arm': args.arm, 'status': 'EXPECTED_PRODUCER_INVARIANT_FAILURE',
++            'lengths': lengths.tolist(), 'max_block': int(blocks.max()),
++            'bitmap_blocks': BITMAP_BLOCKS, 'unsafe_sort_and_sparse_metadata_executed': False}), flush=True)
+         return 23
+     checks = []
+     sort_controls()
+@@ -314,13 +219,9 @@ def main():
+         for mixed in (False, True):
+             data = inputs(ratio, mixed)
+             for generated in (0, 27, 28, 29, 30, 31):
+-                data["raw"].copy_(
+-                    torch.tensor(
+-                        raw_lengths(generated, mixed), device="cuda", dtype=torch.int32
+-                    )
+-                )
++                data['raw'].copy_(torch.tensor(raw_lengths(generated, mixed), device='cuda', dtype=torch.int32))
+                 # Validate actual producer before any bitmap kernel or schedule.
+-                staged = producer(data, ratio, "fixed")
++                staged = producer(data, ratio, 'fixed')
+                 torch.cuda.synchronize()
+                 assert producer_invariant(staged[0], staged[2], TABLE_TOKENS // BLOCK)
+                 del staged
+@@ -328,14 +229,7 @@ def main():
+                 torch.cuda.synchronize()
+                 validate(data, output, ratio, mixed)
+                 del output
+-                checks.append(
+-                    {
+-                        "mode": "eager",
+-                        "ratio": ratio,
+-                        "mixed": mixed,
+-                        "generated": generated,
+-                    }
+-                )
++                checks.append({'mode': 'eager', 'ratio': ratio, 'mixed': mixed, 'generated': generated})
+             # Precompile/initialize every kernel on a side stream before capture.
+             stream = torch.cuda.Stream()
+             stream.wait_stream(torch.cuda.current_stream())
+@@ -348,39 +242,17 @@ def main():
+             with torch.cuda.graph(graph, stream=stream):
+                 captured = chain(data, ratio)
+             for generated in (0, 31, 27, 30, 31):
+-                data["raw"].copy_(
+-                    torch.tensor(
+-                        raw_lengths(generated, mixed), device="cuda", dtype=torch.int32
+-                    )
+-                )
++                data['raw'].copy_(torch.tensor(raw_lengths(generated, mixed), device='cuda', dtype=torch.int32))
+                 graph.replay()
+                 torch.cuda.synchronize()
+                 validate(data, captured, ratio, mixed)
+-                checks.append(
+-                    {
+-                        "mode": "graph",
+-                        "ratio": ratio,
+-                        "mixed": mixed,
+-                        "generated": generated,
+-                    }
+-                )
++                checks.append({'mode': 'graph', 'ratio': ratio, 'mixed': mixed, 'generated': generated})
+             del graph, captured, data
+-    print(
+-        json.dumps(
+-            {
+-                "arm": "fixed",
+-                "status": "PASS",
+-                "checks": checks,
+-                "logical_context": CONTEXT,
+-                "table_tokens": TABLE_TOKENS,
+-                "weights_loaded": False,
+-                "single_stream_only": True,
+-            }
+-        ),
+-        flush=True,
+-    )
++    print(json.dumps({'arm': 'fixed', 'status': 'PASS', 'checks': checks,
++        'logical_context': CONTEXT, 'table_tokens': TABLE_TOKENS,
++        'weights_loaded': False, 'single_stream_only': True}), flush=True)
+     return 0
+ 
+ 
+-if __name__ == "__main__":
++if __name__ == '__main__':
+     sys.exit(main())
+diff --git a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+index 1e6356a5f2882815d338fef15fbf4a0294768442..4d13abc591d5a872fa5f6b42ac6d76f9ae8abf04 100644
+--- a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++++ b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+@@ -8,13 +8,15 @@ import os
+ import threading
+ import unittest
+ from pathlib import Path
++from types import SimpleNamespace
+ from unittest.mock import patch
+ 
+ ROOT = Path(__file__).resolve().parents[2]
+ 
+ 
+-def load(name, relative):
+-    spec = importlib.util.spec_from_file_location(name, ROOT / "python" / relative)
++def load(name, relative=None):
++    path = ROOT / "python" / relative if relative is not None else ROOT / "python/sglang/srt/phala_compat" / (name + ".py")
++    spec = importlib.util.spec_from_file_location(name, path)
+     module = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(module)
+     return module
+@@ -24,6 +26,9 @@ encoding = load("encoding_dsv41", "sglang/srt/entrypoints/openai/encoding_dsv41.
+ batcher_module = load(
+     "async_batcher", "sglang/srt/managers/async_dynamic_batch_tokenizer.py"
+ )
++roles = load("dsv41_message_roles")
++protocol = load("dsv41_protocol_compat")
++tools = load("dsv41_tool_choice_none")
+ 
+ 
+ class ProtocolContracts(unittest.TestCase):
+@@ -131,6 +136,103 @@ class AsyncContracts(unittest.IsolatedAsyncioTestCase):
+             self.assertEqual(await batcher.run_sync(lambda: 42), 42)
+         finally:
+             batcher._executor.shutdown()
++class CompatProtocolContracts(unittest.TestCase):
++    def test_developer_preserves_caller_and_standalone_generation_role(self):
++        solo = [{"role": "developer", "content": "one"}]
++        self.assertIs(roles._prepare_messages(solo), solo)
++        original = solo + [{"role": "user", "content": "two"}]
++        actual = roles._prepare_messages(original)
++        self.assertEqual(actual[0]["role"], "system")
++        self.assertEqual(original[0]["role"], "developer")
++
++    def test_system_only_user_turn_is_opt_in(self):
++        original = [{"role": "system", "content": "one"}]
++        with patch.dict(os.environ, {"DSV41_SYSTEM_ONLY_USER_TURN": "0"}):
++            self.assertIs(roles._prepare_messages(original), original)
++        with patch.dict(os.environ, {"DSV41_SYSTEM_ONLY_USER_TURN": "1"}):
++            self.assertEqual(
++                roles._prepare_messages(original)[-1], {"role": "user", "content": ""}
++            )
++        self.assertEqual(len(original), 1)
++
++    def test_reasoning_off_does_not_override_explicit_flat_effort(self):
++        self.assertEqual(
++            protocol._normalize({"reasoning": {"enabled": False}})["reasoning_effort"],
++            "none",
++        )
++        self.assertEqual(
++            protocol._normalize(
++                {"reasoning_effort": "high", "reasoning": {"enabled": False}}
++            )["reasoning_effort"],
++            "high",
++        )
++
++    def test_integer_budget_and_fractional_effort_are_distinct(self):
++        out = protocol._normalize({"reasoning_effort": 75})
++        self.assertEqual(out["chat_template_kwargs"]["reasoning_effort"], 75)
++        self.assertTrue(out["chat_template_kwargs"]["thinking"])
++        original = {"reasoning_effort": 0.75}
++        self.assertIs(protocol._normalize(original), original)
++        for bad in (-1, 101):
++            with self.assertRaises(ValueError):
++                protocol._normalize({"reasoning_effort": bad})
++
++    def test_exclude_is_output_setting_and_does_not_disable_generation(self):
++        out = protocol._normalize({"reasoning": {"effort": "high", "exclude": True}})
++        self.assertTrue(out["reasoning_exclude"])
++        self.assertNotIn("reasoning_effort", out)
++        self.assertEqual(out["reasoning"]["effort"], "high")
++
++    def test_stream_usage_is_continuous_without_mutating_caller(self):
++        original = {"stream": True, "stream_options": {"include_usage": False}}
++        out = protocol._normalize(original)
++        self.assertEqual(
++            out["stream_options"],
++            {"include_usage": True, "continuous_usage_stats": True},
++        )
++        self.assertFalse(original["stream_options"]["include_usage"])
++
++    def test_none_removes_both_tool_definition_carriers(self):
++        request = SimpleNamespace(
++            tool_choice="none",
++            tools=[{"name": "a"}],
++            messages=[SimpleNamespace(tools=[{"name": "b"}])],
++        )
++        self.assertTrue(tools.drop_tool_definitions(request))
++        self.assertIsNone(request.tools)
++        self.assertIsNone(request.messages[0].tools)
++        request.tool_choice = "required"
++        request.tools = [{"name": "a"}]
++        self.assertFalse(tools.drop_tool_definitions(request))
++        self.assertEqual(len(request.tools), 1)
++
++
++class UsageCapContracts(unittest.TestCase):
++    def test_actual_req_method_caps_only_the_emitted_finishing_prefix(self):
++        path = ROOT / "python/sglang/srt/managers/schedule_batch.py"
++        parsed = ast.parse(path.read_text(encoding="utf-8"))
++        req = next(
++            n for n in parsed.body if isinstance(n, ast.ClassDef) and n.name == "Req"
++        )
++        fn = next(
++            n
++            for n in req.body
++            if isinstance(n, ast.FunctionDef)
++            and n.name == "_cap_reasoning_tokens_at_finished_len"
++        )
++        module = ast.Module(body=[fn], type_ignores=[])
++        namespace = {}
++        exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
++        for finish, counted, expected in (
++            (8, 11, 8),
++            (8, 5, 5),
++            (None, 11, 11),
++            (0, 3, 0),
++        ):
++            with self.subTest(finish=finish, counted=counted):
++                value = SimpleNamespace(finished_len=finish, reasoning_tokens=counted)
++                namespace[fn.name](value)
++                self.assertEqual(value.reasoning_tokens, expected)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py b/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a3a4bf6e63b79a6b5bd12219b5a711d715a8de7
+--- /dev/null
++++ b/test/registered/kernels/ops/attention/test_dense_prefill_indexer.py
+@@ -0,0 +1,281 @@
++import unittest
++from unittest.mock import patch
++
++import torch
++
++from sglang.kernels.ops.attention.dsv4.fp4_indexer import quantize_fp4_indexer_tensor
++from sglang.srt.layers.attention.dsv4 import dense_prefill_indexer
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=120, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++
++def make_inputs(request_lengths, ratio=1, zero_queries=False, seed=17):
++    torch.manual_seed(seed)
++    rows = sum(q for q, _ in request_lengths)
++    q = torch.randn((rows, 32, 128), dtype=torch.bfloat16, device="cuda")
++    if zero_queries:
++        q.zero_()
++    packed, scales = quantize_fp4_indexer_tensor(q.flatten(0, 1), rne=True)
++    kv = quantize_fp4_indexer_tensor(
++        torch.randn(
++            (sum(n for _, n in request_lengths), 128),
++            dtype=torch.bfloat16,
++            device="cuda",
++        ),
++        rne=True,
++    )
++    starts, lengths = [], []
++    start = 0
++    for queries, context in request_lengths:
++        starts.extend([start] * queries)
++        lengths.extend(
++            (position + 1) // ratio
++            for position in range(context * ratio - queries, context * ratio)
++        )
++        start += context
++    return dict(
++        q=(packed.view(rows, 32, 64), scales.view(rows, 32)),
++        kv=kv,
++        weights=torch.rand((rows, 32), dtype=torch.float32, device="cuda"),
++        starts=torch.tensor(starts, dtype=torch.int32, device="cuda"),
++        lengths=torch.tensor(lengths, dtype=torch.int32, device="cuda"),
++        request_lengths=request_lengths,
++        topk=512,
++        candidate_topk_blocks=2,
++        candidate_block_size=8,
++    )
++
++
++def dense_scores(inputs):
++    from deep_gemm import fp8_fp4_mqa_logits
++
++    width = (max(n for _, n in inputs["request_lengths"]) + 3) // 4 * 4
++    scores = fp8_fp4_mqa_logits(
++        inputs["q"],
++        inputs["kv"],
++        inputs["weights"],
++        inputs["starts"],
++        inputs["starts"] + inputs["lengths"],
++        False,
++        width,
++    )
++    return scores.masked_fill_(
++        torch.arange(width, device="cuda")[None, :] >= inputs["lengths"][:, None],
++        -torch.inf,
++    )
++
++
++@unittest.skipUnless(
++    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
++    "requires SM100",
++)
++class TestDensePrefillIndexer(CustomTestCase):
++    def assert_topk(self, inputs, selected, scores):
++        columns = (selected - inputs["starts"][:, None]).long()
++        valid = selected >= 0
++        expected_count = torch.isfinite(scores).sum(-1).clamp_max(inputs["topk"])
++        torch.testing.assert_close(valid.sum(-1), expected_count)
++        self.assertTrue(
++            (~valid | ((columns >= 0) & (columns < inputs["lengths"][:, None]))).all()
++        )
++        actual = scores.gather(1, columns.clamp(0, scores.shape[1] - 1)).masked_fill(
++            ~valid, -torch.inf
++        )
++        expected = scores.topk(min(inputs["topk"], scores.shape[1]), dim=-1).values
++        expected = torch.nn.functional.pad(
++            expected, (0, inputs["topk"] - expected.shape[1]), value=-torch.inf
++        )
++        torch.testing.assert_close(
++            actual.sort(descending=True).values, expected, rtol=1e-5, atol=1e-5
++        )
++        ordered = (
++            columns.masked_fill(~valid, torch.iinfo(torch.int64).max).sort().values
++        )
++        self.assertTrue(
++            (
++                (ordered[:, 1:] != ordered[:, :-1])
++                | (ordered[:, 1:] == torch.iinfo(torch.int64).max)
++            ).all()
++        )
++
++    def test_ragged_source_consumer_and_replay(self):
++        for ratio in (1, 2):
++            for zero_queries in (False, True):
++                with self.subTest(ratio=ratio, zero_queries=zero_queries):
++                    inputs = make_inputs(
++                        [(0, 0), (1, 1), (33, 511), (257, 4097)],
++                        ratio=ratio,
++                        zero_queries=zero_queries,
++                    )
++                    inputs["candidate_topk_blocks"] = 128
++                    scores = dense_scores(inputs)
++                    consumer_inputs = make_inputs(
++                        inputs["request_lengths"],
++                        ratio=ratio,
++                        zero_queries=zero_queries,
++                        seed=29,
++                    )
++                    consumer_inputs["kv"] = inputs["kv"]
++                    consumer_inputs["candidate_topk_blocks"] = 128
++                    consumer_scores = dense_scores(consumer_inputs)
++                    with patch.object(
++                        dense_prefill_indexer, "_SCORE_BUDGET_BYTES", 128 << 10
++                    ):
++                        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                            **inputs, publish_candidates=True, candidates=None
++                        )
++                        self.assert_topk(inputs, selected, scores)
++                        row = 0
++                        for (queries, context), blocks in zip(
++                            inputs["request_lengths"], candidates.request_blocks
++                        ):
++                            local = scores[row : row + queries, :context]
++                            if queries and context:
++                                padded = torch.nn.functional.pad(
++                                    local, (0, -context % 8), value=-torch.inf
++                                )
++                                block_scores = padded.unflatten(-1, (-1, 8)).amax(-1)
++                                last = (inputs["lengths"][row : row + queries] - 1) // 8
++                                block_scores.masked_fill_(
++                                    torch.arange(block_scores.shape[1], device="cuda")[
++                                        None, :
++                                    ]
++                                    == last[:, None],
++                                    torch.inf,
++                                )
++                                chosen_scores = block_scores.gather(
++                                    1, blocks.long().clamp_min(0)
++                                ).masked_fill(blocks < 0, -torch.inf)
++                                torch.testing.assert_close(
++                                    chosen_scores.sort(descending=True).values,
++                                    block_scores.topk(blocks.shape[1]).values,
++                                    rtol=1e-5,
++                                    atol=1e-5,
++                                )
++                                columns = torch.arange(context, device="cuda")
++                                member = (
++                                    columns[None, :, None] // 8 == blocks[:, None, :]
++                                ).any(-1)
++                                consumer_scores[
++                                    row : row + queries, :context
++                                ].masked_fill_(
++                                    ~member,
++                                    -torch.inf,
++                                )
++                            row += queries
++                        self.assertGreater(
++                            torch.isfinite(consumer_scores[-1]).sum().item(),
++                            inputs["topk"],
++                        )
++                        self.assertLess(
++                            torch.isfinite(consumer_scores[-1]).sum().item(),
++                            inputs["lengths"][-1].item(),
++                        )
++                        selected, published = dense_prefill_indexer.dense_prefill_topk(
++                            **consumer_inputs,
++                            publish_candidates=False,
++                            candidates=candidates,
++                        )
++                        self.assertIsNone(published)
++                        self.assert_topk(consumer_inputs, selected, consumer_scores)
++                        tail_lengths = [0, 0, 7, 31]
++                        rows, row = [], 0
++                        for (queries, _), tail in zip(
++                            inputs["request_lengths"], tail_lengths
++                        ):
++                            rows.extend(range(row + queries - tail, row + queries))
++                            row += queries
++                        rows = torch.tensor(rows, dtype=torch.int64, device="cuda")
++                        tail_inputs = dict(
++                            consumer_inputs,
++                            q=tuple(t[rows] for t in consumer_inputs["q"]),
++                            weights=consumer_inputs["weights"][rows],
++                            starts=inputs["starts"][rows],
++                            lengths=inputs["lengths"][rows],
++                            request_lengths=list(
++                                zip(
++                                    tail_lengths,
++                                    [n for _, n in inputs["request_lengths"]],
++                                )
++                            ),
++                        )
++                        selected, _ = dense_prefill_indexer.dense_prefill_topk(
++                            **tail_inputs,
++                            publish_candidates=False,
++                            candidates=candidates.tail(tail_lengths),
++                        )
++                        self.assert_topk(tail_inputs, selected, consumer_scores[rows])
++
++    def test_unfiltered_and_zero_length_requests(self):
++        for request_lengths in ([(257, 8192)], [(1, 0), (1, 1), (0, 7)]):
++            for publish in (False, True):
++                with self.subTest(request_lengths=request_lengths, publish=publish):
++                    inputs = make_inputs(request_lengths)
++                    selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                        **inputs, publish_candidates=publish, candidates=None
++                    )
++                    self.assert_topk(inputs, selected, dense_scores(inputs))
++                    if publish:
++                        self.assertEqual(
++                            [b.shape[0] for b in candidates.request_blocks],
++                            [q for q, _ in request_lengths],
++                        )
++
++    def test_empty_queries(self):
++        inputs = make_inputs([(0, 0), (0, 17)])
++        selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++            **inputs, publish_candidates=True, candidates=None
++        )
++        self.assertEqual(tuple(selected.shape), (0, 512))
++        self.assertEqual(
++            [tuple(b.shape) for b in candidates.request_blocks], [(0, 0), (0, 2)]
++        )
++
++    def test_score_memory_is_bounded(self):
++        for context, limit_gib in ((65536, 3), (65535, 5)):
++            with self.subTest(context=context):
++                inputs = make_inputs([(16384, context)])
++                inputs["candidate_topk_blocks"] = 2048
++                torch.cuda.synchronize()
++                torch.cuda.reset_peak_memory_stats()
++                baseline = torch.cuda.memory_allocated()
++                selected, candidates = dense_prefill_indexer.dense_prefill_topk(
++                    **inputs, publish_candidates=True, candidates=None
++                )
++                torch.cuda.synchronize()
++                self.assertLess(
++                    torch.cuda.max_memory_allocated() - baseline, limit_gib << 30
++                )
++                self.assertEqual(tuple(selected.shape), (16384, 512))
++                self.assertEqual(
++                    tuple(candidates.request_blocks[0].shape), (16384, 2048)
++                )
++                del selected
++                selected, published = dense_prefill_indexer.dense_prefill_topk(
++                    **inputs, publish_candidates=False, candidates=candidates
++                )
++                self.assertIsNone(published)
++                del selected
++                torch.cuda.synchronize()
++                baseline = torch.cuda.memory_allocated()
++                for _ in range(3):
++                    torch.cuda.reset_peak_memory_stats()
++                    selected, published = dense_prefill_indexer.dense_prefill_topk(
++                        **inputs, publish_candidates=False, candidates=candidates
++                    )
++                    torch.cuda.synchronize()
++                    self.assertIsNone(published)
++                    self.assertLess(
++                        torch.cuda.max_memory_allocated() - baseline, 4 << 30
++                    )
++                    self.assertEqual(tuple(selected.shape), (16384, 512))
++                    del selected
++                    torch.cuda.synchronize()
++                    self.assertEqual(torch.cuda.memory_allocated(), baseline)
++                del inputs, candidates
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py b/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f118bfdf410a9169d3b6ef9467add4d3498d0a5d
+--- /dev/null
++++ b/test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py
+@@ -0,0 +1,332 @@
++"""TP4 parity and graph replay for the DSV4.1 medium finalize plane."""
++
++from __future__ import annotations
++
++import atexit
++import logging
++import os
++
++import pytest
++import torch
++import torch.distributed as dist
++
++import sglang.srt.distributed.parallel_state as ps
++from sglang.kernels.jit.utils import cache_once
++from sglang.kernels.ops.communication.all_reduce import AllReduceAlgo
++from sglang.kernels.ops.communication import all_reduce_fusion
++from sglang.kernels.ops.communication.mp import register_comm_cleanup
++from sglang.srt.distributed.device_communicators.custom_all_reduce_v2 import (
++    CustomAllReduceV2,
++)
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.kernels.utils import multigpu_pytest_main
++
++register_cuda_ci(est_time=240, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++HIDDEN = 5120
++TOP_K = 6
++MB = 1024 * 1024
++
++
++def _precompile(num_gpus):
++    for world_size in num_gpus:
++        for dtype in (torch.bfloat16, torch.float32):
++            all_reduce_fusion._jit_module(
++                world_size,
++                HIDDEN,
++                TOP_K,
++                all_reduce_fusion.default_cluster_size(HIDDEN),
++                dtype,
++            )
++
++
++@cache_once
++def _init_world() -> dist.ProcessGroup:
++    local_rank = int(os.environ["LOCAL_RANK"])
++    world_size = int(os.environ["WORLD_SIZE"])
++    torch.cuda.set_device(local_rank)
++    dist.init_process_group(backend="gloo")
++    ps._WORLD = coord = ps.init_world_group(
++        ranks=list(range(world_size)),
++        local_rank=local_rank,
++        backend="nccl",
++    )
++    atexit.register(dist.destroy_process_group)
++    logging.disable(logging.INFO)
++    torch.cuda.set_stream(torch.cuda.Stream())
++    return coord.cpu_group
++
++
++def _device() -> torch.device:
++    return torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
++
++
++@cache_once
++def _init_comms() -> tuple[CustomAllReduceV2, CustomAllReduceV2]:
++    cpu_group = _init_world()
++    small = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=1 * MB,
++        max_push_blocks=96,
++    )
++    medium = CustomAllReduceV2(
++        cpu_group,
++        _device(),
++        max_pull_size=0,
++        max_pull_blocks=0,
++        max_push_size=4 * MB,
++        max_push_blocks=512,
++    )
++    assert not small.disabled and not medium.disabled
++    small.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    medium.override_algo = AllReduceAlgo.ONE_SHOT_PUSH
++    register_comm_cleanup(small)
++    register_comm_cleanup(medium)
++    all_reduce_fusion.register_comm(
++        small.obj, comm_key=all_reduce_fusion.DEFAULT_COMM_KEY
++    )
++    all_reduce_fusion.register_comm(
++        medium.obj, comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++    )
++    return small, medium
++
++
++def _make_inputs(num_tokens: int, seed: int, weight_dtype=torch.bfloat16):
++    rank = dist.get_rank()
++    generator = torch.Generator().manual_seed(seed * 7919 + rank)
++    num_slots = num_tokens * TOP_K
++    gemm2 = torch.randint(-2, 3, (num_slots + 8, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    weights = (
++        torch.randint(0, 3, (num_tokens, TOP_K), generator=generator)
++        .to(weight_dtype)
++        .mul_(0.5)
++    )
++    if weight_dtype == torch.float32:
++        weights.add_(1 / 32768)
++    shared = torch.randint(-2, 3, (num_tokens, HIDDEN), generator=generator).to(
++        torch.bfloat16
++    )
++    indices = torch.arange(num_slots, dtype=torch.int32)
++    indices[::11] = -1
++    indices[:TOP_K] = -1
++    device = _device()
++    return (
++        gemm2.to(device),
++        indices.to(device),
++        weights.to(device),
++        shared.to(device),
++    )
++
++
++def _refresh_inputs(gemm2, indices, weights, shared, seed):
++    rank = dist.get_rank()
++    torch.manual_seed(seed * 7919 + rank)
++    gemm2.copy_(torch.randint(-2, 3, gemm2.shape, device=_device()))
++    weights.copy_(
++        torch.randint(0, 3, weights.shape, device=_device()).to(weights.dtype)
++    ).mul_(0.5)
++    if weights.dtype == torch.float32:
++        weights.add_(1 / 32768)
++    shared.copy_(torch.randint(-2, 3, shared.shape, device=_device()))
++    indices.copy_(torch.arange(indices.numel(), dtype=torch.int32, device=_device()))
++    indices[(seed + rank) % 13 :: 13] = -1
++    indices[:TOP_K] = -1
++
++
++@pytest.mark.parametrize("num_tokens", [96, 97, 288, 336, 384])
++@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
++@torch.inference_mode()
++def test_finalize_shared_rank_sum_graph_replay(num_tokens, weight_dtype):
++    small, medium = _init_comms()
++    if num_tokens <= 96:
++        comm = small
++        comm_key = all_reduce_fusion.DEFAULT_COMM_KEY
++    else:
++        comm = medium
++        comm_key = all_reduce_fusion.DSV41_MEDIUM_COMM_KEY
++
++    gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=17, weight_dtype=weight_dtype)
++
++    def small_plane_reference():
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        return torch.cat(chunks)
++
++    def chain():
++        expected = small_plane_reference()
++        # The reference collectives have completed on every rank. Delaying
++        # rank 0 here specifically exercises the medium plane's peer wait.
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        return expected, actual
++
++    chain()
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with small.capture(), medium.capture(), torch.cuda.graph(graph):
++        expected, actual = chain()
++
++    for replay in range(3):
++        _refresh_inputs(gemm2, indices, weights, shared, seed=31 + replay)
++        graph.replay()
++        torch.cuda.synchronize()
++        error = None
++        try:
++            assert torch.isfinite(expected).all() and torch.isfinite(actual).all()
++            torch.testing.assert_close(
++                actual.view(torch.int16),
++                expected.view(torch.int16),
++                rtol=0,
++                atol=0,
++            )
++        except AssertionError as exc:
++            error = f"rank={dist.get_rank()}, M={num_tokens}, replay={replay}: {exc}"
++        errors = [None] * dist.get_world_size()
++        dist.all_gather_object(errors, error)
++        assert not any(errors), "\n".join(item for item in errors if item)
++
++
++@torch.inference_mode()
++def test_routed_rounds_before_shared_add():
++    """Catch helpers that incorrectly round only after adding shared output."""
++    _, medium = _init_comms()
++    num_tokens = 97
++    gemm2 = torch.zeros(
++        num_tokens * TOP_K,
++        HIDDEN,
++        dtype=torch.bfloat16,
++        device=_device(),
++    )
++    weights = torch.zeros(num_tokens, TOP_K, dtype=torch.bfloat16, device=_device())
++    indices = torch.arange(num_tokens * TOP_K, dtype=torch.int32, device=_device())
++    shared = torch.zeros(num_tokens, HIDDEN, dtype=torch.bfloat16, device=_device())
++    # FP32 routed accumulation is 1 + 1/256. BF16 round-to-even produces 1,
++    # then adding -1 must produce zero. Adding shared before the routed BF16
++    # rounding would incorrectly retain 1/256.
++    gemm2[0, 0] = 1
++    gemm2[1, 0] = 1
++    weights[0, 0] = 1
++    weights[0, 1] = 1 / 256
++    shared[0, 0] = -1
++    indices[TOP_K:] = -1
++
++    out = all_reduce_fusion.moe_finalize_all_reduce(
++        gemm2,
++        indices,
++        weights,
++        TOP_K,
++        shared,
++        world_size=4,
++        hidden_dim=HIDDEN,
++        comm_key=all_reduce_fusion.DSV41_MEDIUM_COMM_KEY,
++        prefetch_metadata=False,
++    )
++    torch.cuda.synchronize()
++    assert torch.count_nonzero(out) == 0
++
++
++@torch.inference_mode()
++def test_default_medium_and_generic_push_interleave():
++    small, medium = _init_comms()
++    sequence = [
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (97, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (384, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (96, all_reduce_fusion.DEFAULT_COMM_KEY),
++        (288, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++        (336, all_reduce_fusion.DSV41_MEDIUM_COMM_KEY),
++    ]
++
++    for step, (num_tokens, comm_key) in enumerate(sequence):
++        gemm2, indices, weights, shared = _make_inputs(num_tokens, seed=101 + step)
++        chunks = []
++        for start in range(0, num_tokens, 96):
++            end = min(start + 96, num_tokens)
++            chunks.append(
++                all_reduce_fusion.moe_finalize_all_reduce(
++                    gemm2,
++                    indices[start * TOP_K : end * TOP_K],
++                    weights[start:end],
++                    TOP_K,
++                    shared[start:end],
++                    world_size=4,
++                    hidden_dim=HIDDEN,
++                    comm_key=all_reduce_fusion.DEFAULT_COMM_KEY,
++                    prefetch_metadata=False,
++                )
++            )
++        expected = torch.cat(chunks)
++
++        probe = torch.full(
++            (1024,),
++            dist.get_rank() + 1,
++            dtype=torch.bfloat16,
++            device=_device(),
++        )
++        ordinary = small.custom_all_reduce(probe)
++        torch.testing.assert_close(
++            ordinary,
++            torch.full_like(ordinary, 10),
++            rtol=0,
++            atol=0,
++        )
++
++        if dist.get_rank() == 0:
++            torch.cuda._sleep(100000)
++        actual = all_reduce_fusion.moe_finalize_all_reduce(
++            gemm2,
++            indices,
++            weights,
++            TOP_K,
++            shared,
++            world_size=4,
++            hidden_dim=HIDDEN,
++            comm_key=comm_key,
++            prefetch_metadata=False,
++        )
++        torch.cuda.synchronize()
++        torch.testing.assert_close(
++            actual.view(torch.int16),
++            expected.view(torch.int16),
++            rtol=0,
++            atol=0,
++        )
++
++
++if __name__ == "__main__":
++    multigpu_pytest_main(
++        __name__,
++        __file__,
++        num_gpus=(4,),
++        pre_launch_fn=_precompile,
++    )
+diff --git a/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py b/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7b640ddb72d1e25694207e8fabc72cbc10c81b8
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py
+@@ -0,0 +1,242 @@
++"""CPU-only routing, cancellation and serialization checks for async V4.1 chat."""
++
++from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++maybe_stub_sgl_kernel()
++
++import asyncio
++import contextvars
++import threading
++import time
++import unittest
++from contextlib import suppress
++from types import SimpleNamespace
++
++from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++from sglang.srt.managers.async_dynamic_batch_tokenizer import AsyncDynamicbatchTokenizer
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=4, suite="base-a-test-cpu")
++
++
++class FakeTokenizer:
++    def __init__(self):
++        self.lock = threading.Lock()
++        self.active = 0
++        self.peak = 0
++        self.thread_ids = set()
++
++    def __call__(self, prompts, **kwargs):
++        with self.lock:
++            self.active += 1
++            self.peak = max(self.peak, self.active)
++            self.thread_ids.add(threading.get_ident())
++        try:
++            time.sleep(0.015)
++            encode = lambda text: [ord(char) for char in text]
++            return {
++                "input_ids": [encode(text) for text in prompts]
++                if isinstance(prompts, list)
++                else encode(prompts)
++            }
++        finally:
++            with self.lock:
++                self.active -= 1
++
++
++class AsyncConversionTests(unittest.IsolatedAsyncioTestCase):
++    async def asyncSetUp(self):
++        self.tokenizer = FakeTokenizer()
++        self.batcher = AsyncDynamicbatchTokenizer(self.tokenizer)
++
++    async def asyncTearDown(self):
++        task = self.batcher._batcher_task
++        if task is not None:
++            task.cancel()
++            with suppress(asyncio.CancelledError):
++                await task
++        self.batcher._executor.shutdown(wait=True, cancel_futures=True)
++
++    def chat(self, spec="dsv41", enabled=True):
++        chat = object.__new__(OpenAIServingChat)
++        chat.chat_encoding_spec = spec
++        chat.tokenizer_manager = SimpleNamespace(
++            async_dynamic_batch_tokenizer=self.batcher if enabled else None,
++            request_logger=SimpleNamespace(log_requests=False),
++        )
++        return chat
++
++    async def test_opt_in_uses_worker_and_preserves_request_context(self):
++        context = contextvars.ContextVar("test_request_context", default="missing")
++        context.set("request-17")
++        main_thread = threading.get_ident()
++        request, raw = SimpleNamespace(input_ids=None), object()
++        chat = self.chat()
++        seen = []
++
++        def convert(req, raw_req):
++            seen.append((req, raw_req, threading.get_ident(), context.get()))
++            return {"ids": [3, 4, 5]}, req
++
++        chat._convert_to_internal_request = convert
++        result = await chat._convert_to_internal_request_async(request, raw)
++        self.assertEqual(result, ({"ids": [3, 4, 5]}, request))
++        self.assertIs(seen[0][0], request)
++        self.assertIs(seen[0][1], raw)
++        self.assertNotEqual(seen[0][2], main_thread)
++        self.assertEqual(seen[0][3], "request-17")
++
++    async def test_other_encoders_and_disabled_or_pretokenized_inputs_stay_inline(self):
++        main_thread = threading.get_ident()
++        for spec, enabled, ids in [
++            (None, True, None),
++            ("dsv4", True, None),
++            ("dsv41", False, None),
++            ("dsv41", True, [8, 9]),
++        ]:
++            with self.subTest(spec=spec, enabled=enabled, ids=ids):
++                chat = self.chat(spec, enabled)
++                chat._convert_to_internal_request = lambda req, raw: (
++                    threading.get_ident(),
++                    req,
++                )
++                request = SimpleNamespace(input_ids=ids)
++                result = await chat._convert_to_internal_request_async(request, None)
++                self.assertEqual(result, (main_thread, request))
++
++    async def test_encode_and_conversion_share_one_serialized_worker(self):
++        results = await asyncio.gather(
++            self.batcher.encode("alpha"),
++            self.batcher.run_sync(self.tokenizer, "beta"),
++            self.batcher.encode("gamma"),
++            self.batcher.run_sync(self.tokenizer, "delta"),
++        )
++        self.assertEqual(
++            [result["input_ids"] for result in results],
++            [
++                [ord(char) for char in text]
++                for text in ["alpha", "beta", "gamma", "delta"]
++            ],
++        )
++        self.assertEqual(self.tokenizer.peak, 1)
++        self.assertEqual(len(self.tokenizer.thread_ids), 1)
++
++    async def test_event_loop_remains_responsive_during_conversion(self):
++        chat = self.chat()
++        started, release = threading.Event(), threading.Event()
++
++        def convert(req, raw):
++            started.set()
++            self.assertTrue(release.wait(2))
++            return "converted", req
++
++        chat._convert_to_internal_request = convert
++        pending = asyncio.create_task(
++            chat._convert_to_internal_request_async(
++                SimpleNamespace(input_ids=None), None
++            )
++        )
++        try:
++            for _ in range(100):
++                if started.is_set():
++                    break
++                await asyncio.sleep(0.005)
++            self.assertTrue(started.is_set())
++            self.assertFalse(pending.done())
++            await asyncio.sleep(0.01)
++            self.assertFalse(pending.done())
++        finally:
++            release.set()
++            await pending
++
++    async def test_queued_cancellation_does_not_execute_conversion(self):
++        started, release = threading.Event(), threading.Event()
++        calls = []
++
++        def blocking():
++            started.set()
++            release.wait(2)
++
++        first = asyncio.create_task(self.batcher.run_sync(blocking))
++        try:
++            for _ in range(100):
++                if started.is_set():
++                    break
++                await asyncio.sleep(0.005)
++            self.assertTrue(started.is_set())
++            second = asyncio.create_task(
++                self.batcher.run_sync(calls.append, "must-not-run")
++            )
++            await asyncio.sleep(0.01)
++            second.cancel()
++            with self.assertRaises(asyncio.CancelledError):
++                await second
++        finally:
++            release.set()
++            await first
++        await self.batcher.run_sync(lambda: None)
++        self.assertEqual(calls, [])
++
++    async def test_handler_cancellation_does_not_submit_inference(self):
++        chat = self.chat()
++        started, release = threading.Event(), threading.Event()
++        submitted = []
++        chat._validate_request = lambda request: None
++
++        def convert(req, raw):
++            started.set()
++            release.wait(2)
++            return SimpleNamespace(), req
++
++        async def stream(*args):
++            submitted.append(True)
++
++        chat._convert_to_internal_request = convert
++        chat._handle_streaming_request = stream
++        task = asyncio.create_task(
++            chat.handle_request(SimpleNamespace(input_ids=None, stream=True), None)
++        )
++        try:
++            for _ in range(100):
++                if started.is_set():
++                    break
++                await asyncio.sleep(0.005)
++            self.assertTrue(started.is_set())
++            task.cancel()
++            with self.assertRaises(asyncio.CancelledError):
++                await task
++        finally:
++            release.set()
++        await self.batcher.run_sync(lambda: None)
++        self.assertEqual(submitted, [])
++
++    async def test_handler_keeps_value_error_status(self):
++        chat = self.chat()
++        chat._validate_request = lambda request: None
++        chat.create_error_response = lambda **kwargs: kwargs
++
++        def invalid(req, raw):
++            raise ValueError("invalid-fixture")
++
++        chat._convert_to_internal_request = invalid
++        result = await chat.handle_request(
++            SimpleNamespace(input_ids=None, stream=True), None
++        )
++        self.assertEqual(result["status_code"], 400)
++        self.assertEqual(result["message"], "invalid-fixture")
++
++    async def test_base_default_keeps_synchronous_conversion(self):
++        main_thread = threading.get_ident()
++        target = SimpleNamespace(
++            _convert_to_internal_request=lambda req, raw: (threading.get_ident(), req)
++        )
++        request = object()
++        result = await OpenAIServingBase._convert_to_internal_request_async(
++            target, request, None
++        )
++        self.assertEqual(result, (main_thread, request))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py b/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6dbd6ba782fb9cc3ab59770ae3954151fa237aab
+--- /dev/null
++++ b/test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py
+@@ -0,0 +1,175 @@
++"""A TP-sharded MXFP4 trtllm-gen MoE whose per-rank intermediate size needs
++padding must sum to the unsharded experts' output."""
++
++import unittest
++from contextlib import nullcontext
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
++
++import torch
++
++from sglang.srt.layers.moe.token_dispatcher import StandardDispatchOutput
++from sglang.srt.layers.moe.topk import StandardTopKOutput
++from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe as mxfp4
++from sglang.test.ci.ci_register import register_cuda_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cuda_ci(est_time=60, stage="base-b-kernel-unit", runner_config="4-gpu-b200")
++
++
++def make_layer(weights):
++    layer = torch.nn.Module()
++    names = (
++        "w13_weight",
++        "w2_weight",
++        "w13_weight_scale_inv",
++        "w2_weight_scale_inv",
++    )
++    for name, tensor in zip(names, weights):
++        layer.register_parameter(name, torch.nn.Parameter(tensor, requires_grad=False))
++    layer.num_experts = weights[0].shape[0]
++    layer.num_local_experts = layer.num_experts
++    layer.moe_ep_rank = 0
++    return layer
++
++
++def make_weights(intermediate, hidden=256, device="cpu"):
++    experts = 8
++
++    def fp4_packed(*shape):
++        return torch.randint(-128, 128, shape, dtype=torch.int8, device=device)
++
++    def e8m0_scales(*shape):
++        return torch.randint(-6, -3, shape, device=device).float().exp2()
++
++    return (
++        fp4_packed(experts, 2 * intermediate, hidden // 2),
++        fp4_packed(experts, hidden, intermediate // 2),
++        e8m0_scales(experts, 2 * intermediate, hidden // 32),
++        e8m0_scales(experts, hidden, intermediate // 32),
++    )
++
++
++class TestMxfp4TrtllmPadding(CustomTestCase):
++    def test_cpu_weight_load_pads_before_reorder(self):
++        """Exercise the real caller and padding helper, stopping before GPU shuffle."""
++        weights = make_weights(576)
++        layer = make_layer([tensor.clone() for tensor in weights])
++        layer.intermediate_size_per_partition = 576
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++
++        class ReorderReached(Exception):
++            pass
++
++        def check_reorder(weight, scales):
++            self.assertEqual(layer.intermediate_size_per_partition, 640)
++            self.assertEqual(weight.shape, (8, 1280, 128))
++            self.assertEqual(scales.shape, (8, 1280, 8))
++            self.assertEqual(layer.w2_weight.shape, (8, 256, 320))
++            self.assertEqual(layer.w2_weight_scale_inv.shape, (8, 256, 20))
++            torch.testing.assert_close(weight[:, :576], weights[0][:, :576])
++            torch.testing.assert_close(weight[:, 640:1216], weights[0][:, 576:])
++            torch.testing.assert_close(scales[:, :576], weights[2][:, :576])
++            torch.testing.assert_close(scales[:, 640:1216], weights[2][:, 576:])
++            self.assertEqual(torch.count_nonzero(weight[:, 576:640]).item(), 0)
++            self.assertEqual(torch.count_nonzero(weight[:, 1216:]).item(), 0)
++            self.assertTrue(torch.all(scales[:, 576:640] == 1).item())
++            self.assertTrue(torch.all(scales[:, 1216:] == 1).item())
++            torch.testing.assert_close(layer.w2_weight[..., :288], weights[1])
++            torch.testing.assert_close(layer.w2_weight_scale_inv[..., :18], weights[3])
++            self.assertEqual(torch.count_nonzero(layer.w2_weight[..., 288:]).item(), 0)
++            self.assertTrue(torch.all(layer.w2_weight_scale_inv[..., 18:] == 1).item())
++            raise ReorderReached
++
++        with (
++            patch(
++                "sglang.srt.layers.quantization.utils.reorder_w1w3_to_w3w1",
++                side_effect=check_reorder,
++            ),
++            patch.object(mxfp4, "print_warning_once"),
++            self.assertRaises(ReorderReached),
++        ):
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++
++    def test_cpu_aligned_padding_is_identity(self):
++        layer = make_layer(make_weights(640))
++        layer.intermediate_size_per_partition = 640
++        before = {name: value.data_ptr() for name, value in layer.named_parameters()}
++        mxfp4._pad_intermediate_size(layer)
++        self.assertEqual(
++            before, {name: value.data_ptr() for name, value in layer.named_parameters()}
++        )
++        self.assertEqual(layer.intermediate_size_per_partition, 640)
++
++    def test_cpu_mega_moe_does_not_enter_padding(self):
++        method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++        method._fp8 = Mock()
++        layer = SimpleNamespace(_mega_moe_weights_built=True)
++        with patch.object(mxfp4, "_pad_intermediate_size") as pad:
++            method.process_weights_after_loading(layer)
++        method._fp8.process_weights_after_loading.assert_called_once_with(layer)
++        pad.assert_not_called()
++
++    @unittest.skipUnless(
++        torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 10,
++        "Requires Blackwell",
++    )
++    def test_tp4_matches_unsharded_experts(self):
++        torch.manual_seed(42)
++        weights = make_weights(2304, hidden=5120, device="cuda")
++
++        def prepare(tensors):
++            layer = make_layer(tensors)
++            method = object.__new__(mxfp4.Mxfp4FlashinferTrtllmMoEMethod)
++            method._fp8 = Mock()
++            method.prefix = "test.experts"
++            method.flashinfer_mxfp4_moe_precision = "default"
++            method.process_weights_after_loading(layer)
++            method.create_moe_runner(layer, SimpleNamespace(swiglu_limit=10.0))
++            return method, layer
++
++        full = prepare([tensor.clone() for tensor in weights])
++        shards = []
++        for rank in range(4):
++            start = rank * 576
++            end = start + 576
++            w13, w2, s13, s2 = weights
++            shard = (
++                torch.cat(
++                    (w13[:, start:end], w13[:, 2304 + start : 2304 + end]), dim=1
++                ),
++                w2[..., start // 2 : end // 2].contiguous(),
++                torch.cat(
++                    (s13[:, start:end], s13[:, 2304 + start : 2304 + end]), dim=1
++                ),
++                s2[..., start // 32 : end // 32].contiguous(),
++            )
++            shards.append(prepare(shard))
++
++        with (
++            patch.object(mxfp4, "get_tp_group", return_value=None),
++            patch.object(mxfp4, "is_allocation_symmetric", return_value=False),
++            patch.object(mxfp4, "use_symmetric_memory", return_value=nullcontext()),
++        ):
++            for tokens in (1, 64):
++                with self.subTest(tokens=tokens):
++                    x = torch.randn(tokens, 5120, dtype=torch.bfloat16, device="cuda")
++                    logits = torch.randn(tokens, 8, device="cuda")
++                    scores, ids = logits.softmax(-1).topk(6, dim=-1)
++                    topk = StandardTopKOutput(scores, ids.to(torch.int32), logits)
++                    dispatch = StandardDispatchOutput(x, None, topk)
++                    reference = full[0].apply(full[1], dispatch).hidden_states.float()
++                    actual = sum(
++                        method.apply(layer, dispatch).hidden_states.float()
++                        for method, layer in shards
++                    )
++                    rmse = torch.linalg.norm(actual - reference) / torch.linalg.norm(
++                        reference
++                    )
++                    self.assertLess(rmse.item(), 0.01)
++
++
++if __name__ == "__main__":
++    unittest.main()

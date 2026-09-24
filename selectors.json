@@ -2,7 +2,7 @@
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
   "active_selector": "unified-v0520-successor",
-  "as_of": "2026-09-23",
+  "as_of": "2026-09-24",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
-      "fork_tree": "daae7edd1feeb0af9be5c5e4a68e72505829ae78",
-      "fork_branch": "codex/sglang-image-unification-20260923",
+      "fork_commit": "63d209bbc5352d6bdc19613b50ef1e50c16898a5",
+      "fork_tree": "33240d76ca414a4591486f3d764b41d8a09f16b7",
+      "fork_branch": "codex/sglang-image-unification-20260924-dsv41",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..63d209bbc5352d6bdc19613b50ef1e50c16898a5",
       "replay_mode": "exact",
       "patches": [
         {
@@ -448,6 +448,32 @@
         "source_commit": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
         "source_parent": "23d8161f6b8c626f60ba097c5855b204978a9995",
         "sha256": "a8af58c5b996c3aa4f4b52e2f6081bc9762ab86f7a52c80da9160b5d9f35a108"
+      },
+      {
+        "id": "union-dsv41-composed-63d209b",
+        "path": "patches/models/deepseek/dsv41-composed-6f076-to-63d209b.patch",
+        "source_parent": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
+        "source_range": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761..63d209bbc5352d6bdc19613b50ef1e50c16898a5",
+        "composition_commits": [
+          "b228ef8f75a0cc6e1738f87a045a092f52d2a6b9",
+          "ea69b662ba5d8ab34cdc9d9f9094131832c033fe",
+          "e9ae83e7faff489652212b9d6643c73f8e3eea2e",
+          "a1499867a6747639dcde11ff20d4d79923e5bf6e",
+          "8bc5e1a02d3473934079de4ebfd048039ab93378",
+          "5023f0d26d07c07da71feeb0640710490ed5d1be",
+          "17c08f451f3312678409cb40d0befd7bdb633e8f",
+          "fb60452e338d7daf6a7cd2b81209ed38ca70201f",
+          "478ebc178cccaa941117d8f35ea1b6f0dbe453a0",
+          "a1eca0def608cd2075c7e510fe7ddfe3ab7b1f43",
+          "d62ecd1e81a3e337bf0acb37c7cb35422f0f6038",
+          "83b4189f21794054ac30ff3a063090c8dd218a81",
+          "d113614eff88f36ec04ab9b4e28d22a389ced131",
+          "b2c8e075e4c1170562018eb1ca5dd2cdb005f19f",
+          "be8580185b7e47a1db8f1895674172df06c9d39e",
+          "b246592b1610d961eb00d7d88e4ade7e33d6e1d3",
+          "63d209bbc5352d6bdc19613b50ef1e50c16898a5"
+        ],
+        "sha256": "b2dd77aaa2b425081b56d538e495a8a6613484b8ec130f012d49cedbb562be2c"
       }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
