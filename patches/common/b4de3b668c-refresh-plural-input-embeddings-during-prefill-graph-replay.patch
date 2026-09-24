@@ -1,0 +1,92 @@
+diff --git a/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py b/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
+index 7f4bd6dc61685bae6c7b7aa98d3deea5d71e5ae9..b095b8dd1d3c40993bbf7ed8779787979c80df2f 100644
+--- a/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
++++ b/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
+@@ -207,6 +207,14 @@ def _build_layer_model_forward_kwargs(
+     return kwargs
+ 
+ 
++def _input_embeds_arg_index(layer_model: torch.nn.Module) -> Optional[int]:
++    parameters = list(inspect.signature(layer_model.forward).parameters)
++    for name in ("input_embeds", "inputs_embeds"):
++        if name in parameters:
++            return parameters.index(name)
++    return None
++
++
+ def _slice_output_rows(output: Any, num_tokens: int) -> Any:
+     """Slice every tensor leaf in a transformer-body output by token rows.
+ 
+@@ -554,10 +562,7 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+                     f"{type(self.backend).__name__} {exc} This backend is "
+                     f"unsupported for this model architecture."
+                 ) from exc
+-            params = list(inspect.signature(self.layer_model.forward).parameters)
+-            self._input_embeds_arg_idx = (
+-                params.index("input_embeds") if "input_embeds" in params else None
+-            )
++            self._input_embeds_arg_idx = _input_embeds_arg_index(self.layer_model)
+ 
+         # --- aiter chip info pre-warming (AMD) -------------------------
+         maybe_pre_warm_aiter_chip_info()
+@@ -1811,6 +1816,8 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+         """A text-only batch would otherwise replay the captured input_embeds."""
+         ie_idx = self._input_embeds_arg_idx
+         ie = layer_kwargs.get("input_embeds")
++        if ie is None:
++            ie = layer_kwargs.get("inputs_embeds")
+         if ie is None and ie_idx is not None and len(args) > ie_idx:
+             ie = args[ie_idx]
+         if ie is None:
+diff --git a/test/registered/unit/model_executor/test_prefill_cuda_graph_runner_helpers.py b/test/registered/unit/model_executor/test_prefill_cuda_graph_runner_helpers.py
+index 9e376481065dc97f6da774b5373ded993878f708..bc085477bec4804ea399cace2fb0f52dc328c292 100644
+--- a/test/registered/unit/model_executor/test_prefill_cuda_graph_runner_helpers.py
++++ b/test/registered/unit/model_executor/test_prefill_cuda_graph_runner_helpers.py
+@@ -14,6 +14,7 @@ from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
+ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+     PrefillCudaGraphRunner,
+     _build_layer_model_forward_kwargs,
++    _input_embeds_arg_index,
+     _resolve_transformer_layer_model,
+ )
+ from sglang.srt.model_executor.runner_utils.buffers import PrefillInputBuffers
+@@ -32,6 +33,11 @@ class _LayerModel:
+         return input_embeds
+ 
+ 
++class _PluralEmbedsLayerModel:
++    def forward(self, input_ids, positions, forward_batch, inputs_embeds=None):
++        return inputs_embeds
++
++
+ def _make_pp_buffers_and_registry():
+     base = torch.zeros(3, dtype=torch.int64)
+     buffers = SimpleNamespace(
+@@ -110,6 +116,27 @@ class TestPrefillCudaGraphRunnerHelpers(CustomTestCase):
+                 self.assertEqual(kwargs, expected)
+                 layer_model.forward(None, None, forward_batch, **kwargs)
+ 
++    def test_plural_input_embeds_refresh_static_graph_slot(self):
++        runner = PrefillCudaGraphRunner.__new__(PrefillCudaGraphRunner)
++        runner._input_embeds_arg_idx = _input_embeds_arg_index(
++            _PluralEmbedsLayerModel()
++        )
++        self.assertEqual(runner._input_embeds_arg_idx, 3)
++        self.assertEqual(_input_embeds_arg_index(_LayerModel()), 3)
++
++        slot = torch.zeros((4, 3))
++        runner.buffer_registry = SimpleNamespace(
++            get_slot=lambda _name: SimpleNamespace(slice_for=lambda *_args: slot)
++        )
++        live = torch.ones((2, 3))
++        runner._fill_input_embeds_slot((None, None, None, live), {}, 4)
++        torch.testing.assert_close(slot[:2], live)
++
++        runner._fill_input_embeds_slot(
++            (None, None, None), {"inputs_embeds": 2 * live}, 4
++        )
++        torch.testing.assert_close(slot[:2], 2 * live)
++
+     def test_finalize_pp_proxy_trims_padded_token_rows(self):
+         runner = PrefillCudaGraphRunner.__new__(PrefillCudaGraphRunner)
+         runner.raw_num_tokens = 3

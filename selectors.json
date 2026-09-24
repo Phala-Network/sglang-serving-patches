@@ -2,7 +2,7 @@
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
   "active_selector": "unified-v0520-successor",
-  "as_of": "2026-09-24",
+  "as_of": "2026-09-25",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
-      "fork_tree": "34205e9181f0c84a7c24884a72f43eebd1c40bf1",
-      "fork_branch": "codex/sglang-image-unification-20260924-r7",
+      "fork_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+      "fork_tree": "629ca25f5b658fcfa14fca2d28639fe8693cf39d",
+      "fork_branch": "codex/sglang-image-unification-20260925-r8",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
       "replay_mode": "exact",
       "patches": [
         {
@@ -502,6 +502,20 @@
           "source_commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
           "source_parent": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
           "sha256": "b2deb7bb8dc4d04efa5cb81be86df83b2046e794604cf682044b446b832edd9e"
+        },
+        {
+          "id": "common-selective-async-ack-9dcd099",
+          "path": "patches/common/9dcd099014-enable-selective-write-through-async-ack.patch",
+          "source_commit": "9dcd0990149dee2755702c789bce4b08d86c1cdb",
+          "source_parent": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+          "sha256": "9453d9f9c2c1c9557273290289bfa445548df9e9bc1486679aa04cea75d972ed"
+        },
+        {
+          "id": "common-plural-prefill-embeds-b4de3b6",
+          "path": "patches/common/b4de3b668c-refresh-plural-input-embeddings-during-prefill-graph-replay.patch",
+          "source_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+          "source_parent": "9dcd0990149dee2755702c789bce4b08d86c1cdb",
+          "sha256": "492c6060adddedccaaca450ef160ff824467b78850e60c5ed529c121dbe81fc3"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

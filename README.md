@@ -21,10 +21,10 @@ pinned versions of these projects.
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
 The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `db0a9f1ec46a3d417d7be190ebc0ce654dad9abd`, tree
-`93fba1f82c9298c0d16aa192d0e2e312eb77f36d`, on navigation branch
-`codex/sglang-image-unification-20260923`.
-It combines the 31-step protected baseline and 62 successor patches.
+engine `b4de3b668c0575eeef24ff418a43fe01f4fa6a21`, tree
+`629ca25f5b658fcfa14fca2d28639fe8693cf39d`, on navigation branch
+`codex/sglang-image-unification-20260925-r8`.
+It combines the 31-step protected baseline and 72 successor patches.
 The September 23 increments add framework privacy/health cleanup, the GLM
 host-reserve configuration and shared HugeTLB accounting. Native and final-image
 acceptance remain separate.

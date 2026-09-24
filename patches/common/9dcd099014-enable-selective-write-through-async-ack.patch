@@ -1,0 +1,46 @@
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index cb4e9e501c685c23e5148fa810d47a5b78a28d44..bb201eb54e2faedad0939cfe90b95d0c432db7a9 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -3162,15 +3162,16 @@ class UnifiedRadixCache(BasePrefixCache):
+         return self._parse_ready_counts(ready_counts, extra_pool_names, digest)
+ 
+     def _async_ready_counts_eligible(self) -> bool:
+-        """Narrow canary guard for the queue lifecycle validated on GLM-5.3."""
++        """Guard the host-only ACK pipeline for validated write-through modes."""
++        memory_write_policy = get_memory().hicache_write_policy
+         return (
+             self._hicache_async_ack_sync_requested
+             and self.pp_size == 1
+             and get_parallel().dp_size == 1
+             and self._ready_counts_group is not None
+             and self.cache_controller is not None
+-            and get_memory().hicache_write_policy == "write_through"
+-            and self.cache_controller.write_policy == "write_through"
++            and memory_write_policy in ("write_through", "write_through_selective")
++            and self.cache_controller.write_policy == memory_write_policy
+             and not self.is_write_back
+             and get_disagg().disaggregation_mode == "null"
+             and self.host_memory_mode == "cache"
+diff --git a/test/manual/test_hicache_async_ack_sync.py b/test/manual/test_hicache_async_ack_sync.py
+index b9d2be726c86d93b4d98d51fe6ddd545f5c063bb..291477f3959bfe4ca7c051f8070726b44f53513d 100644
+--- a/test/manual/test_hicache_async_ack_sync.py
++++ b/test/manual/test_hicache_async_ack_sync.py
+@@ -393,6 +393,17 @@ class TestHiCacheAsyncAckSync(unittest.TestCase):
+         ):
+             self.assertFalse(eligible())
+ 
++    def test_selective_write_through_requires_matching_controller_policy(self):
++        cache = self._cache(write_ready=())
++        eligible = UnifiedRadixCache._async_ready_counts_eligible.__get__(cache)
++        memory = SimpleNamespace(hicache_write_policy="write_through_selective")
++        with patch(__name__ + ".get_memory", return_value=memory):
++            self.assertFalse(eligible())
++            cache.cache_controller.write_policy = "write_through_selective"
++            self.assertTrue(eligible())
++            memory.hicache_write_policy = "write_through"
++            self.assertFalse(eligible())
++
+     def test_single_process_group_selection(self):
+         cache = self._cache()
+         cache.attn_cp_group, cache.attn_tp_group, cache.tp_group = (

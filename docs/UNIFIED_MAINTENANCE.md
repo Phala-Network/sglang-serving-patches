@@ -9,9 +9,11 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `6f0768294b04f4333cc12ff6c7eb4bf7caadf761`.
-- Engine tree: `daae7edd1feeb0af9be5c5e4a68e72505829ae78`.
-- Ordered engine stack: 31 protected steps plus 65 successor steps.
+- Active engine: `b4de3b668c0575eeef24ff418a43fe01f4fa6a21`.
+- Engine tree: `629ca25f5b658fcfa14fca2d28639fe8693cf39d`.
+- Ordered engine stack: 31 protected steps plus 72 successor steps.
+- R8 adds guarded selective write-through async ACK and refreshes live Kimi
+  `inputs_embeds` during prefill CUDA graph replay.
 - New increments: framework log privacy/health cleanup and configurable DSA
   ordinary-memory reserve, with its original 128 GiB default; shared HugeTLB
   accounting for staggered Kimi allocations without changing the DSA ledger;
