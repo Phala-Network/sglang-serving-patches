@@ -1,0 +1,74 @@
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index bc1f8eae17d0000e28f8162d4c5e5d98d1be1b59..6907065914dee1263a7a30337ac7784ede999c70 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -34,7 +34,7 @@ def _align_required_tool_call_repetition(
+ 
+     def visit(node: Any) -> None:
+         if isinstance(node, dict):
+-            if node.get("type") == "tags_with_separator":
++            if node.get("type") in ("tags_with_separator", "triggered_tags"):
+                 repetitions.append(node)
+             for child in node.values():
+                 visit(child)
+@@ -48,8 +48,21 @@ def _align_required_tool_call_repetition(
+             "Qwen3 Coder required structural tag must contain one repeated-tag format"
+         )
+ 
+-    repetitions[0]["separator"] = "\n"
+-    repetitions[0]["stop_after_first"] = not parallel_tool_calls
++    repetition = repetitions[0]
++    if repetition.get("type") == "triggered_tags":
++        if not repetition.get("at_least_one") or repetition.get("triggers") != [
++            "<tool_call>\n<function="
++        ]:
++            raise ValueError("Unexpected Qwen3 Coder required tool-call trigger")
++        tags = repetition["tags"]
++        repetition.clear()
++        repetition.update(
++            type="tags_with_separator",
++            tags=tags,
++            at_least_one=True,
++        )
++    repetition["separator"] = "\n"
++    repetition["stop_after_first"] = not parallel_tool_calls
+     return StructuralTag.model_validate(value)
+ 
+ 
+diff --git a/test/manual/unit/function_call/test_qwen3_coder_parallel_structural_tag.py b/test/manual/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+index 02021c75b9e1d7ccb572c0d5703c28c1f857b2de..ca251358068fb70f1377f87a2b1e9dcd27da61e8 100644
+--- a/test/manual/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
++++ b/test/manual/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+@@ -1,6 +1,8 @@
+ import xgrammar as xgr
++from xgrammar.testing import _is_grammar_accept_string
+ 
+ from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.function_call_parser import FunctionCallParser
+ from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
+ 
+ 
+@@ -82,3 +84,23 @@ def test_required_reasoning_prefix_is_preserved():
+     assert "</think>" in serialized
+     assert "\\n\\n" in serialized
+     assert _repetition(tag)["separator"] == "\n"
++
++
++def test_non_strict_required_uses_native_qwen_call_in_pinned_xgrammar():
++    tool = _tool()
++    tool.function.strict = False
++    constraint = FunctionCallParser([tool], "qwen3_coder").get_structure_constraint(
++        "required", thinking_mode=False
++    )
++
++    assert constraint is not None
++    assert constraint[0] == "structural_tag"
++    grammar = xgr.Grammar.from_structural_tag(constraint[1])
++    native_call = (
++        "<tool_call>\n<function=search_catalog>\n"
++        "<parameter=query>Paris</parameter>\n</function>\n</tool_call>"
++    )
++    assert _is_grammar_accept_string(grammar, native_call)
++    assert not _is_grammar_accept_string(
++        grammar, '[{"name":"search_catalog","parameters":{"query":"Paris"}}]'
++    )

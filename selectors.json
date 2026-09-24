@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
-      "fork_tree": "c428a473dd55b139a9332b8aec1471b186937d86",
-      "fork_branch": "codex/sglang-image-unification-20260924-qwen35-gguf-r3",
+      "fork_commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+      "fork_tree": "34205e9181f0c84a7c24884a72f43eebd1c40bf1",
+      "fork_branch": "codex/sglang-image-unification-20260924-r7",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..670966c2744acb38bb7a5cfaa64fdb674bd96810",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
       "replay_mode": "exact",
       "patches": [
         {
@@ -489,13 +489,20 @@
         "source_parent": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
         "sha256": "53fd600e848fd95339839f4ec8d4fae3942d9bda3742d4240190beb05a968225"
       },
-      {
-        "id": "gguf-separate-processor-config-670966c",
-        "path": "patches/models/qwen/670966c274-use-separate-gguf-processor-config.patch",
-        "source_commit": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
-        "source_parent": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
-        "sha256": "b72741d90c9ef1c99df937bb74067935796d72165b5d6e8fb45b80cbfe7730d7"
-      }
+        {
+          "id": "gguf-separate-processor-config-670966c",
+          "path": "patches/models/qwen/670966c274-use-separate-gguf-processor-config.patch",
+          "source_commit": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
+          "source_parent": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
+          "sha256": "b72741d90c9ef1c99df937bb74067935796d72165b5d6e8fb45b80cbfe7730d7"
+        },
+        {
+          "id": "qwen-required-tool-grammar-3fce29c",
+          "path": "patches/models/qwen/3fce29c8d6-fix-required-tool-grammar.patch",
+          "source_commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+          "source_parent": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
+          "sha256": "b2deb7bb8dc4d04efa5cb81be86df83b2046e794604cf682044b446b832edd9e"
+        }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],

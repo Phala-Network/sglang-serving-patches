@@ -63,6 +63,10 @@
         "path": "test/manual/unit/function_call/test_qwen_complete_call_cpu.py"
       },
       {
+        "name": "qwen-required-tool-grammar",
+        "path": "test/manual/unit/function_call/test_qwen3_coder_parallel_structural_tag.py"
+      },
+      {
         "name": "deepseek-protocol",
         "path": "test/manual/phala/test_dsv41_shared_protocol_cpu.py"
       }
