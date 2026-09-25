@@ -1,0 +1,145 @@
+diff --git a/python/sglang/srt/layers/attention/dsa_backend.py b/python/sglang/srt/layers/attention/dsa_backend.py
+index 7488f0810d22a8537738938141788b5c5c542616..7fd4ce586a1e61075dcfcd7ffe2b9eb6a4fbd5b5 100644
+--- a/python/sglang/srt/layers/attention/dsa_backend.py
++++ b/python/sglang/srt/layers/attention/dsa_backend.py
+@@ -521,6 +521,11 @@ class DeepseekSparseAttnBackend(
+             decode_impl=self.dsa_decode_impl,
+         )
+ 
++        # Captured TRT-LLM graphs retain the address of their counter buffer.
++        # Eager prefills may need a larger buffer later; keep previous buffers
++        # alive for this backend's lifetime so those graphs can still replay.
++        self._retired_multi_ctas_kv_counter_buffers: list[torch.Tensor] = []
++
+         if uses_flashinfer_sparse_mla:
+             self.workspace_buffer = get_buffer(
+                 "dsa_flashinfer_sparse_mla_workspace",
+@@ -3426,14 +3431,7 @@ class DeepseekSparseAttnBackend(
+         batch_size = page_table_1.shape[0]
+         _, num_heads, head_dim = q_all.shape
+ 
+-        self._multi_ctas_kv_counter_buffer = (
+-            grow_multi_ctas_kv_counter_buffer_if_needed(
+-                self._multi_ctas_kv_counter_buffer,
+-                torch.device(self.device),
+-                self.num_q_heads,
+-                batch_size,
+-            )
+-        )
++        self._ensure_multi_ctas_kv_counter_buffer(batch_size)
+ 
+         q = q_all.view(batch_size, 1, num_heads, head_dim)
+         kv = kv_cache.view(-1, 1, self.real_page_size, self.kv_cache_dim)
+@@ -3460,6 +3458,15 @@ class DeepseekSparseAttnBackend(
+ 
+         return out
+ 
++    def _ensure_multi_ctas_kv_counter_buffer(self, batch_size: int) -> None:
++        previous = self._multi_ctas_kv_counter_buffer
++        current = grow_multi_ctas_kv_counter_buffer_if_needed(
++            previous, torch.device(self.device), self.num_q_heads, batch_size
++        )
++        if current is not previous:
++            self._retired_multi_ctas_kv_counter_buffers.append(previous)
++            self._multi_ctas_kv_counter_buffer = current
++
+     def _pad_topk_indices(
+         self, topk_indices: torch.Tensor, num_tokens: int
+     ) -> torch.Tensor:
+diff --git a/test/registered/unit/attention/test_dsa_trtllm_counter_lifetime.py b/test/registered/unit/attention/test_dsa_trtllm_counter_lifetime.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..614d07caf49b2a103acfb78ce932ced95fd91605
+--- /dev/null
++++ b/test/registered/unit/attention/test_dsa_trtllm_counter_lifetime.py
+@@ -0,0 +1,91 @@
++import gc
++import unittest
++import weakref
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.layers.attention.dsa_backend import DeepseekSparseAttnBackend
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++class TestTrtllmCounterBufferLifetime(CustomTestCase):
++    """Decode CUDA graphs capture the raw address of the trtllm-gen multi-CTA
++    KV counter buffer. When a larger eager prefill grows the buffer, the
++    backend must keep the superseded tensor alive; otherwise every later graph
++    replay writes through freed storage."""
++
++    def _backend(self, initial_bytes=64):
++        backend = MagicMock(spec=DeepseekSparseAttnBackend)
++        backend.device = "cpu"
++        backend.num_q_heads = 16
++        backend._multi_ctas_kv_counter_buffer = torch.zeros(
++            initial_bytes, dtype=torch.uint8
++        )
++        backend._retired_multi_ctas_kv_counter_buffers = []
++        return backend
++
++    def _ensure(self, backend, batch_size, grow):
++        # A plain function replaces the helper so nothing records (and thereby
++        # keeps alive) the buffer that was passed in.
++        with patch(
++            "sglang.srt.layers.attention.dsa_backend."
++            "grow_multi_ctas_kv_counter_buffer_if_needed",
++            new=grow,
++        ):
++            DeepseekSparseAttnBackend._ensure_multi_ctas_kv_counter_buffer(
++                backend, batch_size
++            )
++
++    def test_growth_retains_captured_buffer(self):
++        backend = self._backend()
++        captured = weakref.ref(backend._multi_ctas_kv_counter_buffer)
++        larger = torch.zeros(128, dtype=torch.uint8)
++
++        self._ensure(backend, 16384, grow=lambda *_: larger)
++        gc.collect()
++
++        self.assertIs(backend._multi_ctas_kv_counter_buffer, larger)
++        self.assertIsNotNone(captured())
++        self.assertEqual(backend._retired_multi_ctas_kv_counter_buffers, [captured()])
++
++    def test_no_growth_leaves_ownership_unchanged(self):
++        backend = self._backend()
++        current = backend._multi_ctas_kv_counter_buffer
++
++        self._ensure(backend, 32, grow=lambda buffer, *_: buffer)
++
++        self.assertIs(backend._multi_ctas_kv_counter_buffer, current)
++        self.assertEqual(backend._retired_multi_ctas_kv_counter_buffers, [])
++
++    def test_repeated_growth_retains_every_generation(self):
++        backend = self._backend()
++        first = backend._multi_ctas_kv_counter_buffer
++        second = torch.zeros(128, dtype=torch.uint8)
++        third = torch.zeros(256, dtype=torch.uint8)
++
++        self._ensure(backend, 16384, grow=lambda *_: second)
++        self._ensure(backend, 32768, grow=lambda *_: third)
++
++        self.assertIs(backend._multi_ctas_kv_counter_buffer, third)
++        self.assertEqual(
++            backend._retired_multi_ctas_kv_counter_buffers, [first, second]
++        )
++
++    def test_retired_buffers_die_with_backend(self):
++        backend = self._backend()
++        captured = weakref.ref(backend._multi_ctas_kv_counter_buffer)
++        larger = torch.zeros(128, dtype=torch.uint8)
++
++        self._ensure(backend, 16384, grow=lambda *_: larger)
++        del backend
++        gc.collect()
++
++        self.assertIsNone(captured())
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -164,6 +164,18 @@
       "replay_mode": "reference_only",
       "status": "pending_version_migration",
       "validation_boundary": "Do not infer Qwen3.5/GGUF applicability from shared image"
+    },
+    "unified-v0520-r10": {
+      "passed": true,
+      "identity_verified": true,
+      "fork_commit": "85968db99d4be51fdb18afa6706f002fc22d0ece",
+      "fork_tree": "c63af9ba8f14ae1e5d55bd5e3df655e2d244a7a8",
+      "fork_branch": "codex/sglang-image-unification-20260925-r10",
+      "patch_count": 92,
+      "replay_mode": "exact",
+      "status": "R10 source qualified; final image and GLM-5.3-Flash model qualification pending",
+      "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
+      "replay_tree": "c63af9ba8f14ae1e5d55bd5e3df655e2d244a7a8"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

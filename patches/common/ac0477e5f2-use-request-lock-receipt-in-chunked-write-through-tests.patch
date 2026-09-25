@@ -1,0 +1,22 @@
+diff --git a/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py b/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+index 70469e6c7a7cb6579c3d1f7ff9b1d6c0893afb00..0121bca8045bcc617b97b23cf56ae6158d1c2e22 100644
+--- a/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
++++ b/test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py
+@@ -8945,7 +8945,7 @@ class TestChunkedWriteThroughBackupIntegration(_InsertWalkSuite):
+ 
+         self.assertFalse(cache.tree_core.is_root(req.last_node))
+         self.assertTrue(cache.tree_core.is_backuped(req.last_node))
+-        cache.dec_lock_ref(req.last_node)
++        cache._dec_req_lock(req)
+         cache.sanity_check()
+ 
+     def test_subpage_chunk_stays_at_root_without_backup(self):
+@@ -8957,7 +8957,7 @@ class TestChunkedWriteThroughBackupIntegration(_InsertWalkSuite):
+ 
+         self.assertTrue(cache.tree_core.is_root(req.last_node))
+         self.assertEqual(cache.ongoing_write_through, {})
+-        cache.dec_lock_ref(req.last_node)
++        cache._dec_req_lock(req)
+         cache.sanity_check()
+ 
+ 

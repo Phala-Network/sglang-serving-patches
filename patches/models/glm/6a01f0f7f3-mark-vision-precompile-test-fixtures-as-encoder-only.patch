@@ -1,0 +1,24 @@
+diff --git a/test/registered/kernel/vision/test_glm5_next_vision_precompile_gpu.py b/test/registered/kernel/vision/test_glm5_next_vision_precompile_gpu.py
+index e2a7323fc39a8eb95fa05f4f6ddf75e1d6b97f9b..7fb6fef561987a6251111c71abcbed4959c10a33 100644
+--- a/test/registered/kernel/vision/test_glm5_next_vision_precompile_gpu.py
++++ b/test/registered/kernel/vision/test_glm5_next_vision_precompile_gpu.py
+@@ -62,6 +62,7 @@ def _make_model():
+         glm5_next.Glm5NextForConditionalGeneration
+     )
+     nn.Module.__init__(model)
++    model.encoder_only = True
+     model.visual = _FakeVisionTower()
+     model.pp_group = SimpleNamespace(is_first_rank=True)
+     return model
+diff --git a/test/registered/unit/models/test_glm5_next_vision_precompile.py b/test/registered/unit/models/test_glm5_next_vision_precompile.py
+index 643c186bae160ceea82ab427ad17c19b0fe27401..55966803f45dde172b4657d9a93157943b768cf6 100644
+--- a/test/registered/unit/models/test_glm5_next_vision_precompile.py
++++ b/test/registered/unit/models/test_glm5_next_vision_precompile.py
+@@ -81,6 +81,7 @@ def _make_model(visual, is_first_rank: bool = True):
+         glm5_next.Glm5NextForConditionalGeneration
+     )
+     nn.Module.__init__(model)
++    model.encoder_only = True
+     model.visual = visual
+     model.pp_group = SimpleNamespace(is_first_rank=is_first_rank)
+     return model

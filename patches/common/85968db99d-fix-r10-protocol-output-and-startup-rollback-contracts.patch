@@ -1,0 +1,464 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index b9d9f94789e8fc80c5721df5c9a44f363fb90e8f..67c7d3ba88d25a044153b08feb108d5fa912fd80 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -753,9 +753,13 @@ async def health_generate(request: Request) -> Response:
+                     "Health check generation request disconnected for rid=%s", rid
+                 )
+             else:
+-                logger.exception("Health check generation failed for rid=%s", rid)
++                logger.exception(
++                    "Health check generation failed for rid=%s", rid, exc_info=False
++                )
+         except Exception:
+-            logger.exception("Health check generation failed for rid=%s", rid)
++            logger.exception(
++                "Health check generation failed for rid=%s", rid, exc_info=False
++            )
+ 
+     # As long as we receive any response from the detokenizer/scheduler, we consider the server is healthy.
+     try:
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 275f85cc23feb8483c2588e6d6e1632913382dc7..678d0d968db23834c2e16125ab71a34c83a45608 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -973,6 +973,7 @@ class ChatCompletionRequest(BaseModel):
+     )
+     # Response-only policy; do not expose normalized controls as wire extensions.
+     reasoning_exclude: bool = Field(default=False, exclude=True, repr=False)
++    dsv41_reasoning_off_requested: bool = Field(default=False, exclude=True, repr=False)
+     reasoning_max_tokens: Optional[int] = Field(
+         default=None,
+         ge=1,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index f2b18709ab33326ecfbb380af62deb7d55fbec0d..12f79661cd2138f73e2b147b6c3f7b13a685f3c2 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1466,8 +1466,21 @@ class OpenAIServingChat(OpenAIServingBase):
+             and self.tool_call_parser
+         )
+ 
++    def _apply_dsv41_reasoning_off(self, request: ChatCompletionRequest) -> None:
++        if (
++            self.chat_encoding_spec != "dsv41"
++            or not request.dsv41_reasoning_off_requested
++        ):
++            return
++        request.reasoning_effort = "none"
++        kwargs = dict(request.chat_template_kwargs or {})
++        kwargs["thinking"] = False
++        kwargs["enable_thinking"] = False
++        request.chat_template_kwargs = kwargs
++
+     def _validate_request(self, request: ChatCompletionRequest) -> Optional[str]:
+         """Validate that the input is valid."""
++        self._apply_dsv41_reasoning_off(request)
+         if not request.messages:
+             return "Messages cannot be empty."
+ 
+@@ -1691,6 +1704,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         request: ChatCompletionRequest,
+         raw_request: Request = None,
+     ) -> tuple[GenerateReqInput, ChatCompletionRequest]:
++        self._apply_dsv41_reasoning_off(request)
+ 
+         # Header-based opt-in (same rationale as request_headers.py).
+         if raw_request is not None and not request.return_input_ids_in_sglext:
+@@ -2966,12 +2980,11 @@ class OpenAIServingChat(OpenAIServingBase):
+ 
+             # Handle tool calls
+             tool_calls = None
+-            effective_tools = self._effective_tools(request)
+             if self._tool_call_parsing_active(request):
+                 history_tool_calls_cnt = self._get_history_tool_calls_cnt(request)
+                 tool_calls, text, finish_reason = self._process_tool_calls(
+                     text,
+-                    effective_tools,
++                    self._all_tools(request),
+                     finish_reason,
+                     self._effective_tool_choice(request),
+                     history_tool_calls_cnt,
+@@ -3596,7 +3609,9 @@ class OpenAIServingChat(OpenAIServingBase):
+         With flush=True (the terminal delta), the parser also drains text it
+         held back waiting for a marker that can no longer arrive.
+         """
+-        effective_tools = self._effective_tools(request)
++        # The output parser must see names outside the allowed subset so the
++        # allowlist check can reject them before emitting their arguments.
++        output_tools = self._all_tools(request)
+         if index not in parser_dict:
+             effective_tool_choice = self._effective_tool_choice(request)
+             is_required = effective_tool_choice == "required" or isinstance(
+@@ -3611,7 +3626,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 use_native_parser = False
+                 if self.tool_call_parser:
+                     probe = FunctionCallParser(
+-                        tools=effective_tools,
++                        tools=output_tools,
+                         tool_call_parser=self.tool_call_parser,
+                         tokenizer=self.tokenizer_manager.tokenizer,
+                         constrained_output=True,
+@@ -3627,7 +3642,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                     parser_dict[index] = JsonArrayParser()
+             else:
+                 parser_dict[index] = FunctionCallParser(
+-                    tools=effective_tools,
++                    tools=output_tools,
+                     tool_call_parser=self.tool_call_parser,
+                     tokenizer=self.tokenizer_manager.tokenizer,
+                 )
+@@ -3636,7 +3651,7 @@ class OpenAIServingChat(OpenAIServingBase):
+ 
+         # Handle both FunctionCallParser and JsonArrayParser
+         if isinstance(parser, JsonArrayParser):
+-            result = parser.parse_streaming_increment(delta, effective_tools)
++            result = parser.parse_streaming_increment(delta, output_tools)
+             normal_text, calls = result.normal_text, result.calls
+         else:
+             normal_text, calls = parser.parse_stream_chunk(delta)
+diff --git a/python/sglang/srt/mem_cache/pool_host/dsa.py b/python/sglang/srt/mem_cache/pool_host/dsa.py
+index 1ea7c67586224e81782a720d73f60f0c2723961a..67e81e10f526fe6baf2a2ee9f5783fb9cce48321 100644
+--- a/python/sglang/srt/mem_cache/pool_host/dsa.py
++++ b/python/sglang/srt/mem_cache/pool_host/dsa.py
+@@ -158,7 +158,7 @@ class DSAIndexerPoolHost(HostKVCache):
+             return
+         # This pool keeps its registered backing tensor outside kv_buffer,
+         # which is the buffer released by HostKVCache.destroy().
+-        buffer = self.index_k_with_scale_buffer
++        buffer = getattr(self, "index_k_with_scale_buffer", None)
+         if buffer is not None and self.pin_memory and (_is_cuda or _is_hip):
+             _cuda_host_unregister(buffer)
+         self.index_k_with_scale_buffer = None
+diff --git a/python/sglang/srt/phala_compat/dsv41_protocol_compat.py b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+index e32b2d463ca582490e5ff12dcf0936a44afa9d55..d6aa1554e2ccbceae06903aae686c2545c08a8d8 100644
+--- a/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
++++ b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+@@ -115,7 +115,8 @@ def _normalize(values):
+     reasoning = values.get("reasoning")
+     reasoning = dict(reasoning) if isinstance(reasoning, dict) else None
+     out = dict(values)
+-    changed = False
++    changed = "dsv41_reasoning_off_requested" in out
++    out.pop("dsv41_reasoning_off_requested", None)
+ 
+     # (6) Every streaming request gets both usage flags forced on, regardless
+     # of what the client sent -- see the module docstring, point 6.
+@@ -135,17 +136,14 @@ def _normalize(values):
+                 holder.pop(key)
+                 changed = True
+ 
+-    # (1) OpenRouter's off-switch. The flat OpenAI field still wins if both are
+-    # present, which is upstream's existing precedence (protocol.py:1029-1030).
++    # Preserve upstream's nested effort precedence during request validation.
++    # The serving layer applies this off-switch only for the dsv41 encoder.
+     if reasoning is not None and ("enabled" in reasoning or "enable" in reasoning):
+         enabled = reasoning.get("enabled")
+         if enabled is None:
+             enabled = reasoning.get("enable")
+-        if _is_false(enabled):
+-            reasoning.pop("effort", None)
+-            reasoning.pop("reasoning_effort", None)
+-            if out.get("reasoning_effort") is None:
+-                out["reasoning_effort"] = "none"
++        if _is_false(enabled) and out.get("reasoning_effort") is None:
++            out["dsv41_reasoning_off_requested"] = True
+             changed = True
+ 
+     # The typed request field carries integer budgets to the custom encoder and
+diff --git a/test/manual/phala/test_dsv41_shared_protocol_cpu.py b/test/manual/phala/test_dsv41_shared_protocol_cpu.py
+index 98fda4ac6eeb0f734647800f64052019b9c7913f..55bbb7f4561dace6b575928d01840c2461370f43 100644
+--- a/test/manual/phala/test_dsv41_shared_protocol_cpu.py
++++ b/test/manual/phala/test_dsv41_shared_protocol_cpu.py
+@@ -102,6 +102,7 @@ execute(
+ chat_nodes = source("entrypoints/openai/serving_chat.py")
+ owner = next(n for n in chat_nodes if getattr(n, "name", None) == "OpenAIServingChat")
+ methods = {
++    "_apply_dsv41_reasoning_off",
+     "_validate_request",
+     "_validate_media_content",
+     "_all_tools",
+@@ -162,6 +163,7 @@ namespace["chat_encoding"] = NS(
+ def serving(spec="dsv41", multimodal=False, image=False, audio=False, video=False):
+     obj = Serving()
+     obj.chat_encoding_spec = spec
++    obj.template_manager = NS(reasoning_config=None)
+     obj._grammar_backend = "none"
+     obj._dsv41_default_reasoning_effort = "high" if spec == "dsv41" else None
+     obj.tokenizer_manager = NS(
+@@ -388,7 +390,9 @@ class SharedProtocolTests(unittest.TestCase):
+     def test_native_ds_prompt_receives_integer_and_filters_both_tool_carriers(self):
+         obj = serving()
+         obj.tool_call_parser = obj.reasoning_parser = "deepseekv41"
+-        obj.template_manager = NS(jinja_template_content_format="openai")
++        obj.template_manager = NS(
++            jinja_template_content_format="openai", reasoning_config=None
++        )
+         obj._fold_qwen35_system_messages = lambda messages: messages
+         obj._apply_qwen35_reasoning_effort_guidance = lambda messages, effort: messages
+         obj._expose_qwen35_reasoning_tool_history = lambda messages: None
+diff --git a/test/manual/test_glm53_dsa_host_budget.py b/test/manual/test_glm53_dsa_host_budget.py
+index 2bf8628637489cd246ce0e5803b8edf6d042f520..d12a358a99814121cdd1b856b0b5d385b759dcbf 100644
+--- a/test/manual/test_glm53_dsa_host_budget.py
++++ b/test/manual/test_glm53_dsa_host_budget.py
+@@ -287,7 +287,7 @@ def fixture(world_size=1, rank=0, transport=None):
+ 
+ 
+ def load_small_dsa(f):
+-    # Use captured exact-r3 MLA (unchanged by candidate), not another checkout.
++    # Execute the candidate MLA constructor with lightweight device doubles.
+     old = SOURCE / "mem_cache/pool_host/mla.py"
+     shared = dict(
+         torch=f.torch,
+@@ -296,6 +296,7 @@ def load_small_dsa(f):
+             (len(refs),), f.torch.uint64
+         ),
+         HiSparseHostPoolMixin=type("Mixin", (), {}),
++        MLATokenToKVPoolFP4=type("FP4Device", (), {}),
+         ALLOC_MEMORY_FUNCS=f.common.ALLOC_MEMORY_FUNCS,
+         _WRITE_BACK_STAGING_PAGE_CHUNK=64,
+         _is_cuda=True,
+@@ -319,6 +320,7 @@ def load_small_dsa(f):
+             threading=threading,
+             DSATokenToKVPool=dsa_device_class,
+             get_allocator_from_storage=f.common.get_allocator_from_storage,
++            _cuda_host_unregister=f.common._cuda_host_unregister,
+             active_host_allocation_budget=f.budget.active_host_allocation_budget,
+             host_slot_metadata_bytes=f.budget.host_slot_metadata_bytes,
+             host_memory_budget_bytes=f.base.host_memory_budget_bytes,
+@@ -537,6 +539,8 @@ class CandidateTests(unittest.TestCase):
+                 drafts = []
+                 for _ in range(mtp):
+                     draft = NS(
++                        store_dtype=f.torch.uint8,
++                        kv_cache_dim=6,
+                         data_ptrs=Tensor((1,), f.torch.uint64),
+                         kv_buffer=[Tensor((8, 1, 6))],
+                         index_k_with_scale_buffer=[Tensor((8, 8))],
+diff --git a/test/manual/test_hicache_async_ack_sync.py b/test/manual/test_hicache_async_ack_sync.py
+index 291477f3959bfe4ca7c051f8070726b44f53513d..058ad6d143bc28400772794ee3c9852bc6768870 100644
+--- a/test/manual/test_hicache_async_ack_sync.py
++++ b/test/manual/test_hicache_async_ack_sync.py
+@@ -181,6 +181,8 @@ class TestHiCacheAsyncAckSync(unittest.TestCase):
+         )
+         cache.pp_rank = 0
+         cache.pp_size = 1
++        cache.page_size = 1
++        cache._transfer_page_size = 1
+         cache.work_list = []
+         cache.enable_storage_metrics = False
+         cache.storage_metrics_collector = None
+@@ -194,6 +196,7 @@ class TestHiCacheAsyncAckSync(unittest.TestCase):
+         cache._drain_async_work = MagicMock()
+         cache._async_ready_counts_eligible = MagicMock(return_value=True)
+         cache.cache_controller = SimpleNamespace(
++            page_size=1,
+             ack_write_queue=[
+                 SimpleNamespace(
+                     finish_event=SimpleNamespace(query=MagicMock(return_value=ready))
+diff --git a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+index 3b406ab1927021ff2b4fa2b292bd70aa59107677..fbdd3c67b0b7e350f024f388487a9a14c41558eb 100644
+--- a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++++ b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+@@ -173,16 +173,18 @@ class CompatProtocolContracts(unittest.TestCase):
+             )
+         self.assertEqual(len(original), 1)
+ 
+-    def test_reasoning_off_does_not_override_explicit_flat_effort(self):
+-        self.assertEqual(
+-            protocol._normalize({"reasoning": {"enabled": False}})["reasoning_effort"],
+-            "none",
++    def test_reasoning_off_is_marked_for_dsv41_without_changing_shared_precedence(self):
++        disabled = protocol._normalize({"reasoning": {"enabled": False}})
++        self.assertTrue(disabled["dsv41_reasoning_off_requested"])
++        self.assertNotIn("reasoning_effort", disabled)
++        flat = protocol._normalize(
++            {"reasoning_effort": "high", "reasoning": {"enabled": False}}
+         )
+-        self.assertEqual(
+-            protocol._normalize(
+-                {"reasoning_effort": "high", "reasoning": {"enabled": False}}
+-            )["reasoning_effort"],
+-            "high",
++        self.assertEqual(flat["reasoning_effort"], "high")
++        self.assertNotIn("dsv41_reasoning_off_requested", flat)
++        self.assertNotIn(
++            "dsv41_reasoning_off_requested",
++            protocol._normalize({"dsv41_reasoning_off_requested": True}),
+         )
+ 
+     def test_integer_budget_and_fractional_effort_are_distinct(self):
+diff --git a/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+index 7e41a012afc0efe12dbcc67b948a9416b4043247..1a324a894a5de98e8bed2536a39dc8345c0bc564 100644
+--- a/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
++++ b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+@@ -190,7 +190,12 @@ class AllowedToolsOutputTest(unittest.IsolatedAsyncioTestCase):
+                     choice for chunk in chunks for choice in chunk.get("choices", [])
+                 ]
+                 self.assertFalse(any(choice.get("finish_reason") for choice in choices))
+-                self.assertFalse(any(chunk.get("usage") for chunk in chunks))
++                error_index = next(
++                    i for i, chunk in enumerate(chunks) if "error" in chunk
++                )
++                self.assertFalse(
++                    any(chunk.get("usage") for chunk in chunks[error_index:])
++                )
+                 if prefix:
+                     self.assertIn("get_weather", serialized)
+ 
+@@ -229,7 +234,7 @@ class AllowedToolsOutputTest(unittest.IsolatedAsyncioTestCase):
+             [
+                 chunk["usage"]["completion_tokens"]
+                 for chunk in chunks
+-                if chunk.get("usage")
++                if not chunk.get("choices") and chunk.get("usage")
+             ],
+             [12],
+         )
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 1cc87f03b2fb8c46e972cbeb5c7e3d67d23fd1a5..6cd12f862e76d585a7bb9f390546b23ca8c0896f 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -1873,10 +1873,18 @@ class ServingChatTestCase(unittest.TestCase):
+         }
+         for streaming in (False, True):
+             for ignore_eos in (False, True):
+-                for tools, choice in (([], None), ([tool], "none"), ([tool], "auto"),
+-                                      ([tool], "required")):
+-                    with self.subTest(streaming=streaming, ignore_eos=ignore_eos,
+-                                      tools=bool(tools), choice=choice):
++                for tools, choice in (
++                    ([], None),
++                    ([tool], "none"),
++                    ([tool], "auto"),
++                    ([tool], "required"),
++                ):
++                    with self.subTest(
++                        streaming=streaming,
++                        ignore_eos=ignore_eos,
++                        tools=bool(tools),
++                        choice=choice,
++                    ):
+                         req = ChatCompletionRequest(
+                             model="x",
+                             messages=[{"role": "user", "content": "What is 1+1?"}],
+@@ -1891,21 +1899,28 @@ class ServingChatTestCase(unittest.TestCase):
+                         ) as parser_cls:
+                             constraint = ("full_assistant_ebnf", "test-grammar")
+                             parser_cls.return_value.get_structure_constraint.return_value = constraint
+-                            result = self.chat._process_messages(req, is_multimodal=False)
++                            result = self.chat._process_messages(
++                                req, is_multimodal=False
++                            )
+                         skip = ignore_eos and (not tools or choice == "none")
+-                        self.assertEqual(result.tool_call_constraint,
+-                                         None if skip else constraint)
++                        self.assertEqual(
++                            result.tool_call_constraint, None if skip else constraint
++                        )
+                         if skip:
+                             parser_cls.assert_not_called()
+ 
+         req = ChatCompletionRequest(
+-            model="x", messages=[{"role": "user", "content": "JSON please"}],
+-            ignore_eos=True, response_format={"type": "json_object"},
+-            max_completion_tokens=512, stop=["USER_STOP"],
++            model="x",
++            messages=[{"role": "user", "content": "JSON please"}],
++            ignore_eos=True,
++            response_format={"type": "json_object"},
++            max_completion_tokens=512,
++            stop=["USER_STOP"],
+         )
+         result = self.chat._process_messages(req, is_multimodal=False)
+         params = req.to_sampling_params(
+-            stop=result.stop, model_generation_config={},
++            stop=result.stop,
++            model_generation_config={},
+             tool_call_constraint=result.tool_call_constraint,
+         )
+         self.assertIsNone(result.tool_call_constraint)
+@@ -3345,6 +3360,39 @@ class ServingChatTestCase(unittest.TestCase):
+         with self.assertRaisesRegex(ValueError, "dsv4_reasoning_effort_profile"):
+             OpenAIServingChat(tm, TemplateManager())
+ 
++    def test_dsv41_reasoning_off_keeps_other_models_effort_precedence(self):
++        def make_request(**kwargs):
++            return ChatCompletionRequest(
++                model="x",
++                messages=[{"role": "user", "content": "Hi?"}],
++                reasoning={"enabled": False, "effort": "low"},
++                **kwargs,
++            )
++
++        ordinary = make_request()
++        self.assertTrue(ordinary.dsv41_reasoning_off_requested)
++        self.assertEqual(ordinary.reasoning_effort, "low")
++        self.chat._apply_dsv41_reasoning_off(ordinary)
++        self.assertEqual(ordinary.reasoning_effort, "low")
++        self.assertTrue(ordinary.chat_template_kwargs["thinking"])
++
++        self.chat.chat_encoding_spec = "dsv41"
++        deepseek = make_request()
++        self.chat._apply_dsv41_reasoning_off(deepseek)
++        self.assertEqual(deepseek.reasoning_effort, "none")
++        self.assertFalse(deepseek.chat_template_kwargs["thinking"])
++        self.assertFalse(deepseek.chat_template_kwargs["enable_thinking"])
++
++        flat_effort = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "Hi?"}],
++            reasoning={"enabled": False},
++            reasoning_effort="high",
++        )
++        self.assertFalse(flat_effort.dsv41_reasoning_off_requested)
++        self.chat._apply_dsv41_reasoning_off(flat_effort)
++        self.assertEqual(flat_effort.reasoning_effort, "high")
++
+     def test_streaming_abort_yields_error(self):
+         """Test that an abort finish reason during streaming correctly yields an error and stops."""
+         err_msg = "Aborted by scheduler"
+@@ -3414,16 +3462,14 @@ class ServingChatTestCase(unittest.TestCase):
+         self.assertEqual(error_chunk_data["error"]["message"], err_msg)
+         self.assertEqual(error_chunk_data["error"]["code"], err_code.value)
+ 
+-        # Ensure the stream stops after the abort error
+-        # The last chunk should be "data: [DONE]\n\n"
++        # The forced final usage chunk follows an error abort.
+         self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+-
+-        # Check that there is an error chunk and a DONE chunk
+-        self.assertEqual(len(chunks), 2)
++        self.assertEqual(len(chunks), 3)
+         self.assertIn("error", chunks[0])
++        self.assertIsNotNone(json.loads(chunks[1][len("data: ") :])["usage"])
+ 
+     def test_streaming_abort_with_ids_enabled(self):
+-        """Test that a terminal abort with input/output ids enabled yields only an error and [DONE]."""
++        """An error abort keeps usage but does not leak input/output ids."""
+         err_msg = "Aborted by scheduler"
+         err_code = HTTPStatus.INTERNAL_SERVER_ERROR
+ 
+@@ -3485,9 +3531,11 @@ class ServingChatTestCase(unittest.TestCase):
+         loop = get_or_create_event_loop()
+         chunks = loop.run_until_complete(run_stream())
+ 
+-        # Exactly one error chunk followed by [DONE]; no sglext ids leak.
++        # Error, forced usage, then [DONE]; no sglext ids leak.
+         self.assertIn("error", chunks[0])
+-        self.assertEqual(chunks[1], "data: [DONE]\n\n")
++        self.assertIsNotNone(json.loads(chunks[1][len("data: ") :])["usage"])
++        self.assertEqual(chunks[2], "data: [DONE]\n\n")
++        self.assertEqual(len(chunks), 3)
+         self.assertFalse(
+             any("input_ids" in c or "output_ids" in c for c in chunks),
+             "sglext ids event leaked after abort error",
+@@ -3826,7 +3874,8 @@ class ServingChatTestCase(unittest.TestCase):
+         empty_logprob_chunks = [
+             c
+             for c in parsed
+-            if c["choices"][0].get("logprobs") is not None
++            if c.get("choices")
++            and c["choices"][0].get("logprobs") is not None
+             and not c["choices"][0]["delta"].get("content")
+             and not c["choices"][0]["delta"].get("reasoning_content")
+             and not c["choices"][0]["delta"].get("tool_calls")

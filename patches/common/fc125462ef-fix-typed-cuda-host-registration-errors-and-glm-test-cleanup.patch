@@ -1,0 +1,124 @@
+diff --git a/python/sglang/srt/mem_cache/pool_host/common.py b/python/sglang/srt/mem_cache/pool_host/common.py
+index 605339aeed939d0c7e90b6479541f09293a3195d..12b3fbd282637d75a066b6e3d1468294855716b9 100644
+--- a/python/sglang/srt/mem_cache/pool_host/common.py
++++ b/python/sglang/srt/mem_cache/pool_host/common.py
+@@ -174,11 +174,12 @@ def _cuda_host_register(
+         while offset < total:
+             size = min(chunk_bytes, total - offset)
+             ptr = base + offset
+-            rc = int(cudart.cudaHostRegister(ptr, size, 0))
++            status = cudart.cudaHostRegister(ptr, size, 0)
++            rc = int(status)
+             if rc != 0:
+                 raise RuntimeError(
+                     f"cudaHostRegister failed (rc={rc}, "
+-                    f"{cudart.cudaGetErrorString(rc)}) at offset={offset} size={size} "
++                    f"{cudart.cudaGetErrorString(status)}) at offset={offset} size={size} "
+                     f"(total={total}, chunk_limit={chunk_bytes}); host buffer is not "
+                     f"pinned and device transfers may silently return stale data."
+                 )
+@@ -202,14 +203,15 @@ def _cuda_host_unregister_ranges(
+ ) -> list[tuple[int, int]]:
+     failed_ranges = []
+     for ptr, size in reversed(registered_ranges):
+-        rc = int(cudart.cudaHostUnregister(ptr))
++        status = cudart.cudaHostUnregister(ptr)
++        rc = int(status)
+         if rc != 0:
+             failed_ranges.append((ptr, size))
+             logger.warning(
+                 "cudaHostUnregister failed during %s (rc=%d, %s) for ptr=%#x size=%d",
+                 operation,
+                 rc,
+-                cudart.cudaGetErrorString(rc),
++                cudart.cudaGetErrorString(status),
+                 ptr,
+                 size,
+             )
+diff --git a/test/registered/unit/mem_cache/test_hicache_host_register.py b/test/registered/unit/mem_cache/test_hicache_host_register.py
+index e12f30cd19accccd193797adca7f85e4f5a888d5..96eb2870eb6c99ed1e3849f596888ee42916e828 100644
+--- a/test/registered/unit/mem_cache/test_hicache_host_register.py
++++ b/test/registered/unit/mem_cache/test_hicache_host_register.py
+@@ -1,4 +1,5 @@
+ import unittest
++from enum import IntEnum
+ from types import SimpleNamespace
+ from unittest import mock
+ 
+@@ -14,6 +15,7 @@ from sglang.srt.mem_cache.pool_host import mha as mha_pool_host
+ from sglang.srt.mem_cache.pool_host import mla as mla_pool_host
+ from sglang.srt.mem_cache.pool_host.common import (
+     ALLOC_MEMORY_FUNCS,
++    _CUDA_HOST_REGISTERED_RANGES_ATTR,
+     _cuda_host_register,
+     _cuda_host_unregister,
+ )
+@@ -65,7 +67,39 @@ class _FakeCudart:
+         return "injected error"
+ 
+ 
++class _TypedStatus(IntEnum):
++    OK = 0
++    FAILED = 713
++
++
++class _TypedCudart(_FakeCudart):
++    def cudaHostRegister(self, ptr: int, size: int, flags: int) -> _TypedStatus:
++        return _TypedStatus.FAILED
++
++    def cudaHostUnregister(self, ptr: int) -> _TypedStatus:
++        return _TypedStatus.FAILED
++
++    def cudaGetErrorString(self, status: _TypedStatus) -> str:
++        if not isinstance(status, _TypedStatus):
++            raise TypeError("CUDA error status must retain its enum type")
++        return "typed CUDA error"
++
++
+ class TestHiCacheHostRegister(unittest.TestCase):
++    def test_error_text_receives_cuda_status_enum(self):
++        buffer = _FakeBuffer(0x10000000, 17)
++        cudart = _TypedCudart()
++        with mock.patch.object(torch.cuda, "cudart", return_value=cudart):
++            with self.assertRaisesRegex(RuntimeError, "typed CUDA error"):
++                _cuda_host_register(buffer)
++
++            setattr(
++                buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [(buffer.data_ptr(), 17)]
++            )
++            with mock.patch("sglang.srt.mem_cache.pool_host.common.logger") as logger:
++                _cuda_host_unregister(buffer)
++                logger.warning.assert_called_once()
++
+     def test_dsa_page_layouts_with_draft_use_page_registration_granularity(self):
+         target_buffers = [torch.empty(1, dtype=torch.uint8) for _ in range(3)]
+         draft_buffer = torch.empty(1, dtype=torch.uint8)
+diff --git a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+index 1ad73f03ee107ce77d46a478769628df4c20e70c..70fe001170ced7e55c292bd7539f2e6c438ceee5 100644
+--- a/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
++++ b/test/registered/unit/mem_cache/test_hybrid_pool_assembler.py
+@@ -20,7 +20,10 @@ from sglang.srt.mem_cache.memory_pool import (
+     MLATokenToKVPool,
+     MLATokenToKVPoolFP4,
+ )
+-from sglang.srt.mem_cache.pool_host.common import alloc_with_host_register
++from sglang.srt.mem_cache.pool_host.common import (
++    _CUDA_HOST_REGISTERED_RANGES_ATTR,
++    alloc_with_host_register,
++)
+ from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+@@ -187,7 +190,11 @@ class _PackedRowGeometryFixtures:
+     @staticmethod
+     def _alloc_unpinned(dims, dtype, device, pin_memory, allocator, **kwargs):
+         # Host rows are allocated without pinning so no CUDA context is needed.
+-        return alloc_with_host_register(dims, dtype, device, False, allocator, **kwargs)
++        buffer = alloc_with_host_register(
++            dims, dtype, device, False, allocator, **kwargs
++        )
++        setattr(buffer, _CUDA_HOST_REGISTERED_RANGES_ATTR, [])
++        return buffer
+ 
+ 
+ class TestHybridMambaStackHostRowWidth(_PackedRowGeometryFixtures, CustomTestCase):
