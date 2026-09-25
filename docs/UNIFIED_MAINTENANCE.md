@@ -9,9 +9,9 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd`.
-- Engine tree: `7ea9dc0382734d3560db10af78d6fdb929537e1e`.
-- Ordered engine stack: 31 protected steps plus 96 successor steps.
+- Active engine: `fa8cf60f78d006abbd5515426b3a64d384418421`.
+- Engine tree: `fc5dda980ee83a635beb4d99d48d051904bd0bfc`.
+- Ordered engine stack: 31 protected steps plus 97 successor steps.
 - R8 added guarded selective write-through async ACK and refreshed live Kimi
   `inputs_embeds` during prefill CUDA graph replay. R9 preserves DeepSeek
   integer reasoning budgets through the typed request and custom encoder.
@@ -22,6 +22,9 @@ model release workflows.
   `CompletionTokensDetails`, avoiding per-token serialization warnings.
 - R12 aligns the GPU wheel metadata with the fixed Transformers 5.17.0 and
   tokenizers 0.23.1 visual processing dependencies.
+- R13 translates Gemma4's Transformers 5.17 per-layer full/SWA attention
+  dimensions into the fields used by SGLang, with validation of same-type
+  layer consistency. R12 failed Gemma4 startup on C07 before health.
 - The final successor aligns the exact engine tree with `main`'s repository CI
   cleanup and runs the health lifecycle regression in Phala source CI. The
   two-parent integration commit has the same tree as its single-parent export.

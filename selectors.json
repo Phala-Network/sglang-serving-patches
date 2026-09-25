@@ -1,8 +1,8 @@
 {
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
-  "active_selector": "unified-v0520-r12",
-  "as_of": "2026-09-25",
+  "active_selector": "unified-v0520-r13",
+  "as_of": "2026-09-26",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -1615,6 +1615,670 @@
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
       "status": "R12 source candidate; final-image and model qualification pending",
+      "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
+    },
+    "unified-v0520-r13": {
+      "model_family": "shared-serving-and-model-increments",
+      "version": "v0.5.20",
+      "topology": [
+        "model-and-topology-guarded"
+      ],
+      "fork_commit": "fa8cf60f78d006abbd5515426b3a64d384418421",
+      "fork_tree": "fc5dda980ee83a635beb4d99d48d051904bd0bfc",
+      "fork_branch": "codex/sglang-image-unification-20260926-r13",
+      "source_parent": "4281309187007db579a2195f40adfd4baa538528",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..fa8cf60f78d006abbd5515426b3a64d384418421",
+      "replay_mode": "exact",
+      "patches": [
+        {
+          "id": "common-llguidance-callbacks",
+          "path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+          "source_commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+          "sha256": "168a23f64a4afff355fa345b70f135d48908071e92cb352b3ad45faabc1fc45a"
+        },
+        {
+          "id": "common-typed-reasoning-usage",
+          "path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+          "source_commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+          "sha256": "2143f335f17786a281075c929ba57b466a966f7d41438bfe7e8c30e23df84d89"
+        },
+        {
+          "id": "common-mode-sampling-defaults",
+          "path": "patches/common/1db913dd7b-honor-opt-in-checkpoint-mode-sampling-defaults.patch",
+          "source_commit": "1db913dd7b389922243a76caf61bac1c344b3162",
+          "sha256": "eb6945e803f59d2b7a2eead38251159b91a66ca156e8c66336ff997b2440f646"
+        },
+        {
+          "id": "kimi-request-owner",
+          "path": "patches/models/kimi/be54243a76-bind-delayed-aborts-to-original-api-request-owner.patch",
+          "source_commit": "1e62ad753c4243ba8b3e627a41813e3df353e924",
+          "sha256": "3f2f446dd272566ac24482b3ad5101cb040527fa544efcfbe11a24d7fb5b9ab8"
+        },
+        {
+          "id": "kimi-mamba-checkpoint",
+          "path": "patches/models/kimi/bc60e5ce93-align-mamba-checkpoint-donation-to-absolute-page-grid.patch",
+          "source_commit": "9bd58a168358f7c336f63fa3f3965659e8bacc23",
+          "sha256": "2c750e344e4adc961662df64dfd110a6448607f8d575767b10119938beab17d2"
+        },
+        {
+          "id": "kimi-prefill-sequence-cap",
+          "path": "patches/models/kimi/76c354ee11-bound-prefill-graph-replay-by-optional-total-sequence-cap.patch",
+          "source_commit": "6329c4dddd08bc526dbda58449272034cfa6c7e6",
+          "sha256": "b09edf38197e2bc35253d4cec764c0f851971e36143bb670a5047354eae2da9b"
+        },
+        {
+          "id": "kimi-file-ownership",
+          "path": "patches/models/kimi/bb1d6282a9-preserve-hybrid-file-ownership-budgets-and-common-restorable-prefixes.patch",
+          "source_commit": "cd0cca6903e8f0d0fa73dc286b04b85834272840",
+          "sha256": "23bf30c8b455d90323d5a7a5c45d0d0d3848439291f4ea70bf63a096f25338b0"
+        },
+        {
+          "id": "kimi-completed-chunk-guards",
+          "path": "patches/models/kimi/634e484d7e-keep-shared-completed-chunk-backup-on-supported-cache-paths.patch",
+          "source_commit": "5a1799c43d726eaa0f89df8dfe0604285fa3730a",
+          "sha256": "e145bb80740cea97956541c70b888fca02d483b2522b5f7fa055f2ef391f726c"
+        },
+        {
+          "id": "kimi-virtual-page-continuation",
+          "path": "patches/models/kimi/c621dc4550-use-allocator-virtual-pages-for-chunk-continuation-kv-reservations.patch",
+          "source_commit": "02558c2aaab1b1e91a15a8352659bba489dd5ff0",
+          "sha256": "a176d29a38af0be5138bdda1a8f236e42cf95f16381338e2b291bd01f4e683ab"
+        },
+        {
+          "id": "muse-native-channel",
+          "path": "patches/models/muse/d486b6fe7a-preserve-muse-native-channel-framing-for-required-tool-calls.patch",
+          "source_commit": "6b3ca7eddd1f0a1eed2774bdfd461626c5e0e780",
+          "sha256": "dcaf24746efa9397f124ab9e866d430587b9253671364a6400c8595ab351550b"
+        },
+        {
+          "id": "nemotron-literal-token-boundaries",
+          "path": "patches/models/nemotron/6acf476ccf-literal-token-boundaries.patch",
+          "source_commit": "6acf476ccf453e5545be9b12353b67fe09cdbf4c",
+          "sha256": "ed5ba0ef8642927bb4aa10a7ebc4714687a44c25783a8c31e6d2dc017edc4d73"
+        },
+        {
+          "id": "dsv41-0001",
+          "path": "patches/models/deepseek/dsv41-0001-rust-interfaces.patch",
+          "source_commit": "5392a7324f23e0f1d960edb2c60e4fd9020978e9",
+          "sha256": "261ce2e356a0ee6e75e3dfac74ee7ddb7c19928e62dc890dfd9b8186a1042146"
+        },
+        {
+          "id": "dsv41-0002",
+          "path": "patches/models/deepseek/dsv41-0002-standalone-kernels.patch",
+          "source_commit": "6842c9135a8a2af8458f836bb81ac6ff83e33c32",
+          "sha256": "6a0e71200cf093e216967dfbf5d265fc1c2f2916e3d07c17e139037925399c35"
+        },
+        {
+          "id": "dsv41-0003",
+          "path": "patches/models/deepseek/dsv41-0003-topk-candidates.patch",
+          "source_commit": "ae829a492f29d50286ca62e524f66bdab7a314b3",
+          "sha256": "4fac7406660ba795462eb27b5f4f052e9dcc5f7bf5dff51f7b45ce545aefa392"
+        },
+        {
+          "id": "dsv41-0004",
+          "path": "patches/models/deepseek/dsv41-0004-communication-kernels.patch",
+          "source_commit": "2058fb0a106ef3e9a1431f6400d512333643f618",
+          "sha256": "58c71cfa499c2cfb080b90e914a0bb6f0b170aa9492461dbfb4e1923dd1cae14"
+        },
+        {
+          "id": "dsv41-0005",
+          "path": "patches/models/deepseek/dsv41-0005-compression-kv-io.patch",
+          "source_commit": "d25d72a68e5b240851a0b645b98582d7924b540f",
+          "sha256": "72abf167dba618330e18edce53fcdc8b8d5b35af11ab661a583e2e1703064b6f"
+        },
+        {
+          "id": "dsv41-0006",
+          "path": "patches/models/deepseek/dsv41-0006-candidate-indexer.patch",
+          "source_commit": "df74a3ed2401723ff865b514f5bba23a5a0164e4",
+          "sha256": "ba3068384fba17ec00e997801ecb29f1bfaa448b2c10ac1ef40c96bb3281c7af"
+        },
+        {
+          "id": "dsv41-0007",
+          "path": "patches/models/deepseek/dsv41-0007-rope-fp4-packing.patch",
+          "source_commit": "79a3ac5416bfa512b95d7e615c901eaf9dd63482",
+          "sha256": "7fdb26b8ce2ce84a5b488b2bb42b60bf40a4039413b1222ded4a2595236733e8"
+        },
+        {
+          "id": "dsv41-0008",
+          "path": "patches/models/deepseek/dsv41-0008-hopper-fp8.patch",
+          "source_commit": "5919a29f559e8a8a83eab1ca8e2e858ff4a07f9e",
+          "sha256": "85e158b8aadc0622339ac8cd5004361a9797c3137e97bd05e527aa16b28d601a"
+        },
+        {
+          "id": "dsv41-0009",
+          "path": "patches/models/deepseek/dsv41-0009-mhc-projections.patch",
+          "source_commit": "a55765773e792cb3a7dbbf152a0968eb31c74354",
+          "sha256": "b2bf4fe46ec168d1a359427b5c02680c0d623f2712da94c9cccbe7e9d2a420f5"
+        },
+        {
+          "id": "dsv41-0010",
+          "path": "patches/models/deepseek/dsv41-0010-vision-preprocessing.patch",
+          "source_commit": "d31c3fa098ffd37ff1b3bbe27219eb5f990e030e",
+          "sha256": "bd63826de7987e1970a758d7a2367309b868c335f537b9742f7024d9a2c7815d"
+        },
+        {
+          "id": "dsv41-chat-encoding-adapted",
+          "path": "patches/models/deepseek/407ab50cf5-chat-encoding-adapted.patch",
+          "source_commit": "407ab50cf5849ccc66d646f93244a4ce98e754e1",
+          "sha256": "d478ecf64152105756e49bab2e77f4dacf4a40aacccd46f86e1bb43110990c64"
+        },
+        {
+          "id": "common-named-tool-reference-roots",
+          "path": "patches/common/d912c600ba-named-tool-reference-roots.patch",
+          "source_commit": "d912c600bad54887952a0e5d4c96bf1a922294d3",
+          "sha256": "f422a4388d935e3106ea0e1d2bbe89d2d69bedbf57d73d9c103340007d1d5c1e"
+        },
+        {
+          "id": "qwen-gemma-history-reconciliation",
+          "path": "patches/models/qwen/23bd4b2a9b-history-reconciliation.patch",
+          "source_commit": "23bd4b2a9be8dcad15e54fae5d3ab6f233230de1",
+          "sha256": "df0efcdc9be06fa76da1e7c004c914b48c66419217862c668a4194c1a8e92b50"
+        },
+        {
+          "id": "qwen-complete-call-boundaries",
+          "path": "patches/models/qwen/447dfcb6de-complete-call-boundaries.patch",
+          "source_commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
+          "sha256": "6c4a55cef3ae03196c64796a594e1499d22d23ca983deaa6ff07c78f71f2d615"
+        },
+        {
+          "id": "muse-required-named-constraints",
+          "path": "patches/models/muse/acec595f6b-required-named-constraints.patch",
+          "source_commit": "acec595f6b6d2b6e8969af0d5a39fe6ec51a30f5",
+          "sha256": "a6911a3756d1088a30a786c69bdf6ff361dc5867aad3bb302bd1aae199e5f91e"
+        },
+        {
+          "id": "muse-channel-grammar-lifecycle",
+          "path": "patches/models/muse/252ce1114c-channel-grammar-lifecycle.patch",
+          "source_commit": "252ce1114c157031bdc4a8ebfbffe798b7527507",
+          "sha256": "3434c916f30c41cda2a07f6151d636d5762f3e8b3a57d0e028b4f5d2f9304241"
+        },
+        {
+          "id": "muse-history-template-contract",
+          "path": "patches/models/muse/bb758d0bab-history-template-contract.patch",
+          "source_commit": "bb758d0babab3a0d345aa55f503791564923ac4d",
+          "sha256": "a531ecb3f00e224df9ea39007647e5a261193a2e83da0853c738c27e30f43abc"
+        },
+        {
+          "id": "common-marlin-breakable",
+          "path": "patches/common/fa291d652a-marlin-breakable.patch",
+          "source_commit": "fa291d652a4a736d770f1dde59f8a57a41f4d85f",
+          "sha256": "6249c0c85c2ef0b63e5e6877eefe9225e4f45114109f859cb112525ee82dade2"
+        },
+        {
+          "id": "qwen-gguf-load-vision",
+          "path": "patches/models/qwen/0b921c2f15-gguf-load-vision.patch",
+          "source_commit": "0b921c2f15623b0ad9e5fa23984d86b4c16b0951",
+          "sha256": "ba2ac10cde69ced4f062f932d1e82acc78626d772341b65e566badb2a5702590"
+        },
+        {
+          "id": "muse-explicit-budget-regression",
+          "path": "patches/models/muse/f76d68047d-explicit-budget-regression.patch",
+          "source_commit": "f76d68047de08e2cde1884d25c461eccda7a11e1",
+          "sha256": "98f5c6cb68024fc08f88575c99a0cebea573c13335020f4077395b5974e95dca"
+        },
+        {
+          "id": "qwen-guarded-q8-prefill",
+          "path": "patches/models/qwen/8a51d28ba2-guarded-q8-prefill.patch",
+          "source_commit": "8a51d28ba2ad953593ed033612d19205e1388cb9",
+          "sha256": "c083dc7957434c1d7374a9f7d074d9732765a03d20a0e0ebd0089ba8d076c9fc"
+        },
+        {
+          "id": "common-source-ci-lint",
+          "path": "patches/common/a6bfd34af1-source-ci-lint.patch",
+          "source_commit": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
+          "sha256": "582f80ab78c7c796856b9c6c8a5220fb46eaa70dfd6b07ff33f2eeff989133ee"
+        },
+        {
+          "id": "union-9025b810d5",
+          "path": "patches/dependencies/xgrammar/9025b810d5-integrate-pinned-xgrammar-union-native-semantics-and-bounded-adapter.patch",
+          "source_commit": "9025b810d5aadd921516d99aa5810c6d7f842a9d",
+          "source_parent": "a6bfd34af146093fea75d9ff824c5952837a9f3b",
+          "sha256": "3b0b949d4bb6156694dae6d4587f45fa382f8e80f7b9e75e48d6c948a7fa4188"
+        },
+        {
+          "id": "union-f07476acea",
+          "path": "patches/models/deepseek/f07476acea-dsv4-1-engram-module-and-request-history-support-39666.patch",
+          "source_commit": "f07476acea968d239b32c29bbb7890dca4bddb69",
+          "source_parent": "9025b810d5aadd921516d99aa5810c6d7f842a9d",
+          "sha256": "069a8d0b527789026ee3fbb28eac82917ef620eb4393d902b95db4f06ce33324"
+        },
+        {
+          "id": "union-5e7533f6c5",
+          "path": "patches/models/deepseek/5e7533f6c5-dsv4-generalize-attention-metadata-sparse-prefill-and-kv-pool-over-compress-ratios-39921.patch",
+          "source_commit": "5e7533f6c5ecef1ab069ff7cbabc563c1bba1602",
+          "source_parent": "f07476acea968d239b32c29bbb7890dca4bddb69",
+          "sha256": "239280e1d901df1345245ce3b387bdc0881d467985f678ae969e86763653542a"
+        },
+        {
+          "id": "union-4734640dd1",
+          "path": "patches/models/deepseek/4734640dd1-quant-serve-32-wide-k-ue8m0-block-fp8-linears-through-the-flashinfer-mxfp8-gemms-40039.patch",
+          "source_commit": "4734640dd102c9bcd56bc774e88b25b76e60b7a1",
+          "source_parent": "5e7533f6c5ecef1ab069ff7cbabc563c1bba1602",
+          "sha256": "98b32fbf00036dbd10838411249eab0b9260adbd17f1aa0885593107e9c2084d"
+        },
+        {
+          "id": "union-5d462d447b",
+          "path": "patches/models/deepseek/5d462d447b-dsv4-1-remaining-model-and-runtime-integration-38798.patch",
+          "source_commit": "5d462d447b167346ec0957ee229f19293b8697f4",
+          "source_parent": "4734640dd102c9bcd56bc774e88b25b76e60b7a1",
+          "sha256": "ddc0de34b2c61262b617d6a1747b6592e557590bcfbec43699e8c8c43d3ddf5f"
+        },
+        {
+          "id": "union-91def7153c",
+          "path": "patches/models/deepseek/91def7153c-bound-deepseek-v4-1-dense-prefill-indexer-memory.patch",
+          "source_commit": "91def7153cd790589feb3511eab3059c5406754b",
+          "source_parent": "5d462d447b167346ec0957ee229f19293b8697f4",
+          "sha256": "162ed2c8b0349d0b76c20e5cdcbc97877efd2de05ac4b86c8f3f0eee849f8c9d"
+        },
+        {
+          "id": "union-b8745690ae",
+          "path": "patches/common/b8745690ae-strengthen-dense-prefill-consumer-correctness-and-memory-tests.patch",
+          "source_commit": "b8745690ae05ed0591da110b9ec86e81a0dce5c2",
+          "source_parent": "91def7153cd790589feb3511eab3059c5406754b",
+          "sha256": "c4000d02c5a7f631d1583e8e8c97947954e8aa2d1e4e62fffee2eaa2d23e312c"
+        },
+        {
+          "id": "union-40f9a8089b",
+          "path": "patches/common/40f9a8089b-fix-hicache-back-up-completed-write-through-chunks.patch",
+          "source_commit": "40f9a8089b643f880d1e3abb80c13dc01937403a",
+          "source_parent": "b8745690ae05ed0591da110b9ec86e81a0dce5c2",
+          "sha256": "5719c05c00911004a0d12458a6d178f2cf21eec1b7dedf3db4dfd6a26fa8a1f8"
+        },
+        {
+          "id": "union-ea037cef31",
+          "path": "patches/models/deepseek/ea037cef31-perf-dsv41-isolate-medium-target-finalize-plane.patch",
+          "source_commit": "ea037cef312d5658fede1c27da8cd466b33a0b83",
+          "source_parent": "40f9a8089b643f880d1e3abb80c13dc01937403a",
+          "sha256": "797f1729370976b3f9cf5b66a2ff51610da75941228ff781050e3b71b3fe13c0"
+        },
+        {
+          "id": "union-d2309bf011",
+          "path": "patches/models/deepseek/d2309bf011-fix-dsv41-close-stable-transplant-imports-and-document-qualification-boundaries.patch",
+          "source_commit": "d2309bf011c298e7aeb6d0acd7e9ab5350c3159d",
+          "source_parent": "ea037cef312d5658fede1c27da8cd466b33a0b83",
+          "sha256": "3aeb094842fbcfcee8f562fdde417cc16fea6c2a260539f0f4aa0ac5cb1901b0"
+        },
+        {
+          "id": "union-4109368860",
+          "path": "patches/models/deepseek/4109368860-fix-dsv41-restore-mxfp4-padding-before-weight-shuffle.patch",
+          "source_commit": "4109368860365fc1baa4e980a018b3208efba637",
+          "source_parent": "d2309bf011c298e7aeb6d0acd7e9ab5350c3159d",
+          "sha256": "2ff2e73c88b5547ab777388916995cdf1cf1bc708f34285ae872fc7007a62c26"
+        },
+        {
+          "id": "union-790615adcb",
+          "path": "patches/models/deepseek/790615adcb-fix-dsv41-preserve-native-flashinfer-routed-weight-abi.patch",
+          "source_commit": "790615adcbc594fd465fec1bf049063a70166180",
+          "source_parent": "4109368860365fc1baa4e980a018b3208efba637",
+          "sha256": "db486cc862d2cdb79cd8e2f6185ae0bd5b01c813e323207a60f5f0e820775179"
+        },
+        {
+          "id": "union-818de30111",
+          "path": "patches/models/deepseek/818de30111-fix-dsv41-size-candidate-bitmap-for-speculative-scratch-extent.patch",
+          "source_commit": "818de30111761ba60e81ace113f2a1b14ed6d163",
+          "source_parent": "790615adcbc594fd465fec1bf049063a70166180",
+          "sha256": "cd47773491efb1ea8b21a1a2a67a50b20a45af354bdb8db96fb29f5a617c22cc"
+        },
+        {
+          "id": "union-66ae92bedf",
+          "path": "patches/models/deepseek/66ae92bedf-adapt-native-deepseek-encoder-and-common-async-conversion-hooks.patch",
+          "source_commit": "66ae92bedfe6ca50840dceada40bab68cad17606",
+          "source_parent": "818de30111761ba60e81ace113f2a1b14ed6d163",
+          "sha256": "f635ff462983dc22690035ffc1da57b5df81ba19dfc29fe87f4ff14a3bf25507"
+        },
+        {
+          "id": "union-647be7d4d2",
+          "path": "patches/models/deepseek/647be7d4d2-reject-nonfinite-ue8m0-scales-and-verify-deepseek-union-cpu-contracts.patch",
+          "source_commit": "647be7d4d2d06ef4b62943bf466ffb2688947633",
+          "source_parent": "66ae92bedfe6ca50840dceada40bab68cad17606",
+          "sha256": "480c9454bb327beb0db9712187413927557b3fa8d882c58ee54157777be190e5"
+        },
+        {
+          "id": "union-6de6497807",
+          "path": "patches/models/deepseek/6de6497807-record-deepseek-union-donor-migration-and-current-consumer-closure-evidence.patch",
+          "source_commit": "6de64978075d966e43f8900acfee51faf7ea053b",
+          "source_parent": "647be7d4d2d06ef4b62943bf466ffb2688947633",
+          "sha256": "4b7e8efa1ac9ac5a6ea0ed897772cc2344092575f695d8af5f23b8acf59ec885"
+        },
+        {
+          "id": "union-df95a7731e",
+          "path": "patches/models/nemotron/df95a7731e-preserve-nemotron-termination-and-structured-answer-budget-contracts.patch",
+          "source_commit": "df95a7731e0c0e29b2d3149435bb1362342d900b",
+          "source_parent": "6de64978075d966e43f8900acfee51faf7ea053b",
+          "sha256": "7caa57ec10462ab58e70b5443c5ad190f272e120eafacd5ab2fca1bab06c4f20"
+        },
+        {
+          "id": "union-2aa5522ed5",
+          "path": "patches/models/deepseek/2aa5522ed5-format-deepseek-integrated-regression-sources.patch",
+          "source_commit": "2aa5522ed5fd3a5087ce64223a45ba25cd067c0c",
+          "source_parent": "df95a7731e0c0e29b2d3149435bb1362342d900b",
+          "sha256": "09a6ed9ec950a76d984944d68f552d4a2ee701b738097cf1fe3abcb7e12f9057"
+        },
+        {
+          "id": "union-965f2a37ae",
+          "path": "patches/models/nemotron/965f2a37ae-add-termination-guard-removal-control.patch",
+          "source_commit": "965f2a37ae659245d51679cd08281dd9c6b709f5",
+          "source_parent": "2aa5522ed5fd3a5087ce64223a45ba25cd067c0c",
+          "sha256": "d1d60c2996c1fbb329cfcc29a30fe8921e622e22518ca2a83a00ddf12e764233"
+        },
+        {
+          "id": "union-871326d498",
+          "path": "patches/models/deepseek/871326d498-integrate-guarded-deepseek-shared-chat-protocol-contracts.patch",
+          "source_commit": "871326d49831759e021c3b9656bb3f6f4f42a895",
+          "source_parent": "965f2a37ae659245d51679cd08281dd9c6b709f5",
+          "sha256": "fbffe496f1f747274f3040fe566761df3ffbcf9ca12e25b31b1c471961cb6bdd"
+        },
+        {
+          "id": "union-e202be0fdb",
+          "path": "patches/models/deepseek/e202be0fdb-run-integrated-deepseek-protocol-checks-in-shared-cpu-ci.patch",
+          "source_commit": "e202be0fdb1c61632bda5be461eb4e6aae79aba0",
+          "source_parent": "871326d49831759e021c3b9656bb3f6f4f42a895",
+          "sha256": "d80a92d64ebb68adbe9288f27f9b280a32cfa1b2e032c8db1e4c5b5b7c950fc8"
+        },
+        {
+          "id": "union-044149138f",
+          "path": "patches/common/044149138f-format-combined-shared-serving-changes.patch",
+          "source_commit": "044149138fceeb38a5d931c797e7a001795111f6",
+          "source_parent": "e202be0fdb1c61632bda5be461eb4e6aae79aba0",
+          "sha256": "0ea4f61e03007f46b61cfa256ba9d91b2af608e61e5e545e8bdfa941074524a6"
+        },
+        {
+          "id": "union-962cccfd55",
+          "path": "patches/common/962cccfd55-record-unified-source-and-installed-native-cpu-evidence.patch",
+          "source_commit": "962cccfd554752644e8c79a36bb6105148eea6c0",
+          "source_parent": "044149138fceeb38a5d931c797e7a001795111f6",
+          "sha256": "0d78fe0c1f7a2449adb1fdde15ac65ea717a83320740c02cec14cbf0bd6b8766"
+        },
+        {
+          "id": "union-05a0fe7c11",
+          "path": "patches/models/deepseek/05a0fe7c11-place-integrated-deepseek-gpu-regressions-in-kernel-taxonomy.patch",
+          "source_commit": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+          "source_parent": "962cccfd554752644e8c79a36bb6105148eea6c0",
+          "sha256": "3df1c2c4ba63c9f70b42a98741256bbb6e8faa5d61c7c2ae2b8257e50f4abb15"
+        },
+        {
+          "id": "union-f172f7f6e2",
+          "path": "patches/common/f172f7f6e2-fix-restore-shared-malformed-weight-and-initial-stream-error-contracts.patch",
+          "source_commit": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+          "source_parent": "05a0fe7c11e8262c804b0816328378ddc13beb87",
+          "sha256": "5aa7bbf420b0ff3ceead40bd9a341fa9da5cbae3b979c729e2befda4aedb69ee"
+        },
+        {
+          "id": "union-228f7d93dc",
+          "path": "patches/common/228f7d93dc-fix-reject-malformed-flattened-reconstruction-before-weight-mutation.patch",
+          "source_commit": "228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33",
+          "source_parent": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+          "sha256": "394ebcb4240ecc8455e839ba95641e3121604601cb41460276a0ce685576c3b7"
+        },
+        {
+          "id": "union-ec46910f90",
+          "path": "patches/common/ec46910f90-framework-privacy-and-health-cleanup.patch",
+          "source_commit": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
+          "source_parent": "c463a16bdc83d538024da9ddab4ba250c2f77475",
+          "sha256": "bc828ef8cc9edfd64c57ab5ec2be11b30f27298df97009b6641a2cfd4187d1c1"
+        },
+        {
+          "id": "union-2e098cde62",
+          "path": "patches/common/2e098cde62-configurable-dsa-host-reserve.patch",
+          "source_commit": "2e098cde62d22c3afc19e25923fd8a53578360de",
+          "source_parent": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
+          "sha256": "681c8aa99490b1c071ed931c842c369edb9cd69595bd1cff6f922aaf07f3e0c5"
+        },
+        {
+          "id": "union-db0a9f1ec4",
+          "path": "patches/common/db0a9f1ec4-hugetlb-shared-accounting.patch",
+          "source_commit": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+          "source_parent": "2e098cde62d22c3afc19e25923fd8a53578360de",
+          "sha256": "8083e2a40b8c8ad8b7d74b95cd158b3528d60542498116446a668eb684f00762"
+        },
+        {
+          "id": "union-5a3634cab9",
+          "path": "patches/common/5a3634cab9-srt-privacy-contracts.patch",
+          "source_commit": "5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
+          "source_parent": "db0a9f1ec46a3d417d7be190ebc0ce654dad9abd",
+          "sha256": "e382cf5bc42d61327a7c117eee3b69830f51bd34f1fab697ad67910f31698421"
+        },
+        {
+          "id": "union-23d8161f6b",
+          "path": "patches/common/23d8161f6b-shared-cuda-kv-backend.patch",
+          "source_commit": "23d8161f6b8c626f60ba097c5855b204978a9995",
+          "source_parent": "5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
+          "sha256": "d6e249ef839e1dd3f28278cca70cf13a5bac328c413c3e03ea07ec663bf82024"
+        },
+        {
+          "id": "union-6f0768294b",
+          "path": "patches/common/6f0768294b-kv-empty-launch-guards.patch",
+          "source_commit": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
+          "source_parent": "23d8161f6b8c626f60ba097c5855b204978a9995",
+          "sha256": "a8af58c5b996c3aa4f4b52e2f6081bc9762ab86f7a52c80da9160b5d9f35a108"
+        },
+        {
+          "id": "union-dsv41-composed-63d209b",
+          "path": "patches/models/deepseek/dsv41-composed-6f076-to-63d209b.patch",
+          "source_parent": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761",
+          "source_range": "6f0768294b04f4333cc12ff6c7eb4bf7caadf761..63d209bbc5352d6bdc19613b50ef1e50c16898a5",
+          "composition_commits": [
+            "b228ef8f75a0cc6e1738f87a045a092f52d2a6b9",
+            "ea69b662ba5d8ab34cdc9d9f9094131832c033fe",
+            "e9ae83e7faff489652212b9d6643c73f8e3eea2e",
+            "a1499867a6747639dcde11ff20d4d79923e5bf6e",
+            "8bc5e1a02d3473934079de4ebfd048039ab93378",
+            "5023f0d26d07c07da71feeb0640710490ed5d1be",
+            "17c08f451f3312678409cb40d0befd7bdb633e8f",
+            "fb60452e338d7daf6a7cd2b81209ed38ca70201f",
+            "478ebc178cccaa941117d8f35ea1b6f0dbe453a0",
+            "a1eca0def608cd2075c7e510fe7ddfe3ab7b1f43",
+            "d62ecd1e81a3e337bf0acb37c7cb35422f0f6038",
+            "83b4189f21794054ac30ff3a063090c8dd218a81",
+            "d113614eff88f36ec04ab9b4e28d22a389ced131",
+            "b2c8e075e4c1170562018eb1ca5dd2cdb005f19f",
+            "be8580185b7e47a1db8f1895674172df06c9d39e",
+            "b246592b1610d961eb00d7d88e4ade7e33d6e1d3",
+            "63d209bbc5352d6bdc19613b50ef1e50c16898a5"
+          ],
+          "sha256": "b2dd77aaa2b425081b56d538e495a8a6613484b8ec130f012d49cedbb562be2c"
+        },
+        {
+          "id": "qwen35-gguf-config-10eb028",
+          "path": "patches/models/qwen/10eb02827e-load-qwen35-gguf-metadata-and-base-layers.patch",
+          "source_commit": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
+          "source_parent": "63d209bbc5352d6bdc19613b50ef1e50c16898a5",
+          "sha256": "f84afc69e6d5e76b622a56048479570c5ec2156afe3be3a5e62b74324c7e58b9"
+        },
+        {
+          "id": "qwen35-gguf-multimodal-config-2afeb58",
+          "path": "patches/models/qwen/2afeb586b2-populate-gguf-multimodal-config-tokens.patch",
+          "source_commit": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
+          "source_parent": "10eb02827e0da41c75ce700065b0725cf3a89fe3",
+          "sha256": "53fd600e848fd95339839f4ec8d4fae3942d9bda3742d4240190beb05a968225"
+        },
+        {
+          "id": "gguf-separate-processor-config-670966c",
+          "path": "patches/models/qwen/670966c274-use-separate-gguf-processor-config.patch",
+          "source_commit": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
+          "source_parent": "2afeb586b2af81ff7e452dab7af60a4ee63a5d49",
+          "sha256": "b72741d90c9ef1c99df937bb74067935796d72165b5d6e8fb45b80cbfe7730d7"
+        },
+        {
+          "id": "qwen-required-tool-grammar-3fce29c",
+          "path": "patches/models/qwen/3fce29c8d6-fix-required-tool-grammar.patch",
+          "source_commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+          "source_parent": "670966c2744acb38bb7a5cfaa64fdb674bd96810",
+          "sha256": "b2deb7bb8dc4d04efa5cb81be86df83b2046e794604cf682044b446b832edd9e"
+        },
+        {
+          "id": "common-selective-async-ack-9dcd099",
+          "path": "patches/common/9dcd099014-enable-selective-write-through-async-ack.patch",
+          "source_commit": "9dcd0990149dee2755702c789bce4b08d86c1cdb",
+          "source_parent": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+          "sha256": "9453d9f9c2c1c9557273290289bfa445548df9e9bc1486679aa04cea75d972ed"
+        },
+        {
+          "id": "common-plural-prefill-embeds-b4de3b6",
+          "path": "patches/common/b4de3b668c-refresh-plural-input-embeddings-during-prefill-graph-replay.patch",
+          "source_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+          "source_parent": "9dcd0990149dee2755702c789bce4b08d86c1cdb",
+          "sha256": "492c6060adddedccaaca450ef160ff824467b78850e60c5ed529c121dbe81fc3"
+        },
+        {
+          "id": "common-source-format-ci-ca68335",
+          "path": "patches/common/ca68335123-normalize-unified-source-formatting.patch",
+          "source_commit": "ca68335123b37f6d2b553739142f0ad9ed4ddba8",
+          "source_parent": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+          "sha256": "6834311b0cb90779c24c50f44ef48dfa8daa20d8bac73834c1f099994c9d226f"
+        },
+        {
+          "id": "deepseek-ci-loader-3d10764",
+          "path": "patches/models/deepseek/3d10764fb2-make-cpu-source-loader-standalone.patch",
+          "source_commit": "3d10764fb2df23bee955028b29d4049975e5bacb",
+          "source_parent": "ca68335123b37f6d2b553739142f0ad9ed4ddba8",
+          "sha256": "ad3964051a9471626e76ceb46c8400756e15bf1fff51e84e881c1b4b77a478fb"
+        },
+        {
+          "id": "deepseek-chat-ci-loader-cf26398",
+          "path": "patches/models/deepseek/cf2639807b-load-chat-cpu-source-standalone.patch",
+          "source_commit": "cf2639807b65c803e857fd5e3ffbc56500da2315",
+          "source_parent": "3d10764fb2df23bee955028b29d4049975e5bacb",
+          "sha256": "05870e0758930fd7a27b2d4e70ef71933ef34e0313754954dd0a7c4bd31af52b"
+        },
+        {
+          "id": "deepseek-integer-budget-f1a2a74",
+          "path": "patches/models/deepseek/f1a2a74343-preserve-integer-effort-through-typed-request.patch",
+          "source_commit": "f1a2a743438a9f908f25e93944212886997b6629",
+          "source_parent": "cf2639807b65c803e857fd5e3ffbc56500da2315",
+          "sha256": "dc0a58bdb6967c3a9134c62a1320f6a2f6abacd2865d3e9ebae4d663f833be5d"
+        },
+        {
+          "id": "r10-3c9bcf5205",
+          "path": "patches/common/3c9bcf5205-dsa-keep-superseded-trtllm-gen-counter-buffers-alive-for-captured-cuda-g.patch",
+          "source_commit": "3c9bcf5205e4058027ec41edb5e98ae8eb0681d8",
+          "sha256": "43633c7aa180a73337769dbd3ba10c3e23390fefab16d40864aba6a89aa62183"
+        },
+        {
+          "id": "r10-97eef31a27",
+          "path": "patches/common/97eef31a27-fix-mem-cache-keep-a-non-linear-nextn-layer-out-of-the-req-pool-mamba-la.patch",
+          "source_commit": "97eef31a27f844910e86c595ecc9e25ec892c3d7",
+          "sha256": "6a76db6758a699a830dfeb82f34d89feae3506ce02fb26c4f7d44667393196cc"
+        },
+        {
+          "id": "r10-f3fec06f7a",
+          "path": "patches/models/glm/f3fec06f7a-precompile-glm-vision-kernels-before-kv-allocation-to-avoid-first-image.patch",
+          "source_commit": "f3fec06f7adb827f5c3048fc959ae0a29b28b3c2",
+          "sha256": "dbebe51a000a1d371677c15439cd43118e115628536b1d72b5f9073eb083015f"
+        },
+        {
+          "id": "r10-9a2f86c331",
+          "path": "patches/models/glm/9a2f86c331-adapt-regression-coverage-and-documentation-to-current-ci.patch",
+          "source_commit": "9a2f86c331c32eb04d0d47bc4174d49adad314a2",
+          "sha256": "d8487f456194bf8f3ce3a8633d6268687c71211cd8e73548b475b82666f823e3"
+        },
+        {
+          "id": "r10-6a01f0f7f3",
+          "path": "patches/models/glm/6a01f0f7f3-mark-vision-precompile-test-fixtures-as-encoder-only.patch",
+          "source_commit": "6a01f0f7f3c5192fba28103e227d84fbcca430ed",
+          "sha256": "9860a0456cbd30f482157c7378bf08449ddbd489e2ff8e5d73865bafb1d7cbfc"
+        },
+        {
+          "id": "r10-891c0e4399",
+          "path": "patches/models/glm/891c0e4399-restore-compressed-dsa-indexes-and-prefix-ownership-in-hicache.patch",
+          "source_commit": "891c0e4399e37b963d9d1e4efd20cbea45e275b1",
+          "sha256": "5170597403666143e41450440d9182647d6bc0036fba9228576e4006b2789921"
+        },
+        {
+          "id": "r10-5a26609cd6",
+          "path": "patches/models/glm/5a26609cd6-use-hicache-sidecars-for-incompatible-mla-draft-rows.patch",
+          "source_commit": "5a26609cd6d1dc8c4cbf6ffda00a36adfa584205",
+          "sha256": "19b36f3740b338a1e440ace5d056f465f23edba61991472d9de51508357951a2"
+        },
+        {
+          "id": "r10-a7cec13e25",
+          "path": "patches/models/glm/a7cec13e25-keep-recurrent-checkpoints-aligned-with-their-cached-prefixes.patch",
+          "source_commit": "a7cec13e25aff23dbfb794d8b25a22da2a23cfbe",
+          "sha256": "12e5a270e9a0b64ab2682d7908e57a506a472f6c0d912f7e71e4a4de0f847660"
+        },
+        {
+          "id": "r10-e2a1a152dc",
+          "path": "patches/models/glm/e2a1a152dc-consolidate-hicache-integrity-tests-and-release-dsa-host-buffers.patch",
+          "source_commit": "e2a1a152dc5246870dc17147795bf73f8b9d83a8",
+          "sha256": "83d07fcb7bcc2ea873844a9b5a8277f7ef7f3b0cf77f0ea7223a2fc1cfdf07f0"
+        },
+        {
+          "id": "r10-ed896a6c9c",
+          "path": "patches/models/glm/ed896a6c9c-adapt-glm-hicache-port-to-unified-allocation-and-checkpoint-ownership.patch",
+          "source_commit": "ed896a6c9cad7808f7b6dc829be49a85e3b2e27d",
+          "sha256": "e522a7af58ff65eefae349b668bfc33c26c56ba9fee5d92d39855bb7f3573998"
+        },
+        {
+          "id": "r10-ca943c9a0a",
+          "path": "patches/common/ca943c9a0a-reject-reasoning-disable-requests-for-always-on-templates.patch",
+          "source_commit": "ca943c9a0a01541cf701f6fab8aa53d09105ebbd",
+          "sha256": "fc5dc13ecbfb219ad213c375be17d1040510c1a677327e760e220d719c54a783"
+        },
+        {
+          "id": "r10-b87d571134",
+          "path": "patches/models/glm/b87d571134-fix-glm-honor-ignore-eos-for-plain-length-controlled-chat.patch",
+          "source_commit": "b87d5711347263e310b439a2052def49c9f055c7",
+          "sha256": "f8893b6b0147938a92214b31e87236c635ea12e381e58f2547826c19089c5613"
+        },
+        {
+          "id": "r10-eee0bc04ef",
+          "path": "patches/common/eee0bc04ef-fix-health-drain-generation-task-on-every-exit-path.patch",
+          "source_commit": "eee0bc04ef4b23f070897f8292dccb987077cd22",
+          "sha256": "e24d6f689092beb3dbc4ead776bc751da7a99d082eb0cb30e4547a0bd4aa6edf"
+        },
+        {
+          "id": "r10-fc125462ef",
+          "path": "patches/common/fc125462ef-fix-typed-cuda-host-registration-errors-and-glm-test-cleanup.patch",
+          "source_commit": "fc125462efa58909227a64cbad1f16bb26b82211",
+          "sha256": "0c32173ea56d8bb93e137861f37e5e6baaf9918d9c16a6d80e998b7770af76ef"
+        },
+        {
+          "id": "r10-ac0477e5f2",
+          "path": "patches/common/ac0477e5f2-use-request-lock-receipt-in-chunked-write-through-tests.patch",
+          "source_commit": "ac0477e5f2f6e944b2560ad2a22dcd5f10dfec50",
+          "sha256": "bf46f4600b27fc7d66e370b2213181bb4edc2b614f1d99173aa512a96b272f0f"
+        },
+        {
+          "id": "r10-85968db99d",
+          "path": "patches/common/85968db99d-fix-r10-protocol-output-and-startup-rollback-contracts.patch",
+          "source_commit": "85968db99d4be51fdb18afa6706f002fc22d0ece",
+          "sha256": "146b5ca8e6bea359fc4bd861d3fa28824a3f6aeb48d68768a9b8039b22a4eb4a"
+        },
+        {
+          "id": "r10-106ec8462c",
+          "path": "patches/common/106ec8462c-apply-source-ci-import-formatting.patch",
+          "source_commit": "106ec8462cf20c8d71c2192accc5f5fa28bb77c4",
+          "sha256": "a9a7a56ec88657846efe6fb3bad3ebd112e28c6d7f8c6d2b3d7be91d3fc9447c"
+        },
+        {
+          "id": "r10-fd9fa4dbc5",
+          "path": "patches/common/fd9fa4dbc5-align-unified-engine-with-main-repository-checks.patch",
+          "source_commit": "fd9fa4dbc520a7daa38416059e4244c4891cddf7",
+          "sha256": "8c2bb16e86da5575e1ed8a6d0c5f4ca718d28909f8d762ea03844563c8a23143"
+        },
+        {
+          "id": "r11-14a51ac207",
+          "path": "patches/common/14a51ac207-keep-reasoning-usage-details-typed-during-serialization.patch",
+          "source_commit": "14a51ac2077c3c6da79af65cee32906f0cbbc0aa",
+          "sha256": "30d0c416a8dcd8686921bdec7b9c58fed9d80dedeaa2059b2f3e4c710c027b96"
+        },
+        {
+          "id": "r12-4e289f783f",
+          "path": "patches/common/4e289f783f-align-glm-5-3-vision-dependency-metadata-with-installed-runtime.patch",
+          "source_commit": "4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd",
+          "sha256": "ec68fc0aaa9725819504dd93d6ca3ad765a42cdb41b9637c33a0ee40549398b2"
+        },
+        {
+          "id": "r13-gemma4-per-layer-fa8cf60",
+          "path": "patches/models/gemma/fa8cf60f78-normalize-gemma4-per-layer-config-for-shared-transformers.patch",
+          "source_commit": "fa8cf60f78d006abbd5515426b3a64d384418421",
+          "source_parent": "4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd",
+          "sha256": "e9819be7211a731933d14b4c4adab7b8c0408d71e0ac1e250d77307902908672"
+        }
+      ],
+      "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
+      "pending_dsv41_closure": [],
+      "status": "R13 source candidate; final-image and model qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }

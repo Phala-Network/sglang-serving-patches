@@ -21,18 +21,20 @@ pinned versions of these projects.
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
 The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd`, tree
-`7ea9dc0382734d3560db10af78d6fdb929537e1e`, on navigation branch
-`codex/sglang-image-unification-20260925-r12`.
-It combines the 31-step protected baseline and 96 successor patches.
+engine `fa8cf60f78d006abbd5515426b3a64d384418421`, tree
+`fc5dda980ee83a635beb4d99d48d051904bd0bfc`, on navigation branch
+`codex/sglang-image-unification-20260926-r13`.
+It combines the 31-step protected baseline and 97 successor patches.
 The September 23 increments add framework privacy/health cleanup, the GLM
 host-reserve configuration and shared HugeTLB accounting. The latest increment
 preserves DeepSeek integer reasoning budgets through its typed request and custom
 encoder. R10 adds GLM-5.3-Flash compatibility and closes output, health-log,
 and DSA rollback correctness gaps. R11 keeps reasoning usage details typed so
 ordinary and streaming responses serialize without per-token warnings. R12
-aligns the wheel's visual dependency metadata with the installed versions. Native and final-image
-acceptance remain separate.
+aligns the wheel's visual dependency metadata with the installed versions. R13
+translates Transformers 5.17 Gemma4 per-layer attention dimensions into the
+full/SWA fields consumed by SGLang after R12 failed to start Gemma4 on C07.
+Native and final-image acceptance remain separate.
 
 [Source lineage](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
 Kimi, Muse, Nemotron, DS0001–0026 and native DS protocol adaptation, GLM,

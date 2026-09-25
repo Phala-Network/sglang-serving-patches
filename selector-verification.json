@@ -1,6 +1,6 @@
 {
   "schema": "phala.sglang.selector-verification.v3",
-  "as_of": "2026-09-25",
+  "as_of": "2026-09-26",
   "source_repository": "https://github.com/Phala-Network/sglang",
   "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
   "frozen_base_replay_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -176,6 +176,18 @@
       "status": "R12 source candidate; final-image and model qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
       "replay_tree": "7ea9dc0382734d3560db10af78d6fdb929537e1e"
+    },
+    "unified-v0520-r13": {
+      "passed": true,
+      "identity_verified": true,
+      "fork_commit": "fa8cf60f78d006abbd5515426b3a64d384418421",
+      "fork_tree": "fc5dda980ee83a635beb4d99d48d051904bd0bfc",
+      "fork_branch": "codex/sglang-image-unification-20260926-r13",
+      "patch_count": 97,
+      "replay_mode": "exact",
+      "status": "R13 source candidate; final-image and model qualification pending",
+      "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
+      "replay_tree": "fc5dda980ee83a635beb4d99d48d051904bd0bfc"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
