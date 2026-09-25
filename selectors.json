@@ -20,11 +20,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
-      "fork_tree": "629ca25f5b658fcfa14fca2d28639fe8693cf39d",
-      "fork_branch": "codex/sglang-image-unification-20260925-r8",
+      "fork_commit": "f1a2a743438a9f908f25e93944212886997b6629",
+      "fork_tree": "3b03fcbf436e92124d11d65c3befea8c2d6e7f09",
+      "fork_branch": "codex/sglang-image-unification-20260925-r9",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..f1a2a743438a9f908f25e93944212886997b6629",
       "replay_mode": "exact",
       "patches": [
         {
@@ -516,6 +516,34 @@
           "source_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
           "source_parent": "9dcd0990149dee2755702c789bce4b08d86c1cdb",
           "sha256": "492c6060adddedccaaca450ef160ff824467b78850e60c5ed529c121dbe81fc3"
+        },
+        {
+          "id": "common-source-format-ci-ca68335",
+          "path": "patches/common/ca68335123-normalize-unified-source-formatting.patch",
+          "source_commit": "ca68335123b37f6d2b553739142f0ad9ed4ddba8",
+          "source_parent": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
+          "sha256": "6834311b0cb90779c24c50f44ef48dfa8daa20d8bac73834c1f099994c9d226f"
+        },
+        {
+          "id": "deepseek-ci-loader-3d10764",
+          "path": "patches/models/deepseek/3d10764fb2-make-cpu-source-loader-standalone.patch",
+          "source_commit": "3d10764fb2df23bee955028b29d4049975e5bacb",
+          "source_parent": "ca68335123b37f6d2b553739142f0ad9ed4ddba8",
+          "sha256": "ad3964051a9471626e76ceb46c8400756e15bf1fff51e84e881c1b4b77a478fb"
+        },
+        {
+          "id": "deepseek-chat-ci-loader-cf26398",
+          "path": "patches/models/deepseek/cf2639807b-load-chat-cpu-source-standalone.patch",
+          "source_commit": "cf2639807b65c803e857fd5e3ffbc56500da2315",
+          "source_parent": "3d10764fb2df23bee955028b29d4049975e5bacb",
+          "sha256": "05870e0758930fd7a27b2d4e70ef71933ef34e0313754954dd0a7c4bd31af52b"
+        },
+        {
+          "id": "deepseek-integer-budget-f1a2a74",
+          "path": "patches/models/deepseek/f1a2a74343-preserve-integer-effort-through-typed-request.patch",
+          "source_commit": "f1a2a743438a9f908f25e93944212886997b6629",
+          "source_parent": "cf2639807b65c803e857fd5e3ffbc56500da2315",
+          "sha256": "dc0a58bdb6967c3a9134c62a1320f6a2f6abacd2865d3e9ebae4d663f833be5d"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

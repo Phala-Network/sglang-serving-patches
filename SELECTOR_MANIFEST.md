@@ -8,9 +8,9 @@ consumer; historical files under a model directory with no selected ID remain
 pending source material.
 
 The active complete-source selector is `unified-v0520-successor`: engine
-`228f7d93dc7ab0f5b08bc714eb5d4a29afc01d33`, tree
-`0af2ff1dbe241285caacf8e8236c918a434b9889`.
-It cleanly replays the protected 31-step engine428 baseline and 59 successor
+`f1a2a743438a9f908f25e93944212886997b6629`, tree
+`3b03fcbf436e92124d11d65c3befea8c2d6e7f09`.
+It cleanly replays the protected 31-step engine428 baseline and 76 successor
 patches. Common fixes occur once with model-specific guards.
 
 Older Kimi/Muse selectors are historical partial-source checkpoints.

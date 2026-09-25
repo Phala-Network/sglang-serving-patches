@@ -1,0 +1,137 @@
+diff --git a/python/sglang/srt/phala_compat/dsv41_protocol_compat.py b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+index 301af7582db5824250a5886a2a6437c840ec3810..e32b2d463ca582490e5ff12dcf0936a44afa9d55 100644
+--- a/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
++++ b/python/sglang/srt/phala_compat/dsv41_protocol_compat.py
+@@ -148,27 +148,19 @@ def _normalize(values):
+                 out["reasoning_effort"] = "none"
+             changed = True
+ 
+-    # (4) Integer budget -> chat_template_kwargs, the only path that reaches the
+-    # encoder's 1-100 scale. Thinking is turned on with it, mirroring what
+-    # upstream does for any non-"none" effort.
+-    budget = _int_budget(out.get("reasoning_effort"))
+-    if budget is not None:
+-        out.pop("reasoning_effort")
+-    elif reasoning is not None:
++    # The typed request field carries integer budgets to the custom encoder and
++    # lets serving reject them for other models. Preserve nested precedence.
++    _int_budget(out.get("reasoning_effort"))
++    if reasoning is not None:
+         nested = reasoning.get("effort")
+         if nested is None:
+             nested = reasoning.get("reasoning_effort")
+-        budget = _int_budget(nested)
+-        if budget is not None:
++        nested_budget = _int_budget(nested)
++        if nested_budget is not None:
++            out["reasoning_effort"] = nested_budget
+             reasoning.pop("effort", None)
+             reasoning.pop("reasoning_effort", None)
+-    if budget is not None:
+-        template_kwargs = dict(out.get("chat_template_kwargs") or {})
+-        template_kwargs.setdefault("reasoning_effort", budget)
+-        template_kwargs.setdefault("thinking", True)
+-        template_kwargs.setdefault("enable_thinking", True)
+-        out["chat_template_kwargs"] = template_kwargs
+-        changed = True
++            changed = True
+ 
+     # (3) Record reasoning.exclude for the response side.
+     if (
+diff --git a/test/manual/phala/test_dsv41_shared_protocol_cpu.py b/test/manual/phala/test_dsv41_shared_protocol_cpu.py
+index 1c5e7c9b088cecfd363c19b411de0887c2637290..98fda4ac6eeb0f734647800f64052019b9c7913f 100644
+--- a/test/manual/phala/test_dsv41_shared_protocol_cpu.py
++++ b/test/manual/phala/test_dsv41_shared_protocol_cpu.py
+@@ -32,12 +32,23 @@ def load_module(name, path):
+     spec = importlib.util.spec_from_file_location(name, path)
+     module = importlib.util.module_from_spec(spec)
+     sys.modules[name] = module
+-    spec.loader.exec_module(module)
++    with patch.dict(sys.modules, packages):
++        spec.loader.exec_module(module)
+     return module
+ 
+ 
+ utils = types.ModuleType("sglang.utils")
+ utils.convert_json_schema_to_str = json.dumps
++packages = {}
++for package, package_path in (
++    ("sglang", SRT.parent),
++    ("sglang.srt", SRT),
++    ("sglang.srt.phala_compat", SRT / "phala_compat"),
++):
++    namespace = types.ModuleType(package)
++    namespace.__path__ = [str(package_path)]
++    packages[package] = namespace
++
+ with patch.dict(sys.modules, {"sglang.utils": utils}):
+     protocol = load_module("ds_test_protocol", SRT / "entrypoints/openai/protocol.py")
+ 
+@@ -152,6 +163,7 @@ def serving(spec="dsv41", multimodal=False, image=False, audio=False, video=Fals
+     obj = Serving()
+     obj.chat_encoding_spec = spec
+     obj._grammar_backend = "none"
++    obj._dsv41_default_reasoning_effort = "high" if spec == "dsv41" else None
+     obj.tokenizer_manager = NS(
+         model_config=NS(
+             is_multimodal=multimodal,
+@@ -209,7 +221,6 @@ class SharedProtocolTests(unittest.TestCase):
+             1.0,
+             75.0,
+             "75",
+-            "default",
+             "ultra",
+             {},
+             [],
+@@ -217,6 +228,7 @@ class SharedProtocolTests(unittest.TestCase):
+         ):
+             with self.subTest(value=value), self.assertRaises(ValidationError):
+                 request(reasoning_effort=value)
++        self.assertIsNone(request(reasoning_effort="default").reasoning_effort)
+         from pydantic import TypeAdapter
+ 
+         adapter = TypeAdapter(protocol.ReasoningEffortType)
+@@ -238,9 +250,8 @@ class SharedProtocolTests(unittest.TestCase):
+         self.assertTrue(req.reasoning_exclude)
+         self.assertTrue(req.chat_template_kwargs["thinking"])
+         self.assertEqual(req.chat_template_kwargs["reasoning_effort"], 99)
+-        with self.assertRaises(ValidationError):
+-            request(reasoning={"effort": 75})
+-        for nested in (True, False, 1.0, 75, "75", "ultra"):
++        self.assertEqual(request(reasoning={"effort": 75}).reasoning_effort, 75)
++        for nested in (True, False, 1.0, "75", "ultra"):
+             with self.subTest(nested=nested), self.assertRaises(ValidationError):
+                 request(reasoning_effort=75, reasoning={"effort": nested})
+ 
+diff --git a/test/phala_deepseek_v41/selftest.py b/test/phala_deepseek_v41/selftest.py
+index d206c2b3eece8f3599d96d6fc5fb982973320b07..82a8f1ff044805916da981d152776ba055048875 100644
+--- a/test/phala_deepseek_v41/selftest.py
++++ b/test/phala_deepseek_v41/selftest.py
+@@ -674,7 +674,7 @@ check(
+ check(
+     "through FastAPI: integer budget",
+     validate_body(reasoning_effort=50),
+-    (None, {"reasoning_effort": 50, "thinking": True, "enable_thinking": True}),
++    (50, {"thinking": True, "enable_thinking": True}),
+ )
+ 
+ 
+diff --git a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+index 34ef2b47093767c6daf69034707f105233debc99..3b406ab1927021ff2b4fa2b292bd70aa59107677 100644
+--- a/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
++++ b/test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+@@ -186,9 +186,11 @@ class CompatProtocolContracts(unittest.TestCase):
+         )
+ 
+     def test_integer_budget_and_fractional_effort_are_distinct(self):
+-        out = protocol._normalize({"reasoning_effort": 75})
+-        self.assertEqual(out["chat_template_kwargs"]["reasoning_effort"], 75)
+-        self.assertTrue(out["chat_template_kwargs"]["thinking"])
++        original_budget = {"reasoning_effort": 75}
++        self.assertIs(protocol._normalize(original_budget), original_budget)
++        nested_budget = protocol._normalize({"reasoning": {"effort": 75}})
++        self.assertEqual(nested_budget["reasoning_effort"], 75)
++        self.assertNotIn("effort", nested_budget["reasoning"])
+         original = {"reasoning_effort": 0.75}
+         self.assertIs(protocol._normalize(original), original)
+         for bad in (-1, 101):

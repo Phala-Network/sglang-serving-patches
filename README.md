@@ -21,15 +21,17 @@ pinned versions of these projects.
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
 The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `b4de3b668c0575eeef24ff418a43fe01f4fa6a21`, tree
-`629ca25f5b658fcfa14fca2d28639fe8693cf39d`, on navigation branch
-`codex/sglang-image-unification-20260925-r8`.
-It combines the 31-step protected baseline and 72 successor patches.
+engine `f1a2a743438a9f908f25e93944212886997b6629`, tree
+`3b03fcbf436e92124d11d65c3befea8c2d6e7f09`, on navigation branch
+`codex/sglang-image-unification-20260925-r9`.
+It combines the 31-step protected baseline and 76 successor patches.
 The September 23 increments add framework privacy/health cleanup, the GLM
-host-reserve configuration and shared HugeTLB accounting. Native and final-image
+host-reserve configuration and shared HugeTLB accounting. The latest increment
+preserves DeepSeek integer reasoning budgets through its typed request and custom
+encoder. Native and final-image
 acceptance remain separate.
 
-[Current source evidence](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
+[Source lineage](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
 Kimi, Muse, Nemotron, DS0001–0026 and native DS protocol adaptation, GLM,
 Qwen GGUF/vision/prefill and shared parser changes. DS Vision, Engram and Python
 C1/C2 consumers are connected. Checkpoint defaults, GDN layout and historical

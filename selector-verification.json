@@ -8,14 +8,14 @@
     "unified-v0520-successor": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "b4de3b668c0575eeef24ff418a43fe01f4fa6a21",
-      "fork_tree": "629ca25f5b658fcfa14fca2d28639fe8693cf39d",
-      "fork_branch": "codex/sglang-image-unification-20260925-r8",
-      "patch_count": 72,
+      "fork_commit": "f1a2a743438a9f908f25e93944212886997b6629",
+      "fork_tree": "3b03fcbf436e92124d11d65c3befea8c2d6e7f09",
+      "fork_branch": "codex/sglang-image-unification-20260925-r9",
+      "patch_count": 76,
       "replay_mode": "exact",
       "status": "source_replay_and_focused_cpu_verified_full_runtime_qualification_pending",
       "validation_boundary": "Integrated Muse30/0skip (pinned external template; packaging/license remains separate), Nemotron real-tokenizer19/0skip plus termination/budget10, Qwen complete-call17 including const, Qwenhistory5, Marlin/BREAKABLE6 and HiCache13 (real Gloo skipped). DS0012-26 source and DS19/20 native protocol adaptation integrated: encoder/async8, production-function CPU16, MXFP4loader3, chat10, sharedprotocol11. Vision/Engram/Python C1/C2 source consumers connected, not GPU/device-transfer qualification. One XGrammar0.2.6+phala.union1: installed native655 plus adapter14/0skip; immutable public-base/delta recipe verify-only and complete native tree/license/submodule identity passed. Existing GGUF20/Q8prefill11 CPU evidence retained unchanged. Historical fusion/Mamba source coverage confirmed by upstream ancestry and focused CPU controls; shared malformed-weight16 and initial-SSE-status7 now pass. No full runtime imports, native ABI builds, GPU, model weights, SSE, final-image or production acceptance; no Governor candidate changes.",
-      "replay_tree": "629ca25f5b658fcfa14fca2d28639fe8693cf39d"
+      "replay_tree": "3b03fcbf436e92124d11d65c3befea8c2d6e7f09"
     },
     "common-v0520-successor": {
       "passed": true,
