@@ -168,14 +168,14 @@
     "unified-v0520-r10": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "106ec8462cf20c8d71c2192accc5f5fa28bb77c4",
-      "fork_tree": "53f1dda4c2f4fd8918c95df3a1b36f2dcf99e0fb",
-      "fork_branch": "codex/sglang-image-unification-20260925-r10",
-      "patch_count": 93,
+      "fork_commit": "770cd91a34e6eeb01266faaa429f5bb6b5d430bd",
+      "fork_tree": "5f98e11b42c0b4b1688120ab7492b7a9d8024d8d",
+      "fork_branch": "codex/sglang-image-unification-20260925-main-r10",
+      "patch_count": 94,
       "replay_mode": "exact",
       "status": "R10 source qualified; final image and GLM-5.3-Flash model qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "53f1dda4c2f4fd8918c95df3a1b36f2dcf99e0fb"
+      "replay_tree": "5f98e11b42c0b4b1688120ab7492b7a9d8024d8d"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
