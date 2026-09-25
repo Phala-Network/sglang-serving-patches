@@ -1,7 +1,7 @@
 {
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
-  "active_selector": "unified-v0520-r11",
+  "active_selector": "unified-v0520-r12",
   "as_of": "2026-09-25",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
@@ -960,17 +960,17 @@
       "status": "pending_version_migration",
       "validation_boundary": "Do not infer Qwen3.5/GGUF applicability from shared image"
     },
-    "unified-v0520-r11": {
+    "unified-v0520-r12": {
       "model_family": "shared-serving-and-model-increments",
       "version": "v0.5.20",
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "14a51ac2077c3c6da79af65cee32906f0cbbc0aa",
-      "fork_tree": "ad8eb81b242a8f7db380af352ebbae5629271bdb",
-      "fork_branch": "codex/sglang-image-unification-20260925-r11",
+      "fork_commit": "4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd",
+      "fork_tree": "7ea9dc0382734d3560db10af78d6fdb929537e1e",
+      "fork_branch": "codex/sglang-image-unification-20260925-r12",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "f1a2a743438a9f908f25e93944212886997b6629..14a51ac2077c3c6da79af65cee32906f0cbbc0aa",
+      "source_range": "f1a2a743438a9f908f25e93944212886997b6629..4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd",
       "replay_mode": "exact",
       "patches": [
         {
@@ -1604,11 +1604,17 @@
           "path": "patches/common/14a51ac207-keep-reasoning-usage-details-typed-during-serialization.patch",
           "source_commit": "14a51ac2077c3c6da79af65cee32906f0cbbc0aa",
           "sha256": "30d0c416a8dcd8686921bdec7b9c58fed9d80dedeaa2059b2f3e4c710c027b96"
+        },
+        {
+          "id": "r12-4e289f783f",
+          "path": "patches/common/4e289f783f-align-glm-5-3-vision-dependency-metadata-with-installed-runtime.patch",
+          "source_commit": "4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd",
+          "sha256": "ec68fc0aaa9725819504dd93d6ca3ad765a42cdb41b9637c33a0ee40549398b2"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "R11 source candidate; focused usage serialization and final-image qualification pending",
+      "status": "R12 source candidate; final-image and model qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }

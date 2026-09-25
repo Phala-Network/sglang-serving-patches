@@ -9,9 +9,9 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `14a51ac2077c3c6da79af65cee32906f0cbbc0aa`.
-- Engine tree: `ad8eb81b242a8f7db380af352ebbae5629271bdb`.
-- Ordered engine stack: 31 protected steps plus 95 successor steps.
+- Active engine: `4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd`.
+- Engine tree: `7ea9dc0382734d3560db10af78d6fdb929537e1e`.
+- Ordered engine stack: 31 protected steps plus 96 successor steps.
 - R8 added guarded selective write-through async ACK and refreshed live Kimi
   `inputs_embeds` during prefill CUDA graph replay. R9 preserves DeepSeek
   integer reasoning budgets through the typed request and custom encoder.
@@ -20,6 +20,8 @@ model release workflows.
   remains forced by the existing protocol contract.
 - R11 keeps the existing usage response shape while assigning its typed
   `CompletionTokensDetails`, avoiding per-token serialization warnings.
+- R12 aligns the GPU wheel metadata with the fixed Transformers 5.17.0 and
+  tokenizers 0.23.1 visual processing dependencies.
 - The final successor aligns the exact engine tree with `main`'s repository CI
   cleanup and runs the health lifecycle regression in Phala source CI. The
   two-parent integration commit has the same tree as its single-parent export.

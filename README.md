@@ -21,16 +21,17 @@ pinned versions of these projects.
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
 The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `14a51ac2077c3c6da79af65cee32906f0cbbc0aa`, tree
-`ad8eb81b242a8f7db380af352ebbae5629271bdb`, on navigation branch
-`codex/sglang-image-unification-20260925-r11`.
-It combines the 31-step protected baseline and 95 successor patches.
+engine `4e289f783ff913d7fe02dfdf91ffa5f5f48dfebd`, tree
+`7ea9dc0382734d3560db10af78d6fdb929537e1e`, on navigation branch
+`codex/sglang-image-unification-20260925-r12`.
+It combines the 31-step protected baseline and 96 successor patches.
 The September 23 increments add framework privacy/health cleanup, the GLM
 host-reserve configuration and shared HugeTLB accounting. The latest increment
 preserves DeepSeek integer reasoning budgets through its typed request and custom
 encoder. R10 adds GLM-5.3-Flash compatibility and closes output, health-log,
 and DSA rollback correctness gaps. R11 keeps reasoning usage details typed so
-ordinary and streaming responses serialize without per-token warnings. Native and final-image
+ordinary and streaming responses serialize without per-token warnings. R12
+aligns the wheel's visual dependency metadata with the installed versions. Native and final-image
 acceptance remain separate.
 
 [Source lineage](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
