@@ -7,10 +7,10 @@ parent. `selected` patches are the only inputs for that
 consumer; historical files under a model directory with no selected ID remain
 pending source material.
 
-The active complete-source selector is `unified-v0520-successor`: engine
-`f1a2a743438a9f908f25e93944212886997b6629`, tree
-`3b03fcbf436e92124d11d65c3befea8c2d6e7f09`.
-It cleanly replays the protected 31-step engine428 baseline and 76 successor
+The active complete-source selector is `unified-v0520-r11`: engine
+`14a51ac2077c3c6da79af65cee32906f0cbbc0aa`, tree
+`ad8eb81b242a8f7db380af352ebbae5629271bdb`.
+It cleanly replays the protected 31-step engine428 baseline and 95 successor
 patches. Common fixes occur once with model-specific guards.
 
 Older Kimi/Muse selectors are historical partial-source checkpoints.
