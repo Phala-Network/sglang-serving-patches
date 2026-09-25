@@ -1,0 +1,26 @@
+diff --git a/test/registered/unit/entrypoints/test_health_generate_lifecycle.py b/test/registered/unit/entrypoints/test_health_generate_lifecycle.py
+index b91e69c1bb0e4e88cdd9c7bbb556611b4bde93a2..9386f3b34098c1e3dd5528ff7c68c71d20bca78b 100644
+--- a/test/registered/unit/entrypoints/test_health_generate_lifecycle.py
++++ b/test/registered/unit/entrypoints/test_health_generate_lifecycle.py
+@@ -8,7 +8,6 @@ import types
+ import uuid
+ from contextlib import aclosing
+ 
+-
+ SOURCE = (
+     pathlib.Path(__file__).resolve().parents[4]
+     / "python/sglang/srt/entrypoints/http_server.py"
+diff --git a/test/registered/unit/mem_cache/test_hicache_host_register.py b/test/registered/unit/mem_cache/test_hicache_host_register.py
+index 96eb2870eb6c99ed1e3849f596888ee42916e828..2a671277c5802495cac66cbc164f121ee3db6494 100644
+--- a/test/registered/unit/mem_cache/test_hicache_host_register.py
++++ b/test/registered/unit/mem_cache/test_hicache_host_register.py
+@@ -14,8 +14,8 @@ from sglang.srt.mem_cache.memory_pool_host import (
+ from sglang.srt.mem_cache.pool_host import mha as mha_pool_host
+ from sglang.srt.mem_cache.pool_host import mla as mla_pool_host
+ from sglang.srt.mem_cache.pool_host.common import (
+-    ALLOC_MEMORY_FUNCS,
+     _CUDA_HOST_REGISTERED_RANGES_ATTR,
++    ALLOC_MEMORY_FUNCS,
+     _cuda_host_register,
+     _cuda_host_unregister,
+ )

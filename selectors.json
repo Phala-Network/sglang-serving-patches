@@ -966,11 +966,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "85968db99d4be51fdb18afa6706f002fc22d0ece",
-      "fork_tree": "c63af9ba8f14ae1e5d55bd5e3df655e2d244a7a8",
+      "fork_commit": "106ec8462cf20c8d71c2192accc5f5fa28bb77c4",
+      "fork_tree": "53f1dda4c2f4fd8918c95df3a1b36f2dcf99e0fb",
       "fork_branch": "codex/sglang-image-unification-20260925-r10",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "f1a2a743438a9f908f25e93944212886997b6629..85968db99d4be51fdb18afa6706f002fc22d0ece",
+      "source_range": "f1a2a743438a9f908f25e93944212886997b6629..106ec8462cf20c8d71c2192accc5f5fa28bb77c4",
       "replay_mode": "exact",
       "patches": [
         {
@@ -1586,6 +1586,12 @@
           "path": "patches/common/85968db99d-fix-r10-protocol-output-and-startup-rollback-contracts.patch",
           "source_commit": "85968db99d4be51fdb18afa6706f002fc22d0ece",
           "sha256": "146b5ca8e6bea359fc4bd861d3fa28824a3f6aeb48d68768a9b8039b22a4eb4a"
+        },
+        {
+          "id": "r10-106ec8462c",
+          "path": "patches/common/106ec8462c-apply-source-ci-import-formatting.patch",
+          "source_commit": "106ec8462cf20c8d71c2192accc5f5fa28bb77c4",
+          "sha256": "a9a7a56ec88657846efe6fb3bad3ebd112e28c6d7f8c6d2b3d7be91d3fc9447c"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

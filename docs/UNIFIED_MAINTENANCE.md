@@ -9,9 +9,9 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `85968db99d4be51fdb18afa6706f002fc22d0ece`.
-- Engine tree: `c63af9ba8f14ae1e5d55bd5e3df655e2d244a7a8`.
-- Ordered engine stack: 31 protected steps plus 92 successor steps.
+- Active engine: `106ec8462cf20c8d71c2192accc5f5fa28bb77c4`.
+- Engine tree: `53f1dda4c2f4fd8918c95df3a1b36f2dcf99e0fb`.
+- Ordered engine stack: 31 protected steps plus 93 successor steps.
 - R8 added guarded selective write-through async ACK and refreshed live Kimi
   `inputs_embeds` during prefill CUDA graph replay. R9 preserves DeepSeek
   integer reasoning budgets through the typed request and custom encoder.

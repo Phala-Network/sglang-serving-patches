@@ -21,10 +21,10 @@ pinned versions of these projects.
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
 The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `85968db99d4be51fdb18afa6706f002fc22d0ece`, tree
-`c63af9ba8f14ae1e5d55bd5e3df655e2d244a7a8`, on navigation branch
+engine `106ec8462cf20c8d71c2192accc5f5fa28bb77c4`, tree
+`53f1dda4c2f4fd8918c95df3a1b36f2dcf99e0fb`, on navigation branch
 `codex/sglang-image-unification-20260925-r10`.
-It combines the 31-step protected baseline and 92 successor patches.
+It combines the 31-step protected baseline and 93 successor patches.
 The September 23 increments add framework privacy/health cleanup, the GLM
 host-reserve configuration and shared HugeTLB accounting. The latest increment
 preserves DeepSeek integer reasoning budgets through its typed request and custom
