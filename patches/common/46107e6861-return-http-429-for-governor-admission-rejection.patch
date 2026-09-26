@@ -1,0 +1,60 @@
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 2d41951a099cb9f7a198958957d1720cf683bad7..4ce72c7357e1f6fd5dc53d9246a1d0e517231038 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1846,6 +1846,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         if finish_reason.get("type") == "abort" and finish_reason.get(
+             "status_code"
+         ) in (
++            HTTPStatus.TOO_MANY_REQUESTS,
+             HTTPStatus.SERVICE_UNAVAILABLE,
+             HTTPStatus.INTERNAL_SERVER_ERROR,
+         ):
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index 9eec4cea8a9eeadbf398c8a29e751c8842e5ce4c..f7f8f38f409906158f4d3566a141eed6b7ec47e7 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -15,9 +15,11 @@ Covers:
+ 
+ import asyncio
+ import unittest
++from http import HTTPStatus
+ from unittest.mock import AsyncMock, MagicMock, Mock, patch
+ 
+ import msgspec
++import fastapi
+ 
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase, maybe_stub_sgl_kernel
+@@ -943,5 +945,31 @@ class TestBackgroundAbortRequestOwnership(CustomTestCase):
+         )
+ 
+ 
++class TestAbortStatusMapping(CustomTestCase):
++    def test_non_streaming_too_many_requests_abort_is_http_429(self):
++        """Governor admission rejection must not become a successful 200 response."""
++        from types import SimpleNamespace
++
++        tm = TokenizerManager.__new__(TokenizerManager)
++        tm.rid_to_state = {"rid": object()}
++        tm.enable_lora = False
++        state = SimpleNamespace(obj=SimpleNamespace(rid="rid"))
++        out = {
++            "meta_info": {
++                "finish_reason": {
++                    "type": "abort",
++                    "status_code": HTTPStatus.TOO_MANY_REQUESTS,
++                    "message": "Governor waiting limit",
++                }
++            }
++        }
++
++        with self.assertRaises(fastapi.HTTPException) as raised:
++            asyncio.run(tm._handle_abort_finish_reason(out, state, False))
++
++        self.assertEqual(raised.exception.status_code, HTTPStatus.TOO_MANY_REQUESTS)
++        self.assertNotIn("rid", tm.rid_to_state)
++
++
+ if __name__ == "__main__":
+     unittest.main(verbosity=2)

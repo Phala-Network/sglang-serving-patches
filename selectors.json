@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
-      "fork_tree": "9213abdf1f58f4ec34db89fc8d62ea4225693fe4",
+      "fork_commit": "46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
+      "fork_tree": "37c2686fa40413a0fce2cd751a588e563b2d39d4",
       "fork_branch": "codex/governor-current-hooks-r5",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2292,6 +2292,13 @@
           "path": "patches/common/d03dd9731f-integrate-governor-admission-and-reservation-hooks.patch",
           "source_commit": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
           "sha256": "1d9e9147b83d60e843b458485ea4dbb96e0cf805b06def06063eff26aa292620"
+        },
+        {
+          "id": "governor-admission-http-429-46107e6861",
+          "path": "patches/common/46107e6861-return-http-429-for-governor-admission-rejection.patch",
+          "source_commit": "46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
+          "source_parent": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
+          "sha256": "9811d7fa859a829c026ac7e86dad3dfd5b0d8e7870ec6d06b24a1668fb17db71"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
