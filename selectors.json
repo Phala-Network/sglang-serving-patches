@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
-      "fork_tree": "37c2686fa40413a0fce2cd751a588e563b2d39d4",
-      "fork_branch": "codex/governor-current-hooks-r5",
+      "fork_commit": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
+      "fork_tree": "15c87d1d695697b802bc70fa6f674e82a7c4cabb",
+      "fork_branch": "codex/governor-mainline-prep-r5",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..d752488ed6e55ff4bb68892e4aca8c22becea8f9",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2276,28 +2276,35 @@
           "sha256": "e9819be7211a731933d14b4c4adab7b8c0408d71e0ac1e250d77307902908672"
         },
         {
-          "id": "governor-init-after-model-type-d5423e0f47",
-          "path": "patches/common/d5423e0f47-fix-governor-initialization-after-model-type-resolution.patch",
-          "source_commit": "d5423e0f47ef6094f29f5ae3b5f39da74c0d9918",
+          "id": "r13-gemma4-test-format-962d871",
+          "path": "patches/models/gemma/962d8711e2-format-gemma4-normalization-test.patch",
+          "source_commit": "962d8711e26767d8db019184e689b75ad65f487b",
+          "source_parent": "fa8cf60f78d006abbd5515426b3a64d384418421",
+          "sha256": "baafb31c852e4ad4875de7456041a9915590523afa907a2fb04598ce3eb3b516"
+        },
+        {
+          "id": "governor-init-after-model-type-91a6a6f384",
+          "path": "patches/common/91a6a6f384-fix-governor-initialization-after-model-type-resolution.patch",
+          "source_commit": "91a6a6f3842cadea35c90f2af8452072ff9fd116",
           "sha256": "ed75cad9cee4ef6399b03fbb6d34b4d522a59d8bf6234c352f664e1936d7a566"
         },
         {
-          "id": "governor-policy-adapter-733d1832a2",
-          "path": "patches/common/733d1832a2-fix-governor-policy-readback-and-patch-dispatch.patch",
-          "source_commit": "733d1832a2d59643a2e01c88059a569b9745fc2c",
+          "id": "governor-policy-adapter-ca62c5407c",
+          "path": "patches/common/ca62c5407c-fix-governor-policy-readback-and-patch-dispatch.patch",
+          "source_commit": "ca62c5407cbc6f12120fd9707aff69a109465c68",
           "sha256": "c816ec86ba52d2147e496b11d6b94ca86c313a90074e64e3aba0d47b3251f388"
         },
         {
-          "id": "governor-current-hooks-d03dd9731f",
-          "path": "patches/common/d03dd9731f-integrate-governor-admission-and-reservation-hooks.patch",
-          "source_commit": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
+          "id": "governor-current-hooks-990840e67a",
+          "path": "patches/common/990840e67a-integrate-governor-admission-and-reservation-hooks.patch",
+          "source_commit": "990840e67a493787eeed3fc09620d1ffeb7e0b23",
           "sha256": "1d9e9147b83d60e843b458485ea4dbb96e0cf805b06def06063eff26aa292620"
         },
         {
-          "id": "governor-admission-http-429-46107e6861",
-          "path": "patches/common/46107e6861-return-http-429-for-governor-admission-rejection.patch",
-          "source_commit": "46107e686195c0f6f2cf42a5f16e1b91c5bc108a",
-          "source_parent": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
+          "id": "governor-admission-http-429-d752488ed6",
+          "path": "patches/common/d752488ed6-return-http-429-for-governor-admission-rejection.patch",
+          "source_commit": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
+          "source_parent": "990840e67a493787eeed3fc09620d1ffeb7e0b23",
           "sha256": "9811d7fa859a829c026ac7e86dad3dfd5b0d8e7870ec6d06b24a1668fb17db71"
         }
       ],

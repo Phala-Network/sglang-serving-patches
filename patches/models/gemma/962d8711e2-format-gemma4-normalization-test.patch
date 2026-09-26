@@ -1,0 +1,15 @@
+diff --git a/test/registered/unit/configs/test_gemma4_config_normalization.py b/test/registered/unit/configs/test_gemma4_config_normalization.py
+index b65af4c0d0aa7a3f7e124cf291fa77f26cd30302..3cde2bb73aa189d4682ba4f1089add343e4dc59c 100644
+--- a/test/registered/unit/configs/test_gemma4_config_normalization.py
++++ b/test/registered/unit/configs/test_gemma4_config_normalization.py
+@@ -87,9 +87,7 @@ class TestGemma4ConfigNormalization(CustomTestCase):
+         root.architectures = ["Gemma4ForConditionalGeneration"]
+         with TemporaryDirectory() as model_dir:
+             root.save_pretrained(model_dir)
+-            parsed = HfModelConfigParser().parse(
+-                model_dir, trust_remote_code=False
+-            )
++            parsed = HfModelConfigParser().parse(model_dir, trust_remote_code=False)
+ 
+         self.assertEqual(
+             (parsed.text_config.head_dim, parsed.text_config.num_key_value_heads),
