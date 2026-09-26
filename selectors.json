@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
-      "fork_tree": "15c87d1d695697b802bc70fa6f674e82a7c4cabb",
+      "fork_commit": "14624e954902bf2bed035631ed936c51701cec85",
+      "fork_tree": "9239529a6db5c4451e3dfd9b4992aa156a794f75",
       "fork_branch": "codex/governor-mainline-prep-r5",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d752488ed6e55ff4bb68892e4aca8c22becea8f9",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..14624e954902bf2bed035631ed936c51701cec85",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2306,6 +2306,13 @@
           "source_commit": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
           "source_parent": "990840e67a493787eeed3fc09620d1ffeb7e0b23",
           "sha256": "9811d7fa859a829c026ac7e86dad3dfd5b0d8e7870ec6d06b24a1668fb17db71"
+        },
+        {
+          "id": "governor-429-test-imports-14624e9549",
+          "path": "patches/common/14624e9549-sort-governor-429-test-imports.patch",
+          "source_commit": "14624e954902bf2bed035631ed936c51701cec85",
+          "source_parent": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
+          "sha256": "bb32a09de3e5835aa16d725bf3dbc38bab7f94feb313b66210a50cd4b39e9118"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

@@ -1,0 +1,14 @@
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index f7f8f38f409906158f4d3566a141eed6b7ec47e7..bb20faf81dfac204140ab242d3f630581ff4bef4 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -18,8 +18,8 @@ import unittest
+ from http import HTTPStatus
+ from unittest.mock import AsyncMock, MagicMock, Mock, patch
+ 
+-import msgspec
+ import fastapi
++import msgspec
+ 
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase, maybe_stub_sgl_kernel
