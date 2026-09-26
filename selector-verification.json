@@ -177,17 +177,17 @@
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
       "replay_tree": "7ea9dc0382734d3560db10af78d6fdb929537e1e"
     },
-    "unified-v0520-r13": {
+    "unified-v0520-governor-r4": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "fa8cf60f78d006abbd5515426b3a64d384418421",
-      "fork_tree": "fc5dda980ee83a635beb4d99d48d051904bd0bfc",
-      "fork_branch": "codex/sglang-image-unification-20260926-r13",
-      "patch_count": 97,
+      "fork_commit": "733d1832a2d59643a2e01c88059a569b9745fc2c",
+      "fork_tree": "34981fc4bb9a57dbc9f30d96138405d20b49fca8",
+      "fork_branch": "codex/governor-adapter-policy-fix-20260926",
+      "patch_count": 99,
       "replay_mode": "exact",
-      "status": "R13 source candidate; final-image and model qualification pending",
+      "status": "Governor R4 developer candidate; GPU Governor qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "fc5dda980ee83a635beb4d99d48d051904bd0bfc"
+      "replay_tree": "34981fc4bb9a57dbc9f30d96138405d20b49fca8"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
