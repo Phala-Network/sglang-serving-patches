@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "14624e954902bf2bed035631ed936c51701cec85",
-      "fork_tree": "9239529a6db5c4451e3dfd9b4992aa156a794f75",
+      "fork_commit": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
+      "fork_tree": "ce83c7d2050d250b6cab2a1cd6a9a5282474d1c4",
       "fork_branch": "codex/governor-mainline-prep-r5",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..14624e954902bf2bed035631ed936c51701cec85",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2313,6 +2313,13 @@
           "source_commit": "14624e954902bf2bed035631ed936c51701cec85",
           "source_parent": "d752488ed6e55ff4bb68892e4aca8c22becea8f9",
           "sha256": "bb32a09de3e5835aa16d725bf3dbc38bab7f94feb313b66210a50cd4b39e9118"
+        },
+        {
+          "id": "responses-admission-before-headers-ff72db0da9",
+          "path": "patches/common/ff72db0da9-return-responses-admission-errors-before-streaming-headers.patch",
+          "source_commit": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
+          "source_parent": "14624e954902bf2bed035631ed936c51701cec85",
+          "sha256": "aecab4f30dcf77435c02af56e5054e00bd60b1a9a3aa2d6c8026f180b317b328"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

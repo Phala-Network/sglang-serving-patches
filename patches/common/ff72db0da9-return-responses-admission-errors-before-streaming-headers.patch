@@ -1,0 +1,131 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_responses.py b/python/sglang/srt/entrypoints/openai/serving_responses.py
+index 193a8e9b73b1d4bcff43145d442971212f4b7590..98adb9a9614e47848301789b609ac4451f530085 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_responses.py
++++ b/python/sglang/srt/entrypoints/openai/serving_responses.py
+@@ -628,11 +628,36 @@ class OpenAIServingResponses(OpenAIServingChat):
+                 return response
+ 
+             if request.stream:
++                try:
++                    first_result = await await_response_or_disconnect(
++                        result_generator.__anext__(), raw_request
++                    )
++                except StopAsyncIteration:
++                    first_result = None
++                except HTTPException as exc:
++                    await result_generator.aclose()
++                    return self.create_error_response(
++                        exc.detail, status_code=exc.status_code
++                    )
++                except ValueError as exc:
++                    await result_generator.aclose()
++                    return self.create_error_response(str(exc))
++                except BaseException:
++                    await result_generator.aclose()
++                    raise
++
++                async def replay_generation():
++                    if first_result is not None:
++                        yield first_result
++                    async for result in result_generator:
++                        yield result
++
++                replayed_results = replay_generation()
+                 if self.use_harmony:
+                     events = self.responses_stream_generator(
+                         request,
+                         sampling_params,
+-                        result_generator,
++                        replayed_results,
+                         context,
+                         model_name,
+                         tokenizer,
+@@ -643,7 +668,7 @@ class OpenAIServingResponses(OpenAIServingChat):
+                     events = self.responses_stream_generator_non_harmony(
+                         request,
+                         sampling_params,
+-                        result_generator,
++                        replayed_results,
+                         model_name,
+                         tokenizer,
+                         request_metadata,
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_responses.py b/test/registered/unit/entrypoints/openai/test_serving_responses.py
+index 84feceef49941a9c1190ed0af4ba782e5a0b2a99..73f77f4fdda5196fb2a536ed39b98d06aa6604e0 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_responses.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_responses.py
+@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
+ 
+ import orjson
+ import pytest
++from fastapi import HTTPException
+ from openai.types.responses import (
+     ResponseOutputMessage,
+     ResponseOutputText,
+@@ -15,8 +16,6 @@ from openai.types.responses import (
+ )
+ from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+ from openai_harmony import Conversation, Message, Role, ToolNamespaceConfig
+-from utils import StreamFixture, engine_chunk, event_payloads, make_serving
+-
+ from sglang.srt.entrypoints.context import (
+     HarmonyContext,
+     SimpleContext,
+@@ -42,6 +41,7 @@ from sglang.srt.sampling.sampling_params import (
+ from sglang.srt.server_args import ServerArgs
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
++from utils import StreamFixture, engine_chunk, event_payloads, make_serving
+ 
+ register_cpu_ci(est_time=10, suite="base-a-test-cpu")
+ 
+@@ -1388,6 +1388,50 @@ async def create_response_result(serving, request):
+     return result
+ 
+ 
++@pytest.mark.parametrize("stream", [False, True])
++def test_admission_rejection_precedes_responses_stream_headers(
++    response_serving, stream
++):
++    serving = response_serving(enabled=False)
++
++    async def reject(*args, **kwargs):
++        raise HTTPException(status_code=429, detail="Governor admission rejected")
++        yield
++
++    serving.tokenizer_manager.generate_request = reject
++    request = ResponsesRequest(model="x", input="hi", stream=stream)
++    result = asyncio.run(serving.create_responses(request))
++
++    assert result.status_code == 429
++    assert result.media_type != "text/event-stream"
++    assert orjson.loads(result.body) == {
++        "error": {
++            "message": "Governor admission rejected",
++            "type": "invalid_request_error",
++            "param": None,
++            "code": 429,
++        }
++    }
++
++
++def test_responses_stream_replays_first_generation_result(response_serving):
++    serving = response_serving(enabled=False, harmony=False)
++    request = ResponsesRequest(model="x", input="hi", stream=True)
++
++    async def run():
++        result = await serving.create_responses(request)
++        try:
++            return event_payloads([event async for event in result.body_iterator])
++        finally:
++            await result._close_generators()
++
++    payloads = asyncio.run(run())
++    assert payloads[0]["type"] == "response.created"
++    assert payloads[-1]["type"] == "response.completed"
++    response = ResponsesResponse.model_validate(payloads[-1]["response"])
++    assert response.output[0].content[0].text == "ok"
++
++
+ def assert_response_error(response, param, message=STORE_DISABLED_MESSAGE, status=400):
+     assert response.status_code == status
+     assert orjson.loads(response.body) == {
