@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
-      "fork_tree": "ce83c7d2050d250b6cab2a1cd6a9a5282474d1c4",
+      "fork_commit": "bcc1a65d3e5725aa071292650a9dff01bde07169",
+      "fork_tree": "d41d27767148204e7d9d373cd38719a889cc77c3",
       "fork_branch": "codex/governor-mainline-prep-r5",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..bcc1a65d3e5725aa071292650a9dff01bde07169",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2320,6 +2320,13 @@
           "source_commit": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
           "source_parent": "14624e954902bf2bed035631ed936c51701cec85",
           "sha256": "aecab4f30dcf77435c02af56e5054e00bd60b1a9a3aa2d6c8026f180b317b328"
+        },
+        {
+          "id": "responses-test-isort-bcc1a65d3e",
+          "path": "patches/common/bcc1a65d3e-isort-responses-admission-test.patch",
+          "source_commit": "bcc1a65d3e5725aa071292650a9dff01bde07169",
+          "source_parent": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
+          "sha256": "4735821d1c61bd82d77942ffb09d954575ac5d55a87b75337ce737566c574f56"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

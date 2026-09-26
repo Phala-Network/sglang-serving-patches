@@ -180,14 +180,14 @@
     "unified-v0520-governor-r5": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "ff72db0da9a57ed77ed36b18d9ef260d00ec886f",
-      "fork_tree": "ce83c7d2050d250b6cab2a1cd6a9a5282474d1c4",
+      "fork_commit": "bcc1a65d3e5725aa071292650a9dff01bde07169",
+      "fork_tree": "d41d27767148204e7d9d373cd38719a889cc77c3",
       "fork_branch": "codex/governor-mainline-prep-r5",
-      "patch_count": 104,
+      "patch_count": 105,
       "replay_mode": "exact",
       "status": "Governor R5 source candidate; GPU Governor qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "ce83c7d2050d250b6cab2a1cd6a9a5282474d1c4"
+      "replay_tree": "d41d27767148204e7d9d373cd38719a889cc77c3"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
