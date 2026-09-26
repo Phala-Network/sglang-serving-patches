@@ -9,11 +9,11 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `733d1832a2d59643a2e01c88059a569b9745fc2c`.
-- Engine tree: `34981fc4bb9a57dbc9f30d96138405d20b49fca8`.
-- Ordered engine stack: 31 protected steps plus 99 successor steps.
-- The two post-R13 steps initialize Governor after model type resolution and
-  dispatch policy readback/update through its adapter. They are under GPU
+- Active engine: `d03dd9731f1b828fdee6d58a3f73eebcfc012b53`.
+- Engine tree: `9213abdf1f58f4ec34db89fc8d62ea4225693fe4`.
+- Ordered engine stack: 31 protected steps plus 100 successor steps.
+- Three post-R13 steps reconcile Governor initialization, policy dispatch, and
+  the current admission/reservation/profile hook contract. They are under GPU
   correctness qualification; the R13 release tag remains unchanged.
 - R8 added guarded selective write-through async ACK and refreshed live Kimi
   `inputs_embeds` during prefill CUDA graph replay. R9 preserves DeepSeek

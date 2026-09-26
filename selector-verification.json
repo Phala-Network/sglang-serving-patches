@@ -177,17 +177,17 @@
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
       "replay_tree": "7ea9dc0382734d3560db10af78d6fdb929537e1e"
     },
-    "unified-v0520-governor-r4": {
+    "unified-v0520-governor-r5": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "733d1832a2d59643a2e01c88059a569b9745fc2c",
-      "fork_tree": "34981fc4bb9a57dbc9f30d96138405d20b49fca8",
-      "fork_branch": "codex/governor-adapter-policy-fix-20260926",
-      "patch_count": 99,
+      "fork_commit": "d03dd9731f1b828fdee6d58a3f73eebcfc012b53",
+      "fork_tree": "9213abdf1f58f4ec34db89fc8d62ea4225693fe4",
+      "fork_branch": "codex/governor-current-hooks-r5",
+      "patch_count": 100,
       "replay_mode": "exact",
-      "status": "Governor R4 developer candidate; GPU Governor qualification pending",
+      "status": "Governor R5 source candidate; GPU Governor qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "34981fc4bb9a57dbc9f30d96138405d20b49fca8"
+      "replay_tree": "9213abdf1f58f4ec34db89fc8d62ea4225693fe4"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
