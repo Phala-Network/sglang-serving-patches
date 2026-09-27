@@ -1,7 +1,7 @@
 {
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
-  "active_selector": "unified-v0520-governor-r5",
+  "active_selector": "unified-v0520-governor-r6",
   "as_of": "2026-09-26",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
@@ -1617,17 +1617,17 @@
       "status": "R12 source candidate; final-image and model qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     },
-    "unified-v0520-governor-r5": {
+    "unified-v0520-governor-r6": {
       "model_family": "shared-serving-and-model-increments",
       "version": "v0.5.20",
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "c9c6c824e5a607b94260c29f137a8c822f65aaad",
-      "fork_tree": "837df64283dae3e8d5d471b8b2e6f7f35d95a4dc",
-      "fork_branch": "codex/governor-mainline-prep-r5",
+      "fork_commit": "181598031ce692094006eca0bbdba0e356c7f713",
+      "fork_tree": "5cca977d5fb72bc0b7ad7b8ffb3daeeaeb280e11",
+      "fork_branch": "codex/responses-admission-preheader-r8",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..c9c6c824e5a607b94260c29f137a8c822f65aaad",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..181598031ce692094006eca0bbdba0e356c7f713",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2334,11 +2334,18 @@
           "source_commit": "c9c6c824e5a607b94260c29f137a8c822f65aaad",
           "source_parent": "bcc1a65d3e5725aa071292650a9dff01bde07169",
           "sha256": "9a0f10834b165ea7d763cd1b3bcae40e9215de740913071000d4158dad1a4227"
+        },
+        {
+          "id": "responses-stream-abort-before-headers-181598031c",
+          "path": "patches/common/181598031c-return-responses-stream-admission-abort-before-headers.patch",
+          "source_commit": "181598031ce692094006eca0bbdba0e356c7f713",
+          "source_parent": "c9c6c824e5a607b94260c29f137a8c822f65aaad",
+          "sha256": "6a0609807039510e7db259c9766647b1d893678de69a8c97f116959cb4214c16"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Governor R5 source candidate; GPU Governor qualification pending",
+      "status": "Governor R6 Responses admission source candidate; GPU qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }
