@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
-      "fork_tree": "010b3d4c5428b9e8fe08da18dc1faef58ca4ac1c",
-      "fork_branch": "codex/responses-admission-preheader-r8",
+      "fork_commit": "d5ed082bd535bebb8d4695952e4295da1ea72ae0",
+      "fork_tree": "5b63a9bb0f081ebdad12708d40e26dbe38a1c59c",
+      "fork_branch": "codex/glm102-nixl-format-20260928",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..133c73fa3d0d45f642762b54a21cc617e61ac16d",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..d5ed082bd535bebb8d4695952e4295da1ea72ae0",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2348,11 +2348,18 @@
           "source_commit": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
           "source_parent": "181598031ce692094006eca0bbdba0e356c7f713",
           "sha256": "d6806fd345e239f42d088a91afda1fdf36b901c016a0c53913e56f117482cf62"
+        },
+        {
+          "id": "glm-nixl-alignment-format",
+          "path": "patches/models/glm/0033-format-glm-nixl-alignment.patch",
+          "source_commit": "d5ed082bd535bebb8d4695952e4295da1ea72ae0",
+          "source_parent": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
+          "sha256": "17217f37c00c264ebe06a09d8c7baeda72c77442b6315afbea7340ca4364f459"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Governor R6 Responses admission source candidate; GPU qualification pending",
+      "status": "Governor R6 source candidate with GLM NIXL format follow-up; GPU qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }

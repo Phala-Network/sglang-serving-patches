@@ -1,6 +1,6 @@
 {
   "schema": "phala.sglang.selector-verification.v3",
-  "as_of": "2026-09-26",
+  "as_of": "2026-09-28",
   "source_repository": "https://github.com/Phala-Network/sglang",
   "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
   "frozen_base_replay_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "181598031ce692094006eca0bbdba0e356c7f713",
-      "fork_tree": "5cca977d5fb72bc0b7ad7b8ffb3daeeaeb280e11",
-      "fork_branch": "codex/responses-admission-preheader-r8",
-      "patch_count": 107,
+      "fork_commit": "d5ed082bd535bebb8d4695952e4295da1ea72ae0",
+      "fork_tree": "5b63a9bb0f081ebdad12708d40e26dbe38a1c59c",
+      "fork_branch": "codex/glm102-nixl-format-20260928",
+      "patch_count": 109,
       "replay_mode": "exact",
-      "status": "Governor R6 Responses admission source candidate; GPU qualification pending",
+      "status": "Governor R6 source candidate with GLM NIXL format follow-up; GPU qualification pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "5cca977d5fb72bc0b7ad7b8ffb3daeeaeb280e11"
+      "replay_tree": "5b63a9bb0f081ebdad12708d40e26dbe38a1c59c"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
