@@ -2347,7 +2347,7 @@
           "path": "patches/models/glm/0032-align-nixl-direct-io-slots-for-dsa.patch",
           "source_commit": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
           "source_parent": "181598031ce692094006eca0bbdba0e356c7f713",
-          "sha256": "1910ef778ea2c405f3bc294f63a8caaca9bd5e487ec4c55b27c473153ba44709"
+          "sha256": "d6806fd345e239f42d088a91afda1fdf36b901c016a0c53913e56f117482cf62"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
