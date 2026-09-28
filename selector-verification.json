@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
-      "fork_tree": "d7ff183e8134d531091946794b3554f047d987b6",
+      "fork_commit": "8e880b8793adfcc084f0f0b9c1ccb56d92f67d86",
+      "fork_tree": "5ce925ed91e43c4dd803f009cf7805d0661a380c",
       "fork_branch": "codex/dsv4-schema-bridge-p4-20260928",
-      "patch_count": 111,
+      "patch_count": 112,
       "replay_mode": "exact",
-      "status": "P4 combined source plus DSV4 schema bridge; experimental image awaiting runtime qualification",
+      "status": "DSV4 bridge plus test-only CI closure; runtime image remains frozen at 2263a57340",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "d7ff183e8134d531091946794b3554f047d987b6"
+      "replay_tree": "5ce925ed91e43c4dd803f009cf7805d0661a380c"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

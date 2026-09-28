@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
-      "fork_tree": "d7ff183e8134d531091946794b3554f047d987b6",
+      "fork_commit": "8e880b8793adfcc084f0f0b9c1ccb56d92f67d86",
+      "fork_tree": "5ce925ed91e43c4dd803f009cf7805d0661a380c",
       "fork_branch": "codex/dsv4-schema-bridge-p4-20260928",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d5ed082bd535bebb8d4695952e4295da1ea72ae0",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..8e880b8793adfcc084f0f0b9c1ccb56d92f67d86",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2369,11 +2369,17 @@
           "sha256": "e1ed16a59ed4ac912a0b5b1ef18b19b4831fce584cbff361c38db944917f096b",
           "source_commit": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
           "source_parent": "077ecbad5d80a56a64ba5670ae8a218f2e25fa7f"
+        },
+        {
+          "id": "0036-dsv4-bridge-test-ci-closure",
+          "path": "patches/common/0036-dsv4-bridge-test-ci-closure.patch",
+          "sha256": "971e8472033541073f7c50615320cf1b79f8871163d21453264c34ce87f658b6",
+          "source_range": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0..8e880b8793adfcc084f0f0b9c1ccb56d92f67d86"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "P4 combined source plus DSV4 schema bridge; experimental image awaiting runtime qualification",
+      "status": "DSV4 bridge plus test-only CI closure; runtime image remains frozen at 2263a57340",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }

@@ -1,0 +1,696 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 8cfff73b6d2ec25d3f255502b900211a4413fb9c..2096d9989bf4294acced2b1faa4107e687f9a26a 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -59,6 +59,7 @@ jobs:
+           python test/manual/phala/test_srt_log_transform.py
+           python test/manual/phala/test_srt_privacy_contract_cpu.py
+           python test/manual/phala/test_kv_backend_cpu.py
++          python -m pytest -q test/manual/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+           python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
+           python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
+           python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
+diff --git a/test/manual/unit/entrypoints/openai/test_encoding_dsv4_response_format.py b/test/manual/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b01b917950e51cd893a0295cb74cec79779f31dd
+--- /dev/null
++++ b/test/manual/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+@@ -0,0 +1,157 @@
++import copy
++import importlib.util
++from pathlib import Path
++
++import pytest
++
++_ENCODER_PATH = (
++    Path(__file__).parents[5]
++    / "python"
++    / "sglang"
++    / "srt"
++    / "entrypoints"
++    / "openai"
++    / "encoding_dsv4.py"
++)
++_SPEC = importlib.util.spec_from_file_location(
++    "encoding_dsv4_under_test", _ENCODER_PATH
++)
++encoding_dsv4 = importlib.util.module_from_spec(_SPEC)
++assert _SPEC.loader is not None
++_SPEC.loader.exec_module(encoding_dsv4)
++
++
++SCHEMA = {
++    "type": "object",
++    "properties": {"answer": {"type": "string"}},
++    "required": ["answer"],
++    "additionalProperties": False,
++}
++
++
++def test_json_schema_uses_existing_system_once_and_preserves_input():
++    messages = [
++        {"role": "system", "content": "be concise"},
++        {"role": "user", "content": "hi"},
++    ]
++    original = copy.deepcopy(messages)
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages,
++        {
++            "type": "json_schema",
++            "json_schema": {"schema": SCHEMA, "name": "x", "strict": True},
++        },
++    )
++    assert messages == original
++    assert result[0]["response_format"] == SCHEMA
++    assert "response_format" not in result[1]
++    rendered = encoding_dsv4.encode_messages(result, "chat")
++    assert rendered.count("## Response Format:") == 1
++    assert '"answer"' in rendered
++
++
++def test_user_only_gets_synthetic_system_and_json_object():
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        [{"role": "user", "content": "hi"}], {"type": "json_object"}
++    )
++    assert result[0] == {
++        "role": "system",
++        "content": "",
++        "response_format": {"type": "object"},
++    }
++    assert (
++        encoding_dsv4.encode_messages(result, "chat").count("## Response Format:") == 1
++    )
++
++
++def test_developer_only_and_tools_share_one_control_message():
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        [
++            {
++                "role": "developer",
++                "content": "policy",
++                "tools": [
++                    {"type": "function", "function": {"name": "f", "parameters": {}}}
++                ],
++            }
++        ],
++        {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++    )
++    assert result[0]["response_format"] == SCHEMA
++    rendered = encoding_dsv4.encode_messages(result, "chat")
++    assert rendered.count("## Response Format:") == 1
++    assert rendered.count('"name": "f"') == 1
++
++
++def test_first_system_wins_and_text_is_preserved():
++    messages = [
++        {"role": "system", "content": "one"},
++        {"role": "system", "content": "two"},
++    ]
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
++    )
++    assert result[0]["response_format"] == SCHEMA
++    assert "response_format" not in result[1]
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(
++            messages, {"type": "text"}
++        )
++        == messages
++    )
++
++
++def test_identical_control_format_allowed_but_collisions_rejected():
++    existing = [{"role": "system", "content": "x", "response_format": SCHEMA}]
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(
++            existing, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
++        )
++        == existing
++    )
++    with pytest.raises(ValueError, match="conflicting"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [{"role": "system", "content": "x", "response_format": {"type": "object"}}],
++            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++        )
++    with pytest.raises(ValueError, match="only on"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [
++                {"role": "system", "content": "x"},
++                {"role": "user", "content": "y", "response_format": SCHEMA},
++            ],
++            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++        )
++
++
++def test_missing_schema_rejected():
++    with pytest.raises(ValueError, match="requires a schema"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [{"role": "user", "content": "x"}],
++            {"type": "json_schema", "json_schema": {}},
++        )
++
++
++def test_structural_tag_and_nested_unicode_schema_are_preserved():
++    messages = [
++        {"role": "system", "content": "系统"},
++        {"role": "user", "content": "上一轮"},
++        {"role": "assistant", "content": "结果"},
++        {"role": "tool", "tool_call_id": "c1", "content": "工具结果"},
++        {"role": "user", "content": "继续"},
++    ]
++    structural = {"type": "structural_tag", "structural_tag": {"tags": []}}
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(messages, structural)
++        == messages
++    )
++    schema = {
++        "type": "object",
++        "$defs": {"名": {"type": "string", "description": "é"}},
++        "properties": {"值": {"$ref": "#/$defs/名"}},
++    }
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages, {"type": "json_schema", "json_schema": {"schema": schema}}
++    )
++    assert result[0]["response_format"] == schema
++    assert result[1:] == messages[1:]
+diff --git a/test/manual/unit/observability/test_governor_metrics.py b/test/manual/unit/observability/test_governor_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a87f119c20ebbfd77914fec11d15a36973423f7
+--- /dev/null
++++ b/test/manual/unit/observability/test_governor_metrics.py
+@@ -0,0 +1,173 @@
++"""CPU checks for the native telemetry hook, with no model or GPU."""
++
++import builtins
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++from pig_governor import Governor
++from pig_governor.sglang import SglangGovernor
++from prometheus_client import CollectorRegistry, Gauge
++
++from sglang.srt.managers.scheduler_components.metrics_reporter import (
++    SchedulerMetricsReporter,
++)
++
++
++class GovernorMetricsHookTests(unittest.TestCase):
++    def setUp(self):
++        self.core = Governor(0, max_running_requests=4)
++        self.addCleanup(self.core.close)
++        self.governor = SglangGovernor(self.core, max_running_requests=4)
++        self.registry = CollectorRegistry()
++        self.labels = {"model_name": "fixed-model"}
++        self.reporter = object.__new__(SchedulerMetricsReporter)
++        self.reporter.current_scheduler_metrics_enabled = True
++        self.reporter.metrics_collector = MagicMock(labels=self.labels)
++        self.reporter.scheduler = SimpleNamespace(
++            governor=self.governor,
++            waiting_queue=[],
++            grammar_manager=[],
++            chunked_req=None,
++        )
++
++    def initialize(self):
++        with (
++            patch("prometheus_client.REGISTRY", self.registry),
++            patch(
++                "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic",
++                return_value=0,
++            ),
++        ):
++            self.reporter._init_governor_metrics()
++
++    def value(self, name):
++        return self.registry.get_sample_value("pig_governor_" + name, self.labels)
++
++    def test_current_native_count_includes_grammar_and_chunked_owner(self):
++        self.initialize()
++        self.reporter.scheduler.waiting_queue = [object(), object()]
++        self.reporter.scheduler.grammar_manager = [object()]
++        self.reporter.scheduler.chunked_req = object()
++        self.reporter._publish_governor_metrics(0.1)
++        self.assertEqual(self.value("waiting_requests"), 4)
++        self.assertEqual(self.value("waiting_valid"), 1)
++        self.reporter.scheduler.waiting_queue.clear()
++        self.reporter.scheduler.grammar_manager.clear()
++        self.reporter.scheduler.chunked_req = None
++        self.reporter._publish_governor_metrics(0.2)
++        self.assertEqual(self.value("waiting_requests"), 0)
++
++    def test_active_and_idle_time_accounting_publish_without_batch_logs(self):
++        self.initialize()
++        self.reporter.enable_metrics = True
++        self.reporter._scheduler_time_accounting = None
++        self.reporter.scheduler_stage_metrics = MagicMock()
++        self.reporter.scheduler_stage_metrics.drain.return_value = {}
++        self.reporter.scheduler.waiting_queue = [object()]
++        with patch(
++            "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic_ns",
++            side_effect=[0, 10**9, 2 * 10**9],
++        ):
++            self.reporter.record_scheduler_active()
++            self.reporter.record_scheduler_active()
++            self.assertEqual(self.value("waiting_requests"), 1)
++            self.reporter.scheduler.waiting_queue.clear()
++            self.reporter.record_scheduler_idle()
++        self.assertEqual(self.value("waiting_requests"), 0)
++        self.reporter.metrics_collector.log_stats.assert_not_called()
++
++    def test_disabled_governor_remains_scrapeable(self):
++        self.reporter.scheduler.governor = None
++        self.initialize()
++        self.assertEqual(self.value("available"), 1)
++        self.assertEqual(self.value("enabled"), 0)
++        self.assertEqual(self.value("state_valid"), 1)
++
++    def test_reserved_extra_labels_do_not_break_legacy_scraping(self):
++        self.reporter.metrics_collector.labels = {
++            **self.labels,
++            "reason": "deployment-label",
++            "window": "deployment-label",
++        }
++        self.initialize()
++        self.assertEqual(self.value("available"), 1)
++        self.assertEqual(self.value("enabled"), 1)
++
++    def test_real_native_rejection_advances_exported_counter(self):
++        from array import array
++
++        from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++        maybe_stub_sgl_kernel()
++        from sglang.srt.managers.schedule_batch import Req
++        from sglang.srt.managers.scheduler import Scheduler
++        from sglang.srt.sampling.sampling_params import SamplingParams
++
++        self.initialize()
++        self.governor.max_waiting = 0
++        scheduler = object.__new__(Scheduler)
++        scheduler.governor = self.governor
++        scheduler.waiting_queue = []
++        scheduler.grammar_manager = []
++        scheduler.chunked_req = None
++        sent = []
++        scheduler.ipc_channels = SimpleNamespace(
++            send_to_tokenizer=SimpleNamespace(
++                send_output=lambda abort, req: sent.append(abort),
++            )
++        )
++        params = SamplingParams(max_new_tokens=1)
++        params.normalize(None)
++        req = Req(
++            rid="private-request",
++            origin_input_text="",
++            origin_input_ids=array("q", [1]),
++            sampling_params=params,
++        )
++        req.time_stats.trace_ctx = SimpleNamespace(abort=lambda **kwargs: None)
++        with (
++            patch("sglang.srt.managers.scheduler.time.monotonic", return_value=0.1),
++            patch(
++                "sglang.srt.managers.scheduler.get_serving",
++                return_value=SimpleNamespace(weight_version="test"),
++            ),
++        ):
++            self.assertTrue(scheduler._abort_on_governor_admission(req))
++        self.assertEqual(sent[0].finished_reason["status_code"], 429)
++        self.reporter._publish_governor_metrics(0.2)
++        self.assertEqual(self.value("admission_rejects_total"), 1)
++        self.assertEqual(
++            self.registry.get_sample_value(
++                "pig_governor_admission_rejections_total",
++                {**self.labels, "reason": "waiting_limit"},
++            ),
++            1,
++        )
++        self.assertEqual(scheduler.waiting_queue, [])
++
++    def test_missing_legacy_metrics_module_exports_explicit_unavailability(self):
++        original_import = builtins.__import__
++
++        def legacy_import(name, *args, **kwargs):
++            if name == "pig_governor.metrics":
++                raise ModuleNotFoundError("Legacy package", name=name)
++            return original_import(name, *args, **kwargs)
++
++        with (
++            patch("builtins.__import__", side_effect=legacy_import),
++            patch(
++                "prometheus_client.Gauge",
++                side_effect=lambda *args, **kwargs: Gauge(
++                    *args, **kwargs, registry=self.registry
++                ),
++            ),
++        ):
++            self.reporter._init_governor_metrics()
++        self.assertEqual(self.value("available"), 0)
++        self.assertEqual(self.value("enabled"), 1)
++        self.reporter._publish_governor_metrics(0.1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py b/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+deleted file mode 100644
+index 47bcfa0fa01d94bcdc0bdff387251e591e24b2d5..0000000000000000000000000000000000000000
+--- a/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
++++ /dev/null
+@@ -1,158 +0,0 @@
+-import copy
+-import importlib.util
+-from pathlib import Path
+-
+-import pytest
+-
+-
+-_ENCODER_PATH = (
+-    Path(__file__).parents[5]
+-    / "python"
+-    / "sglang"
+-    / "srt"
+-    / "entrypoints"
+-    / "openai"
+-    / "encoding_dsv4.py"
+-)
+-_SPEC = importlib.util.spec_from_file_location(
+-    "encoding_dsv4_under_test", _ENCODER_PATH
+-)
+-encoding_dsv4 = importlib.util.module_from_spec(_SPEC)
+-assert _SPEC.loader is not None
+-_SPEC.loader.exec_module(encoding_dsv4)
+-
+-
+-SCHEMA = {
+-    "type": "object",
+-    "properties": {"answer": {"type": "string"}},
+-    "required": ["answer"],
+-    "additionalProperties": False,
+-}
+-
+-
+-def test_json_schema_uses_existing_system_once_and_preserves_input():
+-    messages = [
+-        {"role": "system", "content": "be concise"},
+-        {"role": "user", "content": "hi"},
+-    ]
+-    original = copy.deepcopy(messages)
+-    result = encoding_dsv4.attach_response_format_to_control_message(
+-        messages,
+-        {
+-            "type": "json_schema",
+-            "json_schema": {"schema": SCHEMA, "name": "x", "strict": True},
+-        },
+-    )
+-    assert messages == original
+-    assert result[0]["response_format"] == SCHEMA
+-    assert "response_format" not in result[1]
+-    rendered = encoding_dsv4.encode_messages(result, "chat")
+-    assert rendered.count("## Response Format:") == 1
+-    assert '"answer"' in rendered
+-
+-
+-def test_user_only_gets_synthetic_system_and_json_object():
+-    result = encoding_dsv4.attach_response_format_to_control_message(
+-        [{"role": "user", "content": "hi"}], {"type": "json_object"}
+-    )
+-    assert result[0] == {
+-        "role": "system",
+-        "content": "",
+-        "response_format": {"type": "object"},
+-    }
+-    assert (
+-        encoding_dsv4.encode_messages(result, "chat").count("## Response Format:") == 1
+-    )
+-
+-
+-def test_developer_only_and_tools_share_one_control_message():
+-    result = encoding_dsv4.attach_response_format_to_control_message(
+-        [
+-            {
+-                "role": "developer",
+-                "content": "policy",
+-                "tools": [
+-                    {"type": "function", "function": {"name": "f", "parameters": {}}}
+-                ],
+-            }
+-        ],
+-        {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
+-    )
+-    assert result[0]["response_format"] == SCHEMA
+-    rendered = encoding_dsv4.encode_messages(result, "chat")
+-    assert rendered.count("## Response Format:") == 1
+-    assert rendered.count('"name": "f"') == 1
+-
+-
+-def test_first_system_wins_and_text_is_preserved():
+-    messages = [
+-        {"role": "system", "content": "one"},
+-        {"role": "system", "content": "two"},
+-    ]
+-    result = encoding_dsv4.attach_response_format_to_control_message(
+-        messages, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
+-    )
+-    assert result[0]["response_format"] == SCHEMA
+-    assert "response_format" not in result[1]
+-    assert (
+-        encoding_dsv4.attach_response_format_to_control_message(
+-            messages, {"type": "text"}
+-        )
+-        == messages
+-    )
+-
+-
+-def test_identical_control_format_allowed_but_collisions_rejected():
+-    existing = [{"role": "system", "content": "x", "response_format": SCHEMA}]
+-    assert (
+-        encoding_dsv4.attach_response_format_to_control_message(
+-            existing, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
+-        )
+-        == existing
+-    )
+-    with pytest.raises(ValueError, match="conflicting"):
+-        encoding_dsv4.attach_response_format_to_control_message(
+-            [{"role": "system", "content": "x", "response_format": {"type": "object"}}],
+-            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
+-        )
+-    with pytest.raises(ValueError, match="only on"):
+-        encoding_dsv4.attach_response_format_to_control_message(
+-            [
+-                {"role": "system", "content": "x"},
+-                {"role": "user", "content": "y", "response_format": SCHEMA},
+-            ],
+-            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
+-        )
+-
+-
+-def test_missing_schema_rejected():
+-    with pytest.raises(ValueError, match="requires a schema"):
+-        encoding_dsv4.attach_response_format_to_control_message(
+-            [{"role": "user", "content": "x"}],
+-            {"type": "json_schema", "json_schema": {}},
+-        )
+-
+-
+-def test_structural_tag_and_nested_unicode_schema_are_preserved():
+-    messages = [
+-        {"role": "system", "content": "系统"},
+-        {"role": "user", "content": "上一轮"},
+-        {"role": "assistant", "content": "结果"},
+-        {"role": "tool", "tool_call_id": "c1", "content": "工具结果"},
+-        {"role": "user", "content": "继续"},
+-    ]
+-    structural = {"type": "structural_tag", "structural_tag": {"tags": []}}
+-    assert (
+-        encoding_dsv4.attach_response_format_to_control_message(messages, structural)
+-        == messages
+-    )
+-    schema = {
+-        "type": "object",
+-        "$defs": {"名": {"type": "string", "description": "é"}},
+-        "properties": {"值": {"$ref": "#/$defs/名"}},
+-    }
+-    result = encoding_dsv4.attach_response_format_to_control_message(
+-        messages, {"type": "json_schema", "json_schema": {"schema": schema}}
+-    )
+-    assert result[0]["response_format"] == schema
+-    assert result[1:] == messages[1:]
+diff --git a/test/registered/unit/observability/test_governor_metrics.py b/test/registered/unit/observability/test_governor_metrics.py
+deleted file mode 100644
+index 7b11b03eff1af8b62c63b17c38242e37fc2143a0..0000000000000000000000000000000000000000
+--- a/test/registered/unit/observability/test_governor_metrics.py
++++ /dev/null
+@@ -1,172 +0,0 @@
+-"""CPU checks for the native telemetry hook, with no model or GPU."""
+-
+-import builtins
+-import unittest
+-from types import SimpleNamespace
+-from unittest.mock import MagicMock, patch
+-
+-from prometheus_client import CollectorRegistry, Gauge
+-
+-from pig_governor import Governor
+-from pig_governor.sglang import SglangGovernor
+-from sglang.srt.managers.scheduler_components.metrics_reporter import (
+-    SchedulerMetricsReporter,
+-)
+-
+-
+-class GovernorMetricsHookTests(unittest.TestCase):
+-    def setUp(self):
+-        self.core = Governor(0, max_running_requests=4)
+-        self.addCleanup(self.core.close)
+-        self.governor = SglangGovernor(self.core, max_running_requests=4)
+-        self.registry = CollectorRegistry()
+-        self.labels = {"model_name": "fixed-model"}
+-        self.reporter = object.__new__(SchedulerMetricsReporter)
+-        self.reporter.current_scheduler_metrics_enabled = True
+-        self.reporter.metrics_collector = MagicMock(labels=self.labels)
+-        self.reporter.scheduler = SimpleNamespace(
+-            governor=self.governor,
+-            waiting_queue=[],
+-            grammar_manager=[],
+-            chunked_req=None,
+-        )
+-
+-    def initialize(self):
+-        with (
+-            patch("prometheus_client.REGISTRY", self.registry),
+-            patch(
+-                "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic",
+-                return_value=0,
+-            ),
+-        ):
+-            self.reporter._init_governor_metrics()
+-
+-    def value(self, name):
+-        return self.registry.get_sample_value("pig_governor_" + name, self.labels)
+-
+-    def test_current_native_count_includes_grammar_and_chunked_owner(self):
+-        self.initialize()
+-        self.reporter.scheduler.waiting_queue = [object(), object()]
+-        self.reporter.scheduler.grammar_manager = [object()]
+-        self.reporter.scheduler.chunked_req = object()
+-        self.reporter._publish_governor_metrics(0.1)
+-        self.assertEqual(self.value("waiting_requests"), 4)
+-        self.assertEqual(self.value("waiting_valid"), 1)
+-        self.reporter.scheduler.waiting_queue.clear()
+-        self.reporter.scheduler.grammar_manager.clear()
+-        self.reporter.scheduler.chunked_req = None
+-        self.reporter._publish_governor_metrics(0.2)
+-        self.assertEqual(self.value("waiting_requests"), 0)
+-
+-    def test_active_and_idle_time_accounting_publish_without_batch_logs(self):
+-        self.initialize()
+-        self.reporter.enable_metrics = True
+-        self.reporter._scheduler_time_accounting = None
+-        self.reporter.scheduler_stage_metrics = MagicMock()
+-        self.reporter.scheduler_stage_metrics.drain.return_value = {}
+-        self.reporter.scheduler.waiting_queue = [object()]
+-        with patch(
+-            "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic_ns",
+-            side_effect=[0, 10**9, 2 * 10**9],
+-        ):
+-            self.reporter.record_scheduler_active()
+-            self.reporter.record_scheduler_active()
+-            self.assertEqual(self.value("waiting_requests"), 1)
+-            self.reporter.scheduler.waiting_queue.clear()
+-            self.reporter.record_scheduler_idle()
+-        self.assertEqual(self.value("waiting_requests"), 0)
+-        self.reporter.metrics_collector.log_stats.assert_not_called()
+-
+-    def test_disabled_governor_remains_scrapeable(self):
+-        self.reporter.scheduler.governor = None
+-        self.initialize()
+-        self.assertEqual(self.value("available"), 1)
+-        self.assertEqual(self.value("enabled"), 0)
+-        self.assertEqual(self.value("state_valid"), 1)
+-
+-    def test_reserved_extra_labels_do_not_break_legacy_scraping(self):
+-        self.reporter.metrics_collector.labels = {
+-            **self.labels,
+-            "reason": "deployment-label",
+-            "window": "deployment-label",
+-        }
+-        self.initialize()
+-        self.assertEqual(self.value("available"), 1)
+-        self.assertEqual(self.value("enabled"), 1)
+-
+-    def test_real_native_rejection_advances_exported_counter(self):
+-        from array import array
+-        from sglang.test.test_utils import maybe_stub_sgl_kernel
+-
+-        maybe_stub_sgl_kernel()
+-        from sglang.srt.managers.schedule_batch import Req
+-        from sglang.srt.managers.scheduler import Scheduler
+-        from sglang.srt.sampling.sampling_params import SamplingParams
+-
+-        self.initialize()
+-        self.governor.max_waiting = 0
+-        scheduler = object.__new__(Scheduler)
+-        scheduler.governor = self.governor
+-        scheduler.waiting_queue = []
+-        scheduler.grammar_manager = []
+-        scheduler.chunked_req = None
+-        sent = []
+-        scheduler.ipc_channels = SimpleNamespace(
+-            send_to_tokenizer=SimpleNamespace(
+-                send_output=lambda abort, req: sent.append(abort),
+-            )
+-        )
+-        params = SamplingParams(max_new_tokens=1)
+-        params.normalize(None)
+-        req = Req(
+-            rid="private-request",
+-            origin_input_text="",
+-            origin_input_ids=array("q", [1]),
+-            sampling_params=params,
+-        )
+-        req.time_stats.trace_ctx = SimpleNamespace(abort=lambda **kwargs: None)
+-        with (
+-            patch("sglang.srt.managers.scheduler.time.monotonic", return_value=0.1),
+-            patch(
+-                "sglang.srt.managers.scheduler.get_serving",
+-                return_value=SimpleNamespace(weight_version="test"),
+-            ),
+-        ):
+-            self.assertTrue(scheduler._abort_on_governor_admission(req))
+-        self.assertEqual(sent[0].finished_reason["status_code"], 429)
+-        self.reporter._publish_governor_metrics(0.2)
+-        self.assertEqual(self.value("admission_rejects_total"), 1)
+-        self.assertEqual(
+-            self.registry.get_sample_value(
+-                "pig_governor_admission_rejections_total",
+-                {**self.labels, "reason": "waiting_limit"},
+-            ),
+-            1,
+-        )
+-        self.assertEqual(scheduler.waiting_queue, [])
+-
+-    def test_missing_legacy_metrics_module_exports_explicit_unavailability(self):
+-        original_import = builtins.__import__
+-
+-        def legacy_import(name, *args, **kwargs):
+-            if name == "pig_governor.metrics":
+-                raise ModuleNotFoundError("Legacy package", name=name)
+-            return original_import(name, *args, **kwargs)
+-
+-        with (
+-            patch("builtins.__import__", side_effect=legacy_import),
+-            patch(
+-                "prometheus_client.Gauge",
+-                side_effect=lambda *args, **kwargs: Gauge(
+-                    *args, **kwargs, registry=self.registry
+-                ),
+-            ),
+-        ):
+-            self.reporter._init_governor_metrics()
+-        self.assertEqual(self.value("available"), 0)
+-        self.assertEqual(self.value("enabled"), 1)
+-        self.reporter._publish_governor_metrics(0.1)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
