@@ -20,38 +20,17 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The explicit `active_selector` in [selectors.json](selectors.json) binds
-engine `fa8cf60f78d006abbd5515426b3a64d384418421`, tree
-`fc5dda980ee83a635beb4d99d48d051904bd0bfc`, on navigation branch
-`codex/sglang-image-unification-20260926-r13`.
-It combines the 31-step protected baseline and 97 successor patches.
-The September 23 increments add framework privacy/health cleanup, the GLM
-host-reserve configuration and shared HugeTLB accounting. The latest increment
-preserves DeepSeek integer reasoning budgets through its typed request and custom
-encoder. R10 adds GLM-5.3-Flash compatibility and closes output, health-log,
-and DSA rollback correctness gaps. R11 keeps reasoning usage details typed so
-ordinary and streaming responses serialize without per-token warnings. R12
-aligns the wheel's visual dependency metadata with the installed versions. R13
-translates Transformers 5.17 Gemma4 per-layer attention dimensions into the
-full/SWA fields consumed by SGLang after R12 failed to start Gemma4 on C07.
-Native and final-image acceptance remain separate.
+The active selector binds engine `14fad544cd9606f5460ca54ef4a3f8ed1e799b8d`, tree
+`453e9702a734a68dce61ca3043c0cc23a1176c5e`: 31 protected steps plus 118 successor patches.
+It preserves the shared serving/model stack and adds trusted internal health
+with Governor 0.2.9/ABI5, DSV4 decode shared offload, and default-off exact PD
+batch completion diagnostics. Governor runtime is pinned in the active selector;
+the protected historical Governor patch bytes remain unchanged.
 
-[Source lineage](docs/UNIFIED_SUCCESSOR.md) covers shared serving,
-Kimi, Muse, Nemotron, DS0001–0026 and native DS protocol adaptation, GLM,
-Qwen GGUF/vision/prefill and shared parser changes. DS Vision, Engram and Python
-C1/C2 consumers are connected. Checkpoint defaults, GDN layout and historical
-Nemotron fusion/Mamba behavior are source-reconciled. The shared malformed
-weight-update and initial SSE error HTTP-status residuals are repaired.
-
-[Successor coverage](docs/SUCCESSOR_COVERAGE_20260922.json) joins all 110 original
-record IDs: 104 source-covered and six upstream-covered, each with source and
-successor identities, current paths, semantic evidence, tests and limits.
-This is complete source-semantic accounting, not 110 runtime acceptances.
-No additional Gemma/Qwen2.5-specific fix is inferred from a shared old image.
-
-Full-runtime/native ABI, loaded weights, GPU numerical/capture/performance,
-Muse template packaging/license, final-image and production acceptance remain
-separate. Shared code does not qualify every model or topology.
+Source replay and CPU tests do not qualify native transport, GPU inference,
+DRAM/SSD cross-instance restoration or production. Those gates use the final
+immutable image and their authorized target owners. Native dependency and
+historical coverage boundaries remain in the linked maintenance records.
 
 ## Protected historical baseline
 

@@ -1,0 +1,615 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 35af7230c11d4e391b33543168b457c00956e9fa..f9085aa0566799d743e2b14e77093da380edf965 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -714,7 +714,9 @@ async def health_generate(request: Request) -> Response:
+     async def gen():
+         try:
+             async with aclosing(
+-                _global_state.tokenizer_manager.generate_request(gri, request)
++                _global_state.tokenizer_manager.generate_request(
++                    gri, request, internal_health_check=True
++                )
+             ) as responses:
+                 async for _ in responses:
+                     break
+diff --git a/python/sglang/srt/managers/detokenizer_manager.py b/python/sglang/srt/managers/detokenizer_manager.py
+index c0029015949ce48cd8e6654143f28ae3112dfd5e..4daf3baef66b907cad1d2dfc81bc96ae57a59079 100644
+--- a/python/sglang/srt/managers/detokenizer_manager.py
++++ b/python/sglang/srt/managers/detokenizer_manager.py
+@@ -30,7 +30,6 @@ from sglang.srt.beam_search.output import (
+     decode_beam_search_output,
+     is_beam_search_batch,
+ )
+-from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
+ from sglang.srt.environ import envs
+ from sglang.srt.managers.io_struct import (
+     BatchEmbeddingOutput,
+@@ -519,10 +518,6 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
+             logging.getLogger().setLevel(recv_req.log_level.upper())
+ 
+ 
+-def is_health_check_request(rid: Optional[str]) -> bool:
+-    return isinstance(rid, str) and rid.startswith(HEALTH_CHECK_RID_PREFIX)
+-
+-
+ class LimitedCapacityDict(OrderedDict):
+     def __init__(self, capacity: int, *args, **kwargs):
+         super().__init__(*args, **kwargs)
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index e4c4accf63fc3fdccd395ae9ace1e45d787568b3..87134c4bdd059884252ce3cd6766557cb3d56f0a 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -981,6 +981,8 @@ class GenerateReqInput:
+ 
+ 
+ class TokenizedGenerateReqInput(BaseReq, kw_only=True):
++    # Set only by TokenizerManager's internal health call, never from HTTP data.
++    is_internal_health_check: bool = False
+     input_text: Optional[Union[str, List[Union[str, List[str]]]]]
+     # The input token ids
+     input_ids: Optional[array]  # Optional[array[int]]
+@@ -1337,6 +1339,7 @@ class EmbeddingReqInput:
+ 
+ 
+ class TokenizedEmbeddingReqInput(BaseReq, kw_only=True):
++    is_internal_health_check: bool = False
+     input_text: Optional[Union[str, List[Union[str, List[str]]]]]
+     # The input token ids
+     input_ids: Optional[array]  # array[int]
+@@ -2051,6 +2054,7 @@ class SlowDownReqOutput(BaseReq, kw_only=True):
+ 
+ 
+ class AbortReq(BaseReq, kw_only=True):
++    is_internal_health_check: bool = False
+     # Whether to abort all requests
+     abort_all: bool = False
+     # The finished reason data (from BaseFinishReason.to_json())
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 26679e634712cd3386bac65499be1a02c742990d..e4ba187b25c2810cbe7dfaa7d2abda62c4f0a3c0 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -978,6 +978,7 @@ class Req(ReqDllmMixin):
+         multi_item_delimiter_indices: Optional[List[int]] = None,
+         session_id: Optional[str] = None,
+         cache_salt: Optional[str] = None,
++        is_internal_health_check: bool = False,
+     ):
+         # Input and output info
+         self.rid = rid
+@@ -1024,6 +1025,7 @@ class Req(ReqDllmMixin):
+ 
+         # For multi-http worker
+         self.http_worker_ipc = http_worker_ipc
++        self.is_internal_health_check = is_internal_health_check
+ 
+         # Require reasoning for the request
+         self.require_reasoning = require_reasoning
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index d06d863e9577405d2b0185bb2dbd76e3eb035082..4e75a17cfcd339f7fa7f98c3f71cf0c0ca55a556 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -278,7 +278,7 @@ from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+ from sglang.srt.managers.utils import (
+     EmbeddingBatchResult,
+     GenerationBatchResult,
+-    is_health_check_generate_req,
++    is_internal_health_check_req,
+     validate_input_length,
+ )
+ from sglang.srt.mem_cache import kv_cache_builder
+@@ -2127,7 +2127,7 @@ class Scheduler(
+                 vmm_errors = self._materialize_cuda_vmm_inputs(recv_req)
+ 
+             # Skip health check when server is busy — ongoing requests already carry health info.
+-            if is_health_check_generate_req(recv_req) and not self.is_fully_idle(
++            if is_internal_health_check_req(recv_req) and not self.is_fully_idle(
+                 for_health_check=True
+             ):
+                 self.return_health_check_ipcs.append(
+@@ -2818,6 +2818,7 @@ class Scheduler(
+                 extra_key=recv_req.extra_key,
+                 cache_salt=recv_req.cache_salt,
+                 http_worker_ipc=recv_req.http_worker_ipc,
++                is_internal_health_check=recv_req.is_internal_health_check,
+                 dllm_config=self.dllm_config,
+                 time_stats=recv_req.time_stats,
+                 multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
+@@ -3300,7 +3301,10 @@ class Scheduler(
+         if self.chunked_req is not None:
+             waiting_count += 1
+         decision = self.governor.admit_request(
+-            req, time.monotonic(), waiting_count=waiting_count
++            req,
++            time.monotonic(),
++            waiting_count=waiting_count,
++            is_health_check=req.is_internal_health_check,
+         )
+         if decision["allowed"]:
+             return False
+@@ -3500,6 +3504,7 @@ class Scheduler(
+             dimensions=recv_req.dimensions,
+             lora_id=recv_req.lora_id,
+             http_worker_ipc=recv_req.http_worker_ipc,
++            is_internal_health_check=recv_req.is_internal_health_check,
+             time_stats=recv_req.time_stats,
+             return_pooled_hidden_states=recv_req.return_pooled_hidden_states,
+             multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
+@@ -4807,7 +4812,8 @@ class Scheduler(
+         is_prefill = mode.is_extend_without_speculative()
+         if not (is_prefill or mode.is_decode() or mode.is_target_verify()):
+             return
+-        if all(is_health_check_generate_req(req) for req in batch.reqs):
++        if any(is_internal_health_check_req(req) for req in batch.reqs):
++            self._prev_step = None
+             return
+         prev = self._prev_step
+         self._prev_step = (batch.forward_iter, batch.launch_ts, is_prefill)
+@@ -6107,6 +6113,7 @@ def _make_abort_req(
+         on_abort_emitted(req)
+     return AbortReq(
+         rid=req.rid,
++        is_internal_health_check=req.is_internal_health_check,
+         finished_reason=finished_reason,
+         weight_versions=compute_weight_version_spans(
+             req.weight_version_events,
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 4ce72c7357e1f6fd5dc53d9246a1d0e517231038..ffe0a16a9a66da5a6a13c16841e77789c3ae1dee 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -60,7 +60,6 @@ from sglang.srt.beam_search.output import (
+     try_build_beam_search_out_dict,
+ )
+ from sglang.srt.configs.model_config import ModelConfig
+-from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
+ from sglang.srt.disaggregation.encoder.receiver import create_mm_receiver
+ from sglang.srt.disaggregation.utils import DisaggregationMode
+ from sglang.srt.entrypoints.request_disconnect import response_disconnect_watched
+@@ -116,7 +115,7 @@ from sglang.srt.managers.tokenizer_control_mixin import TokenizerControlMixin
+ from sglang.srt.managers.tokenizer_manager_score_mixin import TokenizerManagerScoreMixin
+ from sglang.srt.managers.utils import (
+     compute_num_reserved_tokens,
+-    is_health_check_generate_req,
++    is_internal_health_check_req,
+ )
+ from sglang.srt.model_executor.forward_batch_info import (
+     get_server_return_hidden_states_mode,
+@@ -248,6 +247,7 @@ class ReqState:
+ 
+     dispatched: bool = False
+     abort_sent: bool = False
++    is_internal_health_check: bool = False
+     # Delayed disconnects belong to the creating API request, not a reused RID.
+     request_owner: Optional[Union[GenerateReqInput, EmbeddingReqInput]] = None
+ 
+@@ -852,9 +852,16 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         self,
+         obj: Union[GenerateReqInput, EmbeddingReqInput],
+         request: Optional[fastapi.Request] = None,
++        *,
++        internal_health_check: bool = False,
+     ):
+         self.auto_create_handle_loop()
+ 
++        if type(internal_health_check) is not bool:
++            raise ValueError("Invalid internal health marker")
++        # Overwrite any attribute supplied by an external request object.
++        obj._internal_health_check = internal_health_check
++
+         # Normalize the request
+         obj.normalize_batch_and_arguments()
+         self._set_default_priority(obj)
+@@ -1528,6 +1535,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 self.fake_bootstrap_room_counter += 1
+ 
+             tokenized_obj = TokenizedGenerateReqInput(
++                is_internal_health_check=getattr(obj, "_internal_health_check", False),
+                 input_text=input_text,
+                 input_ids=input_ids_arr,
+                 mm_inputs=mm_inputs,
+@@ -1580,6 +1588,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 )
+ 
+             tokenized_obj = TokenizedEmbeddingReqInput(
++                is_internal_health_check=getattr(obj, "_internal_health_check", False),
+                 input_text=input_text,
+                 input_ids=input_ids_arr,
+                 mm_inputs=mm_inputs,
+@@ -2432,9 +2441,6 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         for i, rid in enumerate(recv_obj.rids):
+             state = self.rid_to_state.get(rid, None)
+             if state is None:
+-                # Known race: /health_generate pops its rid as soon as ANY message bumps last_receive_tstamp.
+-                if rid.startswith(HEALTH_CHECK_RID_PREFIX):
+-                    continue
+                 logger.warning(
+                     "Received output for rid=<redacted> but the state was deleted in TokenizerManager."
+                 )
+@@ -3439,8 +3445,6 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         pass
+ 
+     def _handle_abort_req(self, recv_obj: AbortReq):
+-        if is_health_check_generate_req(recv_obj):
+-            return
+         # Two scheduler messages can race in handle_loop for the same rid: a
+         # batch output that finishes it normally (deletes rid_to_state[rid])
+         # and this abort echo. If the finish wins, the rid is already gone and
+@@ -3452,6 +3456,8 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 "Abort request for rid=<redacted> not found in rid_to_state; likely already finished/removed."
+             )
+             return
++        if state.is_internal_health_check and is_internal_health_check_req(recv_obj):
++            return
+         state.finished = True
+         state.time_stats.set_finished_time()
+ 
+@@ -3707,6 +3713,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             time_stats = APIServerReqTimeStats(disagg_mode=self.disaggregation_mode)
+             state = ReqState([], False, asyncio.Event(), sub_obj, time_stats)
+             state.request_owner = obj
++            state.is_internal_health_check = getattr(obj, "_internal_health_check", False)
+             self.rid_to_state[rid] = state
+             if self.enable_trace:
+                 time_stats.init_trace_ctx(rid, bootstrap_room, external_trace_header)
+diff --git a/python/sglang/srt/managers/utils.py b/python/sglang/srt/managers/utils.py
+index 11a40ecec8ae722454959c7d7064c175e32da501..3a717d250a1b80b44d67020b90babca35b171b70 100644
+--- a/python/sglang/srt/managers/utils.py
++++ b/python/sglang/srt/managers/utils.py
+@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+ import msgspec
+ import torch
+ 
+-from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
+ from sglang.srt.eplb.expert_distribution import ExpertDistributionMetrics
+ from sglang.srt.layers.logits_processor import (
+     LogitsProcessorOutput,
+@@ -376,9 +375,8 @@ class EmbeddingBatchResult:
+         self.copy_done.record()
+ 
+ 
+-def is_health_check_generate_req(recv_req):
+-    rid = getattr(recv_req, "rid", None)
+-    return rid is not None and rid.startswith(HEALTH_CHECK_RID_PREFIX)
++def is_internal_health_check_req(recv_req):
++    return getattr(recv_req, "is_internal_health_check", False) is True
+ 
+ 
+ class MsgpackDecodeError(ValueError):
+diff --git a/test/manual/phala/test_health_task_cleanup_cpu.py b/test/manual/phala/test_health_task_cleanup_cpu.py
+index 37a27a1a303a8974798c51cb8e4b36702a9d511a..a3643e14803c1e2d4584d2d0076b94ea84581b0e 100644
+--- a/test/manual/phala/test_health_task_cleanup_cpu.py
++++ b/test/manual/phala/test_health_task_cleanup_cpu.py
+@@ -30,7 +30,8 @@ class HealthTaskTests(unittest.IsolatedAsyncioTestCase):
+             abort_request=Mock(),
+         )
+ 
+-        async def generate(obj, request):
++        async def generate(obj, request, *, internal_health_check=False):
++            self.assertIs(internal_health_check, True)
+             self.child = asyncio.current_task()
+             self.manager.rid_to_state[obj.rid] = object()
+             try:
+diff --git a/test/manual/unit/entrypoints/test_health_generate_lifecycle.py b/test/manual/unit/entrypoints/test_health_generate_lifecycle.py
+index 9386f3b34098c1e3dd5528ff7c68c71d20bca78b..9a516fbbf0be200fa7a7a2abbe72650f37f1a605 100644
+--- a/test/manual/unit/entrypoints/test_health_generate_lifecycle.py
++++ b/test/manual/unit/entrypoints/test_health_generate_lifecycle.py
+@@ -76,11 +76,13 @@ class _Manager:
+         self.cancel_started = asyncio.Event()
+         self.allow_cancel = asyncio.Event()
+         self.child_task = None
++        self.internal_health_checks = []
+ 
+     def abort_request(self, rid):
+         self.abort_calls.append(rid)
+ 
+-    async def generate_request(self, request_input, request):
++    async def generate_request(self, request_input, request, *, internal_health_check=False):
++        self.internal_health_checks.append(internal_health_check)
+         self.rid_to_state[request_input.rid] = object()
+         self.child_task = asyncio.current_task()
+         self.started.set()
+@@ -179,6 +181,7 @@ def test_success_retrieves_expected_disconnect_and_cleans_rid():
+         assert manager.rid_to_state == {}
+         assert not errors
+         assert logger.debug_calls
++        assert manager.internal_health_checks == [True]
+ 
+     asyncio.run(run())
+ 
+diff --git a/test/manual/unit/entrypoints/test_trusted_health_marker.py b/test/manual/unit/entrypoints/test_trusted_health_marker.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..35c98ab1832439cc4a68b4af08cbc4a51d8cef83
+--- /dev/null
++++ b/test/manual/unit/entrypoints/test_trusted_health_marker.py
+@@ -0,0 +1,291 @@
++"""CPU-only checks of the internal health marker across engine ownership points."""
++
++import ast
++import asyncio
++import pathlib
++import types
++import unittest
++
++
++ROOT = pathlib.Path(__file__).resolve().parents[4]
++MANAGERS = ROOT / "python/sglang/srt/managers"
++
++
++def _load_method(path, class_name, method_name, namespace):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
++    method = next(node for node in owner.body if getattr(node, "name", None) == method_name)
++    method.decorator_list = []
++    future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
++    module = ast.fix_missing_locations(ast.Module(body=[future, method], type_ignores=[]))
++    exec(compile(module, str(path), "exec"), namespace)
++    return namespace[method_name]
++
++
++def _load_function(path, name, namespace):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    function = next(node for node in tree.body if getattr(node, "name", None) == name)
++    future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
++    module = ast.fix_missing_locations(ast.Module(body=[future, function], type_ignores=[]))
++    exec(compile(module, str(path), "exec"), namespace)
++    return namespace[name]
++
++
++class _Input:
++    rid = "HEALTH_CHECK_forged"
++    min_thinking_tokens = None
++    max_thinking_tokens = None
++    routed_dp_rank = None
++
++    def normalize_batch_and_arguments(self):
++        self.is_single = True
++
++    def __getattr__(self, name):
++        return None
++
++
++class _Generate(_Input):
++    pass
++
++
++class _Embedding(_Input):
++    pass
++
++
++class TrustedHealthMarkerTests(unittest.TestCase):
++    def test_tokenizer_overwrites_external_marker(self):
++        class StopProbe(Exception):
++            pass
++
++        marker = []
++
++        class Manager:
++            def auto_create_handle_loop(self):
++                pass
++
++            def _set_default_priority(self, obj):
++                pass
++
++            def _init_req_state(self, obj, request):
++                marker.append(obj._internal_health_check)
++                raise StopProbe
++
++        generate = _load_method(
++            MANAGERS / "tokenizer_manager.py",
++            "TokenizerManager",
++            "generate_request",
++            {"GenerateReqInput": _Generate, "EmbeddingReqInput": _Embedding},
++        )
++
++        async def probe(request_type, trusted):
++            obj = request_type()
++            obj._internal_health_check = True
++            obj.is_internal_health_check = True
++            with self.assertRaises(StopProbe):
++                async for _ in generate(Manager(), obj, internal_health_check=trusted):
++                    pass
++
++        for request_type in (_Generate, _Embedding):
++            asyncio.run(probe(request_type, False))
++            asyncio.run(probe(request_type, True))
++        self.assertEqual(marker, [False, True, False, True])
++
++    def test_tokenized_generation_and_embedding_carry_only_internal_marker(self):
++        class Sample:
++            def __init__(self, **kwargs):
++                pass
++
++            def normalize(self, tokenizer):
++                pass
++
++            def verify(self, vocab_size):
++                pass
++
++        class Clock:
++            def set_tokenize_finish_time(self):
++                pass
++
++        class Manager:
++            preferred_sampling_params = None
++            sampling_params_class = Sample
++            tokenizer = None
++            model_config = types.SimpleNamespace(vocab_size=100)
++            rid_to_state = {"HEALTH_CHECK_forged": types.SimpleNamespace(time_stats=Clock())}
++
++        create = _load_method(
++            MANAGERS / "tokenizer_manager.py",
++            "TokenizerManager",
++            "_create_tokenized_object",
++            {
++                "GenerateReqInput": _Generate,
++                "EmbeddingReqInput": _Embedding,
++                "SessionParams": object,
++                "TokenizedGenerateReqInput": lambda **kwargs: types.SimpleNamespace(**kwargs),
++                "TokenizedEmbeddingReqInput": lambda **kwargs: types.SimpleNamespace(**kwargs),
++                "get_disagg": lambda: types.SimpleNamespace(disaggregation_transfer_backend="none"),
++                "array": __import__("array").array,
++            },
++        )
++        for request_type in (_Generate, _Embedding):
++            obj = request_type()
++            obj.sampling_params = {}
++            obj.is_internal_health_check = True
++            obj._internal_health_check = False
++            self.assertFalse(create(Manager(), obj, None, [0]).is_internal_health_check)
++            obj._internal_health_check = True
++            self.assertTrue(create(Manager(), obj, None, [0]).is_internal_health_check)
++
++    def test_busy_skip_and_step_classification_ignore_forged_rid(self):
++        classify = _load_function(MANAGERS / "utils.py", "is_internal_health_check_req", {})
++        calls = []
++
++        class Scheduler:
++            session_controller = types.SimpleNamespace(maybe_reap=lambda now: None)
++            return_health_check_ipcs = []
++            external_corpus_manager = None
++            flush_wrapper = types.SimpleNamespace(check_pending=lambda: None)
++
++            def is_fully_idle(self, **kwargs):
++                return False
++
++            def _request_dispatcher(self, req):
++                calls.append(req.rid)
++
++        scheduler = Scheduler()
++        process = _load_method(
++            MANAGERS / "scheduler.py",
++            "Scheduler",
++            "process_input_requests",
++            {
++                "time": __import__("time"),
++                "get_mm": lambda: types.SimpleNamespace(mm_feature_transport="none"),
++                "is_internal_health_check_req": classify,
++            },
++        )
++        forged = types.SimpleNamespace(rid="HEALTH_CHECK_forged", is_internal_health_check=False)
++        trusted = types.SimpleNamespace(rid="ordinary", is_internal_health_check=True, http_worker_ipc="health-ipc")
++        process(scheduler, [forged, trusted])
++        self.assertEqual(calls, ["HEALTH_CHECK_forged"])
++        self.assertEqual(scheduler.return_health_check_ipcs, ["health-ipc"])
++
++    def test_governor_handoff_and_abort_echo_preserve_trust(self):
++        classify = _load_function(MANAGERS / "utils.py", "is_internal_health_check_req", {})
++        admission_calls = []
++        governor = types.SimpleNamespace(
++            admit_request=lambda *args, **kwargs: admission_calls.append(kwargs) or {"allowed": True}
++        )
++        scheduler = types.SimpleNamespace(governor=governor, waiting_queue=[], grammar_manager=[], chunked_req=None)
++        admit = _load_method(
++            MANAGERS / "scheduler.py", "Scheduler", "_abort_on_governor_admission", {"time": __import__("time")}
++        )
++        req = types.SimpleNamespace(is_internal_health_check=True)
++        self.assertFalse(admit(scheduler, req))
++        self.assertEqual(admission_calls[0]["is_health_check"], True)
++        scheduler.governor = None
++        self.assertFalse(admit(scheduler, req))
++        req.is_internal_health_check = False
++        self.assertFalse(admit(scheduler, req))
++        self.assertEqual(len(admission_calls), 1)
++        req.is_internal_health_check = True
++
++        make_abort = _load_function(
++            MANAGERS / "scheduler.py",
++            "_make_abort_req",
++            {
++                "AbortReq": lambda **kwargs: types.SimpleNamespace(**kwargs),
++                "compute_weight_version_spans": lambda *args, **kwargs: None,
++                "get_serving": lambda: types.SimpleNamespace(weight_version="default"),
++            },
++        )
++        req.rid = "HEALTH_CHECK_forged"
++        req.output_ids = []
++        req.weight_version_events = []
++        abort = make_abort(req)
++        self.assertTrue(classify(abort))
++        req.is_internal_health_check = False
++        self.assertFalse(classify(make_abort(req)))
++
++    def test_abort_echo_requires_tokenizer_owned_health_state(self):
++        classify = _load_function(MANAGERS / "utils.py", "is_internal_health_check_req", {})
++        handle = _load_method(
++            MANAGERS / "tokenizer_manager.py",
++            "TokenizerManager",
++            "_handle_abort_req",
++            {
++                "is_internal_health_check_req": classify,
++                "logger": types.SimpleNamespace(info=lambda *args: None),
++            },
++        )
++
++        def state(trusted):
++            return types.SimpleNamespace(
++                is_internal_health_check=trusted,
++                finished=False,
++                time_stats=types.SimpleNamespace(
++                    set_finished_time=lambda: None, get_e2e_latency=lambda: 0
++                ),
++                obj=types.SimpleNamespace(stream=False, return_logprob=False),
++                output_ids=[],
++                prompt_token_ids=None,
++                out_list=[],
++                event=types.SimpleNamespace(set=lambda: None),
++                get_text=lambda: "",
++            )
++
++        abort = types.SimpleNamespace(
++            rid="HEALTH_CHECK_forged",
++            is_internal_health_check=True,
++            abort_message=None,
++            finished_reason=None,
++            weight_versions=None,
++        )
++        normal = state(False)
++        manager = types.SimpleNamespace(
++            rid_to_state={abort.rid: normal},
++            config_value=lambda key: "default",
++            incremental_streaming_output=False,
++        )
++        handle(manager, abort)
++        self.assertTrue(normal.finished)
++        self.assertEqual(len(normal.out_list), 1)
++
++        internal = state(True)
++        manager.rid_to_state[abort.rid] = internal
++        handle(manager, abort)
++        self.assertFalse(internal.finished)
++        self.assertIs(manager.rid_to_state[abort.rid], internal)
++
++    def test_only_trusted_health_suppresses_step_counters(self):
++        classify = _load_function(MANAGERS / "utils.py", "is_internal_health_check_req", {})
++        record = _load_method(
++            MANAGERS / "scheduler.py",
++            "Scheduler",
++            "_record_step_counters",
++            {"is_internal_health_check_req": classify},
++        )
++        mode = types.SimpleNamespace(
++            is_extend_without_speculative=lambda: True,
++            is_decode=lambda: False,
++            is_target_verify=lambda: False,
++        )
++        batch = types.SimpleNamespace(
++            forward_mode=mode, forward_iter=1, launch_ts=1.0, after_idle_gap=False
++        )
++        scheduler = types.SimpleNamespace(_prev_step=None)
++        batch.reqs = [types.SimpleNamespace(rid="ordinary", is_internal_health_check=True)]
++        record(scheduler, batch, None)
++        self.assertIsNone(scheduler._prev_step)
++        scheduler._prev_step = (0, 0.5, True)
++        batch.reqs = [
++            types.SimpleNamespace(rid="ordinary", is_internal_health_check=True),
++            types.SimpleNamespace(rid="business", is_internal_health_check=False),
++        ]
++        record(scheduler, batch, None)
++        self.assertIsNone(scheduler._prev_step)
++        batch.reqs = [types.SimpleNamespace(rid="HEALTH_CHECK_forged", is_internal_health_check=False)]
++        record(scheduler, batch, None)
++        self.assertEqual(scheduler._prev_step, (1, 1.0, True))
++
++
++if __name__ == "__main__":
++    unittest.main()

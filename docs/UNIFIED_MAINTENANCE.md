@@ -9,51 +9,23 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `d03dd9731f1b828fdee6d58a3f73eebcfc012b53`.
-- Engine tree: `9213abdf1f58f4ec34db89fc8d62ea4225693fe4`.
-- Ordered engine stack: 31 protected steps plus 100 successor steps.
-- Three post-R13 steps reconcile Governor initialization, policy dispatch, and
-  the current admission/reservation/profile hook contract. They are under GPU
-  correctness qualification; the R13 release tag remains unchanged.
-- R8 added guarded selective write-through async ACK and refreshed live Kimi
-  `inputs_embeds` during prefill CUDA graph replay. R9 preserves DeepSeek
-  integer reasoning budgets through the typed request and custom encoder.
-- R10 adds GLM-5.3-Flash vision/HiCache corrections, common output and health
-  privacy guards, and a DSA partial-construction rollback fix. Streaming usage
-  remains forced by the existing protocol contract.
-- R11 keeps the existing usage response shape while assigning its typed
-  `CompletionTokensDetails`, avoiding per-token serialization warnings.
-- R12 aligns the GPU wheel metadata with the fixed Transformers 5.17.0 and
-  tokenizers 0.23.1 visual processing dependencies.
-- R13 translates Gemma4's Transformers 5.17 per-layer full/SWA attention
-  dimensions into the fields used by SGLang, with validation of same-type
-  layer consistency. R12 failed Gemma4 startup on C07 before health.
-- The final successor aligns the exact engine tree with `main`'s repository CI
-  cleanup and runs the health lifecycle regression in Phala source CI. The
-  two-parent integration commit has the same tree as its single-parent export.
-- New increments: framework log privacy/health cleanup and configurable DSA
-  ordinary-memory reserve, with its original 128 GiB default; shared HugeTLB
-  accounting for staggered Kimi allocations without changing the DSA ledger;
-  reviewed SRT privacy migration preserving log controls, required evaluations,
-  request decoding, scheduler time gates and business CLI output; one
-  registered-KV extension with Hopper/Blackwell code targets and device-scoped
-  lazy dispatch, without a raw-address fallback for registered host memory;
-  empty-transfer and invalid-quota guards before launch arithmetic.
-- These are source candidates. Native dependencies, every target configuration,
-  the final image and production deployment are not qualified by replay.
+- Active engine: `14fad544cd9606f5460ca54ef4a3f8ed1e799b8d`; tree `453e9702a734a68dce61ca3043c0cc23a1176c5e`.
+- Ordered engine stack: 31 protected steps plus 118 successor steps.
+- Runtime Governor: `a68cc44ea0ebb65787bce1b38352d02b82ec1252`, version 0.2.9, ABI5.
+- New source: trusted internal health identity and learning isolation; DSV4 decode
+  hybrid HiCache snapshots and sidecar completeness; default-off
+  `SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS=1` logs submitted PD batch bytes,
+  count and synchronous result with hashed room/peer correlation. No content,
+  pointer or full argument logging; submitted bytes plus completion are not a
+  public native `transferred_bytes` field.
+- Exact replay and focused CPU checks are source evidence. Final installed-image
+  pairing, GPU health/cold-start learning, transport and DRAM/SSD restoration
+  remain separate acceptance gates. Earlier immutable release tags are unchanged.
 
-The new KV integration requires both its compiled private wheel and the
-matching `sgl_kernel.kvcacheio` wrapper from this engine in the final image.
-Installing the private wheel alone does not update the separate `sgl_kernel`
-package. The image builder must install and verify that wrapper at build time;
-no startup patching or source mounts qualify the final installed image.
-CPU compilation and SDK-stub-linked registration are not GPU execution evidence.
-
-Real implementation changes belong in the Phala SGLang fork. The patch files
-remain deterministic exports of those immutable changes. Governor-owned hook
-bytes retain their component identity; they are validated against their resulting
-engine tree even when their original diff format differs from `git diff`.
-The existing frozen exporter separately verifies the original Governor artifact.
+The shared KV native wheel still requires the matching `sgl_kernel.kvcacheio`
+wrapper installed by the image builder. Historical selector/native source
+records retain their identities and limitations; source includes the current
+metrics initfix and DSV4 response-format bridge.
 
 ## Verify and Prepare
 

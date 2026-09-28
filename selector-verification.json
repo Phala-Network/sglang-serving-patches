@@ -1,6 +1,6 @@
 {
   "schema": "phala.sglang.selector-verification.v3",
-  "as_of": "2026-09-28",
+  "as_of": "2026-09-29",
   "source_repository": "https://github.com/Phala-Network/sglang",
   "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
   "frozen_base_replay_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "72f4e0ab0485761400be55960bad317f16ea3b41",
-      "fork_tree": "3b0f19be504e18eca4cafeda2a114b0db1c85712",
-      "fork_branch": "codex/p4-governor-startup-fix-20260928",
-      "patch_count": 113,
+      "fork_commit": "14fad544cd9606f5460ca54ef4a3f8ed1e799b8d",
+      "fork_tree": "453e9702a734a68dce61ca3043c0cc23a1176c5e",
+      "fork_branch": "codex/unified-health-integration-20260928",
+      "patch_count": 118,
       "replay_mode": "exact",
-      "status": "P4 Governor metrics initialization repair; image and GPU qualification pending",
+      "status": "Trusted internal health with Governor 0.2.9/ABI5, DSV4 decode offload and opt-in exact PD batch diagnostics; image and GPU gates pending",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "3b0f19be504e18eca4cafeda2a114b0db1c85712"
+      "replay_tree": "453e9702a734a68dce61ca3043c0cc23a1176c5e"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
