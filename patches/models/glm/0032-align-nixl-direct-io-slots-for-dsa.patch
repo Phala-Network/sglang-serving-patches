@@ -1,14 +1,5 @@
-From 133c73fa3d0d45f642762b54a21cc617e61ac16d Mon Sep 17 00:00:00 2001
-From: zozyo <zzy.touhou@gmail.com>
-Date: Mon, 28 Sep 2026 12:50:03 +0800
-Subject: [PATCH] fix NIXL direct I/O slot alignment for GLM DSA
-
----
- .../mem_cache/storage/nixl/hicache_nixl.py    | 33 +++++++++++++++----
- 1 file changed, 26 insertions(+), 7 deletions(-)
-
 diff --git a/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py b/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py
-index 5e508681eb..d4e2080736 100644
+index 5e508681ebd9a3e2fc907cf2db4392a6099b4da3..d4e2080736255d9aafe5f9467a226c0b88da003f 100644
 --- a/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py
 +++ b/python/sglang/srt/mem_cache/storage/nixl/hicache_nixl.py
 @@ -64,6 +64,7 @@ class _HybridPoolContext:
@@ -122,6 +113,3 @@ index 5e508681eb..d4e2080736 100644
              results[transfer.name] = page_results
          return results
  
--- 
-2.38.0.windows.1
-
