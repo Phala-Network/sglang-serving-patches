@@ -2,7 +2,7 @@
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
   "active_selector": "unified-v0520-governor-r6",
-  "as_of": "2026-09-26",
+  "as_of": "2026-09-28",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "181598031ce692094006eca0bbdba0e356c7f713",
-      "fork_tree": "5cca977d5fb72bc0b7ad7b8ffb3daeeaeb280e11",
+      "fork_commit": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
+      "fork_tree": "010b3d4c5428b9e8fe08da18dc1faef58ca4ac1c",
       "fork_branch": "codex/responses-admission-preheader-r8",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..181598031ce692094006eca0bbdba0e356c7f713",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..133c73fa3d0d45f642762b54a21cc617e61ac16d",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2341,6 +2341,13 @@
           "source_commit": "181598031ce692094006eca0bbdba0e356c7f713",
           "source_parent": "c9c6c824e5a607b94260c29f137a8c822f65aaad",
           "sha256": "6a0609807039510e7db259c9766647b1d893678de69a8c97f116959cb4214c16"
+        },
+        {
+          "id": "glm-nixl-direct-io-align",
+          "path": "patches/models/glm/0032-align-nixl-direct-io-slots-for-dsa.patch",
+          "source_commit": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
+          "source_parent": "181598031ce692094006eca0bbdba0e356c7f713",
+          "sha256": "1910ef778ea2c405f3bc294f63a8caaca9bd5e487ec4c55b27c473153ba44709"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
