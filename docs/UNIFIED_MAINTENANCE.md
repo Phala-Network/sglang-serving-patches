@@ -9,8 +9,12 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `9ac976f783ced6e2fb5c2ca37942bca4c4229981`; tree `0fb994e908f4792da97d460cd4e94dfacc671242`.
-- Ordered engine stack: 31 protected steps plus 120 successor steps.
+- Active engine: `7602a75c7f343e2121cfe5d0e965560b1d1ccd2c`; tree `c01117b3787b7c3cc05ea8c53f7f3288085b575d`.
+- Ordered engine stack: 31 protected steps plus 122 successor steps.
+- Gateway request forwarding preserves explicit `include_reasoning` values and
+  omission with vendored `openai-protocol` 1.0.0 and frozen Cargo locks. The focused
+  CPU harness covers serialization and loopback HTTP forwarding, not a whole
+  gateway process; installed wheel and standalone binary checks remain required.
 - Runtime Governor: `a68cc44ea0ebb65787bce1b38352d02b82ec1252`, version 0.2.9, ABI5.
 - New source: trusted internal health identity and learning isolation; DSV4 decode
   hybrid HiCache snapshots and sidecar completeness; default-off
