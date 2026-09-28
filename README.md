@@ -20,8 +20,8 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `14fad544cd9606f5460ca54ef4a3f8ed1e799b8d`, tree
-`453e9702a734a68dce61ca3043c0cc23a1176c5e`: 31 protected steps plus 118 successor patches.
+The active selector binds engine `9ac976f783ced6e2fb5c2ca37942bca4c4229981`, tree
+`0fb994e908f4792da97d460cd4e94dfacc671242`: 31 protected steps plus 120 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.9/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Governor runtime is pinned in the active selector;

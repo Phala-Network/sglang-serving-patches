@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "14fad544cd9606f5460ca54ef4a3f8ed1e799b8d",
-      "fork_tree": "453e9702a734a68dce61ca3043c0cc23a1176c5e",
-      "fork_branch": "codex/unified-health-integration-20260928",
-      "patch_count": 118,
+      "fork_commit": "9ac976f783ced6e2fb5c2ca37942bca4c4229981",
+      "fork_tree": "0fb994e908f4792da97d460cd4e94dfacc671242",
+      "fork_branch": "codex/unified-pd-n2-20260929",
+      "patch_count": 120,
       "replay_mode": "exact",
-      "status": "Trusted internal health with Governor 0.2.9/ABI5, DSV4 decode offload and opt-in exact PD batch diagnostics; image and GPU gates pending",
+      "status": "PD parallel sampling independent room ownership; Governor 0.2.9/ABI5, health, DSV4 decode offload and PD diagnostics retained; image and GPU gates separate",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "453e9702a734a68dce61ca3043c0cc23a1176c5e"
+      "replay_tree": "0fb994e908f4792da97d460cd4e94dfacc671242"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
