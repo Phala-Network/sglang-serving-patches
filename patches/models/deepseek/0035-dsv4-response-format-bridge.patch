@@ -1,0 +1,252 @@
+diff --git a/python/sglang/srt/entrypoints/openai/encoding_dsv4.py b/python/sglang/srt/entrypoints/openai/encoding_dsv4.py
+index 52c8bebd7716dd7f00771aed04c848e8cb307aa3..2ab702718491a942e5753aa2a09609947181fcc9 100644
+--- a/python/sglang/srt/entrypoints/openai/encoding_dsv4.py
++++ b/python/sglang/srt/entrypoints/openai/encoding_dsv4.py
+@@ -255,6 +255,66 @@ def attach_task_to_last_user_message(messages: List[Dict[str, Any]], task: str)
+     messages[idx]["task"] = task
+ 
+ 
++def attach_response_format_to_control_message(
++    messages: List[Dict[str, Any]], response_format: Optional[Dict[str, Any]]
++) -> List[Dict[str, Any]]:
++    """Attach an OpenAI response format to the single DSV4 control message.
++
++    DSV4 renders message-level response formats only for system/developer
++    messages.  The serving adapter therefore maps the request-level format to
++    the first system, first developer, or a new empty system message.  The
++    input is copied so request/history objects are never mutated.
++    """
++    result = copy.deepcopy(messages)
++    if not response_format:
++        return result
++
++    format_type = response_format.get("type")
++    if format_type in (None, "text"):
++        return result
++    if format_type == "json_schema":
++        wrapper = response_format.get("json_schema") or {}
++        candidate = wrapper.get("schema", wrapper.get("schema_"))
++        if candidate is None:
++            raise ValueError("json_schema response_format requires a schema")
++    elif format_type == "json_object":
++        candidate = {"type": "object"}
++    else:
++        # structural_tag and future response-format types retain their
++        # existing serving behavior; this bridge only owns JSON formats.
++        return result
++
++    selected = next(
++        (i for i, message in enumerate(result) if message.get("role") == "system"),
++        None,
++    )
++    if selected is None:
++        selected = next(
++            (
++                i
++                for i, message in enumerate(result)
++                if message.get("role") == "developer"
++            ),
++            None,
++        )
++    if selected is None:
++        result.insert(0, {"role": "system", "content": ""})
++        selected = 0
++
++    for index, message in enumerate(result):
++        if "response_format" not in message:
++            continue
++        if index != selected:
++            raise ValueError(
++                "response_format must appear only on the selected DSV4 control message"
++            )
++        if message["response_format"] != candidate:
++            raise ValueError("conflicting response_format on DSV4 control message")
++
++    result[selected]["response_format"] = candidate
++    return result
++
++
+ # ============================================================
+ # Message Rendering
+ # ============================================================
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 12f79661cd2138f73e2b147b6c3f7b13a685f3c2..764b752de39b7662749efbcc1a1f3050fa07ec5c 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -2155,6 +2155,12 @@ class OpenAIServingChat(OpenAIServingBase):
+                 v4_reasoning_effort = (
+                     effort_source if effort_source in accepted_efforts else None
+                 )
++                messages = encoding_dsv4.attach_response_format_to_control_message(
++                    messages,
++                    request.response_format.model_dump(by_alias=True)
++                    if request.response_format is not None
++                    else None,
++                )
+                 if request.task is not None:
+                     encoding_dsv4.attach_task_to_last_user_message(
+                         messages, request.task
+diff --git a/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py b/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..47bcfa0fa01d94bcdc0bdff387251e591e24b2d5
+--- /dev/null
++++ b/test/registered/unit/entrypoints/openai/test_encoding_dsv4_response_format.py
+@@ -0,0 +1,158 @@
++import copy
++import importlib.util
++from pathlib import Path
++
++import pytest
++
++
++_ENCODER_PATH = (
++    Path(__file__).parents[5]
++    / "python"
++    / "sglang"
++    / "srt"
++    / "entrypoints"
++    / "openai"
++    / "encoding_dsv4.py"
++)
++_SPEC = importlib.util.spec_from_file_location(
++    "encoding_dsv4_under_test", _ENCODER_PATH
++)
++encoding_dsv4 = importlib.util.module_from_spec(_SPEC)
++assert _SPEC.loader is not None
++_SPEC.loader.exec_module(encoding_dsv4)
++
++
++SCHEMA = {
++    "type": "object",
++    "properties": {"answer": {"type": "string"}},
++    "required": ["answer"],
++    "additionalProperties": False,
++}
++
++
++def test_json_schema_uses_existing_system_once_and_preserves_input():
++    messages = [
++        {"role": "system", "content": "be concise"},
++        {"role": "user", "content": "hi"},
++    ]
++    original = copy.deepcopy(messages)
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages,
++        {
++            "type": "json_schema",
++            "json_schema": {"schema": SCHEMA, "name": "x", "strict": True},
++        },
++    )
++    assert messages == original
++    assert result[0]["response_format"] == SCHEMA
++    assert "response_format" not in result[1]
++    rendered = encoding_dsv4.encode_messages(result, "chat")
++    assert rendered.count("## Response Format:") == 1
++    assert '"answer"' in rendered
++
++
++def test_user_only_gets_synthetic_system_and_json_object():
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        [{"role": "user", "content": "hi"}], {"type": "json_object"}
++    )
++    assert result[0] == {
++        "role": "system",
++        "content": "",
++        "response_format": {"type": "object"},
++    }
++    assert (
++        encoding_dsv4.encode_messages(result, "chat").count("## Response Format:") == 1
++    )
++
++
++def test_developer_only_and_tools_share_one_control_message():
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        [
++            {
++                "role": "developer",
++                "content": "policy",
++                "tools": [
++                    {"type": "function", "function": {"name": "f", "parameters": {}}}
++                ],
++            }
++        ],
++        {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++    )
++    assert result[0]["response_format"] == SCHEMA
++    rendered = encoding_dsv4.encode_messages(result, "chat")
++    assert rendered.count("## Response Format:") == 1
++    assert rendered.count('"name": "f"') == 1
++
++
++def test_first_system_wins_and_text_is_preserved():
++    messages = [
++        {"role": "system", "content": "one"},
++        {"role": "system", "content": "two"},
++    ]
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
++    )
++    assert result[0]["response_format"] == SCHEMA
++    assert "response_format" not in result[1]
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(
++            messages, {"type": "text"}
++        )
++        == messages
++    )
++
++
++def test_identical_control_format_allowed_but_collisions_rejected():
++    existing = [{"role": "system", "content": "x", "response_format": SCHEMA}]
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(
++            existing, {"type": "json_schema", "json_schema": {"schema": SCHEMA}}
++        )
++        == existing
++    )
++    with pytest.raises(ValueError, match="conflicting"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [{"role": "system", "content": "x", "response_format": {"type": "object"}}],
++            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++        )
++    with pytest.raises(ValueError, match="only on"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [
++                {"role": "system", "content": "x"},
++                {"role": "user", "content": "y", "response_format": SCHEMA},
++            ],
++            {"type": "json_schema", "json_schema": {"schema": SCHEMA}},
++        )
++
++
++def test_missing_schema_rejected():
++    with pytest.raises(ValueError, match="requires a schema"):
++        encoding_dsv4.attach_response_format_to_control_message(
++            [{"role": "user", "content": "x"}],
++            {"type": "json_schema", "json_schema": {}},
++        )
++
++
++def test_structural_tag_and_nested_unicode_schema_are_preserved():
++    messages = [
++        {"role": "system", "content": "系统"},
++        {"role": "user", "content": "上一轮"},
++        {"role": "assistant", "content": "结果"},
++        {"role": "tool", "tool_call_id": "c1", "content": "工具结果"},
++        {"role": "user", "content": "继续"},
++    ]
++    structural = {"type": "structural_tag", "structural_tag": {"tags": []}}
++    assert (
++        encoding_dsv4.attach_response_format_to_control_message(messages, structural)
++        == messages
++    )
++    schema = {
++        "type": "object",
++        "$defs": {"名": {"type": "string", "description": "é"}},
++        "properties": {"值": {"$ref": "#/$defs/名"}},
++    }
++    result = encoding_dsv4.attach_response_format_to_control_message(
++        messages, {"type": "json_schema", "json_schema": {"schema": schema}}
++    )
++    assert result[0]["response_format"] == schema
++    assert result[1:] == messages[1:]

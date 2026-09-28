@@ -1,0 +1,2501 @@
+diff --git a/DS-REMAINING-UNION-20260922.md b/DS-REMAINING-UNION-20260922.md
+deleted file mode 100644
+index 76e6ce5296fbe3ecfdc320c5c29f17d2ebe46e85..0000000000000000000000000000000000000000
+--- a/DS-REMAINING-UNION-20260922.md
++++ /dev/null
+@@ -1,174 +0,0 @@
+-# DeepSeek remaining union migration (2026-09-22)
+-
+-Independent worktree: `tmp/model-union-ds-remaining-20260922`.
+-Immutable starting union commit: `8a51d28ba2ad953593ed033612d19205e1388cb9`.
+-No edits to the integrator worktree, patch exports, `serving_chat.py`, or
+-`xgrammar_backend.py`. No push, PR, image build, GPU traffic, or deployment.
+-
+-## Source migration
+-
+-Each donor was applied as its own functional commit, preserving attribution.
+-DS0015 required three conflict resolutions: retained the union's descriptive
+-prefill CLI text and its token-budget validation, adding only the DS encoder
+-SWA request restrictions; reconciled the graph config comment. DS0018 replaced
+-the existing equivalent inline completed-chunk backup with the donor's tested
+-helper, rather than performing two backups.
+-
+-| Manifest entry | Donor source | Local adaptation |
+-| --- | --- | --- |
+-| 0012 Engram/history | `22d54075f9` | `fdfd602b93` |
+-| 0013 compression ratios | `5648185cee` | `cdac0e7332` |
+-| 0014 UE8M0/MXFP8 | `e53312611f` | `2b8fb6bf41` |
+-| 0015 native integration | `9af234a489` | `cfd8926f40` |
+-| 0016 dense prefill | `5645663683` | `2529c66e48` |
+-| 0017 dense consumer tests | `3c0eb7c73d` | `88852a5a6d` |
+-| 0018 completed backup | `f94b624c3e` | `efd2a24245` |
+-| 0021 medium finalize | `ecd9f93317` | `948188cc37` |
+-| 0022 transplant imports | `7a23a97622` | `66b5a12fa5` |
+-| 0023 MXFP4 padding | `81b67d8f17` | `e6f51cb222` |
+-| 0025 routed ABI | `6a899fd829` | `2620c870a1` |
+-| 0026 bitmap extent | `b6a5ec4af0` | `8c7a719a60` |
+-
+-0019/0020 are semantic adaptations, not wholesale cherry-picks: the historical
+-`phala_compat` monkey-patch package is deliberately absent. Native additions
+-are `AsyncDynamicbatchTokenizer.run_sync` (existing serialized worker,
+-ContextVars preserved), the base serving async extension point, client media
+-exception classification, DS encoder effort tiers and role normalization.
+-Existing union reasoning-token cap, usage details and output-exclusion logic
+-are not duplicated. 0024's current `parse_dsv41_reasoning_effort` integer and
+-fractional boundaries are exercised by the rewritten native CPU test, without
+-restoring the historical wrapper-dependent selftest.
+-
+-## Required shared-serving adaptation by the integrator
+-
+-The following is **not implemented in this worktree** because the shared
+-serving owner must integrate it with the other models:
+-
+-1. Async chat opt-in: take the `_convert_to_internal_request_async` method from
+-   `git show 437b982abfdfa1b563122e061ead1a1cd1211c29 -- python/sglang/srt/entrypoints/openai/serving_chat.py`.
+-   Only `chat_encoding_spec == "dsv41"` with no caller-supplied `input_ids`
+-   uses the existing batcher's `run_sync`; absent batcher/other encoders use
+-   the synchronous path. The base hook and worker method now exist.
+-2. Media modality/URI/inline-size validation: donor semantic implementation is
+-   `5ad27e1db0d14d17d920e9040599f20655fbe9df:python/sglang/srt/phala_compat/dsv41_media_hardening.py`.
+-   Union `_validate_media_content` currently rejects all media for text-only
+-   models, but returns immediately for multimodal models; individual
+-   image/audio/video capability, scheme and inline-size checks remain missing.
+-   Integrate direct helpers, not monkey-patches or broad fail-open exception
+-   wrappers. The original donor's size estimator is not a hardened URL parser.
+-3. Integer 1–100 top-level DS reasoning budgets: donor
+-   `437b982abfdfa1b563122e061ead1a1cd1211c29:python/sglang/srt/phala_compat/dsv41_protocol_compat.py`
+-   routes integers into `chat_template_kwargs`. Union's public
+-   `ReasoningEffortType` remains tiers or float [0, .99], so integer 75 is not
+-   currently accepted there. The DS encoder and parser accept integer budgets
+-   via template kwargs. Do not widen every model's numeric effort semantics or
+-   transplant the historical global validator. Preserve current Qwen/Muse
+-   token-budget semantics, flat/nested precedence and exclusion behavior.
+-4. Recheck both top-level and message-level tools for explicit `tool_choice=none`
+-   through the existing union filtering path. The donor wrapper source is
+-   `5ad27e1db0d14d17d920e9040599f20655fbe9df:python/sglang/srt/phala_compat/dsv41_tool_choice_none.py`.
+-   Do not overwrite allowed-tools/named-tool/schema work or force historical
+-   streaming usage options globally.
+-
+-These outstanding shared integrations mean this handoff is not full protocol
+-acceptance for DS0019/0020. No XGrammar changes are needed by these donors.
+-
+-## Consumer closure re-evaluated after DS0015
+-
+-The earlier "consumer absent" observation applied to the 0011-era union, not
+-this resulting source. The following are real connected implementations,
+-not evidence based merely on filenames:
+-
+-- **Vision:** processor `DeepseekV41ImageProcessor.process_mm_data_async`
+-  expands image token spans and emits dimensions/optional GPU plan;
+-  `DeepseekV4ForCausalLM.__init__` constructs ViT/Aligner/image parameters when
+-  `model_type == deepseek_v41 && vision_n_layers > 0`, rejecting CP/PP/MoE A2A.
+-  `forward` calls `_prepare_mm_embeddings` → shared `embed_mm_inputs` →
+-  `get_image_feature` → reconstruct/materialize → ViT → Aligner → start,
+-  feature, newline and end spans. Prompt image hashes are remapped for routing.
+-  `remap_weight_name_to_dpsk_hf_format` maps vision QKV/output names and retains
+-  aligner/image names; `load_weights` only skips them when vision is absent.
+-  `DeepseekV2MoE` dispatches vision routing to `vision_topk`, selecting the
+-  checkpoint's image-specific correction bias.
+-- **Engram:** `DeepseekV4Model.__init__` constructs layout/hasher;
+-  decoder layers construct their selected Engram modules.
+-  `_forward_with_pre_mix` computes hash IDs (CP, breakable graph or normal
+-  path), injects each selected layer's embedding/gate and preserves image
+-  residuals. Scheduler `get_next_batch_to_run` calls manager history
+-  preparation, ForwardBatch carries it, and the hasher commits decode/extend
+-  history. DSpark worker invokes `update_after_verify` using accepted lengths.
+-  `.engram.wkv.scale` maps to its FP8 loader; `EngramEmbedding._load_rows` owns
+-  shard loading and post-load calls finalize host mappings.
+-- **Python C1/C2 HiCache:** source layers are collected by ratio, low-ratio KV
+-  and index pools are allocated, and consumers map to their preceding source.
+-  `_dsv4_low_ratio_entries` creates KV/index/scale host pool entries grouped in
+-  full-page units (packed index formats omit the separate scale entry).
+-  `build_deepseek_v4_hicache_stack` adds them to the host group/controller;
+-  `_DeepSeekV4Strategy.build` produces KV-derived ALL_PAGES sidecars;
+-  `_apply_stack_result` registers them with `UnifiedRadixCache`.
+-  `_build_sidecar_transfers` participates in backup/load/storage/prefetch,
+-  inheriting FULL keys/index source. Ratio-2's partial request ring is rebuilt
+-  at even prefix page boundaries rather than independently cached.
+-
+-Source paths are therefore connected. Remaining qualification includes actual
+-model weight coverage, GPU/numerical execution, host mapping lifecycle, native
+-multimodal/radix extension builds, and real HiCache/Mooncake ACK/reload.
+-The CPU vision test executes span assembly with fake ViT/Aligner boundaries;
+-the HiCache tests execute pool/sidecar construction with fake host allocations.
+-Neither is a full model or device-transfer test.
+-
+-## Guards and verification boundary
+-
+-- MXFP8 view requires explicit FlashInfer CUTLASS/CuTe-DSL, CUDA Blackwell,
+-  FlashInfer availability, K-block 32 and UE8M0 scales; plain-weight readers
+-  stay unshuffled. A new finite-scale check rejects +inf, which the donor
+-  otherwise encoded as UE8M0 byte 255 (NaN).
+-- Hopper FP8 admits BF16, aligned N/K and 1 <= M < 32; empty/large batches
+-  fall back. Shared MNNVL allreduce rejects float4-misaligned widths and wrong
+-  group identity even with the same world size.
+-- Medium finalize has an independent communicator namespace, explicit opt-in,
+-  target-verify-only token range 97–384, no draft activation, and retains
+-  model mHC/Blackwell/TP4 admission. Deferred routed weights keep their declared
+-  BF16 or FP32 values; mismatches are errors, never reinterpretation.
+-- Bitmap host dispatch uses actual page-table width including scratch, with
+-  separate 1M/2M token extents, 16-byte vector transactions, and explicit bounds.
+-  CPU test is source/host-arithmetic simulation only. GPU bitmap tests are
+-  carried but were not run.
+-- No PTX compilation was performed. UE8M0 exponent conversion is bit arithmetic,
+-  while low-ratio FP4 rope uses CUDA `__nv_cvt_float2_to_fp4x2` intrinsics.
+-  Their generated PTX/toolkit fallback behavior on each architecture remains
+-  unverified here. Architecture-specific decode/communication kernels still
+-  need the native/GPU gate; no cross-hardware acceptance claim.
+-
+-Local commands (Python runtime path is machine-specific):
+-
+-```
+-python -B test/phala_deepseek_v41/test_cpu_contracts_v0520.py -v
+-python -B test/phala_deepseek_v41/test_union_remaining_cpu.py -v
+-python -B test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py -v
+-python -B test/phala_deepseek_v41/audit_v0520_source.py
+-```
+-
+-The first is stdlib-only; the second uses installed torch 2.13.0+cpu and NumPy,
+-executing actual production function bodies with only kernel/infrastructure
+-edges substituted. The third checks actual load-method ordering with stubs.
+-The source audit checks changed imports/env references from the immutable
+-union base and both ownership-excluded files.
+-
+-Executed results: 8 native encoder/async tests, 16 CPU source-method tests,
+-and 3 MXFP4 load-order tests passed (27 total). Source audit parsed 133 changed
+-Python files with zero missing imports/symbols/envs and zero ownership-excluded
+-file changes. Ruff F821 passed on the changed Python set; F401/I passed on the
+-new/adapted regression files; `git diff --check` passed. A Windows GBK default
+-read in the ablation fixture was corrected to explicit UTF-8 before final pass.
+-No test process remains live.
+-
+-Design ablation: removed historical monkey-patch indirection in favor of
+-native functions. The finite-scale guard is ablated in memory from the actual
+-function AST: +inf then produces byte 255; restoring the guard raises. The
+-bitmap arithmetic control demonstrates why a single 1M specialization cannot
+-cover a context-plus-speculative-scratch page. No serving performance claim.
+-
+-Historical accepted text image
+-`35b7d3019eb9a1ac5c2b3ee8cb00e12a8fabc5c59ee6dc0da769baae27a96f6d`
+-does not accept this new union.
+diff --git a/PHALA_REPOSITORY.md b/PHALA_REPOSITORY.md
+index 3f49a76a37e589b9c73a1bb98b0cf767abf8e915..50bc016a6db530aeee48b687d9036e511ff234c9 100644
+--- a/PHALA_REPOSITORY.md
++++ b/PHALA_REPOSITORY.md
+@@ -1,19 +1,50 @@
+-# Phala SGLang source
++# Phala repository workflow
+ 
+-This repository owns the complete downstream engine source. Develop shared serving fixes here, with model-specific behavior guarded by model or topology. Governor owns its controller/adapter/minimal hooks; TAIL owns transport and attestation. The separate serving-patches repository is an optional generated export, not another manually maintained source or release gate.
++## Ownership
+ 
+-## Branches and integration
++This repository owns the complete downstream engine source on official v0.5.20
++baseline `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`. General serving repairs work
++independently of Governor; model-specific behavior stays scoped to its model or
++topology. Governor owns its controller/adapter/hooks; TAIL owns attestation and
++transport.
+ 
+-`main` currently retains the upstream-derived source baseline plus Phala repository administration. It is **not** a claim that all downstream model fixes or Governor integration have been accepted. The common v0.5.20 serving input ends at `codex/serving-v0520-0020-allowed-output-r1`; the frozen Governor composition input is `codex/serving-v0520-qwen38-governor-derived-r2`. Remaining model/input branches retain distinct work pending shared-source integration and affected tests. They are not separate mandatory PR pipelines.
++Develop real source and synchronize the ordered
++[serving patch export](https://github.com/Phala-Network/sglang-serving-patches)
++through the existing export/replay process. Avoid a second hand-edited
++implementation or a full patch system per model. Deployment configuration
++consumes fixed complete engine and component identities.
+ 
+-The administrator consolidates shared changes and publishes complete source identities. Contributors hand off exact commits, tests, failures and compatibility constraints. Do not create one permanent branch/PR/profile workflow for every patch. A source commit, passing source tests, published image and accepted target deployment are separate states.
++## Main and release tags
+ 
+-Obsolete intermediate branches are removed only when their commits remain reachable from a retained branch or tag. Minimal historical tips are preserved under `archive/20260920/`; older release tags are unchanged. The branch-to-commit-to-retained-ref map is [the cleanup manifest](repository-archive-20260920.json). Restore a removed branch at its recorded SHA if historical work needs continuation; archive tags do not imply a successful release.
++`main` integrates downstream serving/model changes and Governor hooks; it is not
++an upstream-only baseline. Integrate verified work from focused branches. Keep
++long-term maintenance branches only for real compatibility needs.
+ 
+-## CI and releases
++Create immutable version tags from verified commits in `main` history. Record
++engine commit, component versions, build inputs, image digest, validation scope
++and limitations. Do not move published tags or overwrite image versions. Source
++completion, image publication and deployment acceptance are distinct states.
+ 
+-This fork does not run upstream hardware matrices, PR-label/state bots, upstream package publishing or scheduled fleet maintenance. Their inherited workflow files were removed from `main`; original versions remain in Git history. The temporary GHCR token broker is retired. No credentials or temporary token transfer are part of the new repository workflow.
++Images belong to `ghcr.io/phala-network/sglang` and identify the complete engine
++revision. Build and validate selected artifacts through the authorized release
++process; repository cleanup does not initiate model deployment.
+ 
+-Full source lint remains explicitly available through `workflow_dispatch`, with read-only repository permissions and a bounded execution time. It is not a per-patch PR gate. Its historical failures remain failures until fixed and revalidated. No old Actions results/logs are deleted to manufacture a green history. Run affected unit/regression checks for changed code; use authorized hardware for actual runtime checks. GPU/model/attestation qualification is not replaced by lint.
++## Checks and contributions
+ 
+-Published engine images belong to `ghcr.io/phala-network/sglang` and must identify the complete source commit. Release only after applicable image checks; no automatic release or deployment is triggered by repository cleanup. Before deployment, consult the [component version register](https://github.com/Phala-Network/phala-models-compose/blob/main/production/COMPONENT_VERSIONS.md) and recheck current version/digest and target compatibility.
++[Phala source checks](.github/workflows/phala-source-check.yml) run source lint
++and selected CPU regressions on pull requests or manual dispatch.
++[Full lint](.github/workflows/lint.yml) is manual. Existing failures stay visible
++until corrected. Use declared dependencies and tests relevant to changed code;
++source checks do not replace GPU, native ABI or model acceptance.
++
++Preserve upstream layout, licensing, tests and attribution for reviewable
++upgrades. Keep root docs focused on entrypoints and Phala details under
++`docs/phala`. Do not introduce a separate approval chain per patch or inherit
++unrelated upstream hardware publishing/maintenance workflows.
++
++## Historical work
++
++Old branch names and completed migrations are historical inputs, not current
++integration state. See [historical records](docs/phala/HISTORY.md). Remove obsolete
++branches only after checking active consumers and retaining commits through
++appropriate refs. Archive tags preserve evidence, not acceptance.
+diff --git a/PORTING-V0520.md b/PORTING-V0520.md
+deleted file mode 100644
+index 347287f73e0eef919516f95abfa0d8039e006836..0000000000000000000000000000000000000000
+--- a/PORTING-V0520.md
++++ /dev/null
+@@ -1,129 +0,0 @@
+-# DeepSeek-V4.1 compatibility candidate on SGLang v0.5.20
+-
+-> Historical donor record, not the acceptance record of the September 22 unified
+-> source migration. The union migration and remaining shared-serving work are
+-> recorded in `DS-REMAINING-UNION-20260922.md`. In particular the historical
+-> monkey-patch protocol package/selftest and old no-local-torch statements below
+-> do not describe the union. Historical image/GPU observations do not qualify it.
+-
+-This is an actual v0.5.20 source branch, rooted at `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, with selected upstream model commits and reviewed adaptations. It is not the r7 tree relabeled by adding a release ancestor. Source preparation date: 2026-09-19. No remote build, GPU job, serving load, routing or publication was performed by this source-preparation task.
+-
+-## Frozen inputs
+-
+-- Official release: v0.5.20, independently rechecked as latest during this work. Annotated tag object `d158602ff1d2cb953196c95158c488d503d2470c`; peeled source above.
+-- Base image supplied and inspected by the parent task: `lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f`; linux/amd64 platform manifest `sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4`.
+-- Base runtime: Python 3.12.3, torch 2.13.0+cu130, sglang-kernel 0.4.7, sgl-deep-gemm 0.2.0, FlashInfer python/cubin 0.6.18 and jit-cache 0.6.18+cu130, mooncake-transfer-engine-cuda13 0.3.13, huggingface_hub 1.32.0. Do not re-resolve these dependencies while installing the candidate.
+-- `python/pyproject.toml`, `rust/Cargo.lock`, and `rust/sglang-radix-tree/Cargo.lock` remain the release versions. Rust toolchain in `rust/rust-toolchain.toml` is 1.92.
+-- Workspace Cargo.lock SHA256: `81b4b5496d3d4eba8ce4f6a1f21fa7d66feec10a0af8587bca9b6ecdb041d5f8`.
+-- Radix-tree Cargo.lock SHA256: `dfdf5bf35be4c9865a6f42562b64c4ab667a1d7cc7ac35fa0c03956c34c5a2f5`.
+-
+-The final candidate commit and archive/tree hashes belong in the parent's build-input manifest after this file is committed. They are deliberately not self-referenced here.
+-
+-Post-freeze review correction: source `2d625cff` omitted the donor's `_pad_intermediate_size(layer)` call in MXFP4 weight postprocessing. A follow-up commit restores it after the MegaMoE bypass and before gate/up reorder or byte shuffling. The former source archive/build is superseded. The actual-method CPU-stub regression reproduced one failure before the correction and all three cases pass afterward; the padding helper, create/load/scale registration and routed quantization functions are AST-identical to donor `a6cf0581`. Real torch CPU fixtures additionally check 576→640 zero/one padding and aligned/no-op behavior; run those in the image because local Windows has no torch.
+-
+-Post-freeze deferred-ABI correction: the exact FlashInfer 0.6.18 Python wrapper treats a tuple `(topk_ids, topk_weights)` as `UnpackedPrecomputed`, consumes BF16/FP32 weights at their native dtype, and returns the caller-owned weight tensor when `do_finalize=False`. The real SM100 probe returned finite FP32 values equal to the supplied top-k scores; reinterpreting those bits as BF16 created huge values and NaNs. Upstream SGLang `0dabef3d` (#39574) removes that reinterpretation. This candidate keeps the fix narrower: every `_make_deferred_finalize_output` caller declares its expected routing-weight ABI. FromLogits remains strictly BF16, while the MXFP4 unpacked caller declares the actual `topk_weights.dtype`; the helper validates BF16/FP32 and preserves the tensor without casting, rounding, or bit reinterpretation.
+-
+-## Donor closure and adaptations
+-
+-| Donor commit | Upstream change | Candidate role |
+-| --- | --- | --- |
+-| `2f7d04da` | #39677 | Rust V4.1 image preprocessing, C1/C2 KV pool names, PD bootstrap metadata |
+-| `91f691c4` | #39646 | Standalone V4.1/Engram kernels and Python wrappers |
+-| `faaff1ec` | #39648 | Candidate/top-k kernels |
+-| `7d5696b3` | #39653 | NVLink and finalize communication kernels/wrappers |
+-| `13d593b6` | #39652 | Low-ratio compression, KV I/O and metadata |
+-| `35b7589e` | #39671 | Candidate indexer API |
+-| `c2443458` | #39656 | RoPE and FP4 packing |
+-| `46ae84df` | #39657 | FP8 shape dispatch and associated Hopper configurations |
+-| `408d2334` | #39664 | mHC computation and compensated projections |
+-| `c89c63fa` | #39668 | Vision tower/image processing |
+-| `464fffbe` | #39665 | Native V4.1 chat encoding and tool/reasoning parser selection |
+-| `3401b752` | #39666 | Engram model module and request history |
+-| `1f0c73e9` | #39921 | Generalized compression-ratio metadata and pools required by ratios 1/2 |
+-| `0dabef3d` | #39574 | FlashInfer 0.6.18 deferred expert-weight ABI; adapted to explicit per-caller dtype instead of global dtype acceptance |
+-| `1b200ffa` | #40039 | 32-wide-K UE8M0 dense FP8 weights through MXFP8 GEMMs |
+-| `a6cf0581` | #38798 | V4.1 config/model/DSpark/HiCache and runtime integration |
+-| `7061256028c67c0cb8dab77e9cc00eecb2d4b8dc` + `6cec021d06fd47e3a54aef323817ec6e1af13bb1` | OPEN #40217 | Separate dense-prefill memory repair and strengthened consumer tests |
+-| local `1cfea70c` | r6/r7 repair | Completed write-through chunks use existing backup/ACK path |
+-| local `52210a6` / `aa54beb` | qualified Phala contract | Reasoning effort/input aliases, role behavior, tool-none/media/usage, async conversion |
+-| local `7766836c` | r7 narrow #39704 adaptation | Preserve target-only medium finalize namespace/kill switch |
+-
+-Official donors retain `cherry picked from` provenance in candidate commits. Conflicts were resolved by preserving stable unrelated behavior:
+-
+-- Kept stable scheduler, graph-pool runtime state and SWA component byte-for-byte. Kept stable load-back quota `kv_tokens + result.delta > mem_quota` and the `rotation_tail_declined` early return. The local chunk-backup call runs only after that early return.
+-- Did not import unrelated Ling parser registration, NPU-specific CP/WO-A optimizations, AMD breakable-prefill support, general EP/MoE-TP reduction refactoring or an unrelated admission-rejection test. Their context appeared in donor conflict hunks but their implementation dependencies were not part of this model closure.
+-- Preserved stable NPU plain-FP8 fallback while adapting the MXFP8 dispatch. Retained existing TP all-reduce semantics, with consume-once tracking for the DSV4-specific fusion.
+-- Added the missing non-padded token-count plumbing to the V2 MoE reused by V4.1; retained explicit imports from their stable owning modules. Dynamic and full-graph execution must still be exercised in the actual image.
+-- Did not carry r7's optional adaptive-prefill/SWA-retention wrappers. The parent confirmed no corresponding live env overrides. They depend on the old component API and must not replace stable SWA segment-lock behavior.
+-- Medium finalize keeps two communicator namespaces. The new upstream small-row mHC consumer continues on `default`; medium target verification uses the plain, un-normalized consumer on `dsv41_medium`, leaving mHC post outside that kernel. The upstream weight-dtype-aware JIT signature is retained; the copied GPU precompile fixture was adapted to pass BF16 dtype.
+-
+-## B OOM repair: scope and remaining proof
+-
+-The observed B failure is CUDA allocation OOM during `_publish_or_consume_candidates`, not GLM's token-slot allocator failure. The unmodified official integration still builds the full dense FP4 logits matrix and concatenates per-tile position masks. Stable #39182 only provides a generic prefill-buffer ceiling registration hook; it does not bound this DSV4.1 allocation.
+-
+-#40217 replaces that path with 2 GiB score-row tiles and compact candidate block IDs, consumed on subsequent indexer layers and sliced for tail replay. It preserves the full context contract. It is a separate commit group, not folded into the model-compatibility commit.
+-
+-**2 GiB is a score-tile budget, not a total HBM bound.** Padded block reductions, masks, queries, keys and allocator behavior add memory. For adversarial non-block-aligned widths, temporary allocation may approach roughly 4.25 GiB plus Q/K/V and other live tensors. Validate the production-shaped 8192-row and long-prefix cases; do not claim the constant alone guarantees no OOM.
+-
+-The upstream PR is open and its reported results/CI are not this candidate's acceptance. Exact candidate block-ID agreement between old and tiled paths, including score ties at block boundaries, must be checked independently. Comparing a new consumer only against an oracle using the same new IDs is insufficient. Ragged multi-request, zero-length, partial last block, ratio-1/ratio-2, producer→consumer and tail replay remain required tests.
+-
+-The adjacent GLM fallback patch `43368cd3` is not included. In this stable DSV4 hybrid-SWA path, exhausted continuation budget already returns the parked request, so the exact non-hybrid full-chunk fallback differs; scheduler handling of a parked continuation and physical FULL/SWA page capacity should be added as a focused regression before considering a separate patch. Do not conflate it with this malloc OOM repair.
+-
+-## Native extensions and build handoff
+-
+-Required changed native extension interfaces:
+-
+-1. `sglang.srt.rust_extensions._multimodal`: `_multimodal.dsv41.resize_patchify` from `rust/sglang-mm`.
+-2. `sglang.srt.mem_cache.rust_tree_core.mem_cache`: updated C1/C2 pool-name serialization from `rust/sglang-radix-tree`.
+-
+-Build these through **the main `python/setup.py`**, not `pip install rust/sglang-radix-tree` (that crate has no standalone Python pyproject). The setup discovers the independent radix manifest, its `torch_2_13_compat.h`, and passes Cargo `--locked`. Explicitly set `RUSTUP_TOOLCHAIN=1.92.0` for metadata and build invocations: Cargo launched from the `python/` cwd does not necessarily discover the sibling `rust/rust-toolchain.toml`. Record `rustc --version` and `cargo --version` under that override.
+-
+-Parent packaging design uses a fresh measured `/opt/phala-source`, explicitly copies unchanged `_server`/`_grpc` extensions from the immutable base, builds `SGLANG_BUILD_RUST_EXTS=multimodal,mem_cache`, installs editable with `--no-deps --no-build-isolation`, and binds import resolution to that source tree. Verify all four extension files after installation; a partial wheel reinstall must not silently uninstall the two inherited binaries. Alternatively build all extensions when publishing a full replacement wheel.
+-
+-Build-only pins chosen by parent: setuptools-rust 1.11.1, setuptools-scm 8.3.1, semantic-version 2.10.0, with wheel SHA256 `--require-hashes`; base setuptools 84.0 and wheel 0.48 are retained. These satisfy source requirements. Fail closed on `import setuptools_rust`: setup.py otherwise permits an installation with no native rebuild. Do not replace these reviewed pins with latest dependencies. Record compiler version, both Cargo lock hashes and installed build-tool versions in build inputs.
+-
+-Source-archive install outline (commands for the parent builder, not executed here):
+-
+-```sh
+-python3 -c 'import setuptools_rust, setuptools_scm, torch; assert torch.__version__.startswith("2.13.0")'
+-RUSTUP_TOOLCHAIN=1.92.0 SGLANG_BUILD_RUST_EXTS=multimodal,mem_cache python3 -m pip install --no-deps --no-build-isolation -e /opt/phala-source/python
+-python3 -c 'from sglang.srt.rust_extensions import _multimodal, _grpc, _server; assert callable(_multimodal.dsv41.resize_patchify); import sglang.srt.mem_cache.rust_tree_core.mem_cache'
+-```
+-
+-The image must retain model/downloader agreement, direct `hf --help`/`hf download --help`, pinned source path/compiled extensions, installed-file hashes, immutable provenance and rollback. This document does not assert those image gates passed.
+-
+-## Source checks and image test commands
+-
+-Local Windows Python 3.13 has no torch/pytest/transformers; no fake claim of the real runtime CPU suite is made. Completed here:
+-
+-- `python test/phala_deepseek_v41/audit_v0520_source.py`: parses changed Python sources, checks internal import/env references (including namespace packages), and asserts protected stable files are unchanged plus quota/rotation/chunk-backup guards. One pre-existing TYPE_CHECKING-only `FlashinferCombineInput` export is explicitly excluded from import-symbol checking.
+-- Ruff `F821` over all existing changed Python files: passed after correcting two transplant imports.
+-- `python test/phala_deepseek_v41/test_cpu_contracts_v0520.py -v`: 8 tests passed, including original-object preservation, reasoning aliases/budgets/exclusion, tool-none carriers, continuous usage and actual Req emitted-prefix reasoning cap.
+-- `git diff --check`: passed. These are structural/finite CPU checks, not GPU correctness or startup proof.
+-
+-Run in the source-bound/final-image CPU environment (separate final-image tests must not mount serving code):
+-
+-```sh
+-python3 test/phala_deepseek_v41/audit_v0520_source.py
+-python3 test/phala_deepseek_v41/test_cpu_contracts_v0520.py -v
+-python3 test/phala_deepseek_v41/test_mxfp4_weight_load_contract.py -v
+-python3 -m pytest -q test/phala_deepseek_v41/test_flashinfer_deferred_finalize_abi.py
+-python3 test/phala_deepseek_v41/selftest.py
+-python3 -m pytest -q test/registered/unit/entrypoints/openai/test_async_dsv41_conversion.py test/registered/unit/layers/test_dsv41_candidate_blocks.py test/registered/unit/models/test_dsv41_medium_finalize_selection.py
+-python3 -m pytest -q test/registered/unit/layers/quantization/test_mxfp4_trtllm_padding.py test/registered/unit/model_executor/test_pool_configurator.py test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
+-python3 -m pytest -q test/registered/unit/mem_cache/test_unified_radix_cache_unittest.py -k 'TestChunkedWriteThroughBackupDecision or scheduler_hicache_load_back_fallback_keeps_old_anchor'
+-```
+-
+-The new deferred-ABI CPU regression passed `5/5` in a no-network, no-GPU,
+-resource-capped container from image `sha256:304d7190...`, with only the three
+-changed source/test files overlaid into that disposable container. This proves
+-the helper preserves declared BF16 and genuine FP32 values and rejects routing
+-ABI mismatches; it is not final rebuilt-image or GPU parity acceptance.
+-
+-The structural Git-based audit needs the original checkout or equivalent source identity metadata; a stripped archive image can run its AST/protected-file checks after providing baseline hashes, or run it before archive creation. Do not mistake a missing `.git` failure for runtime failure. Actual imports of V4.1 config/model/DSpark/backend, extension symbols and server-arg resolution are mandatory before GPU startup. GPU suites: `test/registered/kernels/ops/attention/test_dense_prefill_indexer.py`, `test/registered/kernels/ops/communication/test_dsv41_medium_finalize_all_reduce.py`, and the relevant V4.1 KV/HiCache restore tests. Preserve simulated-versus-real acceptance and test only authorized hardware.
+-
+-## Design ablation and limitations
+-
+-The chosen closure is much larger than a cache fix because v0.5.20 lacks the native V4.1 model. Official split donors keep it attributable, while stable generic cache/graph/scheduler repairs remain intact. Removed unrelated conflict-context features and old runtime-adapter knobs instead of importing their dependency stacks. Kept separate commits for model support, #40217, Phala protocol, write-through backup and medium finalize because each has a distinct regression/rollback boundary.
+-
+-Not yet proven by this task: Rust compilation against the final base, full Python-runtime import/tests, FlashInfer deferred/native payload parity, full-graph and breakable-prefill replay, long-context memory peak, numerical/tie equivalence, protocol service acceptance, HiCache/Mooncake ACK/reload semantics, A watchdog root cause, B OOM elimination, throughput or publication. Parent owns those stages. Freeze and test this candidate before further upstream rebases; do not relabel previous r7 or donor measurements as v0.5.20 results.
+diff --git a/README.md b/README.md
+index 8637a8ffcc249803cdf2382ad10b246ff1baa36f..3c709981cc0d60b74df70df6aa045af3a27cb032 100644
+--- a/README.md
++++ b/README.md
+@@ -1,100 +1,62 @@
+-> **Phala downstream source:** See [repository ownership and validation](PHALA_REPOSITORY.md) for the shared-source workflow, active integration inputs, and historical branch archive. The upstream documentation below describes SGLang generally; it does not establish Phala release or deployment acceptance.
+-
+-<div align="center" id="sglangtop">
+-<img src="https://raw.githubusercontent.com/sgl-project/sglang/main/assets/logo.png" alt="logo" width="400" margin="10px"></img>
+-
+-[![PyPI](https://img.shields.io/pypi/v/sglang)](https://pypi.org/project/sglang)
+-![PyPI - Downloads](https://static.pepy.tech/badge/sglang?period=month)
+-[![license](https://img.shields.io/github/license/sgl-project/sglang.svg)](https://github.com/sgl-project/sglang/tree/main/LICENSE)
+-[![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
+-[![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
+-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang)
+-
+-</div>
+-
+---------------------------------------------------------------------------------
+-
+-<p align="center">
+-<a href="https://www.sglang.io/"><b>🌐 Website</b></a> |
+-<a href="https://lmsys.org/blog/"><b>Blog</b></a> |
+-<a href="https://docs.sglang.io/"><b>Documentation</b></a> |
+-<a href="https://roadmap.sglang.io/"><b>Roadmap</b></a> |
+-<a href="https://slack.sglang.io/"><b>Join Slack</b></a> |
+-<a href="https://meet.sglang.io/"><b>Weekly Dev Meeting</b></a> |
+-<a href="https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#slides"><b>Slides</b></a>
+-</p>
+-
+-## News
+-- [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://lmsys.org/blog/2026-07-27-kimi-k3-day0-support/)).
+-- [2026/07] RadixArk and Google bring full SGLang features to TPUs ([blog](https://lmsys.org/blog/2026-07-30-sglang-google-tpu/)).
+-- [2026/07] Serving GLM5.2 NVFP4 agentic workloads with SGLang: Reaching 500 TPS in two weeks ([blog](https://lmsys.org/blog/2026-07-13-glm52-optimization/)).
+-- [2026/06] 🔥 The next generation of speculative decoding: DFlash and Spec V2 ([blog](https://lmsys.org/blog/2026-06-15-next-generation-speculative-decoding-dflash-v2/)).
+-- [2026/06] SGLang provides day-0 support for latest open models ([Nemotron 3 Ultra](https://lmsys.org/blog/2026-06-04-nvidia-run-nemotron-3-ultra/), [Nemotron 3 Super](https://lmsys.org/blog/2026-03-11-run-nvidia-nemotron-3-super/), [Higgs Audio v3 TTS](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)).
+-- [2026/04] 🔥 DeepSeek-V4 on Day 0: From Fast Inference to Verified RL with SGLang and Miles ([blog](https://lmsys.org/blog/2026-04-25-deepseek-v4/)).
+-- [2026/02] 🔥 Unlocking 25x Inference Performance with SGLang on NVIDIA GB300 NVL72 ([blog](https://lmsys.org/blog/2026-02-20-gb300-inferencex/)).
+-- [2026/01] SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2026-01-16-sglang-diffusion/)).
+-
+-<details>
+-<summary>More</summary>
+-
+-- [2025/12] SGLang provides day-0 support for latest open models ([MiMo-V2-Flash](https://lmsys.org/blog/2025-12-16-mimo-v2-flash/), [Nemotron 3 Nano](https://lmsys.org/blog/2025-12-15-run-nvidia-nemotron-3-nano/), [Mistral Large 3](https://github.com/sgl-project/sglang/pull/14213), [LLaDA 2.0 Diffusion LLM](https://lmsys.org/blog/2025-12-19-diffusion-llm/), [MiniMax M2](https://lmsys.org/blog/2025-11-04-miminmax-m2/)).
+-- [2025/11] SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)).
+-- [2025/10] SGLang now runs natively on TPU with the SGLang-Jax backend ([blog](https://lmsys.org/blog/2025-10-29-sglang-jax/)).
+-- [2025/10] PyTorch Conference 2025 SGLang Talk ([slide](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/sglang_pytorch_2025.pdf)).
+-- [2025/10] SGLang x Nvidia SF Meetup on 10/2 ([recap](https://x.com/lmsysorg/status/1975339501934510231)).
+-- [2025/09] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part II): 3.8x Prefill, 4.8x Decode Throughput ([blog](https://lmsys.org/blog/2025-09-25-gb200-part-2/)).
+-- [2025/09] SGLang Day 0 Support for DeepSeek-V3.2 with Sparse Attention ([blog](https://lmsys.org/blog/2025-09-29-deepseek-V32/)).
+-- [2025/08] SGLang x AMD SF Meetup on 8/22: Hands-on GPU workshop, tech talks by AMD/xAI/SGLang, and networking ([Roadmap](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_roadmap.pdf), [Large-scale EP](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_ep.pdf), [Highlights](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_highlights.pdf), [AITER/MoRI](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_aiter_mori.pdf), [Wave](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_wave.pdf)).
+-- [2025/08] SGLang provides day-0 support for OpenAI gpt-oss model ([instructions](https://github.com/sgl-project/sglang/issues/8833))
+-- [2025/06] SGLang, the high-performance serving infrastructure powering trillions of tokens daily, has been awarded the third batch of the Open Source AI Grant by a16z ([a16z blog](https://a16z.com/advancing-open-source-ai-through-benchmarks-and-bold-experimentation/)).
+-- [2025/06] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part I): 2.7x Higher Decoding Throughput ([blog](https://lmsys.org/blog/2025-06-16-gb200-part-1/)).
+-- [2025/05] Deploying DeepSeek with PD Disaggregation and Large-scale Expert Parallelism on 96 H100 GPUs ([blog](https://lmsys.org/blog/2025-05-05-large-scale-ep/)).
+-- [2025/03] Supercharge DeepSeek-R1 Inference on AMD Instinct MI300X ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1-Part2/README.html))
+-- [2025/03] SGLang Joins PyTorch Ecosystem: Efficient LLM Serving Engine ([PyTorch blog](https://pytorch.org/blog/sglang-joins-pytorch/))
+-- [2025/02] Unlock DeepSeek-R1 Inference Performance on AMD Instinct™ MI300X GPU ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1_Perf/README.html))
+-- [2025/01] SGLang provides day one support for DeepSeek V3/R1 models on NVIDIA and AMD GPUs with DeepSeek-specific optimizations. ([instructions](https://github.com/sgl-project/sglang/tree/main/benchmark/deepseek_v3), [AMD blog](https://www.amd.com/en/developer/resources/technical-articles/amd-instinct-gpus-power-deepseek-v3-revolutionizing-ai-development-with-sglang.html), [10+ other companies](https://x.com/lmsysorg/status/1887262321636221412))
+-- [2024/12] v0.4 Release: Zero-Overhead Batch Scheduler, Cache-Aware Load Balancer, Faster Structured Outputs ([blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/)).
+-- [2024/10] The First SGLang Online Meetup ([slides](https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#the-first-sglang-online-meetup)).
+-- [2024/09] v0.3 Release: 7x Faster DeepSeek MLA, 1.5x Faster torch.compile, Multi-Image/Video LLaVA-OneVision ([blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/)).
+-- [2024/07] v0.2 Release: Faster Llama3 Serving with SGLang Runtime (vs. TensorRT-LLM, vLLM) ([blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/)).
+-- [2024/02] SGLang enables **3x faster JSON decoding** with compressed finite state machine ([blog](https://lmsys.org/blog/2024-02-05-compressed-fsm/)).
+-- [2024/01] SGLang provides up to **5x faster inference** with RadixAttention ([blog](https://lmsys.org/blog/2024-01-17-sglang/)).
+-- [2024/01] SGLang powers the serving of the official **LLaVA v1.6** release demo ([usage](https://github.com/haotian-liu/LLaVA?tab=readme-ov-file#demo)).
+-
+-</details>
+-
+-## About
+-SGLang is a high-performance serving framework for large language models and multimodal models.
+-It is designed to deliver low-latency and high-throughput inference across a wide range of setups, from a single GPU to large distributed clusters.
+-Its core features include:
+-
+-- **Fast Runtime**: Provides efficient serving with RadixAttention for prefix caching, a zero-overhead CPU scheduler, prefill-decode disaggregation, speculative decoding, continuous batching, paged attention, tensor/pipeline/expert/data parallelism, structured outputs, chunked prefill, quantization (FP4/FP8/INT4/AWQ/GPTQ), and multi-LoRA batching.
+-- **Broad Model Support**: Supports a wide range of language models (Llama, Qwen, DeepSeek, Kimi, GLM, GPT, Gemma, Mistral, etc.), embedding models (e5-mistral, gte, mcdse), reward models (Skywork), and diffusion models (WAN, Qwen-Image), with easy extensibility for adding new models. Compatible with most Hugging Face models and OpenAI APIs.
+-- **Extensive Hardware Support**: Runs on NVIDIA GPUs (GB200/B300/H100/A100/Spark/5090), AMD GPUs (MI355/MI300), Intel Xeon CPUs, Google TPUs, Ascend NPUs, and more.
+-- **Active Community**: SGLang is open-source and supported by a vibrant community with widespread industry adoption, powering over 400,000 GPUs worldwide.
+-- **RL & Post-Training Backbone**: SGLang is a proven rollout backend used for training many frontier models, with native RL integrations and adoption by well-known post-training frameworks such as [**AReaL**](https://github.com/inclusionAI/AReaL), [**Miles**](https://github.com/radixark/miles), [**slime**](https://github.com/THUDM/slime), [**Tunix**](https://github.com/google/tunix), [**verl**](https://github.com/volcengine/verl) and more.
+-
+-## Getting Started
+-- [Install SGLang](https://docs.sglang.io/get_started/install.html)
+-- [Quick Start](https://docs.sglang.io/basic_usage/send_request.html)
+-- [Backend Tutorial](https://docs.sglang.io/basic_usage/openai_api_completions.html)
+-- [Frontend Tutorial](https://docs.sglang.io/references/frontend/frontend_tutorial.html)
+-- [Contribution Guide](https://docs.sglang.io/developer_guide/contribution_guide.html)
+-
+-## Benchmark and Performance
+-Learn more in the release blogs: [v0.2 blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/), [v0.3 blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/), [v0.4 blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/), [Large-scale expert parallelism](https://lmsys.org/blog/2025-05-05-large-scale-ep/), [GB200 rack-scale parallelism](https://lmsys.org/blog/2025-09-25-gb200-part-2/), [GB300 long context](https://lmsys.org/blog/2026-02-19-gb300-longctx/).
+-
+-## Adoption and Sponsorship
+-SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, NVIDIA, AMD, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, RunPod, InnoMatrix, Modal, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Baseten, Baidu, AntGroup, Alibaba, Tencent, and other major technology organizations.
+-As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.
+-SGLang is currently hosted under the non-profit open-source organization [LMSYS](https://lmsys.org/about/).
+-
+-<img src="https://raw.githubusercontent.com/sgl-project/sgl-learning-materials/refs/heads/main/slides/adoption.png" alt="logo" width="800" margin="10px"></img>
+-
+-## Contact Us
+-For enterprises interested in adopting or deploying SGLang at scale, including technical consulting, sponsorship opportunities, or partnership inquiries, please contact us at [sglang@lmsys.org](mailto:sglang@lmsys.org).
+-
+-Long-term active SGLang contributors are eligible for coding agent sponsorship, such as Cursor, Claude Code, or OpenAI Codex. Email [sglang@lmsys.org](mailto:sglang@lmsys.org) with your most important commits or pull requests.
+-
+-## Acknowledgment
+-We learned the design and reused code from the following projects: [Guidance](https://github.com/guidance-ai/guidance), [vLLM](https://github.com/vllm-project/vllm), [LightLLM](https://github.com/ModelTC/lightllm), [FlashInfer](https://github.com/flashinfer-ai/flashinfer), [Outlines](https://github.com/outlines-dev/outlines), and [LMQL](https://github.com/eth-sri/lmql).
++# Phala SGLang
++
++Phala's downstream [SGLang](https://github.com/sgl-project/sglang) engine is based
++on upstream **v0.5.20**. It integrates shared serving fixes, model compatibility
++changes and explicit opt-in [Governor](https://github.com/Phala-Network/phala-inference-governor)
++hooks into one complete source tree.
++
++This repository owns engine source. [TAIL](https://github.com/Phala-Network/pig-tail)
++owns transport/attestation; Governor owns its controller and adapter. Model
++weights, deployment configuration and rollout acceptance remain separate.
++
++## Choose a version
++
++`main` is the shared integration branch. Immutable
++[source tags](https://github.com/Phala-Network/sglang/tags) identify release inputs;
++[GHCR images](https://github.com/Phala-Network/sglang/pkgs/container/sglang) live at
++`ghcr.io/phala-network/sglang`. Select an image digest and component identities
++from its release receipt. A source tag or upstream feature list alone does not
++establish hardware/model qualification.
++
++The PyPI package `sglang` is the upstream distribution; installing it does not
++install this fork's changes. For development, follow the
++[installation guide](https://docs.sglang.io/get_started/install.html) using this
++checkout and the selected Phala release's pinned native dependencies.
++
++## Run a selected image
++
++This Bash template requires Docker with NVIDIA runtime, compatible GPUs, an
++accepted image digest and a supported model. Set `SGLANG_IMAGE` to the receipt's
++`ghcr.io/phala-network/sglang@sha256:...` reference and `MODEL` to your model:
++
++```bash
++: "${SGLANG_IMAGE:?Set an accepted immutable image reference}"
++: "${MODEL:?Set a supported model}"
++docker run --rm --gpus all --ipc=host -p 127.0.0.1:30000:30000 \
++  --entrypoint sglang "$SGLANG_IMAGE" serve \
++  --model-path "$MODEL" --host 0.0.0.0 --port 30000 \
++  --schedule-policy hrrn --enable-metrics --enable-cache-report \
++  --uvicorn-access-log-exclude-prefixes /metrics /health
++```
++
++After loading, `curl --fail http://127.0.0.1:30000/health` checks readiness.
++Adjust topology, quantization, context and cache settings to your model/hardware.
++This localhost example does not configure production authentication, attestation
++or Governor; use the selected release's full configuration for those features.
++
++## Contribute and validate
++
++- [Phala responsibilities and release workflow](PHALA_REPOSITORY.md)
++- [Historical source records](docs/phala/HISTORY.md)
++- [CPU source checks](.github/workflows/phala-source-check.yml)
++- [Full source lint](.github/workflows/lint.yml)
++- [Upstream overview](README.upstream.md) and [documentation](https://docs.sglang.io/)
++
++Keep common fixes shared and model-specific behavior scoped to its model or
++topology. Run affected regressions before integration. GPU, native ABI,
++final-image and deployment checks remain distinct from source lint.
++
++## License
++
++[Apache License 2.0](LICENSE). Preserve upstream attribution and applicable
++third-party notices when redistributing the engine and its dependencies.
+diff --git a/README.upstream.md b/README.upstream.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..37b81417513c3c4c0fcbb818c513cc2162b2a8de
+--- /dev/null
++++ b/README.upstream.md
+@@ -0,0 +1,98 @@
++<div align="center" id="sglangtop">
++<img src="https://raw.githubusercontent.com/sgl-project/sglang/main/assets/logo.png" alt="logo" width="400" margin="10px"></img>
++
++[![PyPI](https://img.shields.io/pypi/v/sglang)](https://pypi.org/project/sglang)
++![PyPI - Downloads](https://static.pepy.tech/badge/sglang?period=month)
++[![license](https://img.shields.io/github/license/sgl-project/sglang.svg)](https://github.com/sgl-project/sglang/tree/main/LICENSE)
++[![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
++[![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
++[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang)
++
++</div>
++
++--------------------------------------------------------------------------------
++
++<p align="center">
++<a href="https://www.sglang.io/"><b>🌐 Website</b></a> |
++<a href="https://lmsys.org/blog/"><b>Blog</b></a> |
++<a href="https://docs.sglang.io/"><b>Documentation</b></a> |
++<a href="https://roadmap.sglang.io/"><b>Roadmap</b></a> |
++<a href="https://slack.sglang.io/"><b>Join Slack</b></a> |
++<a href="https://meet.sglang.io/"><b>Weekly Dev Meeting</b></a> |
++<a href="https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#slides"><b>Slides</b></a>
++</p>
++
++## News
++- [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://lmsys.org/blog/2026-07-27-kimi-k3-day0-support/)).
++- [2026/07] RadixArk and Google bring full SGLang features to TPUs ([blog](https://lmsys.org/blog/2026-07-30-sglang-google-tpu/)).
++- [2026/07] Serving GLM5.2 NVFP4 agentic workloads with SGLang: Reaching 500 TPS in two weeks ([blog](https://lmsys.org/blog/2026-07-13-glm52-optimization/)).
++- [2026/06] 🔥 The next generation of speculative decoding: DFlash and Spec V2 ([blog](https://lmsys.org/blog/2026-06-15-next-generation-speculative-decoding-dflash-v2/)).
++- [2026/06] SGLang provides day-0 support for latest open models ([Nemotron 3 Ultra](https://lmsys.org/blog/2026-06-04-nvidia-run-nemotron-3-ultra/), [Nemotron 3 Super](https://lmsys.org/blog/2026-03-11-run-nvidia-nemotron-3-super/), [Higgs Audio v3 TTS](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)).
++- [2026/04] 🔥 DeepSeek-V4 on Day 0: From Fast Inference to Verified RL with SGLang and Miles ([blog](https://lmsys.org/blog/2026-04-25-deepseek-v4/)).
++- [2026/02] 🔥 Unlocking 25x Inference Performance with SGLang on NVIDIA GB300 NVL72 ([blog](https://lmsys.org/blog/2026-02-20-gb300-inferencex/)).
++- [2026/01] SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2026-01-16-sglang-diffusion/)).
++
++<details>
++<summary>More</summary>
++
++- [2025/12] SGLang provides day-0 support for latest open models ([MiMo-V2-Flash](https://lmsys.org/blog/2025-12-16-mimo-v2-flash/), [Nemotron 3 Nano](https://lmsys.org/blog/2025-12-15-run-nvidia-nemotron-3-nano/), [Mistral Large 3](https://github.com/sgl-project/sglang/pull/14213), [LLaDA 2.0 Diffusion LLM](https://lmsys.org/blog/2025-12-19-diffusion-llm/), [MiniMax M2](https://lmsys.org/blog/2025-11-04-miminmax-m2/)).
++- [2025/11] SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)).
++- [2025/10] SGLang now runs natively on TPU with the SGLang-Jax backend ([blog](https://lmsys.org/blog/2025-10-29-sglang-jax/)).
++- [2025/10] PyTorch Conference 2025 SGLang Talk ([slide](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/sglang_pytorch_2025.pdf)).
++- [2025/10] SGLang x Nvidia SF Meetup on 10/2 ([recap](https://x.com/lmsysorg/status/1975339501934510231)).
++- [2025/09] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part II): 3.8x Prefill, 4.8x Decode Throughput ([blog](https://lmsys.org/blog/2025-09-25-gb200-part-2/)).
++- [2025/09] SGLang Day 0 Support for DeepSeek-V3.2 with Sparse Attention ([blog](https://lmsys.org/blog/2025-09-29-deepseek-V32/)).
++- [2025/08] SGLang x AMD SF Meetup on 8/22: Hands-on GPU workshop, tech talks by AMD/xAI/SGLang, and networking ([Roadmap](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_roadmap.pdf), [Large-scale EP](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_ep.pdf), [Highlights](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_highlights.pdf), [AITER/MoRI](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_aiter_mori.pdf), [Wave](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_wave.pdf)).
++- [2025/08] SGLang provides day-0 support for OpenAI gpt-oss model ([instructions](https://github.com/sgl-project/sglang/issues/8833))
++- [2025/06] SGLang, the high-performance serving infrastructure powering trillions of tokens daily, has been awarded the third batch of the Open Source AI Grant by a16z ([a16z blog](https://a16z.com/advancing-open-source-ai-through-benchmarks-and-bold-experimentation/)).
++- [2025/06] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part I): 2.7x Higher Decoding Throughput ([blog](https://lmsys.org/blog/2025-06-16-gb200-part-1/)).
++- [2025/05] Deploying DeepSeek with PD Disaggregation and Large-scale Expert Parallelism on 96 H100 GPUs ([blog](https://lmsys.org/blog/2025-05-05-large-scale-ep/)).
++- [2025/03] Supercharge DeepSeek-R1 Inference on AMD Instinct MI300X ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1-Part2/README.html))
++- [2025/03] SGLang Joins PyTorch Ecosystem: Efficient LLM Serving Engine ([PyTorch blog](https://pytorch.org/blog/sglang-joins-pytorch/))
++- [2025/02] Unlock DeepSeek-R1 Inference Performance on AMD Instinct™ MI300X GPU ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1_Perf/README.html))
++- [2025/01] SGLang provides day one support for DeepSeek V3/R1 models on NVIDIA and AMD GPUs with DeepSeek-specific optimizations. ([instructions](https://github.com/sgl-project/sglang/tree/main/benchmark/deepseek_v3), [AMD blog](https://www.amd.com/en/developer/resources/technical-articles/amd-instinct-gpus-power-deepseek-v3-revolutionizing-ai-development-with-sglang.html), [10+ other companies](https://x.com/lmsysorg/status/1887262321636221412))
++- [2024/12] v0.4 Release: Zero-Overhead Batch Scheduler, Cache-Aware Load Balancer, Faster Structured Outputs ([blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/)).
++- [2024/10] The First SGLang Online Meetup ([slides](https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#the-first-sglang-online-meetup)).
++- [2024/09] v0.3 Release: 7x Faster DeepSeek MLA, 1.5x Faster torch.compile, Multi-Image/Video LLaVA-OneVision ([blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/)).
++- [2024/07] v0.2 Release: Faster Llama3 Serving with SGLang Runtime (vs. TensorRT-LLM, vLLM) ([blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/)).
++- [2024/02] SGLang enables **3x faster JSON decoding** with compressed finite state machine ([blog](https://lmsys.org/blog/2024-02-05-compressed-fsm/)).
++- [2024/01] SGLang provides up to **5x faster inference** with RadixAttention ([blog](https://lmsys.org/blog/2024-01-17-sglang/)).
++- [2024/01] SGLang powers the serving of the official **LLaVA v1.6** release demo ([usage](https://github.com/haotian-liu/LLaVA?tab=readme-ov-file#demo)).
++
++</details>
++
++## About
++SGLang is a high-performance serving framework for large language models and multimodal models.
++It is designed to deliver low-latency and high-throughput inference across a wide range of setups, from a single GPU to large distributed clusters.
++Its core features include:
++
++- **Fast Runtime**: Provides efficient serving with RadixAttention for prefix caching, a zero-overhead CPU scheduler, prefill-decode disaggregation, speculative decoding, continuous batching, paged attention, tensor/pipeline/expert/data parallelism, structured outputs, chunked prefill, quantization (FP4/FP8/INT4/AWQ/GPTQ), and multi-LoRA batching.
++- **Broad Model Support**: Supports a wide range of language models (Llama, Qwen, DeepSeek, Kimi, GLM, GPT, Gemma, Mistral, etc.), embedding models (e5-mistral, gte, mcdse), reward models (Skywork), and diffusion models (WAN, Qwen-Image), with easy extensibility for adding new models. Compatible with most Hugging Face models and OpenAI APIs.
++- **Extensive Hardware Support**: Runs on NVIDIA GPUs (GB200/B300/H100/A100/Spark/5090), AMD GPUs (MI355/MI300), Intel Xeon CPUs, Google TPUs, Ascend NPUs, and more.
++- **Active Community**: SGLang is open-source and supported by a vibrant community with widespread industry adoption, powering over 400,000 GPUs worldwide.
++- **RL & Post-Training Backbone**: SGLang is a proven rollout backend used for training many frontier models, with native RL integrations and adoption by well-known post-training frameworks such as [**AReaL**](https://github.com/inclusionAI/AReaL), [**Miles**](https://github.com/radixark/miles), [**slime**](https://github.com/THUDM/slime), [**Tunix**](https://github.com/google/tunix), [**verl**](https://github.com/volcengine/verl) and more.
++
++## Getting Started
++- [Install SGLang](https://docs.sglang.io/get_started/install.html)
++- [Quick Start](https://docs.sglang.io/basic_usage/send_request.html)
++- [Backend Tutorial](https://docs.sglang.io/basic_usage/openai_api_completions.html)
++- [Frontend Tutorial](https://docs.sglang.io/references/frontend/frontend_tutorial.html)
++- [Contribution Guide](https://docs.sglang.io/developer_guide/contribution_guide.html)
++
++## Benchmark and Performance
++Learn more in the release blogs: [v0.2 blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/), [v0.3 blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/), [v0.4 blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/), [Large-scale expert parallelism](https://lmsys.org/blog/2025-05-05-large-scale-ep/), [GB200 rack-scale parallelism](https://lmsys.org/blog/2025-09-25-gb200-part-2/), [GB300 long context](https://lmsys.org/blog/2026-02-19-gb300-longctx/).
++
++## Adoption and Sponsorship
++SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, NVIDIA, AMD, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, RunPod, InnoMatrix, Modal, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Baseten, Baidu, AntGroup, Alibaba, Tencent, and other major technology organizations.
++As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.
++SGLang is currently hosted under the non-profit open-source organization [LMSYS](https://lmsys.org/about/).
++
++<img src="https://raw.githubusercontent.com/sgl-project/sgl-learning-materials/refs/heads/main/slides/adoption.png" alt="logo" width="800" margin="10px"></img>
++
++## Contact Us
++For enterprises interested in adopting or deploying SGLang at scale, including technical consulting, sponsorship opportunities, or partnership inquiries, please contact us at [sglang@lmsys.org](mailto:sglang@lmsys.org).
++
++Long-term active SGLang contributors are eligible for coding agent sponsorship, such as Cursor, Claude Code, or OpenAI Codex. Email [sglang@lmsys.org](mailto:sglang@lmsys.org) with your most important commits or pull requests.
++
++## Acknowledgment
++We learned the design and reused code from the following projects: [Guidance](https://github.com/guidance-ai/guidance), [vLLM](https://github.com/vllm-project/vllm), [LightLLM](https://github.com/ModelTC/lightllm), [FlashInfer](https://github.com/flashinfer-ai/flashinfer), [Outlines](https://github.com/outlines-dev/outlines), and [LMQL](https://github.com/eth-sri/lmql).
+diff --git a/UNION_SOURCE_VALIDATION_20260922.md b/UNION_SOURCE_VALIDATION_20260922.md
+deleted file mode 100644
+index a13f30b7174849082d1e75a87c21fe25f4976210..0000000000000000000000000000000000000000
+--- a/UNION_SOURCE_VALIDATION_20260922.md
++++ /dev/null
+@@ -1,136 +0,0 @@
+-# Unified source integration checks, 2026-09-22
+-
+-This is source and CPU evidence, not a runtime image, GPU, ABI, HTTP/SSE,
+-provider, performance or production acceptance. The paired serving-patches
+-selector binds the final complete engine commit/tree and each ordered delta.
+-Existing PRs 121 (engine) and 6 (patches) are reused.
+-
+-## Installed native dependency
+-
+-The single version is `xgrammar==0.2.6+phala.union1`. Its deterministic public
+-upstream-plus-delta recipe is documented in `docker/phala-xgrammar/README.md`.
+-Serving-patches dependency commit `345f57ee3ff447679a9f4d426b6d61ada95c0e12`
+-pins native source `8830951a797886cb09568dd0ae2f9b77b9aab552`, tree
+-`b8dcb87b50b99cc61dbab46e7dcfbd34f78a2f45`, delta SHA256
+-`c6a4defdfe0967056e144351ff2027132c3fa4cb79026c862bff0306e946e26b`.
+-The native candidate commit is local provenance, not a claimed public ref.
+-There is no public Phala wheel claim.
+-
+-Existing 655 installed native CPU passes and the same-base ablation
+-(22 semantic failures, 21 passes) are retained. The wheel was built from
+-`8b5d3b860de06a8f8016ec1c7b131c58e2055229`; its successor adds tests only.
+-Wheel SHA256 `d62d888568626676837ff64709cd4a3dccae4bbf43401bf7d9c0e4422dcafe2e`,
+-installed library SHA256
+-`778e9ac15a67a2bf731057de0834e71874e490f9fa777a627f0b4527f76ee7c4`.
+-
+-The engine adapter added 14 passing tests, zero skips, using that installed
+-library in the existing CPU builder, runc, network none and no GPU. Candidate
+-tar SHA256 `c246bfb9981325967ba84f75fc06471ea889cb8fefedded82c5d6e0fe2c1c316`;
+-complete log SHA256
+-`b95e0ac94316fd3914eb4c05b5f5ae7691b48fae6dee44e67675d996093519f1`.
+-Files are in the custodian's `tmp/xgrammar-audit-20260922/`.
+-The adapter source thereafter changed only through formatting.
+-
+-Cases cover direct and ANY JSON bounds, per-format limit preservation,
+-schema-position-only fail-closed checks, legacy and nested JSON/XML structural
+-formats, masks/rollback/EOS and invalid backend/compact/tokenizer settings.
+-The logged fallback-to-none belongs to an unset-limit compatibility control;
+-an explicit positive bound with that tokenizer raises instead.
+-
+-The recipe itself was run with `--verify-only` in a fresh source directory:
+-public immutable fetch, delta application, complete tree, license, DLPack
+-URL and gitlink all passed. A first exact URL comparison exposed the missing
+-`.git` suffix in the manifest and was corrected before the passing run.
+-No wheel rebuild, image build/push or service change occurred.
+-
+-## Integrated CPU checks
+-
+-- Muse: 30 passed, zero skips with historical template SHA256
+-  `900db3effc316e33295ec3d7dfa2df83ea2735228cba73adba8fecc2e83343f7`.
+-  This includes the actual process/Jinja/render call chain, inner rejection
+-  state consistency and 100,000 final tokens retaining only header snapshots.
+-- Nemotron: 19 passed with the pinned real tokenizer, plus 10 focused
+-  termination/budget cases. Cuts cannot turn unfinished thinking/tool examples
+-  into content; real closers retain legitimate final calls. No-token-context
+-  normal EOF compatibility remains. Structured JSON/tool requests reserve
+-  answer space while explicit budgets, disabled reasoning and continuations
+-  remain unchanged. Missing token filtering aborts an explicit budget.
+-- XML const: shared complete-call executor suite now has 17 passes, including
+-  numeric/boolean/object/array/null/string const intersections and unchanged
+-  generated values. Atomic withholding and other detector consumers remain.
+-- DeepSeek: 8 encoder/async, 16 production-function CPU, 3 MXFP4 load-order,
+-  10 chat and 11 shared-protocol tests passed on the integrated tree.
+-  Vision, Engram and Python C1/C2 consumers are connected source paths.
+-  DS-only async conversion, modality/URI/inline-size validation, strict
+-  top-level integer effort with model-aware rejection and both tool carriers
+-  for explicit none are integrated. Historical monkey-patches are not restored.
+-- Nearby Qwen history 5, Marlin/BREAKABLE 6 and HiCache source 13 passed;
+-  HiCache real Gloo is explicitly skipped in this source-only run.
+-  Existing unchanged GGUF20/Q8-prefill11 CPU evidence is retained, not GPU proof.
+-
+-Python 3.12 with the existing isolated Torch 2.13.0 CPU environment was used for
+-DeepSeek tensor methods. The unrelated system Python 3.10/Torch 1.12 trial
+-could not execute two modern torch contracts and was not accepted.
+-Dependency-light CI intentionally skips artifact/native-only classes when
+-their pinned inputs are unavailable. Local artifact/native results above
+-are separate executed evidence, not silently converted CI skips.
+-
+-## Simplification and boundaries
+-
+-The termination guard ablation disables only `_set_finish_reason` on the
+-actual parser: the truncated tool example then enters normal content.
+-Restoring it yields reasoning only. Model-local DS integer rejection and
+-finite UE8M0-scale guard have separate negative controls. Existing native
+-extension points and shared validators replace historical wrapper layers.
+-Muse final-output snapshots were eliminated in favor of its existing counter;
+-this is CPU bookkeeping evidence, not measured serving throughput.
+-
+-Source integration does not prove loaded weights, native extension compilation,
+-device transfers, Mooncake ACK/reload, model generation, new image acceptance
+-or any Governor combination. Muse template packaging/license remains a
+-separate gate.
+-
+-## Historical residual closeout
+-
+-Nemotron fusion `65a1b3f10fd0`, Mamba flat SSM indexing `752cbf71d2fc`,
+-saved admission debit `72d09f13ce3e`, and deferred initialization
+-`12593d20ead3` are covered by exact official-baseline ancestors. Seven
+-function ASTs remain identical to historical extracted sources; the GEMM
+-dispatcher is identical after two explicit splitK identifier renames.
+-Four existing Mamba index tests, saved-reserve admission with a failing
+-late-recompute negative control, page-alignment/exact-fill controls and
+-speculative-decode metadata clearing passed as source-method CPU checks.
+-The patch repository's `docs/NEMOTRON_HISTORY_AUDIT_20260922.md` records
+-identities and call chains. No duplicate engine patch was needed.
+-
+-The multi-path Muse donor `2224d5c899711426210957da0f3ba341f6b6c110`
+-(extracted source `c2d241b80ef0e4e0e3aaf517567287368ac56fe3`) had one real
+-common residual: malformed online weight-update validation. Only its worker
+-deserialization and updater validation/unwrap handling are now adapted.
+-The existing DS derived-cache rejection and weight-cache guards retain their
+-ordering; tensor/default/direct/custom/flattened paths remain available.
+-Sixteen focused real-torch CPU/source-method tests pass, covering malformed
+-collections, names, local serialization/TP rank, load formats, metadata
+-bounds, successful loader dispatch, and both existing cache guards.
+-An ablation removing the payload validator loses controlled pre-device
+-rejection; restoring the shared helper preserves it without another wrapper.
+-CPU pickle fixtures do not qualify CUDA IPC, distributed updates, full runtime
+-imports or production acceptance. No unrelated donor hunks were imported.
+-The historical bounds validator alone does not establish dtype-view/reshape
+-compatibility. Reconstruction now finishes all entries inside a controlled
+-error boundary before any model loader call. A valid first entry followed by
+-shape mismatch, incompatible dtype view or boolean shape is rejected without
+-model mutation. This reuses the real consumer instead of adding duplicate
+-shape/byte arithmetic or restricting otherwise compatible tensor layouts.
+-
+-Historical Nemotron donor `5f9f960c28a16bfaef3f20800c30eeee125753aa`
+-(extracted `3c06073c3d0b3ada4ed413d25d543350386c3f72`) also had one common
+-residual: an encoded first SSE error was still sent with HTTP 200. The shared
+-pre-header response method now promotes only an initial 4xx/5xx error and
+-closes its generator before returning; later errors remain in the stream.
+-Seven source-method tests with real FastAPI/Starlette/ORJSON responses pass:
+-five status codes, missing-code default, invalid/nonerror passthrough,
+-midstream error ASGI bodies, ValueError, header-send failure cleanup and an
+-ablation that restores the erroneous initial HTTP 200. This suite joins the
+-existing shared source CI; no per-model workflow is added. Full server
+-generation/ingress acceptance remains separate.
+diff --git a/docs/phala/HISTORY.md b/docs/phala/HISTORY.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..46a2fc6b25176b668fb58ee7e33a3416873801f9
+--- /dev/null
++++ b/docs/phala/HISTORY.md
+@@ -0,0 +1,8 @@
++# Phala historical source records
++
++These records preserve earlier migrations and branch cleanup. Their branch names and pending states are historical; use the selected release receipt for current source/image identity.
++
++- [PORTING-V0520.md](https://github.com/Phala-Network/sglang/blob/181598031ce692094006eca0bbdba0e356c7f713/PORTING-V0520.md)
++- [DS-REMAINING-UNION-20260922.md](https://github.com/Phala-Network/sglang/blob/181598031ce692094006eca0bbdba0e356c7f713/DS-REMAINING-UNION-20260922.md)
++- [UNION_SOURCE_VALIDATION_20260922.md](https://github.com/Phala-Network/sglang/blob/181598031ce692094006eca0bbdba0e356c7f713/UNION_SOURCE_VALIDATION_20260922.md)
++- [repository-archive-20260920.json](https://github.com/Phala-Network/sglang/blob/181598031ce692094006eca0bbdba0e356c7f713/repository-archive-20260920.json)
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index de0d6f7059f4817a348ce8243167df8ca4648370..35af7230c11d4e391b33543168b457c00956e9fa 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -1823,6 +1823,27 @@ async def openai_v1_chat_completions(
+     request: ChatCompletionRequest, raw_request: Request
+ ):
+     """OpenAI-compatible chat completion endpoint."""
++    # Reject an unknown base model before it reaches the scheduler.  The
++    # OpenAI handler accepts the model field for LoRA's ``base:adapter``
++    # notation, but the base must still be the one model advertised by this
++    # server.  Without this check an invalid model name was silently treated
++    # as a normal generation request and returned HTTP 200.
++    served_model = (
++        raw_request.app.state.openai_serving_chat.tokenizer_manager.served_model_name
++    )
++    requested_base = request.model.split(":", 1)[0].strip()
++    if requested_base != served_model:
++        return ORJSONResponse(
++            status_code=400,
++            content={
++                "error": {
++                    "message": f"The model '{request.model}' does not exist",
++                    "type": "invalid_request_error",
++                    "param": "model",
++                    "code": "model_not_found",
++                }
++            },
++        )
+     return await raw_request.app.state.openai_serving_chat.handle_request(
+         request, raw_request
+     )
+diff --git a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+index 8116ee1dfa2a84590cca42a69a4ac4c962781d17..73d4ffdda44705fb139b4cebcbb80b226c020ff4 100644
+--- a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
++++ b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+@@ -192,6 +192,7 @@ class SchedulerMetricsReporter:
+             self.metrics_collector_context.enable_kv_cache_events
+         )
+         self._init_metrics(self.tp_rank, self.pp_rank, self.dp_rank)
++        self._init_governor_metrics()
+         self._install_device_timer_on_runners()
+         # Keep log history after the existing async result copy so reporting does
+         # not synchronize the model stream once per generated token.
+@@ -203,6 +204,48 @@ class SchedulerMetricsReporter:
+         # cache_hit_rate stats keep their per-report semantics.
+         self.recent_cache_hit_rate = 0.0
+ 
++    def _init_governor_metrics(self) -> None:
++        self._governor_metrics = None
++        if not self.current_scheduler_metrics_enabled:
++            return
++        labels = {
++            name: value
++            for name, value in self.metrics_collector.labels.items()
++            if name not in {"reason", "window"}
++        }
++        try:
++            from pig_governor.metrics import GovernorMetrics
++        except ModuleNotFoundError as error:
++            if error.name not in {"pig_governor", "pig_governor.metrics"}:
++                raise
++            from prometheus_client import Gauge
++
++            for name, value in (
++                ("available", 0),
++                ("enabled", int(getattr(self.scheduler, "governor", None) is not None)),
++            ):
++                Gauge(
++                    "pig_governor_" + name,
++                    "Native Governor telemetry availability or admission enablement.",
++                    tuple(labels),
++                    multiprocess_mode="mostrecent",
++                ).labels(**labels).set(value)
++            return
++        self._governor_metrics = GovernorMetrics(labels)
++        self._publish_governor_metrics(time.monotonic())
++
++    def _publish_governor_metrics(self, now: float) -> None:
++        if self._governor_metrics is None:
++            return
++        governor = getattr(self.scheduler, "governor", None)
++        waiting_count = None
++        if governor is not None:
++            waiting_count = len(self.scheduler.waiting_queue) + len(
++                self.scheduler.grammar_manager
++            )
++            waiting_count += int(self.scheduler.chunked_req is not None)
++        self._governor_metrics.publish(governor, now=now, waiting_count=waiting_count)
++
+     def _current_gen_throughput(self, now: float) -> float:
+         """last_gen_throughput, decayed to 0 once decode-stats stop arriving.
+ 
+@@ -213,6 +256,18 @@ class SchedulerMetricsReporter:
+             self.last_gen_throughput = 0.0
+         return self.last_gen_throughput
+ 
++    def _sample_gpu_memory_if_due(self) -> None:
++        if not self.current_scheduler_metrics_enabled or self.metrics_collector is None:
++            return
++
++        sample_gpu_memory_if_due = getattr(
++            self.metrics_collector, "sample_gpu_memory_if_due", None
++        )
++        if sample_gpu_memory_if_due is not None:
++            sample_gpu_memory_if_due(
++                getattr(getattr(self.scheduler, "ps", None), "gpu_id", 0)
++            )
++
+     def _init_metrics(
+         self,
+         tp_rank: int,
+@@ -658,6 +713,8 @@ class SchedulerMetricsReporter:
+         ):
+             return
+ 
++        self._sample_gpu_memory_if_due()
++
+         now = time.perf_counter()
+         gap_latency = now - self.last_prefill_stats_tic
+         self.last_prefill_stats_tic = now
+@@ -838,6 +895,8 @@ class SchedulerMetricsReporter:
+     ):
+         batch = running_batch or self.scheduler.running_batch
+ 
++        self._sample_gpu_memory_if_due()
++
+         # Every-iteration work: realtime token counting + status logger
+         if self.current_scheduler_metrics_enabled:
+             decode_tokens = num_generated_tokens
+@@ -1316,6 +1375,8 @@ class SchedulerMetricsReporter:
+         if not accounting.should_record(now_wall_ns):
+             return
+ 
++        self._publish_governor_metrics(now_wall_ns / 1e9)
++
+         now_process_cpu_ns = time.process_time_ns()
+         elapsed_process_cpu_ns = now_process_cpu_ns - accounting.start_process_cpu_ns
+         if accounting.accumulate_idle_ns > 0:
+diff --git a/python/sglang/srt/observability/metrics_collector.py b/python/sglang/srt/observability/metrics_collector.py
+index a92adbaad1ca655b8805c6a54155042debebdf53..1f729ffda84a3fe675c2a6c6a5c3af107355984e 100644
+--- a/python/sglang/srt/observability/metrics_collector.py
++++ b/python/sglang/srt/observability/metrics_collector.py
+@@ -17,6 +17,7 @@ from __future__ import annotations
+ 
+ import dataclasses
+ import logging
++import math
+ import os
+ import time
+ from collections import Counter
+@@ -29,6 +30,7 @@ from sglang.srt.observability.scheduler_stage_metrics import (
+     SCHEDULER_STAGE_CATEGORIES,
+ )
+ from sglang.srt.observability.utils import exponential_buckets, generate_buckets
++from sglang.srt.platforms import current_platform
+ from sglang.srt.runtime_context import (
+     exports_expert_balancedness_to_prometheus,
+     get_context,
+@@ -50,6 +52,9 @@ SGLANG_TEST_REQUEST_TIME_STATS = get_bool_env_var("SGLANG_TEST_REQUEST_TIME_STAT
+ 
+ logger = logging.getLogger(__name__)
+ 
++_GPU_MEMORY_BYTES_PER_GIB = float(1 << 30)
++_GPU_MEMORY_SAMPLE_INTERVAL_SECONDS = 1.0
++
+ 
+ @dataclass
+ class QueueCount:
+@@ -246,6 +251,112 @@ class SchedulerMetricsCollectorContext:
+     collector: Optional[SchedulerMetricsCollector]
+ 
+ 
++class _GpuMemorySampler:
++    """Sample driver-reported free memory without changing allocator state."""
++
++    def __init__(self, labels: Mapping[str, Any], gauge_cls, interval_seconds: float):
++        self.interval_seconds = interval_seconds
++        self._next_sample_time = 0.0
++
++        labelnames = labels.keys()
++        self.free_memory_gb = gauge_cls(
++            name="sglang:gpu_free_memory_gb",
++            documentation=(
++                "Latest successful driver-reported free device memory sample in "
++                "GiB (bytes / 2**30). This is current sampled memory, not "
++                "startup memory."
++            ),
++            labelnames=labelnames,
++            multiprocess_mode="mostrecent",
++        )
++        self.sample_timestamp_seconds = gauge_cls(
++            name="sglang:gpu_free_memory_sample_timestamp_seconds",
++            documentation=(
++                "Unix timestamp when the latest free-memory query was attempted. "
++                "Use gpu_free_memory_sample_valid to distinguish a successful "
++                "sample from an invalid attempt."
++            ),
++            labelnames=labelnames,
++            multiprocess_mode="mostrecent",
++        )
++        self.sample_valid = gauge_cls(
++            name="sglang:gpu_free_memory_sample_valid",
++            documentation=(
++                "Whether the latest free-memory query succeeded (1) or was invalid (0)."
++            ),
++            labelnames=labelnames,
++            multiprocess_mode="mostrecent",
++        )
++        self.sample_interval_seconds = gauge_cls(
++            name="sglang:gpu_free_memory_sample_interval_seconds",
++            documentation=(
++                "Minimum seconds between free-memory queries. A query is attempted "
++                "on the first forward and when this interval has elapsed."
++            ),
++            labelnames=labelnames,
++            multiprocess_mode="mostrecent",
++        )
++
++        metric_labels = dict(labels)
++        self._free_memory = self.free_memory_gb.labels(**metric_labels)
++        self._sample_timestamp = self.sample_timestamp_seconds.labels(**metric_labels)
++        self._sample_valid = self.sample_valid.labels(**metric_labels)
++        self._sample_interval = self.sample_interval_seconds.labels(**metric_labels)
++
++        self._sample_interval.set(interval_seconds)
++        self._publish_invalid(timestamp_seconds=0.0)
++
++    def _publish_invalid(self, timestamp_seconds: float) -> None:
++        self._free_memory.set(math.nan)
++        self._sample_timestamp.set(timestamp_seconds)
++        self._sample_valid.set(0.0)
++
++    def _publish_success(self, free_memory_gb: float, timestamp_seconds: float) -> None:
++        self._free_memory.set(free_memory_gb)
++        self._sample_timestamp.set(timestamp_seconds)
++        self._sample_valid.set(1.0)
++
++    def sample_if_due(self, device_id: int) -> bool:
++        now = time.monotonic()
++        if now < self._next_sample_time:
++            return False
++
++        self._next_sample_time = now + self.interval_seconds
++        timestamp_seconds = time.time()
++        if not current_platform.is_cuda_alike():
++            self._publish_invalid(timestamp_seconds)
++            logger.debug(
++                "Skipping GPU memory sample on unsupported platform %s",
++                current_platform.device_name,
++            )
++            return False
++
++        try:
++            free_bytes, total_bytes = current_platform.get_available_memory(device_id)
++            free_bytes = float(free_bytes)
++            total_bytes = float(total_bytes)
++            if (
++                not math.isfinite(free_bytes)
++                or not math.isfinite(total_bytes)
++                or free_bytes < 0
++                or total_bytes <= 0
++                or free_bytes > total_bytes
++            ):
++                raise ValueError("platform returned invalid device memory")
++        except Exception:
++            # A transient driver/platform failure must be visible to scrapers;
++            # retaining the previous value as current would misstate headroom.
++            self._publish_invalid(timestamp_seconds)
++            logger.debug("Failed to sample current device memory for metrics")
++            return False
++
++        self._publish_success(
++            free_memory_gb=free_bytes / _GPU_MEMORY_BYTES_PER_GIB,
++            timestamp_seconds=timestamp_seconds,
++        )
++        return True
++
++
+ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+     def __init__(
+         self,
+@@ -1096,6 +1207,11 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+             labelnames=labels.keys(),
+             multiprocess_mode="mostrecent",
+         )
++        self._gpu_memory_sampler = _GpuMemorySampler(
++            labels=labels,
++            gauge_cls=Gauge,
++            interval_seconds=_GPU_MEMORY_SAMPLE_INTERVAL_SECONDS,
++        )
+ 
+     @classmethod
+     def init_new(
+@@ -1162,6 +1278,10 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+         # Convenience function for logging a scalar to gauge.
+         gauge.labels(**self.labels).set(data)
+ 
++    def sample_gpu_memory_if_due(self, device_id: int = 0) -> bool:
++        """Refresh sampled device memory when the configured interval elapses."""
++        return self._gpu_memory_sampler.sample_if_due(device_id)
++
+     def _log_gauge_queue_count(self, gauge: Gauge, data: QueueCount) -> None:
+         # Log a QueueCount to gauge: total under default labels, per-priority breakdown under priority="<int>".
+         # NOTE: When priority scheduling is enabled, the total is recorded under
+diff --git a/repository-archive-20260920.json b/repository-archive-20260920.json
+deleted file mode 100644
+index 774aa31f84370bf94bc2d26f99abccd488966045..0000000000000000000000000000000000000000
+--- a/repository-archive-20260920.json
++++ /dev/null
+@@ -1,981 +0,0 @@
+-{
+-  "date": "2026-09-20",
+-  "purpose": "Repository cleanup; retained refs preserve source history, not acceptance claims",
+-  "keep": [
+-    "codex/dsv41-pr39704-medium-r7",
+-    "codex/dsv41-protocol-wire-fidelity-20260920",
+-    "codex/dsv41-v0520-11-candidate-bitmap",
+-    "codex/five-cvm-v0519-muse",
+-    "codex/five-cvm-v0519-nemotron",
+-    "codex/five-cvm-v0519-qwen36",
+-    "codex/five-cvm-v0519-qwen38-gemma4",
+-    "codex/glm53-v0520-atomic-tools-r1",
+-    "codex/glm53-v0520-completed-chunks-r1",
+-    "codex/glm53-v0520-dsa-host-budget-r1",
+-    "codex/glm53-v0520-flashinfer-cleanup-r1",
+-    "codex/glm53-v0520-host-async-ack-r1",
+-    "codex/glm53-v0520-idle-dp-gauge-r1",
+-    "codex/glm53-v0520-mooncake-ssd-ranks-r1",
+-    "codex/glm53-v0520-physical-kv-budget-r1",
+-    "codex/glm53-v0520-reasoning-usage-r1",
+-    "codex/kimi-k3-v0520-0007-chunk-write-through-r1",
+-    "codex/kimi-k3-v0520-r12-frozen-provenance",
+-    "codex/serving-v0520-0020-allowed-output-r1",
+-    "codex/serving-v0520-qwen38-governor-derived-r2",
+-    "main"
+-  ],
+-  "archive_tags": [
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-muse",
+-      "tag": "archive/20260920/archive-five-cvm-v0519-muse",
+-      "sha": "eec6b2e25ee098d04475e4784caad7b18021393b"
+-    },
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-nemotron",
+-      "tag": "archive/20260920/archive-five-cvm-v0519-nemotron",
+-      "sha": "cfe6dbb89416065555d4a2f0d2260704680136ec"
+-    },
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-qwen38-gemma4",
+-      "tag": "archive/20260920/archive-five-cvm-v0519-qwen38-gemma4",
+-      "sha": "82da9278e229402abcb50b46ee5a57e801bb651c"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-flash-hardening-20260807-r1",
+-      "tag": "archive/20260920/deepseek-v4-flash-hardening-20260807-r1",
+-      "sha": "b272ab972354a5c916e7e72025846c789ff7be46"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-pro-0813-sglang",
+-      "tag": "archive/20260920/deepseek-v4-pro-0813-sglang",
+-      "sha": "a42731b07a7a1f256d0a68142b0a86f381a80bb1"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-v0517-no33288-20260809-r2",
+-      "tag": "archive/20260920/deepseek-v4-v0517-no33288-20260809-r2",
+-      "sha": "20fdb3815a33e693b5edf786d8f3e0bc60cca3ff"
+-    },
+-    {
+-      "branch": "codex/glm52-structured-hardening-20260807-r2",
+-      "tag": "archive/20260920/glm52-structured-hardening-20260807-r2",
+-      "sha": "1c15c898856e35bf2bc932a4259c7422de903ce4"
+-    },
+-    {
+-      "branch": "codex/glm52-v0517-r8-grammar-cache-failclosed-20260812",
+-      "tag": "archive/20260920/glm52-v0517-r8-grammar-cache-failclosed-20260812",
+-      "sha": "b14c6df53df7d03acddfdf52f76975928182e073"
+-    },
+-    {
+-      "branch": "codex/glm53-bf16-production",
+-      "tag": "archive/20260920/glm53-bf16-production",
+-      "sha": "2253c598b2d4bfb736148b274bc841c72f9a90ca"
+-    },
+-    {
+-      "branch": "codex/glm53-glm47-unknown-stream-r16",
+-      "tag": "archive/20260920/glm53-glm47-unknown-stream-r16",
+-      "sha": "f9bd4aae3eae870a23c23cdb8415128c16547f24"
+-    },
+-    {
+-      "branch": "codex/glm53-native-cli-r4",
+-      "tag": "archive/20260920/glm53-native-cli-r4",
+-      "sha": "61cb9d21e16530469583b70991c0079f6045da0b"
+-    },
+-    {
+-      "branch": "codex/gptoss-qwen25-harmony-tool-fix-20260904",
+-      "tag": "archive/20260920/gptoss-qwen25-harmony-tool-fix-20260904",
+-      "sha": "dcb73950e7554bc35b4142db6787d9c95dfe1747"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-llguidance-pinned-mask-r11-20260818",
+-      "tag": "archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818",
+-      "sha": "5ca52b059830fa98dbb066818c4c128d072a3a50"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-structured-budget-r11-20260814",
+-      "tag": "archive/20260920/muse-glimmer-structured-budget-r11-20260814",
+-      "sha": "fbadf3056c7b789c313083ffea8f781abec7b37f"
+-    },
+-    {
+-      "branch": "codex/qwen38-flash-next-phala-20260826",
+-      "tag": "archive/20260920/qwen38-flash-next-phala-20260826",
+-      "sha": "ea52ea090009930ca3bf99d5e45128ea2b35564c"
+-    },
+-    {
+-      "branch": "codex/qwen38-r15-flat-official-base",
+-      "tag": "archive/20260920/qwen38-r15-flat-official-base",
+-      "sha": "98f40b15259586b7a818affa17890709e4cd84a1"
+-    },
+-    {
+-      "branch": "codex/qwen38-reasoning-budget-r12",
+-      "tag": "archive/20260920/qwen38-reasoning-budget-r12",
+-      "sha": "c0fc2cfcd2f9ea2c482155b2126f9036300a3813"
+-    },
+-    {
+-      "branch": "codex/qwen38-v0519-null-schema-response-format-20260914",
+-      "tag": "archive/20260920/qwen38-v0519-null-schema-response-format-20260914",
+-      "sha": "fb70a0ac9fd5c9f85ef95917db5351e3b229f025"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-qwen38-governor-derived-r1",
+-      "tag": "archive/20260920/serving-v0520-qwen38-governor-derived-r1",
+-      "sha": "cb88b5675f50a26090407f2dc155de8bdd0e42fd"
+-    },
+-    {
+-      "branch": "codex/v0.5.17-deepseek-v4-b-repair-20260816",
+-      "tag": "archive/20260920/v0.5.17-deepseek-v4-b-repair-20260816",
+-      "sha": "7423800c750affa9f6eccfee0c65ab70a21edd15"
+-    }
+-  ],
+-  "delete": [
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-muse",
+-      "sha": "eec6b2e25ee098d04475e4784caad7b18021393b",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-nemotron",
+-      "sha": "cfe6dbb89416065555d4a2f0d2260704680136ec",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-qwen36",
+-      "sha": "1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a",
+-      "retained_ref": "refs/tags/qwen38-27b-sglang-v0.5.19-phala-r5-1a56fbb0dc-20260914"
+-    },
+-    {
+-      "branch": "codex/archive-five-cvm-v0519-qwen38-gemma4",
+-      "sha": "82da9278e229402abcb50b46ee5a57e801bb651c",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-flash-hardening-20260807-r1",
+-      "sha": "b272ab972354a5c916e7e72025846c789ff7be46",
+-      "retained_ref": "refs/tags/archive/20260920/deepseek-v4-flash-hardening-20260807-r1"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-pro-0813-sglang",
+-      "sha": "a42731b07a7a1f256d0a68142b0a86f381a80bb1",
+-      "retained_ref": "refs/tags/archive/20260920/deepseek-v4-pro-0813-sglang"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-v0517-no33288-20260809-r2",
+-      "sha": "20fdb3815a33e693b5edf786d8f3e0bc60cca3ff",
+-      "retained_ref": "refs/tags/archive/20260920/deepseek-v4-v0517-no33288-20260809-r2"
+-    },
+-    {
+-      "branch": "codex/deepseek-v4-v0517-paged-chunk-20260811-r1",
+-      "sha": "00dd7bed7f12f534359ded418bcd79fbda095aa5",
+-      "retained_ref": "refs/tags/archive/20260920/v0.5.17-deepseek-v4-b-repair-20260816"
+-    },
+-    {
+-      "branch": "codex/deepseek-v41-async-chat-r1",
+-      "sha": "aa54beb47f1953d0a9bda2dc19ccd96783220b8c",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-pr39704-medium-r7"
+-    },
+-    {
+-      "branch": "codex/deepseek-v41-pd-streaming-r1",
+-      "sha": "b72c85741895351aab79c5434831351d5bea6e50",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-pr39704-medium-r7"
+-    },
+-    {
+-      "branch": "codex/dsv41-hicache-chunked-backup-r6",
+-      "sha": "b85aa875dd9118270f7c82efde296064807e321f",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-pr39704-medium-r7"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-01-native-support",
+-      "sha": "9af234a4891a8facbe92626a2c54fffce5f04637",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-02-dense-prefill",
+-      "sha": "3c0eb7c73d9c51baf236faebd649ea14c6482ecb",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-03-hicache-backup",
+-      "sha": "f94b624c3e1abf798ca7e0e495a17ca82d9c8dd8",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-04-common-serving",
+-      "sha": "5ad27e1db0d14d17d920e9040599f20655fbe9df",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-05-model-protocol",
+-      "sha": "437b982abfdfa1b563122e061ead1a1cd1211c29",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-06-medium-finalize",
+-      "sha": "ecd9f93317e41aa19487948ddab05f754556a990",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-07-integration-audit",
+-      "sha": "7a23a97622a8483f3fe6f1e6d37e06bcd933aa27",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-08-mxfp4-padding",
+-      "sha": "81b67d8f1736b387aff2f908a2cddf011803367a",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-09-parser-selftest",
+-      "sha": "127a3646891cdefc09b1d59cf1a7fb11e4f23f12",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/dsv41-v0520-10-routed-weight-abi",
+-      "sha": "6a899fd8296f3b8f6e1a41ace558ed0f7d8b5057",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/five-cvm-v0519-muse-nemotron-shared",
+-      "sha": "c977122cefeef784c33f0e11c2b841c8111e76cb",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/five-cvm-v0519-upstream",
+-      "sha": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-pr39704-medium-r7"
+-    },
+-    {
+-      "branch": "codex/glm52-structured-hardening-20260807-r2",
+-      "sha": "1c15c898856e35bf2bc932a4259c7422de903ce4",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-structured-hardening-20260807-r2"
+-    },
+-    {
+-      "branch": "codex/glm52-v0517-r7-safeunpickler-adminforce-20260812",
+-      "sha": "784fecf1a9c44a7f9ccaab0b5802ed14e4a2c2a3",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-v0517-r8-grammar-cache-failclosed-20260812"
+-    },
+-    {
+-      "branch": "codex/glm52-v0517-r8-grammar-cache-failclosed-20260812",
+-      "sha": "b14c6df53df7d03acddfdf52f76975928182e073",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-v0517-r8-grammar-cache-failclosed-20260812"
+-    },
+-    {
+-      "branch": "codex/glm52-v0517-structured-toolcall-r5-20260811",
+-      "sha": "2440f17ab55c0aed9d8e0469cb4feabf6441d85e",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-v0517-r8-grammar-cache-failclosed-20260812"
+-    },
+-    {
+-      "branch": "codex/glm52-v0517-toolcall-schema-coercion-r6-20260812",
+-      "sha": "0544418a81e0cfa138bff4203905a1ff4367a7e0",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-v0517-r8-grammar-cache-failclosed-20260812"
+-    },
+-    {
+-      "branch": "codex/glm53-bf16-production",
+-      "sha": "2253c598b2d4bfb736148b274bc841c72f9a90ca",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-bf16-production"
+-    },
+-    {
+-      "branch": "codex/glm53-cc-ipc-fusion-r2",
+-      "sha": "f11a9d585868a7a3ea0b3efb3d75159a1637a6f1",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-native-cli-r4"
+-    },
+-    {
+-      "branch": "codex/glm53-cc-ipc-lifecycle-r3",
+-      "sha": "883836dc7ae08c10b4295c1d489e5e6ac41f7141",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-native-cli-r4"
+-    },
+-    {
+-      "branch": "codex/glm53-glm47-unknown-stream-r16",
+-      "sha": "f9bd4aae3eae870a23c23cdb8415128c16547f24",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-glm47-unknown-stream-r16"
+-    },
+-    {
+-      "branch": "codex/glm53-mm-cache-mismatch-r9",
+-      "sha": "a652801e8fd8803b6009ccc298a7bb834fce8ac4",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-glm47-unknown-stream-r16"
+-    },
+-    {
+-      "branch": "codex/glm53-mm-embedding-isolation-r12",
+-      "sha": "26f67bd9fbbb07e4f14a66f64b0a623ef1c55cd9",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-glm47-unknown-stream-r16"
+-    },
+-    {
+-      "branch": "codex/glm53-mmcache-video-budget-r10",
+-      "sha": "276866ce25f3c9f387e3fe32750979e56f9253ee",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-glm47-unknown-stream-r16"
+-    },
+-    {
+-      "branch": "codex/glm53-mmcache-videobudget-badmedia-r11",
+-      "sha": "af261009d5e411a8dc74be62dbe2da193cf78403",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-glm47-unknown-stream-r16"
+-    },
+-    {
+-      "branch": "codex/glm53-native-cli-r4",
+-      "sha": "61cb9d21e16530469583b70991c0079f6045da0b",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-native-cli-r4"
+-    },
+-    {
+-      "branch": "codex/glm53-nvfp4-const-types-ccf9fe",
+-      "sha": "c1ff6d9b34a3c5257c8eaf5222e8a0b18c017517",
+-      "retained_ref": "refs/tags/archive/20260920/glm53-native-cli-r4"
+-    },
+-    {
+-      "branch": "codex/gptoss-qwen25-harmony-tool-fix-20260904",
+-      "sha": "dcb73950e7554bc35b4142db6787d9c95dfe1747",
+-      "retained_ref": "refs/tags/archive/20260920/gptoss-qwen25-harmony-tool-fix-20260904"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0001-prefill-seq-cap-r1",
+-      "sha": "37d88dc627e4ab0560bc24e2825b912ffc7f3a0e",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0002-chat-stream-close-r1",
+-      "sha": "6e6e743682adb5449c072879502afbf6bc41f0b5",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0003-request-owner-r1",
+-      "sha": "5256c3113810f97a156e9847b79f586009cb3c51",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0004-mamba-checkpoint-r1",
+-      "sha": "bda19ad5a7a3d6044d6825c4f492929ef7d85182",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0005-file-storage-ownership-r1",
+-      "sha": "cf08f42ebf1a0018d0e6768dd0b014ead9afdfed",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/kimi-k3-v0520-0006-restorable-prefix-r1",
+-      "sha": "530bf4c75e7fbad0010a47ccc51d968cc10c53c5",
+-      "retained_ref": "refs/remotes/phala/codex/kimi-k3-v0520-0007-chunk-write-through-r1"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-30b-sglang-r5-20260812",
+-      "sha": "6a58f6b029fe8bf98db79479eda76383e9aa23b4",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-llguidance-pinned-mask-r11-20260818",
+-      "sha": "5ca52b059830fa98dbb066818c4c128d072a3a50",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-openrouter-run-tests-r9-20260813",
+-      "sha": "fd5f91baf3754cbfd0c5905e2f0ec18e05235ad6",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-reasoning-usage-r8-20260813",
+-      "sha": "58f34bce3fba4e8a02f9c3951d4b93f922c275b6",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-response-format-34659-r6-20260813",
+-      "sha": "28fede103d201f2622f55f1737887933f9a00c35",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-structured-budget-r11-20260814",
+-      "sha": "fbadf3056c7b789c313083ffea8f781abec7b37f",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-structured-budget-r11-20260814"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-structured-default-r10-20260817",
+-      "sha": "06bbbdb60d681667b356a6202e49165763ed0e4c",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-glimmer-tool-required-34577-r7-20260813",
+-      "sha": "820245df819e659b00b58fe0205068f2a2313a2e",
+-      "retained_ref": "refs/tags/archive/20260920/muse-glimmer-llguidance-pinned-mask-r11-20260818"
+-    },
+-    {
+-      "branch": "codex/muse-nemotron-v0519-20260910",
+-      "sha": "0bac23f3947c21a9ca238a151f3c686737d6a5b6",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/muse-qwen25-v0518-flat-20260903",
+-      "sha": "4b46eba4d5f31d8e2b9a5d67827fe889227f2f27",
+-      "retained_ref": "refs/tags/archive/20260920/gptoss-qwen25-harmony-tool-fix-20260904"
+-    },
+-    {
+-      "branch": "codex/nemotron-qwen-v0519-20260909",
+-      "sha": "5a2055cf386e168140ce35fa53a030229659ea72",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/nemotron-soe-bounded-whitespace-20260911",
+-      "sha": "6ffbe968188a65a364a08f59005aa9b24d9fbf9f",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/nemotron-soe-r4-20260913",
+-      "sha": "4dbfdf98a4d5b1583cdabcf004c158bec3b7ddb7",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/nemotron-soe-r5-cancellation-20260914",
+-      "sha": "068de9fd66d1a682e9635c8bbe69d77989eea91e",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/nemotron-soe-r6-marlin-20260914",
+-      "sha": "6d3d45b55d9882e29daa4d2e11b44f5f2ae097ae",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/nemotron-soe-r7-grammar-20260914",
+-      "sha": "f97b21d20d9334484ea7a447876c433e2770ab07",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/nemotron-tools-schema-r3-20260912",
+-      "sha": "01433fd331495d42bb6dac05b5f77c29e46e941d",
+-      "retained_ref": "refs/tags/archive/20260920/archive-five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/qwen38-flash-next-phala-20260826",
+-      "sha": "ea52ea090009930ca3bf99d5e45128ea2b35564c",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-flash-next-phala-20260826"
+-    },
+-    {
+-      "branch": "codex/qwen38-medium-budget-20260910",
+-      "sha": "70bcd26c46213cf19dea4ae54e853a78d4240fc8",
+-      "retained_ref": "refs/tags/qwen38-27b-sglang-v0.5.19-phala-r4-17cb697778-20260914"
+-    },
+-    {
+-      "branch": "codex/qwen38-openrouter-unhide-r5",
+-      "sha": "6a8fe9acd1d844e0a01ed3187c864af6bb0e9510",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-openrouter-unhide-r6",
+-      "sha": "12c101c74af99956585adce6900556a18126df73",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-openrouter-unhide-r7",
+-      "sha": "d6f78861f397d07eb70ba11abdb654886039c8c2",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-openrouter-unhide-r8",
+-      "sha": "364dcd928b695e4add074ef5e1c271bbb24fafa0",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-r4-medium-null-20260914",
+-      "sha": "17cb69777837cf082db07730da765f617f56b4f1",
+-      "retained_ref": "refs/tags/qwen38-27b-sglang-v0.5.19-phala-r4-17cb697778-20260914"
+-    },
+-    {
+-      "branch": "codex/qwen38-r5-xml-schema-20260914",
+-      "sha": "1a56fbb0dc48ec3fb2b4b629fc4e74a3b57c639a",
+-      "retained_ref": "refs/tags/qwen38-27b-sglang-v0.5.19-phala-r5-1a56fbb0dc-20260914"
+-    },
+-    {
+-      "branch": "codex/qwen38-r14-reasoning-visibility",
+-      "sha": "ef132dcc710be48cb362794b47e3e19c6ddb56b5",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-r15-flat-official-base"
+-    },
+-    {
+-      "branch": "codex/qwen38-r15-flat-official-base",
+-      "sha": "98f40b15259586b7a818affa17890709e4cd84a1",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-r15-flat-official-base"
+-    },
+-    {
+-      "branch": "codex/qwen38-reasoning-budget-r12",
+-      "sha": "c0fc2cfcd2f9ea2c482155b2126f9036300a3813",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-sglang-r13-qwen-rebase",
+-      "sha": "a8e6b57b02d2d89d65f0ebd54360671ea2710485",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-r15-flat-official-base"
+-    },
+-    {
+-      "branch": "codex/qwen38-tool-structured-r4",
+-      "sha": "ee1e7c62e698c31158e5562c956fe8f1570c0941",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-reasoning-budget-r12"
+-    },
+-    {
+-      "branch": "codex/qwen38-v0.5.19-phala-r1",
+-      "sha": "3852646c7dfddcfc875bd4aabb8b5495f85352f6",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-v0519-null-schema-response-format-20260914"
+-    },
+-    {
+-      "branch": "codex/qwen38-v0519-null-schema-20260914",
+-      "sha": "5bb155635e814c7a94b4b5314f25d341243af1cd",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-v0519-null-schema-response-format-20260914"
+-    },
+-    {
+-      "branch": "codex/qwen38-v0519-null-schema-response-format-20260914",
+-      "sha": "fb70a0ac9fd5c9f85ef95917db5351e3b229f025",
+-      "retained_ref": "refs/tags/archive/20260920/qwen38-v0519-null-schema-response-format-20260914"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0001-control-correlation-r1",
+-      "sha": "fbd7f3c617461b0360f31fa519b3910be642377f",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0002-request-cleanup-r1",
+-      "sha": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0003-worker-extend-metadata-r1",
+-      "sha": "162970e3c9a66c97cc4bd788a45f67841d909cdb",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0004-identity-grammar-mask-r1",
+-      "sha": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0005-lifecycle-observation-r1",
+-      "sha": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0006-parallel-sampling-owners-r1",
+-      "sha": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0007-token-auth-redaction-r1",
+-      "sha": "0750682477e0c0aebcc055fc748a3b682b172af7",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0008-schema-normalization-r1",
+-      "sha": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0009-schema-argument-coercion-r1",
+-      "sha": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0010-xgrammar-schema-rejection-r1",
+-      "sha": "83b69e75e77b0db238afc9a3ad479d030bdef058",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0011-allowed-tool-subsets-r1",
+-      "sha": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0012-reasoning-visibility-bounds-r1",
+-      "sha": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0013-orphan-tool-deltas-r1",
+-      "sha": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0014-pre-mm-token-budget-r1",
+-      "sha": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0015-image-input-errors-r1",
+-      "sha": "6a673233e9f7bac86b130977a967bdb77926239a",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0016-watchdog-recovery-r1",
+-      "sha": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0017-qwen3_5-template-r1",
+-      "sha": "348b3066f561fcf9748bae2659327107f1002d18",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0018-qwen3_coder-parser-r1",
+-      "sha": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-0019-schema-reference-r1",
+-      "sha": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+-      "retained_ref": "refs/remotes/phala/codex/serving-v0520-0020-allowed-output-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-qwen38-governor-derived-r1",
+-      "sha": "cb88b5675f50a26090407f2dc155de8bdd0e42fd",
+-      "retained_ref": "refs/tags/archive/20260920/serving-v0520-qwen38-governor-derived-r1"
+-    },
+-    {
+-      "branch": "codex/serving-v0520-upstream-r1",
+-      "sha": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+-      "retained_ref": "refs/remotes/phala/codex/dsv41-protocol-wire-fidelity-20260920"
+-    },
+-    {
+-      "branch": "codex/v0.5.17-deepseek-qos-20260808",
+-      "sha": "550fcdf5e8616845562dd2cdfc9e722ec8e51903",
+-      "retained_ref": "refs/tags/archive/20260920/deepseek-v4-v0517-no33288-20260809-r2"
+-    },
+-    {
+-      "branch": "codex/v0.5.17-deepseek-v4-b-repair-20260816",
+-      "sha": "7423800c750affa9f6eccfee0c65ab70a21edd15",
+-      "retained_ref": "refs/tags/archive/20260920/v0.5.17-deepseek-v4-b-repair-20260816"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-0b21f9af0f2f",
+-      "sha": "ae13fff53317c8db42f2bda64b20a2fe280591e2",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-1d8e0a494693",
+-      "sha": "d668757274a2fee4f6e0f464b66066bdd7e28bc7",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-2a6898f3c996",
+-      "sha": "774c19539bd532090df7b12994b0c01a9b4fbf7a",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-2b2584575aa5",
+-      "sha": "788a8983750cd29aaee5f07ce5f937e7ae1e623f",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-4dbfdf98a4d5",
+-      "sha": "09361b0f5e5bc3d274f560f4f830e1205a200241",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-4dcc87bb9a11",
+-      "sha": "42cac46e56d82d587d9170614cae4c22a4cef164",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-5f9f960c28a1",
+-      "sha": "3c06073c3d0b3ada4ed413d25d543350386c3f72",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-6d3d45b55d98",
+-      "sha": "e27330c9722dcc837ea2452b5256d7a63f325b82",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-6d6103699ea4",
+-      "sha": "cd31831d54f55659b2c241d72ff098197f93d1a4",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-7aad27962602",
+-      "sha": "2ef83173697fb4993f636cffb63439ffef6f99c1",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-7dd1e4933610",
+-      "sha": "ea92ab4c5f7be0b8771b14bce9648951ec3a9832",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-7e4e69f5850f",
+-      "sha": "538e30d61375ddeacbf6f6eeefe4606bc14e3e02",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-17cb69777837",
+-      "sha": "bdec50dcf6f5aaf802f9962ecd0092fdd7eebdc6",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-29f0b04675b4",
+-      "sha": "82c5597d4182d86cac839c7869d52e8c8a381c9b",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-47d684c188fd",
+-      "sha": "b2d182e4d645bd1103f0734eeee3be5e39862bef",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-58c4ebfd0be5",
+-      "sha": "a1c281180bbcfee4e90081bc23aeb05c88e00314",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-61ab8c2adb9c",
+-      "sha": "b431a69ddfaf3b2f953b75215f0c6d1095fdb733",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-65a1b3f10fd0",
+-      "sha": "5a50cb42c0c1a167241fea7da8ca9d8209e65cf7",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-66c99cdb3906",
+-      "sha": "4aca87a34545a2aa6b92f1887893feb069c43e4e",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-068de9fd66d1",
+-      "sha": "c25af5ffb848ac4f4754117c039f9c5b0ea60c0e",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-70bcd26c4621",
+-      "sha": "d70dbf79e7fee22a1db15dbc5df25a1d7398a5d7",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-72d09f13ce3e",
+-      "sha": "3c716ec8e08e86fe6752a10de346172937c54337",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-79e215cde60b",
+-      "sha": "97882c58422b6253ae994aa39f9d34825b038654",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-82da9278e229",
+-      "sha": "d0b3e70cbc5ed3cc757d22e79ffa1fff28f58571",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-87d669f137cb",
+-      "sha": "d2334dc9c0ab93c6bc2b629ae12d4e26d4855b3f",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-93a9c811a9af",
+-      "sha": "010d115a7fa3bd926b6e693ae347fa8b43f2aa9f",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-96cd94344d57",
+-      "sha": "b85619fd04c3948469edb47aed99f400f49eae2b",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-223e067187a6",
+-      "sha": "4c25322c802951ad5fb6dc85906998f1a01efac2",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-405fa1086fdb",
+-      "sha": "287188b4806f33ff7e4702668a6836b5c5b2987d",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-752cbf71d2fc",
+-      "sha": "b33a5227201dccdfa45a62275661375ba83a7c40",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-889dac086485",
+-      "sha": "235ce2bcc40a5b4fc5e5e89758f8d5c0b3280fc7",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-01433fd33149",
+-      "sha": "c977122cefeef784c33f0e11c2b841c8111e76cb",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-2224d5c89971",
+-      "sha": "c2d241b80ef0e4e0e3aaf517567287368ac56fe3",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-5404f7600755",
+-      "sha": "81881bd7c1a0d867513dbef9b650656fdc1fa9e2",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-12593d20ead3",
+-      "sha": "0775c972ac7eb227e9fd852e79bfb78049439403",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-15966fe477b8",
+-      "sha": "711978779936d1918d038de8515e33f968cb5193",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-66599f0839c0",
+-      "sha": "cdea3b3c96d410e1e21e1013eed39a6388fc4f2e",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-69743bca633b",
+-      "sha": "6445186b9110860eca2836fc425d11e0e3ae9b32",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-119767a19ad0",
+-      "sha": "6c6cdbc75c7de2704141e6f2ab02cc9417fb02f0",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-3852646c7dfd",
+-      "sha": "cd196db84369a0de957bde93c31a44ee67adbc55",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-6928845df367",
+-      "sha": "88c70bc7f39f4037ff22bd4bc3e2918ac3058f04",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-7070885b6c51",
+-      "sha": "6d7a2dc746935afa3ccbcd5f0e9bb727f52bf84d",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-7984762a1925",
+-      "sha": "353a12fabcd98597a83f81885be52cba8c8e82f2",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-27487759d660",
+-      "sha": "7a6812c460d5941e3af0f2db3fd8771edf7ed438",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-a17450df7fe0",
+-      "sha": "96e883d1e796b0ad0e86af386eb113708760806a",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-ac6e301b2c45",
+-      "sha": "354b7c6c3f0acb2d2b0d54fdb09c4f908a7f4325",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-b07c939d0f55",
+-      "sha": "002883d4473bd4e0ffcfa557ac7e6c8723a7daf4",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-b69731aa5a70",
+-      "sha": "5e3f909d22f2e79ba7c7b85fa747f762109aab99",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-c0b47b4d9a80",
+-      "sha": "7846a276b049d34a96a51d4497d168a036ea1f40",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-c4afa9828243",
+-      "sha": "be0e34807dfb65dda85877bb7ca9ec17b7a05430",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-c5af5ab92184",
+-      "sha": "f6adaf751a72201a0280ae7ba6446791924e98e6",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-c5052c199e05",
+-      "sha": "b22934ade600777fe7b5cdf0f8a54ce6d4096651",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-cc713697cb1b",
+-      "sha": "28238ec4007a4aab04e61295031fdc4f00d3f47a",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-cfe6dbb89416",
+-      "sha": "9cfc79c4b497bc883132f5e2bcd5d012790f3d12",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-d61efbc4c4f5",
+-      "sha": "9b1b0671abe6d94ca05c2fdd341846f91fee23a0",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-d67e821bd5ea",
+-      "sha": "39eedc17eb620a3533ff4633141d73a0d5a89016",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-da8da902526c",
+-      "sha": "c30384652e5478f49c2a542af10c46989275fb8b",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-e26b9f4dae32",
+-      "sha": "6ecc100728f6b85500800bb683fd2f9743340569",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-ea31b4a3509f",
+-      "sha": "55c45e7499621201fbabe73e10ffdea401e0aa5e",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-ec6f1c44c8a7",
+-      "sha": "ac0834cff92db9cb4667e3d674bbd26ce28735a5",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-ed4266b4513f",
+-      "sha": "29aca0c55e2c7606260333bea0d667eea9695940",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-ed810727c954",
+-      "sha": "c8c1cfccdb7ee6bd251949b639880cc876fbabd0",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-eec6b2e25ee0",
+-      "sha": "a54a1d5bb9f4ee2034c281f99bab4391eb70c77c",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-muse"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-f65bb7af2030",
+-      "sha": "76d1c6ab2ebcb2d87b19e17c14b97dd2e9681a21",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-f97b21d20d93",
+-      "sha": "ee2f690dd80ab7deb722d1613b2c5cffbf78fea2",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-nemotron"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-f80677f937c5",
+-      "sha": "5a9b0690dddaf0100acabc1ed0eadccb0e0d1255",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen38-gemma4"
+-    },
+-    {
+-      "branch": "codex/v0519-repair-fdcb90492c7c",
+-      "sha": "772a63931ff9719eb5e9fd123f95984ab3c20de0",
+-      "retained_ref": "refs/remotes/phala/codex/five-cvm-v0519-qwen36"
+-    },
+-    {
+-      "branch": "phala/v0.5.16-glm52-structured-output-n2",
+-      "sha": "5af4ca2cfcbda98decae1a5c75e239a5e2f3790b",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-structured-hardening-20260807-r2"
+-    },
+-    {
+-      "branch": "phala/v0.5.16-glm52-structured-toolcall-20260805-r1",
+-      "sha": "075137f107a34e2605968f97a12c67fbd487e151",
+-      "retained_ref": "refs/tags/archive/20260920/glm52-structured-hardening-20260807-r2"
+-    }
+-  ]
+-}
+diff --git a/test/registered/observability/test_metrics.py b/test/registered/observability/test_metrics.py
+index 5105e54d401788f974d6a5f2b273041b54a7de10..6fccd067ba55193fd8b87840116772be48b99fbd 100644
+--- a/test/registered/observability/test_metrics.py
++++ b/test/registered/observability/test_metrics.py
+@@ -191,6 +191,10 @@ class TestEnableMetrics(CustomTestCase):
+             "sglang:kv_cache_memory_usage_gb",
+             "sglang:graph_memory_usage_gb",
+             "sglang:startup_available_gpu_memory_gb",
++            "sglang:gpu_free_memory_gb",
++            "sglang:gpu_free_memory_sample_timestamp_seconds",
++            "sglang:gpu_free_memory_sample_valid",
++            "sglang:gpu_free_memory_sample_interval_seconds",
+             "sglang:startup_time_seconds",
+             "sglang:startup_cuda_graph_time_seconds",
+             "sglang:scheduler_idle_seconds_total",
+@@ -241,6 +245,19 @@ class TestEnableMetrics(CustomTestCase):
+                 "sglang:startup_available_gpu_memory_gb",
+                 {"model_name": _MODEL_NAME},
+             ),
++            ("sglang:gpu_free_memory_gb", {"model_name": _MODEL_NAME}),
++            (
++                "sglang:gpu_free_memory_sample_timestamp_seconds",
++                {"model_name": _MODEL_NAME},
++            ),
++            (
++                "sglang:gpu_free_memory_sample_valid",
++                {"model_name": _MODEL_NAME},
++            ),
++            (
++                "sglang:gpu_free_memory_sample_interval_seconds",
++                {"model_name": _MODEL_NAME},
++            ),
+             ("sglang:startup_time_seconds", {"phase": "load_weight"}),
+             ("sglang:startup_time_seconds", {"phase": "kv_cache_allocation"}),
+             ("sglang:startup_time_seconds", {"phase": "scheduler_e2e"}),
+diff --git a/test/registered/unit/observability/test_governor_metrics.py b/test/registered/unit/observability/test_governor_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7b11b03eff1af8b62c63b17c38242e37fc2143a0
+--- /dev/null
++++ b/test/registered/unit/observability/test_governor_metrics.py
+@@ -0,0 +1,172 @@
++"""CPU checks for the native telemetry hook, with no model or GPU."""
++
++import builtins
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++from prometheus_client import CollectorRegistry, Gauge
++
++from pig_governor import Governor
++from pig_governor.sglang import SglangGovernor
++from sglang.srt.managers.scheduler_components.metrics_reporter import (
++    SchedulerMetricsReporter,
++)
++
++
++class GovernorMetricsHookTests(unittest.TestCase):
++    def setUp(self):
++        self.core = Governor(0, max_running_requests=4)
++        self.addCleanup(self.core.close)
++        self.governor = SglangGovernor(self.core, max_running_requests=4)
++        self.registry = CollectorRegistry()
++        self.labels = {"model_name": "fixed-model"}
++        self.reporter = object.__new__(SchedulerMetricsReporter)
++        self.reporter.current_scheduler_metrics_enabled = True
++        self.reporter.metrics_collector = MagicMock(labels=self.labels)
++        self.reporter.scheduler = SimpleNamespace(
++            governor=self.governor,
++            waiting_queue=[],
++            grammar_manager=[],
++            chunked_req=None,
++        )
++
++    def initialize(self):
++        with (
++            patch("prometheus_client.REGISTRY", self.registry),
++            patch(
++                "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic",
++                return_value=0,
++            ),
++        ):
++            self.reporter._init_governor_metrics()
++
++    def value(self, name):
++        return self.registry.get_sample_value("pig_governor_" + name, self.labels)
++
++    def test_current_native_count_includes_grammar_and_chunked_owner(self):
++        self.initialize()
++        self.reporter.scheduler.waiting_queue = [object(), object()]
++        self.reporter.scheduler.grammar_manager = [object()]
++        self.reporter.scheduler.chunked_req = object()
++        self.reporter._publish_governor_metrics(0.1)
++        self.assertEqual(self.value("waiting_requests"), 4)
++        self.assertEqual(self.value("waiting_valid"), 1)
++        self.reporter.scheduler.waiting_queue.clear()
++        self.reporter.scheduler.grammar_manager.clear()
++        self.reporter.scheduler.chunked_req = None
++        self.reporter._publish_governor_metrics(0.2)
++        self.assertEqual(self.value("waiting_requests"), 0)
++
++    def test_active_and_idle_time_accounting_publish_without_batch_logs(self):
++        self.initialize()
++        self.reporter.enable_metrics = True
++        self.reporter._scheduler_time_accounting = None
++        self.reporter.scheduler_stage_metrics = MagicMock()
++        self.reporter.scheduler_stage_metrics.drain.return_value = {}
++        self.reporter.scheduler.waiting_queue = [object()]
++        with patch(
++            "sglang.srt.managers.scheduler_components.metrics_reporter.time.monotonic_ns",
++            side_effect=[0, 10**9, 2 * 10**9],
++        ):
++            self.reporter.record_scheduler_active()
++            self.reporter.record_scheduler_active()
++            self.assertEqual(self.value("waiting_requests"), 1)
++            self.reporter.scheduler.waiting_queue.clear()
++            self.reporter.record_scheduler_idle()
++        self.assertEqual(self.value("waiting_requests"), 0)
++        self.reporter.metrics_collector.log_stats.assert_not_called()
++
++    def test_disabled_governor_remains_scrapeable(self):
++        self.reporter.scheduler.governor = None
++        self.initialize()
++        self.assertEqual(self.value("available"), 1)
++        self.assertEqual(self.value("enabled"), 0)
++        self.assertEqual(self.value("state_valid"), 1)
++
++    def test_reserved_extra_labels_do_not_break_legacy_scraping(self):
++        self.reporter.metrics_collector.labels = {
++            **self.labels,
++            "reason": "deployment-label",
++            "window": "deployment-label",
++        }
++        self.initialize()
++        self.assertEqual(self.value("available"), 1)
++        self.assertEqual(self.value("enabled"), 1)
++
++    def test_real_native_rejection_advances_exported_counter(self):
++        from array import array
++        from sglang.test.test_utils import maybe_stub_sgl_kernel
++
++        maybe_stub_sgl_kernel()
++        from sglang.srt.managers.schedule_batch import Req
++        from sglang.srt.managers.scheduler import Scheduler
++        from sglang.srt.sampling.sampling_params import SamplingParams
++
++        self.initialize()
++        self.governor.max_waiting = 0
++        scheduler = object.__new__(Scheduler)
++        scheduler.governor = self.governor
++        scheduler.waiting_queue = []
++        scheduler.grammar_manager = []
++        scheduler.chunked_req = None
++        sent = []
++        scheduler.ipc_channels = SimpleNamespace(
++            send_to_tokenizer=SimpleNamespace(
++                send_output=lambda abort, req: sent.append(abort),
++            )
++        )
++        params = SamplingParams(max_new_tokens=1)
++        params.normalize(None)
++        req = Req(
++            rid="private-request",
++            origin_input_text="",
++            origin_input_ids=array("q", [1]),
++            sampling_params=params,
++        )
++        req.time_stats.trace_ctx = SimpleNamespace(abort=lambda **kwargs: None)
++        with (
++            patch("sglang.srt.managers.scheduler.time.monotonic", return_value=0.1),
++            patch(
++                "sglang.srt.managers.scheduler.get_serving",
++                return_value=SimpleNamespace(weight_version="test"),
++            ),
++        ):
++            self.assertTrue(scheduler._abort_on_governor_admission(req))
++        self.assertEqual(sent[0].finished_reason["status_code"], 429)
++        self.reporter._publish_governor_metrics(0.2)
++        self.assertEqual(self.value("admission_rejects_total"), 1)
++        self.assertEqual(
++            self.registry.get_sample_value(
++                "pig_governor_admission_rejections_total",
++                {**self.labels, "reason": "waiting_limit"},
++            ),
++            1,
++        )
++        self.assertEqual(scheduler.waiting_queue, [])
++
++    def test_missing_legacy_metrics_module_exports_explicit_unavailability(self):
++        original_import = builtins.__import__
++
++        def legacy_import(name, *args, **kwargs):
++            if name == "pig_governor.metrics":
++                raise ModuleNotFoundError("Legacy package", name=name)
++            return original_import(name, *args, **kwargs)
++
++        with (
++            patch("builtins.__import__", side_effect=legacy_import),
++            patch(
++                "prometheus_client.Gauge",
++                side_effect=lambda *args, **kwargs: Gauge(
++                    *args, **kwargs, registry=self.registry
++                ),
++            ),
++        ):
++            self.reporter._init_governor_metrics()
++        self.assertEqual(self.value("available"), 0)
++        self.assertEqual(self.value("enabled"), 1)
++        self.reporter._publish_governor_metrics(0.1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/observability/test_gpu_memory_metrics.py b/test/registered/unit/observability/test_gpu_memory_metrics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e348c5aa31f5ef700511a2199efa4df921217bba
+--- /dev/null
++++ b/test/registered/unit/observability/test_gpu_memory_metrics.py
+@@ -0,0 +1,183 @@
++"""CPU tests for sampled device-memory observability."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import math
++import unittest
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
++
++from sglang.srt.observability.metrics_collector import _GpuMemorySampler
++from sglang.srt.platforms.cpu import CpuSRTPlatform
++
++
++class _BoundRecordingGauge:
++    def __init__(self, gauge, labels):
++        self.gauge = gauge
++        self.labels = labels
++
++    def set(self, value):
++        self.gauge.values.append((self.labels, value))
++
++
++class _RecordingGauge:
++    def __init__(self, *, name, documentation, labelnames, **kwargs):
++        self.name = name
++        self.documentation = documentation
++        self.labelnames = tuple(labelnames)
++        self.values = []
++
++    def labels(self, **labels):
++        return _BoundRecordingGauge(self, labels)
++
++
++def _make_sampler(interval_seconds=1.0):
++    return _GpuMemorySampler(
++        labels={"model_name": "cpu-test", "tp_rank": 0},
++        gauge_cls=_RecordingGauge,
++        interval_seconds=interval_seconds,
++    )
++
++
++class TestGpuMemorySampler(unittest.TestCase):
++    def test_cpu_platform_does_not_report_host_memory_as_gpu(self):
++        sampler = _make_sampler()
++        cpu_platform = CpuSRTPlatform()
++        with (
++            patch(
++                "sglang.srt.observability.metrics_collector.current_platform",
++                cpu_platform,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.monotonic",
++                return_value=10.0,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.time",
++                return_value=1_700_000_010.25,
++            ),
++            patch.object(cpu_platform, "empty_cache", side_effect=AssertionError),
++        ):
++            self.assertFalse(sampler.sample_if_due(device_id=0))
++
++        self.assertTrue(math.isnan(sampler.free_memory_gb.values[-1][1]))
++        self.assertEqual(
++            sampler.sample_timestamp_seconds.values[-1][1], 1_700_000_010.25
++        )
++        self.assertEqual(sampler.sample_valid.values[-1][1], 0.0)
++        self.assertEqual(sampler.sample_interval_seconds.values[-1][1], 1.0)
++
++    def test_sampling_interval_throttles_platform_queries(self):
++        sampler = _make_sampler(interval_seconds=2.0)
++        get_available_memory = Mock(
++            side_effect=[
++                (8 * (1 << 30), 16 * (1 << 30)),
++                (6 * (1 << 30), 16 * (1 << 30)),
++            ]
++        )
++        platform = SimpleNamespace(
++            device_name="test-gpu",
++            is_cuda_alike=lambda: True,
++            get_available_memory=get_available_memory,
++        )
++        with (
++            patch(
++                "sglang.srt.observability.metrics_collector.current_platform",
++                platform,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.monotonic",
++                side_effect=[10.0, 11.0, 12.0],
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.time",
++                side_effect=[100.0, 101.0],
++            ),
++        ):
++            self.assertTrue(sampler.sample_if_due(device_id=3))
++            self.assertFalse(sampler.sample_if_due(device_id=3))
++            self.assertTrue(sampler.sample_if_due(device_id=3))
++
++        self.assertEqual(sampler.free_memory_gb.values[-1][1], 6.0)
++        self.assertEqual(get_available_memory.call_count, 2)
++        get_available_memory.assert_called_with(3)
++
++    def test_query_failure_clears_current_value_and_marks_sample_invalid(self):
++        sampler = _make_sampler()
++        successful_platform = SimpleNamespace(
++            device_name="test-gpu",
++            is_cuda_alike=lambda: True,
++            get_available_memory=lambda _: (4, 8),
++        )
++        with (
++            patch(
++                "sglang.srt.observability.metrics_collector.current_platform",
++                successful_platform,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.monotonic",
++                return_value=10.0,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.time",
++                return_value=100.0,
++            ),
++        ):
++            self.assertTrue(sampler.sample_if_due(device_id=0))
++
++        failing_platform = SimpleNamespace(
++            device_name="test-gpu",
++            is_cuda_alike=lambda: True,
++            get_available_memory=Mock(side_effect=RuntimeError("probe")),
++        )
++        with (
++            patch(
++                "sglang.srt.observability.metrics_collector.current_platform",
++                failing_platform,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.monotonic",
++                return_value=11.0,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.time",
++                return_value=101.0,
++            ),
++        ):
++            self.assertFalse(sampler.sample_if_due(device_id=0))
++
++        self.assertTrue(math.isnan(sampler.free_memory_gb.values[-1][1]))
++        self.assertEqual(sampler.sample_timestamp_seconds.values[-1][1], 101.0)
++        self.assertEqual(sampler.sample_valid.values[-1][1], 0.0)
++
++    def test_invalid_platform_values_are_not_published_as_current(self):
++        sampler = _make_sampler(interval_seconds=0.0)
++        platform = SimpleNamespace(
++            device_name="test-gpu",
++            is_cuda_alike=lambda: True,
++            get_available_memory=lambda _: (9, 8),
++        )
++        with (
++            patch(
++                "sglang.srt.observability.metrics_collector.current_platform",
++                platform,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.monotonic",
++                return_value=10.0,
++            ),
++            patch(
++                "sglang.srt.observability.metrics_collector.time.time",
++                return_value=100.0,
++            ),
++        ):
++            self.assertFalse(sampler.sample_if_due(device_id=0))
++
++        self.assertTrue(math.isnan(sampler.free_memory_gb.values[-1][1]))
++        self.assertEqual(sampler.sample_valid.values[-1][1], 0.0)
++
++
++if __name__ == "__main__":
++    unittest.main()

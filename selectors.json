@@ -1623,9 +1623,9 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d5ed082bd535bebb8d4695952e4295da1ea72ae0",
-      "fork_tree": "5b63a9bb0f081ebdad12708d40e26dbe38a1c59c",
-      "fork_branch": "codex/glm102-nixl-format-20260928",
+      "fork_commit": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
+      "fork_tree": "d7ff183e8134d531091946794b3554f047d987b6",
+      "fork_branch": "codex/dsv4-schema-bridge-p4-20260928",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
       "source_range": "4281309187007db579a2195f40adfd4baa538528..d5ed082bd535bebb8d4695952e4295da1ea72ae0",
       "replay_mode": "exact",
@@ -2355,11 +2355,25 @@
           "source_commit": "d5ed082bd535bebb8d4695952e4295da1ea72ae0",
           "source_parent": "133c73fa3d0d45f642762b54a21cc617e61ac16d",
           "sha256": "17217f37c00c264ebe06a09d8c7baeda72c77442b6315afbea7340ca4364f459"
+        },
+        {
+          "id": "0034-p4-combined-telemetry-memory-model-validation",
+          "path": "patches/common/0034-p4-combined-telemetry-memory-model-validation.patch",
+          "source_range": "d5ed082bd535bebb8d4695952e4295da1ea72ae0..077ecbad5d80a56a64ba5670ae8a218f2e25fa7f",
+          "sha256": "37c21dcc7998ef7c6ed7f59344a32e4d80e11a8c7f649d0630356534edb88897"
+        },
+        {
+          "id": "0035-dsv4-response-format-bridge",
+          "path": "patches/models/deepseek/0035-dsv4-response-format-bridge.patch",
+          "source_range": "077ecbad5d80a56a64ba5670ae8a218f2e25fa7f..2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
+          "sha256": "e1ed16a59ed4ac912a0b5b1ef18b19b4831fce584cbff361c38db944917f096b",
+          "source_commit": "2263a57340c4c6f9e3f6a2a388c7c161d88670a0",
+          "source_parent": "077ecbad5d80a56a64ba5670ae8a218f2e25fa7f"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Governor R6 source candidate with GLM NIXL format follow-up; GPU qualification pending",
+      "status": "P4 combined source plus DSV4 schema bridge; experimental image awaiting runtime qualification",
       "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate"
     }
   }
