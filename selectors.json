@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "046599c305e80eac4f8aee2697e1f33fffeb2f0a",
-      "fork_tree": "b6463e1b84cf38f9ab730755848cb687ff7b3620",
-      "fork_branch": "codex/shared-owner-integration-20260929",
+      "fork_commit": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
+      "fork_tree": "aec424c6f31cf413a0a59494577343d3af0527de",
+      "fork_branch": "codex/r5-cold-mainline-candidate-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..046599c305e80eac4f8aee2697e1f33fffeb2f0a",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..d09ea8f5611e18c586a225dbf6862908139b7a0c",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2622,11 +2622,46 @@
           "source_commit": "046599c305e80eac4f8aee2697e1f33fffeb2f0a",
           "source_parent": "a59bb8e0829e3200ea6d05359be7c7c28ac788ea",
           "sha256": "88406bc2b05d2d2287edecff5d7f1c89ba83b03af575e847e7f9a40e520889ed"
+        },
+        {
+          "id": "0072-cold-shared-read-bypass",
+          "path": "patches/common/0072-cold-shared-read-bypass.patch",
+          "source_commit": "f1f3555b644199f1064d37c09cc2e975c2e552ca",
+          "source_parent": "046599c305e80eac4f8aee2697e1f33fffeb2f0a",
+          "sha256": "8d8c3254f35152673f82bb7e7bdd0a8c7f779deb748966fdd784d920a0378966"
+        },
+        {
+          "id": "0073-reconcile-r5-installed-srt-baseline",
+          "path": "patches/common/0073-reconcile-r5-installed-srt-baseline.patch",
+          "source_commit": "54e2872e14916cbdb524a267f8fe065b70f0dfdc",
+          "source_parent": "f1f3555b644199f1064d37c09cc2e975c2e552ca",
+          "sha256": "ec63d8a57970e4d0014514898d2dfd8d336c0cb51e1aae58182db4b61763b64e"
+        },
+        {
+          "id": "0074-explicit-cold-cache-zero-counters",
+          "path": "patches/common/0074-explicit-cold-cache-zero-counters.patch",
+          "source_commit": "eae54a3c24b76fcaa92954337646de159cc3d609",
+          "source_parent": "54e2872e14916cbdb524a267f8fe065b70f0dfdc",
+          "sha256": "e5e958078c5c36ef01a26175fc18e81691a006f652d92cfdfcc4e960db164512"
+        },
+        {
+          "id": "0075-format-r5-cold-source",
+          "path": "patches/common/0075-format-r5-cold-source.patch",
+          "source_commit": "5ba30265ccf108fc27f077e6c73df0d03701d1d4",
+          "source_parent": "eae54a3c24b76fcaa92954337646de159cc3d609",
+          "sha256": "41ee7f95eec77a279a985eebe14dd3fac6e0f9d1559772255d9a3862b6d93fab"
+        },
+        {
+          "id": "0076-guard-abort-without-cache-handle",
+          "path": "patches/common/0076-guard-abort-without-cache-handle.patch",
+          "source_commit": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
+          "source_parent": "5ba30265ccf108fc27f077e6c73df0d03701d1d4",
+          "sha256": "f91906b7efcecff6b7f31a04192e7f95a79a659d5887c364b4b18675f5dbabd1"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Shared owner control, host pool and exact read-only seed schema; finite two-operation seed capture; explicit nullable revision and field-specific clear identities; source qualification",
+      "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with exact GET trace and explicit zero cache counters; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

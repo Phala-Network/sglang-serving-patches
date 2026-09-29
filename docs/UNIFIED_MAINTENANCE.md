@@ -9,8 +9,11 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `046599c305e80eac4f8aee2697e1f33fffeb2f0a`; tree `b6463e1b84cf38f9ab730755848cb687ff7b3620`.
-- Ordered engine stack: 31 protected steps plus 147 successor steps.
+- Active engine: `d09ea8f5611e18c586a225dbf6862908139b7a0c`; tree `aec424c6f31cf413a0a59494577343d3af0527de`.
+- Ordered engine stack: 31 protected steps plus 152 successor steps.
+- R5 cold requests can opt into a request-scoped shared-read bypass with
+  correlated Mooncake GET-call tracing and explicit device/host/storage cache
+  counters, including zeros. Ordinary requests retain their default behavior.
 - Host state occupancy reuses a uniquely declared SWA owner snapshot with matching
   pool geometry, retaining unknown/incomplete states. Affected source checks cover
   hostpool15/schema5/callsite10/two-operation21/consumer8/reader15; actual constructor and

@@ -1,3 +1,6 @@
 * text=auto eol=lf
 # Unified diffs contain intentional blank context lines.
 *.patch -whitespace
+# These exports contain CRLF source context that is part of their verified bytes.
+patches/common/0073-reconcile-r5-installed-srt-baseline.patch -text
+patches/common/0075-format-r5-cold-source.patch -text
