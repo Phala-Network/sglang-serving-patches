@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "7602a75c7f343e2121cfe5d0e965560b1d1ccd2c",
-      "fork_tree": "c01117b3787b7c3cc05ea8c53f7f3288085b575d",
-      "fork_branch": "codex/ds101-include-reasoning-20260929",
+      "fork_commit": "2a4015cabcc274629126051940528eb83707f428",
+      "fork_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae",
+      "fork_branch": "codex/shared-startup-gov0210-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..7602a75c7f343e2121cfe5d0e965560b1d1ccd2c",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..2a4015cabcc274629126051940528eb83707f428",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2445,17 +2445,38 @@
           "source_commit": "7602a75c7f343e2121cfe5d0e965560b1d1ccd2c",
           "source_parent": "258a9d88816ad55783d0458c094a4d4e8d4a3605",
           "sha256": "9ba4a0b85cf68e07a5b7bb42fa9b7754df1ab268a73c90e626bce502ab3f9cff"
+        },
+        {
+          "id": "0047-shared-hicache-startup-privacy",
+          "path": "patches/common/0047-shared-hicache-startup-privacy.patch",
+          "source_commit": "4f3fcf34741e225d8475b25488ff192a515c72b8",
+          "source_parent": "7602a75c7f343e2121cfe5d0e965560b1d1ccd2c",
+          "sha256": "f93cd14c14baf8b41154a76d4769d1b804fcd03a95693c3894e9bac94827ba3c"
+        },
+        {
+          "id": "0048-shared-startup-formatting",
+          "path": "patches/common/0048-shared-startup-formatting.patch",
+          "source_commit": "d7bc0510efbb1a3482b47a2b67b0f394c9fec028",
+          "source_parent": "4f3fcf34741e225d8475b25488ff192a515c72b8",
+          "sha256": "eb74ffb9511851a3791a1b34b5961b099d4f0ef4400c6b8d3bc6152cc69e1b9e"
+        },
+        {
+          "id": "0049-shared-startup-cpu-registration",
+          "path": "patches/common/0049-shared-startup-cpu-registration.patch",
+          "source_commit": "2a4015cabcc274629126051940528eb83707f428",
+          "source_parent": "d7bc0510efbb1a3482b47a2b67b0f394c9fec028",
+          "sha256": "af8909cf6da29ec42b1c2ab80aa7374ec33543e88f7df3dad0789a95f81f076b"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Gateway preserves explicit include_reasoning false/true and omission through pinned vendored protocol; PD room ownership, Governor 0.2.9/ABI5 and existing source retained; installed-image and GPU gates separate",
-      "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
+      "status": "Shared HiCache config validation, DSV4 startup safety and sanitized exception diagnostics; Governor 0.2.10/ABI5 runtime pin; source-only qualification, installed-image and GPU gates separate",
+      "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
-        "commit": "a68cc44ea0ebb65787bce1b38352d02b82ec1252",
-        "tree": "229cd4ef60cd899a35e59eff7894ae4ffa553d8d",
-        "version": "0.2.9",
+        "commit": "f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155",
+        "tree": "36913b4c15cbc0a7202d875588af2a8344758235",
+        "version": "0.2.10",
         "abi": 5
       }
     }

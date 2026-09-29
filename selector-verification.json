@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "7602a75c7f343e2121cfe5d0e965560b1d1ccd2c",
-      "fork_tree": "c01117b3787b7c3cc05ea8c53f7f3288085b575d",
-      "fork_branch": "codex/ds101-include-reasoning-20260929",
-      "patch_count": 122,
+      "fork_commit": "2a4015cabcc274629126051940528eb83707f428",
+      "fork_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae",
+      "fork_branch": "codex/shared-startup-gov0210-20260929",
+      "patch_count": 125,
       "replay_mode": "exact",
-      "status": "Gateway preserves explicit include_reasoning false/true and omission through pinned vendored protocol; PD room ownership, Governor 0.2.9/ABI5 and existing source retained; installed-image and GPU gates separate",
-      "validation_boundary": "Exact source replay and focused source/GPU tests; final installed image and real-model acceptance remain separate",
-      "replay_tree": "c01117b3787b7c3cc05ea8c53f7f3288085b575d"
+      "status": "Shared HiCache config validation, DSV4 startup safety and sanitized exception diagnostics; Governor 0.2.10/ABI5 runtime pin; source-only qualification, installed-image and GPU gates separate",
+      "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
+      "replay_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

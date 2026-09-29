@@ -1,0 +1,149 @@
+diff --git a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+index a4d015d25e1bfac853624a8ccb76e92022b829d4..836f7632d887b12e7d89206b6007263e5dd0061b 100644
+--- a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
++++ b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
+ from weakref import WeakKeyDictionary as WeakKeyDict
+ 
+ import torch
++
+ from sglang.srt.disaggregation.kv_events import OffloadedState
+ from sglang.srt.environ import envs
+ from sglang.srt.managers.cache_controller import HiCacheController
+@@ -125,8 +126,7 @@ class DecodeKVCacheOffloadManager:
+                 # page still occupies one page in the non-unified DSV4 pool.
+                 window = max(
+                     self.page_size,
+-                    ((window + self.page_size - 1) // self.page_size)
+-                    * self.page_size,
++                    ((window + self.page_size - 1) // self.page_size) * self.page_size,
+                 )
+             if not getattr(kv_cache, "_unified_kv", False) and (
+                 window is None or self.offload_stride > window
+diff --git a/python/sglang/srt/mem_cache/hiradix_cache.py b/python/sglang/srt/mem_cache/hiradix_cache.py
+index 27d5d001237c5ea67f09b350d6d334cdd2c920c3..5a8fcd25b7c47c7ac267a066ad38861229d273af 100644
+--- a/python/sglang/srt/mem_cache/hiradix_cache.py
++++ b/python/sglang/srt/mem_cache/hiradix_cache.py
+@@ -9,6 +9,7 @@ import time
+ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+ 
+ import torch
++
+ from sglang.srt.disaggregation.kv_events import StorageMedium
+ from sglang.srt.distributed.communication_tags import P2PTag
+ from sglang.srt.managers.cache_controller import HiCacheController, PrefetchOperation
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+index bed2c226013dbf47fa184d334e71eb279f0ee9c7..8a3994d9784667378679ad733bc4977bbe579d93 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+@@ -10,14 +10,17 @@ from queue import Empty, Queue
+ from typing import TYPE_CHECKING, Any, Callable, List, Optional
+ 
+ import torch
++
+ from sglang.srt.managers.cache_controller import (
+     CacheOperation,
+-    LayerDoneCounter,
+-    PrefetchAck,
+ )
+ from sglang.srt.managers.cache_controller import (
+     HiCacheController as BaseHiCacheController,
+ )
++from sglang.srt.managers.cache_controller import (
++    LayerDoneCounter,
++    PrefetchAck,
++)
+ from sglang.srt.managers.cache_controller import (
+     StorageOperation as BaseStorageOperation,
+ )
+diff --git a/python/sglang/utils.py b/python/sglang/utils.py
+index d64b527704796907ad102e90b35d37748e1764a0..51a8be28ac37a63bc00a7fc5d17e5c7cf3b3167d 100644
+--- a/python/sglang/utils.py
++++ b/python/sglang/utils.py
+@@ -132,7 +132,9 @@ def get_exception_diagnostic(max_frames: int = 8, max_chain: int = 4) -> dict:
+     exceptions = []
+     seen: set[int] = set()
+     current = value
+-    while current is not None and id(current) not in seen and len(exceptions) < max_chain:
++    while (
++        current is not None and id(current) not in seen and len(exceptions) < max_chain
++    ):
+         seen.add(id(current))
+         frames = [
+             {
+diff --git a/test/registered/unit/disaggregation/test_dsv4_decode_offload.py b/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
+index cc6381b19e827ddfa33ac07784d97c3d85ac5c0b..d18ad693325598b7980f31fb2bb7c8c9c7921ccf 100644
+--- a/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
++++ b/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
+@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
+ from weakref import WeakKeyDictionary
+ 
+ import torch
++
+ from sglang.srt.disaggregation.decode_kvcache_offload_manager import (
+     DecodeKVCacheOffloadManager,
+ )
+@@ -210,7 +211,10 @@ class TestDSV4DecodeOffload(unittest.TestCase):
+                 ),
+                 patch(
+                     module + "build_deepseek_v4_hicache_stack",
+-                    return_value=(fixture.decode_host_mem_pool, fixture.cache_controller),
++                    return_value=(
++                        fixture.decode_host_mem_pool,
++                        fixture.cache_controller,
++                    ),
+                 ) as build,
+             ):
+                 manager = DecodeKVCacheOffloadManager(
+@@ -241,7 +245,8 @@ class TestDSV4DecodeOffload(unittest.TestCase):
+             )
+             with (
+                 patch(
+-                    module + "get_schedule", return_value=SimpleNamespace(page_size=PAGE)
++                    module + "get_schedule",
++                    return_value=SimpleNamespace(page_size=PAGE),
+                 ),
+                 patch(
+                     module + "get_memory",
+@@ -257,7 +262,10 @@ class TestDSV4DecodeOffload(unittest.TestCase):
+                 patch(module + "torch.distributed.get_world_size", return_value=1),
+                 patch(
+                     module + "build_deepseek_v4_hicache_stack",
+-                    return_value=(fixture.decode_host_mem_pool, fixture.cache_controller),
++                    return_value=(
++                        fixture.decode_host_mem_pool,
++                        fixture.cache_controller,
++                    ),
+                 ) as build,
+             ):
+                 manager = DecodeKVCacheOffloadManager(
+diff --git a/test/registered/unit/mem_cache/test_storage_attachment_privacy.py b/test/registered/unit/mem_cache/test_storage_attachment_privacy.py
+index b7d37bfea05d1366faaa0831c89b94469910d1a2..1bc920721dd72c8b01e3c838f1cf88f247fb4da6 100644
+--- a/test/registered/unit/mem_cache/test_storage_attachment_privacy.py
++++ b/test/registered/unit/mem_cache/test_storage_attachment_privacy.py
+@@ -4,8 +4,8 @@ import unittest
+ from types import SimpleNamespace
+ from unittest.mock import patch
+ 
+-from sglang.srt.mem_cache.unified_cache.storage_attachment import StorageAttachment
+ from sglang.srt.mem_cache.hiradix_cache import HiRadixCache
++from sglang.srt.mem_cache.unified_cache.storage_attachment import StorageAttachment
+ 
+ 
+ class TestStorageAttachmentPrivacy(unittest.TestCase):
+@@ -13,9 +13,12 @@ class TestStorageAttachmentPrivacy(unittest.TestCase):
+         secret = "SENTINEL_STORAGE_CONFIG_SECRET"
+         cache = SimpleNamespace(cache_controller=object(), enable_storage=False)
+         attachment = StorageAttachment(cache)
+-        with patch.object(attachment, "_apply_policies"), patch(
+-            "sglang.srt.mem_cache.unified_cache.storage_attachment.HybridCacheController.parse_storage_backend_extra_config",
+-            side_effect=ValueError(secret),
++        with (
++            patch.object(attachment, "_apply_policies"),
++            patch(
++                "sglang.srt.mem_cache.unified_cache.storage_attachment.HybridCacheController.parse_storage_backend_extra_config",
++                side_effect=ValueError(secret),
++            ),
+         ):
+             ok, message = attachment.attach(
+                 "mooncake", storage_backend_extra_config_json=secret

@@ -9,13 +9,15 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `7602a75c7f343e2121cfe5d0e965560b1d1ccd2c`; tree `c01117b3787b7c3cc05ea8c53f7f3288085b575d`.
-- Ordered engine stack: 31 protected steps plus 122 successor steps.
+- Active engine: `2a4015cabcc274629126051940528eb83707f428`; tree `b10d279da1e9ea7af55da4b91a615063b550bfae`.
+- Ordered engine stack: 31 protected steps plus 125 successor steps.
 - Gateway request forwarding preserves explicit `include_reasoning` values and
   omission with vendored `openai-protocol` 1.0.0 and frozen Cargo locks. The focused
   CPU harness covers serialization and loopback HTTP forwarding, not a whole
   gateway process; installed wheel and standalone binary checks remain required.
-- Runtime Governor: `a68cc44ea0ebb65787bce1b38352d02b82ec1252`, version 0.2.9, ABI5.
+- Shared startup repair validates HiCache storage configuration, keeps DSV4 decode
+  startup safe, and sanitizes shared loader/storage exception diagnostics.
+- Runtime Governor: `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10, ABI5.
 - New source: trusted internal health identity and learning isolation; DSV4 decode
   hybrid HiCache snapshots and sidecar completeness; default-off
   `SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS=1` logs submitted PD batch bytes,
