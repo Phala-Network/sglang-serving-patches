@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "28dc30eb9048a5bed672827094f157896bca6765",
-      "fork_tree": "8dd46ac9ea3a0379e78dc88609115c530277285e",
+      "fork_commit": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
+      "fork_tree": "ae44fce033b1736adf1212baf154b04dbdcae82c",
       "fork_branch": "codex/r5-cold-pd-router-20260930",
-      "patch_count": 155,
+      "patch_count": 157,
       "replay_mode": "exact",
       "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with router forwarding and explicit zero cache counters; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "8dd46ac9ea3a0379e78dc88609115c530277285e"
+      "replay_tree": "ae44fce033b1736adf1212baf154b04dbdcae82c"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

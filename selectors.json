@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "28dc30eb9048a5bed672827094f157896bca6765",
-      "fork_tree": "8dd46ac9ea3a0379e78dc88609115c530277285e",
+      "fork_commit": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
+      "fork_tree": "ae44fce033b1736adf1212baf154b04dbdcae82c",
       "fork_branch": "codex/r5-cold-pd-router-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..28dc30eb9048a5bed672827094f157896bca6765",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2678,6 +2678,20 @@
           "source_commit": "28dc30eb9048a5bed672827094f157896bca6765",
           "source_parent": "02d395e257f891d060b9290f8aa826edc8744568",
           "sha256": "302879efca9f1d44a30a6fae4cbe581d9a3fdf68ea6f49065b4d989a21266e21"
+        },
+        {
+          "id": "0080-compare-forwarded-worker-header-as-text",
+          "path": "patches/common/0080-compare-forwarded-worker-header-as-text.patch",
+          "source_commit": "3a8083b2fbbf10e7095fc7e1851f7c75e577a24d",
+          "source_parent": "28dc30eb9048a5bed672827094f157896bca6765",
+          "sha256": "7a53ae2f6f54b14ae5b7155901cde26290ba31fdc23f6972bc657ad0304e0f56"
+        },
+        {
+          "id": "0081-use-correlation-header-in-installed-router-fixture",
+          "path": "patches/common/0081-use-correlation-header-in-installed-router-fixture.patch",
+          "source_commit": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
+          "source_parent": "3a8083b2fbbf10e7095fc7e1851f7c75e577a24d",
+          "sha256": "9304560da6dfc5e3c9e61a132ed518d91e6ef831625da6a9bdded83972245a68"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
