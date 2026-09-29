@@ -20,8 +20,8 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `246a60ac5115102fe06f0ec38b144ef05fa0f139`, tree
-`9a60fec4d4a6b2ab2af1ae28fc54a43211519b31`: 31 protected steps plus 132 successor patches.
+The active selector binds engine `111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180`, tree
+`e4e7befa7db7a2a0e957601dfb8cdd775247125b`: 31 protected steps plus 134 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
@@ -45,7 +45,7 @@ historical coverage boundaries remain in the linked maintenance records.
 
 The [independent Mooncake manifest](native/mooncake/manifest.json) pins its public
 v0.3.13 base, complete patch hash and reproduced tree. CI replays that native
-patch independently of the 163-step engine stack. Native source `1df0440` adds
+patch independently of the 165-step engine stack. Native source `1df0440` adds
 independent owner-drain and backend capture windows. Its full CUDA wheel and
 installed native API checks are required before publishing the shared owner image.
 

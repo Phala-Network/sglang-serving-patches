@@ -1,0 +1,39 @@
+diff --git a/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py b/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
+index 0cd4029c59be5f64d7bd7beee1c5a78269f2d758..5963c7fab7b339d44db708a8bcbce54124d9acfc 100644
+--- a/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
++++ b/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
+@@ -3,8 +3,11 @@
+ import ast
+ import concurrent.futures
+ import hashlib
++import importlib.util
+ import os
++import sys
+ import threading
++import types
+ import unittest
+ from pathlib import Path
+ from types import SimpleNamespace as NS
+@@ -16,6 +19,22 @@ ROOT = Path(__file__).resolve().parents[3]
+ SOURCE = ROOT / "python/sglang/srt/disaggregation/mooncake/conn.py"
+ 
+ 
++if importlib.util.find_spec("sglang") is None:
++    for package in (
++        "sglang",
++        "sglang.srt",
++        "sglang.srt.disaggregation",
++        "sglang.srt.disaggregation.mooncake",
++        "sglang.srt.mem_cache",
++    ):
++        source_package = types.ModuleType(package)
++        source_package.__path__ = [str(ROOT / "python" / package.replace(".", "/"))]
++        source_package.__spec__ = importlib.util.spec_from_loader(
++            package, loader=None, is_package=True
++        )
++        sys.modules[package] = source_package
++
++
+ def load_manager(namespace):
+     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+     owner = next(
