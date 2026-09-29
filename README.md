@@ -20,8 +20,8 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180`, tree
-`e4e7befa7db7a2a0e957601dfb8cdd775247125b`: 31 protected steps plus 134 successor patches.
+The active selector binds engine `2362426572428bf1d0fc2ac9486700925cc68708`, tree
+`860bcdef270ca25bb743fe12691f6a4978acf715`: 31 protected steps plus 144 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
@@ -30,6 +30,11 @@ independent Mooncake native artifact is required for this diagnostic API.
 The shared owner increment adds original writer seed, bounded clear control,
 owner-drain consumption, strict master-evidence timestamp validation and correct
 storage-query diagnostic batch offsets and identities.
+The successor also adds bounded host-pool/schema accounting, finite independent
+two-operation seed evidence and compatible clear identities. Host state occupancy
+uses a uniquely declared SWA owner snapshot with matching geometry; unknown state
+remains explicit. The source CPU chain covers actual constructor IDs0/1 and sealed
+v2 operation/key IDs0/1. These checks do not qualify live storage or capacity.
 Governor runtime is pinned in the active selector;
 the protected historical Governor patch bytes remain unchanged.
 
@@ -45,7 +50,7 @@ historical coverage boundaries remain in the linked maintenance records.
 
 The [independent Mooncake manifest](native/mooncake/manifest.json) pins its public
 v0.3.13 base, complete patch hash and reproduced tree. CI replays that native
-patch independently of the 165-step engine stack. Native source `1df0440` adds
+patch independently of the 175-step engine stack. Native source `1df0440` adds
 independent owner-drain and backend capture windows. Its full CUDA wheel and
 installed native API checks are required before publishing the shared owner image.
 

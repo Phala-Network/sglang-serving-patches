@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
-      "fork_tree": "d8a58a105d3cbeade2baadf8df2c4040bea0c978",
+      "fork_commit": "2362426572428bf1d0fc2ac9486700925cc68708",
+      "fork_tree": "860bcdef270ca25bb743fe12691f6a4978acf715",
       "fork_branch": "codex/shared-owner-integration-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..cce2757b8fe49af71a7a8d58fccb33702d36c82e",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..2362426572428bf1d0fc2ac9486700925cc68708",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2587,6 +2587,20 @@
           "source_commit": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
           "source_parent": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
           "sha256": "93615914414ca8d210dff82c865135cc423126ec22d58a79d027e0073b14db92"
+        },
+        {
+          "id": "0067-host-state-swa-owner-occupancy",
+          "path": "patches/common/0067-host-state-swa-owner-occupancy.patch",
+          "source_commit": "d3a9d500af0e3fcc3fccec27f139cf0547c801e7",
+          "source_parent": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
+          "sha256": "5827e580ed2cb9a0d9f966e112b56e287f3536749ddd075c5d7542a03fc68e91"
+        },
+        {
+          "id": "0068-shared-seed-operation-zero-contract",
+          "path": "patches/common/0068-shared-seed-operation-zero-contract.patch",
+          "source_commit": "2362426572428bf1d0fc2ac9486700925cc68708",
+          "source_parent": "d3a9d500af0e3fcc3fccec27f139cf0547c801e7",
+          "sha256": "757d4c3f3d2cf2f6ac896d817ae251b8b93571346a8e495db52a917ab45618c8"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

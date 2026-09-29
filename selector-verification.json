@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
-      "fork_tree": "d8a58a105d3cbeade2baadf8df2c4040bea0c978",
+      "fork_commit": "2362426572428bf1d0fc2ac9486700925cc68708",
+      "fork_tree": "860bcdef270ca25bb743fe12691f6a4978acf715",
       "fork_branch": "codex/shared-owner-integration-20260929",
-      "patch_count": 142,
+      "patch_count": 144,
       "replay_mode": "exact",
       "status": "Shared owner control, host pool and exact read-only seed schema; finite two-operation seed capture; explicit nullable revision and field-specific clear identities; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "d8a58a105d3cbeade2baadf8df2c4040bea0c978"
+      "replay_tree": "860bcdef270ca25bb743fe12691f6a4978acf715"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
