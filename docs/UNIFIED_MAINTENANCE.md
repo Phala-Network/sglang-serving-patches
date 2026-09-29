@@ -9,13 +9,15 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `2362426572428bf1d0fc2ac9486700925cc68708`; tree `860bcdef270ca25bb743fe12691f6a4978acf715`.
-- Ordered engine stack: 31 protected steps plus 144 successor steps.
+- Active engine: `046599c305e80eac4f8aee2697e1f33fffeb2f0a`; tree `b6463e1b84cf38f9ab730755848cb687ff7b3620`.
+- Ordered engine stack: 31 protected steps plus 147 successor steps.
 - Host state occupancy reuses a uniquely declared SWA owner snapshot with matching
   pool geometry, retaining unknown/incomplete states. Affected source checks cover
-  hostpool15/schema5/callsite10/two-operation21/consumer8; actual constructor and
+  hostpool15/schema5/callsite10/two-operation21/consumer8/reader15; actual constructor and
   sealed operation/key IDs0/1 are explicit contracts. Installed-image and live
-  capacity acceptance remain separate.
+  capacity acceptance remain separate. Reader diagnostics use a fixed-path
+  one-shot late arm with operation-owned GET/prefetch/C128 context, retaining
+  the opportunity while the donor seed is absent.
 - Gateway request forwarding preserves explicit `include_reasoning` values and
   omission with vendored `openai-protocol` 1.0.0 and frozen Cargo locks. The focused
   CPU harness covers serialization and loopback HTTP forwarding, not a whole
