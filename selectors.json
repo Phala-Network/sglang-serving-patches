@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "b9d7ebc441a9034100d9de84e775c695b8a6cd6e",
-      "fork_tree": "15317d603e9753d4a182f46ce1f62a43132b49d3",
+      "fork_commit": "246a60ac5115102fe06f0ec38b144ef05fa0f139",
+      "fork_tree": "9a60fec4d4a6b2ab2af1ae28fc54a43211519b31",
       "fork_branch": "codex/shared-owner-integration-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..b9d7ebc441a9034100d9de84e775c695b8a6cd6e",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..246a60ac5115102fe06f0ec38b144ef05fa0f139",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2510,11 +2510,18 @@
           "source_parent": "a353d2182cde60a8e46d0ab89d7d4012bc51f73d",
           "source_origin_commit": "3d4823486602f4c92065ffe251fcd9aedad2eaee",
           "sha256": "812ab649fa9b219f3c7a0328955e801f1d849ac8aae11106a77fa7181d7db562"
+        },
+        {
+          "id": "0056-shared-query-context-and-format",
+          "path": "patches/common/0056-shared-query-context-and-format.patch",
+          "source_commit": "246a60ac5115102fe06f0ec38b144ef05fa0f139",
+          "source_parent": "b9d7ebc441a9034100d9de84e775c695b8a6cd6e",
+          "sha256": "deda31bc4e32ea47f1331f9e9ddcdd4d66f32c85cf6426736b2e1ecb5859d704"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Original D writer seed and bounded clear with owner-drain consumer and strict timestamp validation merged onto PD source; source qualification only, final native windows and immutable shared image pending",
+      "status": "Shared writer/owner control with validated master timestamps and actual storage-query batch diagnostic identities; source qualification only, complete native wheel and installed image gates separate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
