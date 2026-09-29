@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "02d395e257f891d060b9290f8aa826edc8744568",
-      "fork_tree": "cc6ab4029ca449fb29032d5276951040c341e983",
+      "fork_commit": "28dc30eb9048a5bed672827094f157896bca6765",
+      "fork_tree": "8dd46ac9ea3a0379e78dc88609115c530277285e",
       "fork_branch": "codex/r5-cold-pd-router-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..02d395e257f891d060b9290f8aa826edc8744568",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..28dc30eb9048a5bed672827094f157896bca6765",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2671,6 +2671,13 @@
           "source_commit": "02d395e257f891d060b9290f8aa826edc8744568",
           "source_parent": "3c5294560bb814f6bb2f96a004f53adc2118f3d2",
           "sha256": "e92e063a3366f5172c8fa285aa4fc0479e73ba763e47ed26d795e2557097a246"
+        },
+        {
+          "id": "0079-format-installed-router-cold-forwarding-fixture",
+          "path": "patches/common/0079-format-installed-router-cold-forwarding-fixture.patch",
+          "source_commit": "28dc30eb9048a5bed672827094f157896bca6765",
+          "source_parent": "02d395e257f891d060b9290f8aa826edc8744568",
+          "sha256": "302879efca9f1d44a30a6fae4cbe581d9a3fdf68ea6f49065b4d989a21266e21"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

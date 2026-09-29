@@ -20,8 +20,8 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `02d395e257f891d060b9290f8aa826edc8744568`, tree
-`cc6ab4029ca449fb29032d5276951040c341e983`: 31 protected steps plus 154 successor patches.
+The active selector binds engine `28dc30eb9048a5bed672827094f157896bca6765`, tree
+`8dd46ac9ea3a0379e78dc88609115c530277285e`: 31 protected steps plus 155 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
