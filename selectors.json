@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180",
-      "fork_tree": "e4e7befa7db7a2a0e957601dfb8cdd775247125b",
+      "fork_commit": "f7831c1609a274e8ca656a6930e38ed981cb8ed3",
+      "fork_tree": "9e2c28a518cbde6754b909f5cdf9761a06d67498",
       "fork_branch": "codex/shared-owner-integration-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..f7831c1609a274e8ca656a6930e38ed981cb8ed3",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2531,11 +2531,25 @@
           "source_commit": "111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180",
           "source_parent": "d388c80929ec8af96548aecf4062b4c91a7518b8",
           "sha256": "ce11bd2e3216ea931abfba90dd8ee24ce4925cc62d4949a317750e3e302931e3"
+        },
+        {
+          "id": "0059-host-pool-allocation-observability",
+          "path": "patches/common/0059-host-pool-allocation-observability.patch",
+          "source_commit": "d62c6b4cd88b5bfc50b1d3ca2fe6c95578ca1434",
+          "source_parent": "111c09fe252d14a9f2f4d53ff78b2c8b2d4c2180",
+          "sha256": "227a24ea76a51382efb12d51e508df7b9174b8881ab171e3972b0d6d9696d67f"
+        },
+        {
+          "id": "0060-host-pool-source-ci-fixture",
+          "path": "patches/common/0060-host-pool-source-ci-fixture.patch",
+          "source_commit": "f7831c1609a274e8ca656a6930e38ed981cb8ed3",
+          "source_parent": "d62c6b4cd88b5bfc50b1d3ca2fe6c95578ca1434",
+          "sha256": "8ab1ebd49e20818c0664fd684508b3be2387b74dfecd1e3b093ce1b990dab232"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Shared writer/owner control with validated master timestamps and actual storage-query batch diagnostic identities; source qualification only, complete native wheel and installed image gates separate",
+      "status": "Shared owner control plus bounded per-worker host-pool tensor allocation observability; real Torch source fixtures; source-only qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
