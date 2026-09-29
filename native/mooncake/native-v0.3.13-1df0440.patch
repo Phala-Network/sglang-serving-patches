@@ -1,0 +1,3842 @@
+diff --git a/docs/shared-cache-diagnostics.md b/docs/shared-cache-diagnostics.md
+new file mode 100644
+index 0000000..d56cac0
+--- /dev/null
++++ b/docs/shared-cache-diagnostics.md
+@@ -0,0 +1,239 @@
++# Bounded shared cache diagnostic candidate
++
++Base: Mooncake `e5598b0992cc258b06d22f24d875480e8931a28e`.
++This is an unpublished source candidate. It does not qualify a GPU request or
++authorize a live clear. The Python API and cache selection remain unchanged; nondefault clear RPC routing is made tenant-aware.
++
++## Capture contract
++
++Capture is disabled unless `MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST` names a
++regular, current-user-owned, owner-only readable JSON file (maximum 64 KiB).
++An invalid manifest fails capture closed with a fixed message, without echoing
++the input. `output_path` must not already exist; a new mode-0600 JSONL file is
++created. No public control or destructive endpoint is added.
++
++Required manifest fields are `case_id`, `epoch`, `tenant_id`, `key_salt`,
++`rank`, `component`, `key_ids`, `max_keys`, `max_events`, `max_bytes`,
++`max_duration_ms`, `max_requests`, `output_path`. Labels are bounded ASCII
++identifiers. Salt is 16–256 UTF-8 bytes and is never emitted. Key IDs are full
++lowercase HMAC-SHA256 digests. Hard maxima: 256 keys, 8192 events, 16 MiB output,
++120 seconds, 1024 queued events (current queue default 256). Hash work is also
++bounded to four times `max_events` attempts. The final summary reserves 1 KiB.
++
++`max_requests` must be 1 for this candidate: one engine request in the epoch,
++with at most one native read of each allowlisted component key. Native batches
++are not user requests: several disjoint pool batches are accepted, and unknown
++keys consume no per-key read allowance. A repeated or concurrent read of the
++same allowed key marks the epoch incomplete; it is not silently attributed to
++the first request. Planned promotion hit warmup must be outside this capture
++epoch. A multi-request or same-key concurrent proof needs a propagated RPC
++operation identity and is not supported by this patch.
++
++Key HMAC input is `phala.shared-cache-key.v1` plus NUL, followed by `case_id`,
++`epoch`, normalized tenant (`default` when unspecified), and the actual native
++key. Each field is UTF-8 preceded by its uint32 big-endian byte length. Owner
++and file IDs use independent `phala.shared-cache-owner.v1` and
++`phala.shared-cache-file.v1` domains. Backend scoped keys are decoded with
++`TenantId::ParseScopedKey`; raw keys, endpoints, paths, prompts, bytes and salt
++are not emitted. Output includes configured rank/component and actual PID;
++the installed acceptance receipt must bind PID/config to the real SSD owner.
++
++The bounded queue is drained by a dedicated writer. A capture summary is
++written at shutdown/deadline; any dropped event, ambiguous repeated key or
++writer failure makes `complete=false`. Missing summary is inconclusive.
++Unknown keys are counted as rejected, never emitted. Disabling capture does
++not hash keys or serialize objects; the io_uring event loop is also gated.
++
++## Sealed-manifest activation and finite metadata snapshot
++
++A missing configured event manifest (ENOENT) can be atomically published after
++model readiness and seed/warmup completion without restarting the store. The
++fixed path is retained on first `Capture::Global()`; absent means unarmed, so
++no event duration is consumed during model loading. Later hooks retry only
++that path, without background polling. An invalid existing manifest/output
++disables capture permanently. Successful activation is one-time: no reload,
++salt change or allowlist replacement. The bounded event duration starts on
++activation. Actual donor PUT provenance and whole-backup ACK remain the engine
++seed producer's responsibility; native pre-seal PUT capture is not claimed.
++
++Existing admin GET `/batch_query_keys` accepts a default-off finite mode with
++exactly six unique parameters: `finite_snapshot=1`, `tenant_id`, `case_id`,
++`epoch`, `sample_id`, `key_ids` (comma-separated full HMACs). URL <=18000 bytes;
++raw `keys`, unknown/duplicate fields, duplicate/subset/unknown IDs are rejected.
++The independent `MOONCAKE_SHARED_CACHE_SNAPSHOT_MANIFEST` must be an owned
++regular mode0600 file <=64KiB, no symlink. It contains case/epoch/tenant/salt,
++`keys:[{key_id,key}]`, `max_snapshots` (1..16), `max_duration_ms` (1..120000),
++`max_response_bytes` (4096..1048576), `max_total_logical_bytes` (1..17179869184).
++The exact <=256 keys must be nonempty, <=4096 bytes and contain no control,
++comma or wildcard characters. First request loads once; samples cannot replay.
++
++`phala.shared-cache.snapshot.v1` includes case/epoch/sample, actual master PID,
++sample times, requested/effective tenant, actual `master_multi_tenant_enabled`,
++and each key's existence, logical bytes, original writer HMAC, authoritative
++`IsLeaseExpired`, all replica IDs/types/statuses/readability/refcounts, segment
++HMACs, SSD owner/scope HMACs, and actual processing/offload/promotion/candidate/
++replication/dynamic-replication membership. Segment HMAC domain is
++`phala.shared-cache-segment.v1`; writer and SSD UUIDs use canonical
++`UuidToString` and the owner domain. Owner scope uses the actual endpoint.
++Unsupported lease owner, generation and backend drain are explicitly marked
++unavailable. Per-key state is sampled under one RO accessor; the entire batch
++is not atomic. No Query/Exist/GET, lease renewal, promotion or backend I/O occurs.
++
++Native master defaults to single-tenant mode: ordinary requests then resolve
++to `default`, regardless of the worker's tenant configuration. Finite snapshot
++and the new internal tenant-aware clear reject nondefault tenants when mode is
++disabled. An isolated experiment must enable multi-tenancy and supply its quota
++policy before seeding, or explicitly use actual single-tenant semantics. This
++patch does not migrate existing objects or prove a live tenant configuration.
++`MasterClient::BatchReplicaClear` preserves the old three-argument RPC for
++`default`; nondefault uses `BatchReplicaClearForTenant` with no fallback on an
++old master. Writer/lease checks remain authoritative. Clear request/result
++logs and the reviewed descriptor-query error log contain no raw identifiers.
++
++## Actual hooks and limits
++
++- `RealClient::batch_get_into_internal` and
++  `batch_get_into_multi_buffers_internal`: record actual selected descriptor
++  tier/replica and final per-key return bytes/error after transfer/checksum.
++  Selection is not a success event. Query failures retain unknown tier/error.
++  These are the two SGLang zero-copy binding paths. Other single/offset/read
++  overloads are not source-qualified by this candidate.
++- File-per-key payload decode, bucket vector read/io_uring descriptor, and
++  offset allocator value read: record actual backend result and short reads,
++  with logical length and hashed file/offset identity. Synchronous
++  `FileStorage::LoadBatch` and promotion `BatchLoad` calls use a narrowly scoped
++  RAII thread-local purpose (`consumer_get` or `promotion`); these calls contain
++  no coroutine suspension. Overlapping threads and nested restoration are
++  exercised by the native runtime fixture. These are backend read
++  events, not device-level IOPS or allocated physical-byte measurements.
++  Failures before payload I/O are visible as native read failures without a
++  successful backend payload event. No backend event implies success.
++- `NotifyPromotionSuccess`: emit only after the holder/precise staged replica
++  commit, accounting, task removal and mailbox cleanup successfully finish.
++  Failure notification is separate, after its real cleanup. Wrong holder,
++  missing task and failed commit do not emit promotion success.
++
++No actual output event establishes a whole SGLang request or all pools by
++itself. Engine whole-group/forward/ack evidence and unchanged exact output
++remain separate required gates.
++
++## CPU and complete-hook build gates
++
++Minimal collector and real manifest/output fixture:
++
++```sh
++bash mooncake-store/tests/run_shared_cache_diagnostics_cpu.sh /absolute/isolated/build
++```
++
++Dependencies: C++20 compiler, pthread, Python 3, pkg-config, JsonCpp 1.9.5 and
++OpenSSL libcrypto 3. The script compiles the actual collector with
++`-Wall -Wextra -Werror`. Fixtures cover HMAC vectors/domain separation,
++disabled mode, allowlist/tenant checks, multiple pool batches, ambiguous
++repeated keys, short/error byte preservation, all capture limits, concurrency,
++manifest permissions, exclusive output, shutdown.
++
++Complete changed translation-unit and integration gate, in a prepared native
++Mooncake dependency environment:
++
++```sh
++cmake -S . -B /absolute/isolated/hooks -DWITH_STORE=ON -DWITH_STORE_RUST=OFF \
++  -DUSE_CUDA=OFF -DUSE_ETCD=OFF -DBUILD_UNIT_TESTS=ON
++cmake --build /absolute/isolated/hooks --parallel 1 --target \
++  mooncake_store_shared_objects mooncake_store_client_objects mooncake_store_master_objects
++cmake --build /absolute/isolated/hooks --parallel 1 --target \
++  promotion_on_hit_test file_storage_promotion_test storage_backend_test
++/absolute/isolated/hooks/mooncake-store/tests/file_storage_promotion_test
++python3 mooncake-store/tests/test_shared_cache_promotion_events.py \
++  /absolute/isolated/hooks/mooncake-store/tests/promotion_on_hit_test
++python3 mooncake-store/tests/test_shared_cache_backend_events.py \
++  /absolute/isolated/hooks/mooncake-store/tests/storage_backend_test
++```
++
++The standalone fixture compiles only the collector. The full integration build
++also compiles the actual `real_client.cpp`, `storage_backend.cpp`,
++`file_storage.cpp` and `master_service.cpp` hooks. Promotion event fixtures use
++real MasterService success, wrong-holder, missing-task, reaped-task and failure
++paths; backend fixtures use real offset payload, bucket io_uring and short-read
++paths. They reject missing or skipped tests. On 2026-09-29 the isolated CPU
++build and collector/runtime fixture passed, along with 11 FileStorage tests,
++6 real master event cases and 3 actual backend event cases (3 offset reads,
++40 io_uring reads, 2 short-read outcomes). The existing bucket NONE watermark
++fixture also passed. This is CPU evidence only.
++
++## Smallest clear-to-read retention decision
++
++The legacy original-writer API checks writer and expired lease, but lacks an
++atomic MEMORY-only/retained-COMPLETE-SSD predicate. Query then clear is racy.
++No disconnected Boolean policy helper or simulated clear fixture is shipped.
++A real clear gate must validate writer/lease/MEMORY/SSD/epoch/owner/inflight
++and retained backend state under the actual lock/hold. No live clear is
++qualified by the diagnostic fixtures.
++
++The bucket backend supports the first option under a finite static contract:
++
++1. **Source-supported static experiment.** Before constructing the dataset,
++   initialize the owner with
++   `MOONCAKE_OFFLOAD_STORAGE_BACKEND_DESCRIPTOR=bucket_storage_backend`,
++   `MOONCAKE_OFFLOAD_BUCKET_EVICTION_POLICY=none` and
++   `MOONCAKE_OFFLOAD_ENABLE_DISK_WATERMARK_EVICTION=false`.
++   `PrepareEviction` and `EvictAboveDiskWatermark` return no eviction under
++   NONE; `RunDiskWatermarkEviction` also returns when its flag is false.
++   Capacity checks in PrepareEviction are bypassed by NONE, so finish a bounded
++   dataset within measured free space before the window. Init's invalid/orphan
++   cleanup has no disable switch; finish Init/ScanMeta before the window and
++   exclude restart. ScanMeta/HandleNext registration failure does not delete
++   buckets. Exclude new writes/rollback, remove/reset/unmount and file mutation;
++   drain every offload, promotion and read. Keep master/owner healthy and fail
++   on timeout, remount or identity change. Master processing expiry retains
++   COMPLETE replicas, but client-loss cleanup still removes LOCAL_DISK
++   metadata; `enable_metadata_cleanup_on_timeout=false` does not disable it.
++   Read back the actual owner configuration/identity and exact nonempty MEMORY
++   targets and retained COMPLETE SSD before the reviewed original-writer API.
++   The current diagnostics patch contains no clear command. This quiescent
++   contract excludes mutation across query/clear only if operational ownership
++   is real; any subset clear or continuity failure ends the attempt. Under
++   those conditions no new hold service is needed for the finite read.
++2. **Small finite-key hold when background exclusion cannot be proven.**
++   Reuse the backend's existing `BucketReadGuard` or offset `AllocationPtr`
++   plus shared file handle and retain the exact read plan before clear.
++   Add only a bounded holder for those handles (manifest+epoch+expected
++   replica IDs, maximum keys and timeout), rather than a general lease
++   service. Under the same object metadata lock validate original writer,
++   expired lease, exact COMPLETE MEMORY and SSD, owner availability and no
++   processing/promotion/read; establish the matching SSD metadata hold before
++   removing MEMORY. Actual backend eviction must honor the held read plan,
++   and the reader must use that same held plan rather than re-resolve a key
++   whose mapping was evicted. Release on read completion or timeout. Do not
++   hold the metadata lock across network I/O. Owner failure/expiry fails the
++   experiment; no fault-tolerance promise is needed.
++
++Existing master hard pins/refcounts do not prove physical retention:
++File/bucket watermark eviction calls its master-notification handler before
++physical deletion and restores prepared eviction if the handler fails. However,
++that handler reaches `MasterService::EvictDiskReplica`, whose owner/type-matched
++removal has no hard-pin, lease or replica-refcount gate. Thus the pin checks in
++other master eviction paths do not cover this actual backend callback. Existing backend read guards retain storage only while
++`BatchLoad` is active; they do not cover the preceding clear-to-read gap.
++Explicit `RemoveAll` and owner failure can be excluded/failed operationally,
++but real automatic backend eviction must be disabled with evidence or honor
++the finite hold. Source implementation of that hold and an authenticated
++original-writer command remain a separate decision; no unsafe shortcut or
++new public deletion API is included here.
++
++## Optional owner drain observation
++
++Set `capture_owner_drain=true` in the sealed manifest selected by `MOONCAKE_SHARED_CACHE_OWNER_DRAIN_MANIFEST` to emit `kind=owner_drain`, `schema=phala.shared-cache.owner-drain.v1` records into its own bounded private JSONL. This is a process-local FileStorage observer; the master metadata endpoint still cannot report backend drain. Unavailable backends report unavailable and never synthesize a quiet state.
++
++Each record has actual bucket metadata counts and FileStorage activity counts for loads, offloads, promotions, removes, heartbeats, rescans and leased read buffers. Buffer ownership remains active until its actual remote/local lease is destroyed. Bucket writes, evictions, ungrouped offloads and read guards are sampled under their existing locks, with a finite256bucket limit. An owner activity revision brackets that sample; raced snapshots are marked inconsistent. Init/Scan timestamps are recorded only after actual successful completion, and heartbeat success, resync/draining flags, bucket eviction policy and watermark setting describe actual state.
++
++`owner_id`, runtime-generated `store_instance_id`, `scope_id` and `backend_path_id` use existing case/epoch/tenant HMAC framing. The configured tenant is only capture correlation; `owner_client_requested_tenant_id` records the client request tenant separately. Establish the owner mapping from independent process/container/backend identity and master replica metadata, then require the same instance across the scene. The mapping is not a new storage generation or ownership protocol.
++
++The consumer requires an available, consistent, initialized owner with full bucket coverage, successful heartbeat, completed Init/Scan, selected static-retention settings, no resync/draining and all active/pending values zero over its existing quiet window. `owner_sample_sequence` orders snapshots; `activity_sequence` changes for actual work and buffer lifetime, excluding idle heartbeats. Concurrent JSONL output may be reordered. Final `capture_summary` must be present and complete with zero drops; damaged/missing/truncated evidence cannot establish drain. This observer supplies evidence and does not hold the storage lifecycle or guarantee future quiescence.
++
++### Separate finite owner and event windows
++
++Owner drain uses `Capture::OwnerGlobal`; backend read and promotion events continue to use `Capture::Global` and `MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST`. Both use the same Runtime/collector implementation, but each snapshots its own fixed manifest path on first use and can activate once. Each has its own queue, finite deadline, private output and final summary. Both are disabled unless configured; neither rearms or reloads after activation or invalid input.
++
++Provide both fixed environment paths before process startup. Seal the owner manifest after seed/warmup drain, obtain its genuine complete final summary, and use that evidence for the existing pre-clear gate. Then seal the previously absent ordinary event manifest for post-clear reads/promotions. Use the same case/epoch/tenant/salt and distinct output paths; select each capture budget within its consumer's limits. The ordinary absent manifest consumes no capture duration while waiting. Closing the owner window does not close or activate the ordinary event window.
++
++Native UUID identity strings are `UuidToString` decimal unsigned64 pairs (`first-second`), not RFC4122 UUID text. HMAC framing is unchanged.
+diff --git a/mooncake-integration/transfer_engine/test_pd_batch_diagnostics.py b/mooncake-integration/transfer_engine/test_pd_batch_diagnostics.py
+new file mode 100644
+index 0000000..0c5ed48
+--- /dev/null
++++ b/mooncake-integration/transfer_engine/test_pd_batch_diagnostics.py
+@@ -0,0 +1,69 @@
++"""CPU loopback acceptance for the actual classic Python native binding."""
++
++import ctypes
++import os
++import socket
++import unittest
++
++os.environ["MC_FORCE_TCP"] = "1"
++os.environ["MC_LEGACY_RPC_PORT_BINDING"] = "1"
++
++from mooncake.engine import TransferEngine
++
++
++def endpoint():
++    with socket.socket() as sock:
++        sock.bind(("127.0.0.1", 0))
++        return f"127.0.0.1:{sock.getsockname()[1]}"
++
++
++class NativeBatchDiagnosticsTest(unittest.TestCase):
++    def test_real_completed_tcp_batch_and_empty_invalid_controls(self):
++        source, destination = TransferEngine(), TransferEngine()
++        source_name, destination_name = endpoint(), endpoint()
++        self.assertEqual(source.initialize(source_name, "P2PHANDSHAKE", "tcp", ""), 0)
++        self.assertEqual(
++            destination.initialize(destination_name, "P2PHANDSHAKE", "tcp", ""), 0
++        )
++        destination_name = f"127.0.0.1:{destination.get_rpc_port()}"
++        payload = ctypes.create_string_buffer(bytes(range(256)) * 32)
++        target = ctypes.create_string_buffer(len(payload))
++        source_address, target_address = (
++            ctypes.addressof(payload),
++            ctypes.addressof(target),
++        )
++        self.assertEqual(source.register_memory(source_address, len(payload)), 0)
++        self.assertEqual(destination.register_memory(target_address, len(target)), 0)
++        sizes = [4096, len(payload) - 4096]
++        record = source.batch_transfer_sync_write_diagnostic(
++            destination_name,
++            [source_address, source_address + 4096],
++            [target_address, target_address + 4096],
++            sizes,
++        )
++        self.assertEqual(record["result"], 0)
++        self.assertFalse(record["diagnostics_truncated"])
++        self.assertEqual(len(record["attempts"]), 1)
++        native = record["attempts"][0]
++        self.assertEqual(native["terminal_status"], "completed")
++        self.assertEqual(native["transferred_bytes"], sum(sizes))
++        self.assertEqual(native["selected_transports"], {"tcp": 2})
++        self.assertEqual(native["missing_transports"], 0)
++        self.assertEqual(target.raw, payload.raw)
++        empty = source.batch_transfer_sync_write_diagnostic(
++            destination_name, [], [], []
++        )
++        self.assertEqual(empty["result"], 0)
++        self.assertEqual(empty["attempts"][0]["task_count"], 0)
++        invalid = source.batch_transfer_sync_write_diagnostic(
++            destination_name, [source_address], [], [1]
++        )
++        self.assertEqual(invalid["result"], -1)
++        self.assertEqual(invalid["attempts"], [])
++        self.assertGreater(empty["batch_sequence"], record["batch_sequence"])
++        self.assertEqual(source.unregister_memory(source_address), 0)
++        self.assertEqual(destination.unregister_memory(target_address), 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/mooncake-integration/transfer_engine/transfer_engine_py.cpp b/mooncake-integration/transfer_engine/transfer_engine_py.cpp
+index 5542b61..7867717 100644
+--- a/mooncake-integration/transfer_engine/transfer_engine_py.cpp
++++ b/mooncake-integration/transfer_engine/transfer_engine_py.cpp
+@@ -460,6 +460,39 @@ int TransferEnginePy::batchTransferSyncRead(
+                              transport_hint);
+ }
+ 
++pybind11::dict TransferEnginePy::batchTransferSyncWriteDiagnostic(
++    const char* target_hostname, std::vector<uintptr_t> buffers,
++    std::vector<uintptr_t> peer_buffer_addresses, std::vector<size_t> lengths,
++    const std::string& transport_hint) {
++    static std::atomic<uint64_t> sequence{0};
++    const auto batch_sequence =
++        sequence.fetch_add(1, std::memory_order_relaxed) + 1;
++    std::vector<BatchAttemptDiagnostic> diagnostics;
++    bool truncated = false;
++    const int result = batchTransferSyncImpl(
++        target_hostname, std::move(buffers), std::move(peer_buffer_addresses),
++        std::move(lengths), TransferOpcode::WRITE, nullptr, transport_hint,
++        &diagnostics, &truncated);
++    pybind11::dict record;
++    record["result"] = result;
++    record["batch_sequence"] = batch_sequence;
++    record["diagnostics_truncated"] = truncated;
++    pybind11::list attempts;
++    for (size_t i = 0; i < diagnostics.size(); ++i) {
++        const auto& native = diagnostics[i];
++        pybind11::dict attempt;
++        attempt["attempt"] = i;
++        attempt["task_count"] = native.selection.task_count;
++        attempt["missing_transports"] = native.selection.missing_transports;
++        attempt["selected_transports"] = native.selection.selected_transports;
++        attempt["terminal_status"] = native.terminal_status;
++        attempt["transferred_bytes"] = native.transferred_bytes;
++        attempts.append(attempt);
++    }
++    record["attempts"] = attempts;
++    return record;
++}
++
+ batch_id_t TransferEnginePy::batchTransferAsyncWrite(
+     const char* target_hostname, const std::vector<uintptr_t>& buffers,
+     const std::vector<uintptr_t>& peer_buffer_addresses,
+@@ -576,6 +609,18 @@ int TransferEnginePy::batchTransferSync(
+     std::vector<uintptr_t> peer_buffer_addresses, std::vector<size_t> lengths,
+     TransferOpcode opcode, TransferNotify* notify,
+     const std::string& transport_hint) {
++    return batchTransferSyncImpl(
++        target_hostname, std::move(buffers), std::move(peer_buffer_addresses),
++        std::move(lengths), opcode, notify, transport_hint);
++}
++
++int TransferEnginePy::batchTransferSyncImpl(
++    const char* target_hostname, std::vector<uintptr_t> buffers,
++    std::vector<uintptr_t> peer_buffer_addresses, std::vector<size_t> lengths,
++    TransferOpcode opcode, TransferNotify* notify,
++    const std::string& transport_hint,
++    std::vector<BatchAttemptDiagnostic>* diagnostics,
++    bool* diagnostics_truncated) {
+     pybind11::gil_scoped_release release;
+     Transport::SegmentHandle handle;
+     {
+@@ -619,19 +664,34 @@ int TransferEnginePy::batchTransferSync(
+ 
+     for (int retry = 0; retry < max_retry; ++retry) {
+         auto batch_id = engine_->allocateBatchID(batch_size);
++        BatchAttemptDiagnostic* diagnostic = nullptr;
++        if (diagnostics) {
++            if (diagnostics->size() < 64) {
++                diagnostic = &diagnostics->emplace_back();
++            } else {
++                *diagnostics_truncated = true;
++            }
++        }
+         Status s =
+             notify
+                 ? engine_->submitTransferWithNotify(
+                       batch_id, entries,
+                       TransferMetadata::NotifyDesc{notify->name, notify->msg})
+                 : engine_->submitTransfer(batch_id, entries);
++        if (diagnostic) {
++            auto selected = engine_->getBatchTransportSelection(
++                batch_id, diagnostic->selection);
++            if (!selected.ok())
++                diagnostic->selection.missing_transports = batch_size;
++            diagnostic->terminal_status = s.ok() ? "waiting" : "submit_failed";
++        }
+         if (!s.ok()) {
+             engine_->freeBatchID(batch_id);
+             Status segment_status = engine_->CheckSegmentStatus(handle);
+             if (!segment_status.ok()) {
+                 LOG(WARNING)
+-                    << "submitTransfer failed with target " << target_hostname
+-                    << ", CheckSegmentStatus not ok, ready to closeSegment";
++                    << "submitTransfer failed, CheckSegmentStatus not ok, "
++                       "ready to closeSegment";
+                 std::lock_guard<std::mutex> guard(mutex_);
+                 engine_->closeSegment(handle);
+                 engine_->getMetadata()->removeSegmentDesc(target_hostname);
+@@ -646,14 +706,19 @@ int TransferEnginePy::batchTransferSync(
+         while (!completed) {
+             Status s = engine_->getBatchTransferStatus(batch_id, status);
+             LOG_ASSERT(s.ok());
++            if (diagnostic)
++                diagnostic->transferred_bytes = status.transferred_bytes;
+             if (status.s == TransferStatusEnum::COMPLETED) {
++                if (diagnostic) diagnostic->terminal_status = "completed";
+                 engine_->freeBatchID(batch_id);
+                 return 0;
+             } else if (status.s == TransferStatusEnum::FAILED) {
++                if (diagnostic) diagnostic->terminal_status = "failed";
+                 engine_->freeBatchID(batch_id);
+                 already_freed = true;
+                 completed = true;
+             } else if (status.s == TransferStatusEnum::TIMEOUT) {
++                if (diagnostic) diagnostic->terminal_status = "timeout";
+                 LOG(INFO) << "Sync data transfer timeout";
+                 completed = true;
+             }
+@@ -661,6 +726,8 @@ int TransferEnginePy::batchTransferSync(
+             const int64_t timeout =
+                 transfer_timeout_nsec_ + total_length;  // 1GiB per second
+             if (current_ts - start_ts > timeout) {
++                if (diagnostic && diagnostic->terminal_status == "waiting")
++                    diagnostic->terminal_status = "deadline_exceeded";
+                 LOG(INFO) << "Sync batch data transfer timeout after "
+                           << current_ts - start_ts << "ns";
+                 // TODO: as @doujiang24 mentioned, early free(while there are
+@@ -1262,6 +1329,11 @@ PYBIND11_MODULE(engine, m) {
+                  py::arg("target_hostname"), py::arg("buffers"),
+                  py::arg("peer_buffer_addresses"), py::arg("lengths"),
+                  py::arg("transport_hint") = "")
++            .def("batch_transfer_sync_write_diagnostic",
++                 &TransferEnginePy::batchTransferSyncWriteDiagnostic,
++                 py::arg("target_hostname"), py::arg("buffers"),
++                 py::arg("peer_buffer_addresses"), py::arg("lengths"),
++                 py::arg("transport_hint") = "")
+             .def("batch_transfer_sync_read",
+                  &TransferEnginePy::batchTransferSyncRead,
+                  py::arg("target_hostname"), py::arg("buffers"),
+diff --git a/mooncake-integration/transfer_engine/transfer_engine_py.h b/mooncake-integration/transfer_engine/transfer_engine_py.h
+index d4af71a..f94a0ac 100644
+--- a/mooncake-integration/transfer_engine/transfer_engine_py.h
++++ b/mooncake-integration/transfer_engine/transfer_engine_py.h
+@@ -96,6 +96,11 @@ class TransferEnginePy {
+                               std::vector<size_t> lengths,
+                               const std::string &transport_hint = "");
+ 
++    pybind11::dict batchTransferSyncWriteDiagnostic(
++        const char *target_hostname, std::vector<uintptr_t> buffers,
++        std::vector<uintptr_t> peer_buffer_addresses,
++        std::vector<size_t> lengths, const std::string &transport_hint = "");
++
+     batch_id_t batchTransferAsyncWrite(
+         const char *target_hostname, const std::vector<uintptr_t> &buffers,
+         const std::vector<uintptr_t> &peer_buffer_addresses,
+@@ -205,6 +210,20 @@ class TransferEnginePy {
+     uintptr_t getEnginePtr() const { return (uintptr_t)engine_.get(); }
+ 
+    private:
++    struct BatchAttemptDiagnostic {
++        Transport::BatchTransportSelection selection;
++        std::string terminal_status = "not_submitted";
++        size_t transferred_bytes = 0;
++    };
++
++    int batchTransferSyncImpl(
++        const char *target_hostname, std::vector<uintptr_t> buffers,
++        std::vector<uintptr_t> peer_buffer_addresses,
++        std::vector<size_t> lengths, TransferOpcode opcode,
++        TransferNotify *notify, const std::string &transport_hint,
++        std::vector<BatchAttemptDiagnostic> *diagnostics = nullptr,
++        bool *diagnostics_truncated = nullptr);
++
+     char *allocateRawBuffer(size_t capacity);
+ 
+     int findClassId(size_t size);
+diff --git a/mooncake-store/include/file_storage.h b/mooncake-store/include/file_storage.h
+index b271921..2d4383f 100644
+--- a/mooncake-store/include/file_storage.h
++++ b/mooncake-store/include/file_storage.h
+@@ -4,6 +4,7 @@
+ #include "client_buffer.h"
+ #include "storage_backend.h"
+ #include "pinned_buffer_pool.h"
++#include "shared_cache_diagnostics.h"
+ 
+ namespace mooncake {
+ 
+@@ -90,11 +91,20 @@ class FileStorage {
+      * @return true if batch was found and released, false otherwise
+      */
+     bool ReleaseBuffer(uint64_t batch_id);
++    shared_cache_diagnostics::OwnerDrainSnapshot GetOwnerDrainSnapshot() const;
+ 
+    private:
+     friend class FileStorageTest;
+     friend class FileStoragePromotionTest;
++    friend class FileStorageOwnerDrainTest;
++    struct OwnerState;
++    struct OwnerLease;
++    class OwnerScope;
++    std::shared_ptr<OwnerState> owner_state_;
++    void EmitOwnerDrain() const noexcept;
++    tl::expected<void, ErrorCode> HeartbeatImpl();
+     struct AllocatedBatch {
++        std::shared_ptr<void> diagnostic_owner_lease;
+         uint64_t batch_id;
+         std::vector<BufferHandle> handles;
+         std::unordered_map<std::string, Slice> slices;
+diff --git a/mooncake-store/include/master_service.h b/mooncake-store/include/master_service.h
+index 1a95249..3d25b08 100644
+--- a/mooncake-store/include/master_service.h
++++ b/mooncake-store/include/master_service.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include "shared_cache_diagnostics.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -457,6 +458,10 @@ class MasterService {
+     std::vector<tl::expected<GetReplicaListResponse, ErrorCode>>
+     BatchGetReplicaListForAdmin(const std::vector<std::string>& keys,
+                                 const TenantId& tenant_id);
++    // Finite read-only diagnostic projection; no query/lease/promotion side
++    // effects.
++    std::optional<std::string> GetFiniteSnapshotForAdmin(
++        const shared_cache_diagnostics::SnapshotRequest& request);
+ 
+     /**
+      * @brief Start a put operation for an object
+diff --git a/mooncake-store/include/rpc_service.h b/mooncake-store/include/rpc_service.h
+index 165d63d..ea5bf84 100644
+--- a/mooncake-store/include/rpc_service.h
++++ b/mooncake-store/include/rpc_service.h
+@@ -53,6 +53,16 @@ class WrappedMasterService {
+         const std::vector<std::string>& object_keys, const UUID& client_id,
+         const std::string& segment_name);
+ 
++    // Backward-compatible internal dispatch for non-default clients. Never
++    // falls back to the legacy default-tenant RPC on an old master.
++    tl::expected<std::vector<std::string>, ErrorCode>
++    BatchReplicaClearForTenant(const std::vector<std::string>& object_keys,
++                               const UUID& client_id,
++                               const std::string& segment_name,
++                               const std::string& tenant_id);
++    std::optional<std::string> GetFiniteSnapshotForAdmin(
++        const shared_cache_diagnostics::SnapshotRequest& request);
++
+     tl::expected<
+         std::unordered_map<std::string, std::vector<Replica::Descriptor>>,
+         ErrorCode>
+diff --git a/mooncake-store/include/shared_cache_diagnostics.h b/mooncake-store/include/shared_cache_diagnostics.h
+new file mode 100644
+index 0000000..1c25463
+--- /dev/null
++++ b/mooncake-store/include/shared_cache_diagnostics.h
+@@ -0,0 +1,125 @@
++#pragma once
++
++#include <cstdint>
++#include <array>
++#include <chrono>
++#include <optional>
++#include <utility>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace mooncake::shared_cache_diagnostics {
++
++enum class Kind { SelectedRead, ReadReturn, BackendRead, PromotionCommit,
++                  PromotionFailure };
++enum class Tier { Unknown, Memory, NoF, LocalDisk, Disk, Dfs };
++enum class Backend { None, FilePerKey, Bucket, OffsetAllocator };
++enum class ReadPurpose { Unknown, ConsumerGet, Promotion };
++
++// The backend calls are synchronous. Distinguish the consumer read from the
++// subsequent promotion copy without inventing an RPC operation identifier.
++class ReadPurposeScope {
++ public:
++    explicit ReadPurposeScope(ReadPurpose) noexcept;
++    ~ReadPurposeScope();
++    ReadPurposeScope(const ReadPurposeScope&) = delete;
++    ReadPurposeScope& operator=(const ReadPurposeScope&) = delete;
++    static ReadPurpose Current() noexcept;
++ private:
++    ReadPurpose previous_ = ReadPurpose::Unknown;
++    bool active_ = false;
++};
++
++struct Config {
++    bool capture_owner_drain = false;
++    std::string case_id, epoch, tenant_id, key_salt, rank, component;
++    std::vector<std::string> key_ids;
++    uint64_t max_keys = 64, max_events = 1024, max_bytes = 1048576;
++    uint64_t max_duration_ms = 30000, max_requests = 1, queue_capacity = 256;
++};
++
++// Process-local owner observations, not a retention lock or storage generation.
++struct OwnerDrainSnapshot {
++    std::string owner, instance, scope, path, client_tenant;
++    uint64_t sample_time_unix_ms = 0, init_completed_unix_ms = 0;
++    uint64_t scan_completed_unix_ms = 0, sample_sequence = 0,
++             activity_sequence = 0;
++    // load, offload, promotion, remove/eviction, heartbeat, rescan, leased
++    // buffer
++    std::array<uint64_t, 7> active{};
++    uint64_t pending_writes = 0, pending_evictions = 0, pending_ungrouped = 0;
++    uint64_t read_guards = 0, bucket_count = 0, covered_buckets = 0;
++    bool available = false, consistent = false, backend_initialized = false;
++    bool watermark_eviction = true, resync_pending = false, draining = false;
++    bool heartbeat_ok = false;
++    std::string eviction_policy = "unknown";
++};
++
++// HMAC input is domain + NUL, then uint32 big-endian length-prefixed UTF-8
++// case_id, epoch, tenant_id, actual key. The salt and raw key never leave here.
++std::string Identifier(const Config&, const std::string& domain,
++                       const std::string& tenant, const std::string& value);
++
++struct Event {
++    explicit Event(Kind value = Kind::SelectedRead) : kind(value) {}
++    Kind kind = Kind::SelectedRead;
++    Tier tier = Tier::Unknown;
++    Backend backend = Backend::None;
++    ReadPurpose purpose = ReadPurpose::Unknown;
++    uint64_t replica = 0;
++    uint64_t requested_bytes = 0;
++    int64_t returned_bytes = -1;  // -1 means unknown, never invented success.
++    int error = 0;
++    std::string owner;           // HMAC before capture, not an emitted address.
++    std::string physical_file;   // HMAC before capture, not an emitted path.
++    uint64_t offset = 0;
++    bool committed = false;
++};
++
++struct Snapshot {
++    std::vector<std::string> events;
++    uint64_t emitted = 0, dropped = 0, rejected = 0, bytes = 0;
++    bool complete = true;
++};
++
++// Privileged finite admin snapshot. Raw keys/salt remain process-local.
++struct SnapshotRequest {
++    Config identity;
++    std::string sample_id;
++    std::vector<std::pair<std::string, std::string>> keys;  // id, raw key
++    uint64_t max_response_bytes = 0, max_total_logical_bytes = 0;
++    std::chrono::steady_clock::time_point deadline;
++};
++std::optional<SnapshotRequest> AuthorizeSnapshot(
++    const std::string& tenant, const std::string& case_id,
++    const std::string& epoch, const std::string& sample_id,
++    const std::string& key_ids) noexcept;
++
++// Bounded collector; no capture initialization or key hashing when disabled.
++// Never changes serving results, including on allocation/serialization errors.
++class Capture {
++ public:
++    Capture();
++    explicit Capture(Config config);
++    ~Capture();
++    Capture(const Capture&) = delete;
++    Capture& operator=(const Capture&) = delete;
++    bool Enabled() const noexcept;
++    bool OwnerEnabled() const noexcept;
++    void EmitOwner(const OwnerDrainSnapshot&) noexcept;
++    bool BeginReadKeys(const std::string& tenant, const std::vector<std::string>& keys) noexcept;
++    void Lost() noexcept;
++    void Emit(const std::string& tenant, const std::string& key,
++              const Event&) noexcept;
++    Snapshot Drain() noexcept;
++    static Capture& Global() noexcept;
++    static Capture& OwnerGlobal() noexcept;
++
++   private:
++    struct Runtime;
++    struct Impl;
++    std::unique_ptr<Impl> impl_;
++};
++
++}  // namespace mooncake::shared_cache_diagnostics
+diff --git a/mooncake-store/include/storage_backend.h b/mooncake-store/include/storage_backend.h
+index a970fba..61aa1d1 100644
+--- a/mooncake-store/include/storage_backend.h
++++ b/mooncake-store/include/storage_backend.h
+@@ -387,6 +387,14 @@ struct FileStorageConfig {
+ 
+ class StorageBackendInterface {
+    public:
++    struct DrainSnapshot {
++        uint64_t pending_writes = 0, pending_evictions = 0,
++                 pending_ungrouped = 0;
++        uint64_t read_guards = 0, bucket_count = 0, covered_buckets = 0;
++        bool available = false, initialized = false;
++        std::string eviction_policy = "unknown";
++    };
++    virtual DrainSnapshot GetDrainSnapshot() const { return {}; }
+     explicit StorageBackendInterface(const FileStorageConfig& config)
+         : file_storage_config_(config) {}
+     virtual ~StorageBackendInterface() = default;
+@@ -1173,6 +1181,7 @@ class BucketStorageBackend : public StorageBackendInterface {
+         SharedMutexLocker lock(&mutex_, shared_lock);
+         return lru_index_.size();
+     }
++    DrainSnapshot GetDrainSnapshot() const override;
+ 
+    private:
+     // Alignment helper functions for O_DIRECT I/O
+diff --git a/mooncake-store/src/CMakeLists.txt b/mooncake-store/src/CMakeLists.txt
+index b647576..1ce0a80 100644
+--- a/mooncake-store/src/CMakeLists.txt
++++ b/mooncake-store/src/CMakeLists.txt
+@@ -1,7 +1,10 @@
++find_package(OpenSSL REQUIRED COMPONENTS Crypto)
++
+ add_subdirectory(cachelib_memory_allocator)
+ add_subdirectory(local_ssd)
+ 
+ set(MOONCAKE_STORE_SHARED_SOURCES
++    shared_cache_diagnostics.cpp
+     types.cpp
+     utils.cpp
+     mmap_arena.cpp
+@@ -629,3 +632,8 @@ if(WITH_STORE_C_SHARED)
+     "$<$<CONFIG:Release>:-Wl,-s>")
+   install(TARGETS mooncake_store_c DESTINATION lib)
+ endif()
++
++# Shared diagnostics HMAC is used by client and master; runtime capture defaults off.
++target_link_libraries(mooncake_store_shared_objects PRIVATE OpenSSL::Crypto JsonCpp::JsonCpp)
++target_link_libraries(mooncake_store_master PRIVATE OpenSSL::Crypto)
++target_link_libraries(mooncake_store PUBLIC OpenSSL::Crypto)
+diff --git a/mooncake-store/src/file_storage.cpp b/mooncake-store/src/file_storage.cpp
+index e83277b..61fbc1a 100644
+--- a/mooncake-store/src/file_storage.cpp
++++ b/mooncake-store/src/file_storage.cpp
+@@ -1,3 +1,4 @@
++#include "shared_cache_diagnostics.h"
+ #include "file_storage.h"
+ 
+ #include <algorithm>
+@@ -38,6 +39,118 @@ std::vector<OffloadTaskItem> BuildOffloadTasksFromStorageKeys(
+ 
+ }  // namespace
+ 
++struct FileStorage::OwnerState {
++    std::mutex mutex;
++    std::array<uint64_t, 7> active{};
++    uint64_t revision = 0, activity_sequence = 0, sample_sequence = 0;
++    uint64_t init_ms = 0, scan_ms = 0;
++    bool heartbeat_ok = false;
++    std::atomic<bool> failed{false};
++    std::string instance = UuidToString(generate_uuid());
++};
++struct FileStorage::OwnerLease {
++    std::shared_ptr<OwnerState> state;
++    size_t index;
++    explicit OwnerLease(std::shared_ptr<OwnerState> value, size_t operation)
++        : state(std::move(value)), index(operation) {
++        if (!state) return;
++        try {
++            std::lock_guard<std::mutex> lock(state->mutex);
++            ++state->active[index];
++            ++state->revision;
++            if (index != 4) ++state->activity_sequence;
++        } catch (...) {
++            state->failed = true;
++            state.reset();
++        }
++    }
++    void Release() noexcept {
++        if (!state) return;
++        try {
++            std::lock_guard<std::mutex> lock(state->mutex);
++            --state->active[index];
++            ++state->revision;
++            if (index != 4) ++state->activity_sequence;
++        } catch (...) {
++            state->failed = true;
++        }
++        state.reset();
++    }
++    ~OwnerLease() { Release(); }
++};
++class FileStorage::OwnerScope {
++    FileStorage& owner;
++    OwnerLease lease;
++
++   public:
++    OwnerScope(FileStorage& value, size_t operation)
++        : owner(value), lease(value.owner_state_, operation) {
++        owner.EmitOwnerDrain();
++    }
++    ~OwnerScope() {
++        lease.Release();
++        owner.EmitOwnerDrain();
++    }
++};
++
++namespace {
++uint64_t OwnerNowMs() {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(
++               std::chrono::system_clock::now().time_since_epoch())
++        .count();
++}
++}  // namespace
++shared_cache_diagnostics::OwnerDrainSnapshot
++FileStorage::GetOwnerDrainSnapshot() const {
++    shared_cache_diagnostics::OwnerDrainSnapshot result;
++    if (!owner_state_) return result;
++    uint64_t revision;
++    {
++        std::lock_guard<std::mutex> lock(owner_state_->mutex);
++        revision = owner_state_->revision;
++        result.active = owner_state_->active;
++        result.activity_sequence = owner_state_->activity_sequence;
++        result.sample_sequence = ++owner_state_->sample_sequence;
++        result.init_completed_unix_ms = owner_state_->init_ms;
++        result.scan_completed_unix_ms = owner_state_->scan_ms;
++        result.heartbeat_ok = owner_state_->heartbeat_ok;
++        result.instance = owner_state_->instance;
++    }
++    result.sample_time_unix_ms = OwnerNowMs();
++    result.owner = client_ ? UuidToString(client_->getClientId()) : "";
++    result.client_tenant = client_ ? client_->tenant_id() : "";
++    result.scope = local_rpc_addr_;
++    result.path = config_.storage_filepath;
++    result.watermark_eviction = config_.enable_disk_watermark_eviction;
++    result.resync_pending = metadata_resync_pending_.load();
++    result.draining = draining_.load();
++    const auto backend = storage_backend_->GetDrainSnapshot();
++    result.pending_writes = backend.pending_writes;
++    result.pending_evictions = backend.pending_evictions;
++    result.pending_ungrouped = backend.pending_ungrouped;
++    result.read_guards = backend.read_guards;
++    result.bucket_count = backend.bucket_count;
++    result.covered_buckets = backend.covered_buckets;
++    result.eviction_policy = backend.eviction_policy;
++    result.backend_initialized = backend.initialized;
++    result.available =
++        backend.available && client_ != nullptr && !owner_state_->failed.load();
++    {
++        std::lock_guard<std::mutex> lock(owner_state_->mutex);
++        result.consistent = revision == owner_state_->revision;
++    }
++    return result;
++}
++void FileStorage::EmitOwnerDrain() const noexcept {
++    if (!owner_state_) return;
++    try {
++        auto& capture = shared_cache_diagnostics::Capture::OwnerGlobal();
++        if (capture.OwnerEnabled()) capture.EmitOwner(GetOwnerDrainSnapshot());
++    } catch (...) {
++        shared_cache_diagnostics::Capture::OwnerGlobal().Lost();
++    }
++}
++
+ FileStorage::FileStorage(const FileStorageConfig& config,
+                          std::shared_ptr<Client> client,
+                          const std::string& local_rpc_addr,
+@@ -49,6 +162,16 @@ FileStorage::FileStorage(const FileStorageConfig& config,
+       pinned_buffer_pool_(std::make_unique<PinnedBufferPool>()),
+       client_buffer_allocator_(AlignedClientBufferAllocator::create(
+           config.local_buffer_size, client ? client->GetProtocol() : "")) {
++    try {
++        const char* owner_manifest =
++            std::getenv("MOONCAKE_SHARED_CACHE_OWNER_DRAIN_MANIFEST");
++        const char* event_manifest =
++            std::getenv("MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST");
++        if ((owner_manifest && *owner_manifest) ||
++            (event_manifest && *event_manifest))
++            owner_state_ = std::make_shared<OwnerState>();
++    } catch (...) {
++    }
+     if (config_.storage_backend_type == StorageBackendType::kDistributed) {
+         config_.enable_dfs = true;
+     }
+@@ -129,6 +252,7 @@ FileStorage::~FileStorage() {
+ }
+ 
+ tl::expected<void, ErrorCode> FileStorage::Init() {
++    OwnerScope observation(*this, 5);
+     auto register_memory_result = RegisterLocalMemory();
+     if (!register_memory_result) {
+         LOG(ERROR) << "Failed to register local memory: "
+@@ -212,6 +336,15 @@ tl::expected<void, ErrorCode> FileStorage::Init() {
+         }
+     }
+ 
++    if (owner_state_ && scan_meta_result) {
++        try {
++            std::lock_guard<std::mutex> lock(owner_state_->mutex);
++            owner_state_->scan_ms = OwnerNowMs();
++            ++owner_state_->revision;
++        } catch (...) {
++            owner_state_->failed = true;
++        }
++    }
+     heartbeat_running_.store(true);
+     heartbeat_thread_ = std::thread([this]() {
+         LOG(INFO) << "Starting periodic task with interval: "
+@@ -226,6 +359,15 @@ tl::expected<void, ErrorCode> FileStorage::Init() {
+     client_buffer_gc_running_.store(true);
+     client_buffer_gc_thread_ =
+         std::thread(&FileStorage::ClientBufferGCThreadFunc, this);
++    if (owner_state_) {
++        try {
++            std::lock_guard<std::mutex> lock(owner_state_->mutex);
++            owner_state_->init_ms = OwnerNowMs();
++            ++owner_state_->revision;
++        } catch (...) {
++            owner_state_->failed = true;
++        }
++    }
+     return {};
+ }
+ 
+@@ -246,7 +388,11 @@ FileStorage::LoadBatch(const std::vector<std::string>& keys,
+         return tl::make_unexpected(allocate_res.error());
+     }
+     auto allocated_batch = std::move(allocate_res.value());
+-    auto result = BatchLoad(allocated_batch->slices);
++    auto result = [&] {
++        shared_cache_diagnostics::ReadPurposeScope diagnostic_purpose(
++            shared_cache_diagnostics::ReadPurpose::ConsumerGet);
++        return BatchLoad(allocated_batch->slices);
++    }();
+     if (!result) {
+         LOG(ERROR) << "Batch load object failed,err_code = " << result.error();
+         return tl::make_unexpected(result.error());
+@@ -311,6 +457,7 @@ tl::expected<void, ErrorCode> FileStorage::OffloadObjects(
+     if (offloading_objects.empty()) {
+         return {};
+     }
++    OwnerScope observation(*this, 1);
+     std::unordered_map<std::string, int64_t> storage_object_sizes;
+     std::unordered_map<std::string, OffloadTaskItem> task_by_storage_key;
+     storage_object_sizes.reserve(offloading_objects.size());
+@@ -617,6 +764,7 @@ tl::expected<void, ErrorCode> FileStorage::RunDiskWatermarkEviction() {
+         return {};
+     }
+ 
++    OwnerScope observation(*this, 3);
+     auto eviction_result = storage_backend_->EvictAboveDiskWatermark(
+         config_.disk_eviction_high_watermark_ratio,
+         config_.disk_eviction_low_watermark_ratio,
+@@ -647,6 +795,24 @@ tl::expected<bool, ErrorCode> FileStorage::IsEnableOffloading() {
+ }
+ 
+ tl::expected<void, ErrorCode> FileStorage::Heartbeat() {
++    auto result = [&] {
++        OwnerLease lease(owner_state_, 4);
++        return HeartbeatImpl();
++    }();
++    if (owner_state_) {
++        try {
++            std::lock_guard<std::mutex> lock(owner_state_->mutex);
++            owner_state_->heartbeat_ok = result.has_value();
++            ++owner_state_->revision;
++        } catch (...) {
++            owner_state_->failed = true;
++        }
++    }
++    EmitOwnerDrain();
++    return result;
++}
++
++tl::expected<void, ErrorCode> FileStorage::HeartbeatImpl() {
+     if (client_ == nullptr) {
+         LOG(ERROR) << "client is nullptr";
+         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+@@ -799,6 +965,7 @@ tl::expected<void, ErrorCode> FileStorage::Heartbeat() {
+ }
+ 
+ void FileStorage::RemoveAll() {
++    OwnerScope observation(*this, 3);
+     // TODO(tenant-isolation): This performs a tenant-UNAWARE global wipe of the
+     // storage directory. Storage backends store physical files without a
+     // tenant dimension, so a tenant-scoped master RemoveAll("tenant_A") that
+@@ -875,6 +1042,7 @@ tl::expected<void, ErrorCode> FileStorage::ProcessPromotionTasks() {
+         return {};
+     }
+ 
++    OwnerScope observation(*this, 2);
+     VLOG(1) << "ProcessPromotionTasks pulled " << promotion_objects.size()
+             << " promotion candidate(s) from master";
+ 
+@@ -953,7 +1121,11 @@ tl::expected<void, ErrorCode> FileStorage::ProcessPromotionTasks() {
+             continue;
+         }
+         auto staging = allocate_res.value();
+-        auto load_res = BatchLoad(staging->slices);
++        auto load_res = [&] {
++            shared_cache_diagnostics::ReadPurposeScope diagnostic_purpose(
++                shared_cache_diagnostics::ReadPurpose::Promotion);
++            return BatchLoad(staging->slices);
++        }();
+         if (!load_res) {
+             LOG(WARNING) << "Promotion: BatchLoad failed for key=" << key
+                          << ", error=" << load_res.error();
+@@ -1005,6 +1177,7 @@ tl::expected<void, ErrorCode> FileStorage::ProcessPromotionTasks() {
+ tl::expected<void, ErrorCode> FileStorage::BatchLoad(
+     std::unordered_map<std::string, Slice>& batch_object) {
+     auto start_time = std::chrono::steady_clock::now();
++    OwnerScope observation(*this, 0);
+     auto result = storage_backend_->BatchLoad(batch_object);
+     auto end_time = std::chrono::steady_clock::now();
+     auto elapsed_time = std::chrono::duration_cast<std::chrono::microseconds>(
+@@ -1086,6 +1259,14 @@ FileStorage::AllocateBatch(const std::vector<std::string>& keys,
+         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+     }
+     auto result = std::make_shared<AllocatedBatch>();
++    if (owner_state_) {
++        try {
++            result->diagnostic_owner_lease =
++                std::make_shared<OwnerLease>(owner_state_, 6);
++        } catch (...) {
++            owner_state_->failed = true;
++        }
++    }
+     result->batch_id = next_batch_id_.fetch_add(1, std::memory_order_relaxed);
+     std::chrono::steady_clock::time_point now =
+         std::chrono::steady_clock::now();
+@@ -1193,6 +1374,7 @@ bool FileStorage::ReleaseBuffer(uint64_t batch_id) {
+ }
+ 
+ tl::expected<void, ErrorCode> FileStorage::ReRegisterOffloadedObjects() {
++    OwnerScope observation(*this, 5);
+     LOG(INFO) << "ReRegisterOffloadedObjects: starting ScanMeta to re-register "
+               << "offloaded objects with master";
+     int total_keys = 0;
+@@ -1257,6 +1439,15 @@ tl::expected<void, ErrorCode> FileStorage::ReRegisterOffloadedObjects() {
+                    << scan_meta_result.error();
+         return scan_meta_result;
+     }
++    if (owner_state_) {
++        try {
++            std::lock_guard<std::mutex> lock(owner_state_->mutex);
++            owner_state_->scan_ms = OwnerNowMs();
++            ++owner_state_->revision;
++        } catch (...) {
++            owner_state_->failed = true;
++        }
++    }
+     LOG(INFO) << "ReRegisterOffloadedObjects: completed. "
+               << "total_keys=" << total_keys
+               << " total_batches=" << total_batches
+diff --git a/mooncake-store/src/master_admin_service.cpp b/mooncake-store/src/master_admin_service.cpp
+index cc85bcb..7cf1514 100644
+--- a/mooncake-store/src/master_admin_service.cpp
++++ b/mooncake-store/src/master_admin_service.cpp
+@@ -1,4 +1,5 @@
+ #include "master_admin_service.h"
++#include <set>
+ 
+ #include <algorithm>
+ #include <chrono>
+@@ -995,6 +996,72 @@ YLT_REFL(HttpBatchQueryKeysResponse, success, data);
+ void MasterAdminServer::HandleBatchQueryKeys(
+     coro_http::coro_http_request& req, coro_http::coro_http_response& resp) {
+     WithActiveService(resp, [&](auto service) {
++        const auto finite = req.get_query_value("finite_snapshot");
++        if (req.get_queries().count("finite_snapshot")) {
++            auto reject = [&] {
++                WriteSimpleErrorResponse(resp,
++                                         coro_http::status_type::bad_request,
++                                         "finite_snapshot_rejected");
++            };
++            try {
++                // Parse the bounded raw query as well: the HTTP parser's map
++                // silently folds duplicate parameters. Accept only six exact
++                // field names, once each, and never accept raw keys here.
++                const auto url = req.full_url();
++                if (url.size() > 18000) {
++                    reject();
++                    return;
++                }
++                auto query = url.substr(url.find('?') + 1);
++                std::set<std::string_view> fields;
++                while (!query.empty()) {
++                    const auto end = query.find('&');
++                    const auto field = query.substr(0, end);
++                    const auto name = field.substr(0, field.find('='));
++                    if ((name != "finite_snapshot" && name != "tenant_id" &&
++                         name != "case_id" && name != "epoch" &&
++                         name != "sample_id" && name != "key_ids") ||
++                        !fields.insert(name).second) {
++                        reject();
++                        return;
++                    }
++                    if (end == std::string_view::npos) break;
++                    query.remove_prefix(end + 1);
++                }
++                if (fields.size() != 6) {
++                    reject();
++                    return;
++                }
++                auto tenant = ParseAdminTenantId(req);
++                if (finite != "1" || !tenant ||
++                    !req.get_query_value("keys").empty()) {
++                    reject();
++                    return;
++                }
++                auto request = shared_cache_diagnostics::AuthorizeSnapshot(
++                    *tenant, std::string(req.get_decode_query_value("case_id")),
++                    std::string(req.get_decode_query_value("epoch")),
++                    std::string(req.get_decode_query_value("sample_id")),
++                    std::string(req.get_decode_query_value("key_ids")));
++                if (!request) {
++                    reject();
++                    return;
++                }
++                auto output = service->GetFiniteSnapshotForAdmin(*request);
++                if (!output) {
++                    reject();
++                    return;
++                }
++                resp.add_header("Content-Type",
++                                "application/json; charset=utf-8");
++                resp.set_status_and_content(coro_http::status_type::ok,
++                                            std::move(*output));
++            } catch (...) {
++                reject();
++            }
++            return;
++        }
++
+         auto keys_str = req.get_decode_query_value("keys");
+         std::vector<std::string> keys;
+         if (!keys_str.empty()) {
+diff --git a/mooncake-store/src/master_client.cpp b/mooncake-store/src/master_client.cpp
+index 4dcb58e..a8dc1c1 100644
+--- a/mooncake-store/src/master_client.cpp
++++ b/mooncake-store/src/master_client.cpp
+@@ -47,6 +47,11 @@ struct RpcNameTraits<&WrappedMasterService::BatchQueryIp> {
+     static constexpr const char* value = "BatchQueryIp";
+ };
+ 
++template <>
++struct RpcNameTraits<&WrappedMasterService::BatchReplicaClearForTenant> {
++    static constexpr const char* value = "BatchReplicaClearForTenant";
++};
++
+ template <>
+ struct RpcNameTraits<&WrappedMasterService::BatchReplicaClear> {
+     static constexpr const char* value = "BatchReplicaClear";
+@@ -514,13 +519,16 @@ MasterClient::BatchReplicaClear(const std::vector<std::string>& object_keys,
+                                 const UUID& client_id,
+                                 const std::string& segment_name) {
+     ScopedVLogTimer timer(1, "MasterClient::BatchReplicaClear");
+-    timer.LogRequest("object_keys_count=", object_keys.size(),
+-                     ", client_id=", client_id,
+-                     ", segment_name=", segment_name);
+-    auto result = invoke_rpc<&WrappedMasterService::BatchReplicaClear,
+-                             std::vector<std::string>>(object_keys, client_id,
+-                                                       segment_name);
+-    timer.LogResponseExpected(result);
++    timer.LogRequest("object_keys_count=", object_keys.size());
++    auto result =
++        tenant_id_ == TenantId::Default()
++            ? invoke_rpc<&WrappedMasterService::BatchReplicaClear,
++                         std::vector<std::string>>(object_keys, client_id,
++                                                   segment_name)
++            : invoke_rpc<&WrappedMasterService::BatchReplicaClearForTenant,
++                         std::vector<std::string>>(
++                  object_keys, client_id, segment_name, tenant_id_.value());
++    timer.LogResponse("success=", result.has_value());
+     return result;
+ }
+ 
+diff --git a/mooncake-store/src/master_service.cpp b/mooncake-store/src/master_service.cpp
+index d95cedb..8ac4bbb 100644
+--- a/mooncake-store/src/master_service.cpp
++++ b/mooncake-store/src/master_service.cpp
+@@ -1,4 +1,7 @@
+ #include "master_service.h"
++#include "shared_cache_diagnostics.h"
++#include <json/json.h>
++#include <unistd.h>
+ 
+ #include <algorithm>
+ #include <array>
+@@ -3337,15 +3340,13 @@ auto MasterService::BatchReplicaClear(
+ 
+     for (const auto& key : object_keys) {
+         if (key.empty()) {
+-            LOG(WARNING) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                         << " empty key, skipping";
++            LOG(WARNING) << "BatchReplicaClear: empty_key";
+             continue;
+         }
+         MetadataAccessorRW accessor(this,
+                                     MakeObjectIdentity(key, normalized_tenant));
+         if (!accessor.Exists()) {
+-            LOG(WARNING) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                         << " key=" << key << " not found, skipping";
++            LOG(WARNING) << "BatchReplicaClear: not_found";
+             continue;
+         }
+ 
+@@ -3353,17 +3354,13 @@ auto MasterService::BatchReplicaClear(
+ 
+         // Security check: Ensure the requesting client owns the object.
+         if (metadata.client_id != client_id) {
+-            LOG(WARNING) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                         << " key=" << key << " belongs to different client_id="
+-                         << metadata.client_id << ", expected=" << client_id
+-                         << ", skipping";
++            LOG(WARNING) << "BatchReplicaClear: wrong_writer";
+             continue;
+         }
+ 
+         // Safety check: Do not clear an object that has an active lease.
+         if (!metadata.IsLeaseExpired()) {
+-            LOG(WARNING) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                         << " key=" << key << " has active lease, skipping";
++            LOG(WARNING) << "BatchReplicaClear: active_lease";
+             continue;
+         }
+ 
+@@ -3372,9 +3369,7 @@ auto MasterService::BatchReplicaClear(
+             // indicate an ongoing Put operation, and clearing during this time
+             // could lead to an inconsistent state or interfere with the write.
+             if (!metadata.AllReplicas(&Replica::fn_is_completed)) {
+-                LOG(WARNING)
+-                    << "BatchReplicaClear: tenant=" << normalized_tenant
+-                    << " key=" << key << " has incomplete replicas, skipping";
++                LOG(WARNING) << "BatchReplicaClear: incomplete_replica";
+                 continue;
+             }
+ 
+@@ -3405,10 +3400,7 @@ auto MasterService::BatchReplicaClear(
+                         continue;
+                     }
+                     cleared_keys.emplace_back(key);
+-                    VLOG(1)
+-                        << "BatchReplicaClear: tenant=" << normalized_tenant
+-                        << " successfully cleared all replicas for key=" << key
+-                        << " for client_id=" << client_id;
++                    VLOG(1) << "BatchReplicaClear: cleared_all";
+                     continue;
+                 }
+             }
+@@ -3418,9 +3410,7 @@ auto MasterService::BatchReplicaClear(
+             // decrements disk_object_count via OnDiskReplicaRemoved.
+             accessor.Erase();
+             cleared_keys.emplace_back(key);
+-            VLOG(1) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                    << " successfully cleared all replicas for key=" << key
+-                    << " for client_id=" << client_id;
++            VLOG(1) << "BatchReplicaClear: cleared_all";
+         } else {
+             // Clear only replicas on the specified segment_name
+             const auto match_replica_on_segment =
+@@ -3439,11 +3429,7 @@ auto MasterService::BatchReplicaClear(
+             };
+ 
+             if (!metadata.HasReplica(match_replica_on_segment)) {
+-                LOG(WARNING)
+-                    << "BatchReplicaClear: tenant=" << normalized_tenant
+-                    << " key=" << key
+-                    << " has no replica on segment_name=" << segment_name
+-                    << ", skipping";
++                LOG(WARNING) << "BatchReplicaClear: segment_not_found";
+                 continue;
+             }
+ 
+@@ -3505,10 +3491,7 @@ auto MasterService::BatchReplicaClear(
+                         continue;
+                     }
+                     cleared_keys.emplace_back(key);
+-                    VLOG(1) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                            << " successfully cleared replicas on segment_name="
+-                            << segment_name << " for key=" << key
+-                            << " for client_id=" << client_id;
++                    VLOG(1) << "BatchReplicaClear: cleared_segment";
+                     continue;
+                 }
+             }
+@@ -3533,10 +3516,7 @@ auto MasterService::BatchReplicaClear(
+             }
+ 
+             cleared_keys.emplace_back(key);
+-            VLOG(1) << "BatchReplicaClear: tenant=" << normalized_tenant
+-                    << " successfully cleared replicas on segment_name="
+-                    << segment_name << " for key=" << key
+-                    << " for client_id=" << client_id;
++            VLOG(1) << "BatchReplicaClear: cleared_segment";
+         }
+     }
+ 
+@@ -4018,6 +3998,130 @@ MasterService::BatchGetReplicaListForAdmin(const std::vector<std::string>& keys,
+     return results;
+ }
+ 
++std::optional<std::string> MasterService::GetFiniteSnapshotForAdmin(
++    const shared_cache_diagnostics::SnapshotRequest& request) {
++    try {
++        const TenantId tenant(request.identity.tenant_id);
++        if (!tenant.IsValid() ||
++            (!enable_multi_tenants_ && tenant != TenantId::Default()) ||
++            request.keys.empty() || request.keys.size() > 256 ||
++            request.max_response_bytes < 4096 ||
++            request.max_response_bytes > 1048576 ||
++            !request.max_total_logical_bytes ||
++            request.max_total_logical_bytes > 17179869184ULL)
++            return std::nullopt;
++        const auto timestamp = [](auto now) {
++            return Json::Int64(
++                std::chrono::duration_cast<std::chrono::milliseconds>(
++                    now.time_since_epoch())
++                    .count());
++        };
++        const auto identifier = [&](const char* domain,
++                                    const std::string& value) {
++            return shared_cache_diagnostics::Identifier(
++                request.identity, domain, tenant.value(), value);
++        };
++        Json::Value payload;
++        payload["schema"] = "phala.shared-cache.snapshot.v1";
++        payload["success"] = true;
++        payload["case_id"] = request.identity.case_id;
++        payload["epoch"] = request.identity.epoch;
++        payload["sample_id"] = request.sample_id;
++        payload["tenant_id"] = tenant.value();
++        payload["requested_tenant_id"] = tenant.value();
++        payload["effective_tenant_id"] = tenant.value();
++        payload["master_multi_tenant_enabled"] = enable_multi_tenants_;
++        payload["master_pid"] = Json::Int64(getpid());
++        payload["sample_time_unix_ms"] =
++            timestamp(std::chrono::system_clock::now());
++        payload["lease_owner_available"] = false;
++        payload["generation_available"] = false;
++        payload["backend_drain_available"] = false;
++        payload["objects"] = Json::Value(Json::arrayValue);
++        uint64_t total = 0;
++        for (const auto& [id, key] : request.keys) {
++            if (std::chrono::steady_clock::now() >= request.deadline)
++                return std::nullopt;
++            Json::Value item;
++            item["key_id"] = id;
++            item["found"] = false;
++            std::shared_lock<std::shared_mutex> snapshot_lock(snapshot_mutex_);
++            MetadataAccessorRO accessor(this, MakeObjectIdentity(key, tenant));
++            if (accessor.Exists()) {
++                const auto& metadata = accessor.Get();
++                const auto* state = accessor.GetTenantState();
++                auto now = std::chrono::system_clock::now();
++                if (metadata.size > request.max_total_logical_bytes - total ||
++                    metadata.CountReplicas() > 64)
++                    return std::nullopt;
++                total += metadata.size;
++                item["found"] = true;
++                item["logical_bytes"] = Json::UInt64(metadata.size);
++                item["sample_time_unix_ms"] = timestamp(now);
++                item["writer_id"] =
++                    identifier("phala.shared-cache-owner.v1",
++                               UuidToString(metadata.client_id));
++                item["lease_expired"] = metadata.IsLeaseExpired(now);
++                item["pending"]["processing"] =
++                    Json::UInt64(accessor.InProcessing());
++                item["pending"]["offload"] =
++                    Json::UInt64(state->offloading_tasks.count(key));
++                item["pending"]["promotion"] =
++                    Json::UInt64(state->promotion_tasks.count(key));
++                item["pending"]["promotion_candidate"] =
++                    Json::UInt64(state->promotion_candidates.count(key));
++                item["pending"]["replication"] =
++                    Json::UInt64(state->replication_tasks.count(key));
++                item["pending"]["dynamic_replication"] =
++                    Json::UInt64(state->dynamic_replication_pending.count(key));
++                item["replicas"] = Json::Value(Json::arrayValue);
++                metadata.VisitReplicas(
++                    [](const Replica&) { return true; },
++                    [&](const Replica& replica) {
++                        Json::Value entry;
++                        std::ostringstream type, status;
++                        type << replica.type();
++                        status << replica.status();
++                        entry["id"] = Json::UInt64(replica.id());
++                        entry["type"] = type.str();
++                        entry["status"] = status.str();
++                        entry["readable"] = IsReplicaReadable(replica);
++                        entry["refcount"] = Json::UInt64(replica.get_refcnt());
++                        entry["segment_ids"] = Json::Value(Json::arrayValue);
++                        entry["owner_id"] = Json::Value();
++                        entry["scope_id"] = Json::Value();
++                        for (const auto& segment : replica.get_segment_names())
++                            if (segment)
++                                entry["segment_ids"].append(identifier(
++                                    "phala.shared-cache-segment.v1", *segment));
++                        if (replica.is_local_disk_replica()) {
++                            const auto descriptor =
++                                replica.get_descriptor()
++                                    .get_local_disk_descriptor();
++                            entry["owner_id"] =
++                                identifier("phala.shared-cache-owner.v1",
++                                           UuidToString(descriptor.client_id));
++                            entry["scope_id"] =
++                                identifier("phala.shared-cache-owner.v1",
++                                           descriptor.transport_endpoint);
++                        }
++                        item["replicas"].append(std::move(entry));
++                    });
++            }
++            payload["objects"].append(std::move(item));
++        }
++        Json::StreamWriterBuilder writer;
++        writer["indentation"] = "";
++        auto output = Json::writeString(writer, payload);
++        if (output.size() > request.max_response_bytes ||
++            std::chrono::steady_clock::now() >= request.deadline)
++            return std::nullopt;
++        return output;
++    } catch (...) {
++        return std::nullopt;
++    }
++}
++
+ auto MasterService::AllocateAndInsertMetadata(
+     MetadataShardAccessorRW& shard, const UUID& client_id,
+     const std::string& key, uint64_t value_length,
+@@ -8863,6 +8967,7 @@ auto MasterService::NotifyPromotionSuccess(const UUID& client_id,
+         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+     }
+ 
++    const ReplicaID diagnostic_replica_id = task_it->second.alloc_id;
+     bool committed = false;
+     Replica* staged = metadata.GetReplicaByID(task_it->second.alloc_id);
+     if (staged != nullptr && staged->is_memory_replica() &&
+@@ -8952,6 +9057,13 @@ auto MasterService::NotifyPromotionSuccess(const UUID& client_id,
+     if (!committed) {
+         return tl::make_unexpected(ErrorCode::REPLICA_IS_NOT_READY);
+     }
++    if (shared_cache_diagnostics::Capture::Global().Enabled()) {
++        shared_cache_diagnostics::Event event{shared_cache_diagnostics::Kind::PromotionCommit};
++        event.tier=shared_cache_diagnostics::Tier::Memory;
++        event.replica=diagnostic_replica_id; event.requested_bytes=completed_bytes;
++        event.returned_bytes=completed_bytes; event.committed=true;
++        shared_cache_diagnostics::Capture::Global().Emit(object_id.tenant_id.value(), object_id.user_key, event);
++    }
+     return {};
+ }
+ 
+@@ -8982,6 +9094,7 @@ auto MasterService::NotifyPromotionFailure(const UUID& client_id,
+         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+     }
+ 
++    const ReplicaID diagnostic_replica_id = task_it->second.alloc_id;
+     // Mirror the reaper's expiry path; see DiscardExpiredProcessingReplicas
+     // Part 4 for the full rationale on each step.
+     auto* source = metadata.GetReplicaByID(task_it->second.source_id);
+@@ -9047,6 +9160,12 @@ auto MasterService::NotifyPromotionFailure(const UUID& client_id,
+     local_ssd_manager_.RemovePromotion(client_id, object_id.tenant_id,
+                                        object_id.user_key);
+ 
++    if (shared_cache_diagnostics::Capture::Global().Enabled()) {
++        shared_cache_diagnostics::Event event{shared_cache_diagnostics::Kind::PromotionFailure};
++        event.tier=shared_cache_diagnostics::Tier::Memory;
++        event.replica=diagnostic_replica_id; event.error=static_cast<int>(ErrorCode::REPLICA_IS_NOT_READY);
++        shared_cache_diagnostics::Capture::Global().Emit(object_id.tenant_id.value(), object_id.user_key, event);
++    }
+     return {};
+ }
+ 
+diff --git a/mooncake-store/src/real_client.cpp b/mooncake-store/src/real_client.cpp
+index 5a93169..f009d41 100644
+--- a/mooncake-store/src/real_client.cpp
++++ b/mooncake-store/src/real_client.cpp
+@@ -17,6 +17,7 @@
+ #include <vector>
+ 
+ #include "real_client.h"
++#include "shared_cache_diagnostics.h"
+ #include "registered_pinned_memory.h"
+ #include "client_buffer.h"
+ #include "replica_selection.h"
+@@ -64,6 +65,58 @@ namespace mooncake {
+ namespace {
+ constexpr std::chrono::seconds kIpcRequestRecvTimeout{5};
+ 
++namespace scd = shared_cache_diagnostics;
++// Native batches are components, not user requests. Multiple disjoint pool
++// batches are accepted; repeated allowlisted keys make this epoch incomplete.
++class SharedCacheReadTrace {
++ public:
++    SharedCacheReadTrace(const std::vector<std::string>& keys,
++                         const std::string& tenant) noexcept
++        : keys_(keys), capture_(scd::Capture::Global()) {
++        enabled_ = capture_.Enabled() && capture_.BeginReadKeys(tenant,keys);
++        if (enabled_) {
++            try {
++                if (keys.size()>256) { capture_.Lost(); enabled_=false; return; }
++                tenant_=tenant;
++                events_.resize(keys.size());
++            } catch (...) { capture_.Lost(); enabled_=false; }
++        }
++    }
++    void Selected(size_t i, const Replica::Descriptor& r, uint64_t bytes) noexcept {
++        if (!enabled_) return;
++        try {
++            scd::Event event{scd::Kind::SelectedRead};
++            event.purpose=scd::ReadPurpose::ConsumerGet;
++            event.tier = r.is_memory_replica() ? scd::Tier::Memory :
++                         r.is_nof_replica() ? scd::Tier::NoF :
++                         r.is_local_disk_replica() ? scd::Tier::LocalDisk :
++                         r.is_dfs_replica() ? scd::Tier::Dfs : scd::Tier::Disk;
++            event.replica = r.id; event.requested_bytes = bytes;
++            if (r.is_local_disk_replica())
++                event.owner = r.get_local_disk_descriptor().transport_endpoint;
++            events_[i] = event;
++            capture_.Emit(tenant_, keys_[i], event);
++        } catch (...) { capture_.Lost(); enabled_ = false; }
++    }
++    template<class Results> void Finish(const Results& results) noexcept {
++        if (!enabled_) return;
++        for (size_t i=0; i<results.size(); ++i) {
++            auto& event=events_[i];
++            event.kind=scd::Kind::ReadReturn;
++            event.returned_bytes=results[i] ? results[i].value() : -1;
++            event.error=results[i] ? 0 : static_cast<int>(results[i].error());
++            capture_.Emit(tenant_, keys_[i], event);
++        }
++    }
++ private:
++    const std::vector<std::string>& keys_;
++    std::string tenant_;
++    scd::Capture& capture_;
++    bool enabled_=false;
++    std::vector<scd::Event> events_;
++};
++
++
+ size_t DivideRoundUp(size_t value, size_t divisor) {
+     return value / divisor + (value % divisor != 0);
+ }
+@@ -5068,6 +5121,8 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
+         return results;
+     }
+ 
++    SharedCacheReadTrace diagnostic(keys, client_->tenant_id());
++
+     // Query metadata for all keys
+     const auto query_results = client_->BatchQuery(keys);
+ 
+@@ -5130,6 +5185,7 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
+         // Calculate required buffer size
+         const auto replica = *best_replica;
+         uint64_t total_size = calculate_total_size(replica);
++        diagnostic.Selected(i, replica, total_size);
+ 
+         // Validate buffer capacity
+         if (sizes[i] < total_size) {
+@@ -5183,6 +5239,7 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
+     // Early return if no valid operations
+     if (valid_operations.empty() && valid_local_disk_operations.empty() &&
+         disk_operations.empty()) {
++        diagnostic.Finish(results);
+         return results;
+     }
+ 
+@@ -5353,6 +5410,7 @@ RealClient::batch_get_into_internal(const std::vector<std::string> &keys,
+     //           << "us, with memory key count: " << valid_operations.size()
+     //           << ", offload key count: " << offload_object_count;
+ 
++    diagnostic.Finish(results);
+     return results;
+ }
+ 
+@@ -6142,6 +6200,8 @@ RealClient::batch_get_into_multi_buffers_internal(
+     if (num_keys == 0) {
+         return results;
+     }
++    SharedCacheReadTrace diagnostic(keys, client_->tenant_id());
++
+     // Query metadata for all keys
+     const auto query_results = client_->BatchQuery(keys);
+     // Process each key individually and prepare for batch transfer
+@@ -6200,6 +6260,7 @@ RealClient::batch_get_into_multi_buffers_internal(
+         }
+         const auto replica = *best_replica;
+         uint64_t total_size = calculate_total_size(replica);
++        diagnostic.Selected(i, replica, total_size);
+         const auto &sizes = all_sizes[i];
+         uint64_t dst_total_size = 0;
+         for (auto &size : sizes) {
+@@ -6254,6 +6315,7 @@ RealClient::batch_get_into_multi_buffers_internal(
+     }
+     // Early return if no valid operations
+     if (valid_operations.empty() && valid_local_disk_ops.empty()) {
++        diagnostic.Finish(results);
+         return results;
+     }
+ 
+@@ -6455,6 +6517,7 @@ RealClient::batch_get_into_multi_buffers_internal(
+         }
+     }
+ 
++    diagnostic.Finish(results);
+     return results;
+ }
+ 
+@@ -6690,8 +6753,8 @@ RealClient::batch_get_replica_desc(const std::vector<std::string> &keys) {
+         if (query_results[i]) {
+             replica_map[keys[i]] = query_results[i].value().replicas;
+         } else {
+-            LOG(ERROR) << "batch_get_replica failed for key: " << keys[i]
+-                       << " with error: " << toString(query_results[i].error());
++            LOG(ERROR) << "batch_get_replica failed: "
++                       << toString(query_results[i].error());
+         }
+     }
+     return replica_map;
+diff --git a/mooncake-store/src/rpc_service.cpp b/mooncake-store/src/rpc_service.cpp
+index c45c5d6..6b67c59 100644
+--- a/mooncake-store/src/rpc_service.cpp
++++ b/mooncake-store/src/rpc_service.cpp
+@@ -198,16 +198,26 @@ tl::expected<std::vector<std::string>, ErrorCode>
+ WrappedMasterService::BatchReplicaClear(
+     const std::vector<std::string>& object_keys, const UUID& client_id,
+     const std::string& segment_name) {
++    return BatchReplicaClearForTenant(object_keys, client_id, segment_name,
++                                      "default");
++}
++
++tl::expected<std::vector<std::string>, ErrorCode>
++WrappedMasterService::BatchReplicaClearForTenant(
++    const std::vector<std::string>& object_keys, const UUID& client_id,
++    const std::string& segment_name, const std::string& tenant_id) {
++    const TenantId tenant(tenant_id);
++    if (!tenant.IsValid() || (tenant != TenantId::Default() &&
++                              !master_service_.IsTenantQuotaEnabled()))
++        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+     ScopedVLogTimer timer(1, "BatchReplicaClear");
+     const size_t total_keys = object_keys.size();
+-    timer.LogRequest("object_keys_count=", total_keys,
+-                     ", client_id=", client_id,
+-                     ", segment_name=", segment_name);
++    timer.LogRequest("object_keys_count=", total_keys);
+     MasterMetricManager::instance().inc_batch_replica_clear_requests(
+         total_keys);
+ 
+-    auto result =
+-        master_service_.BatchReplicaClear(object_keys, client_id, segment_name);
++    auto result = master_service_.BatchReplicaClear(
++        object_keys, client_id, segment_name, tenant.value());
+ 
+     size_t failure_count = 0;
+     if (!result.has_value()) {
+@@ -229,7 +239,7 @@ WrappedMasterService::BatchReplicaClear(
+             failure_count);
+     }
+ 
+-    timer.LogResponseExpected(result);
++    timer.LogResponse("success=", result.has_value());
+     return result;
+ }
+ 
+@@ -343,6 +353,15 @@ WrappedMasterService::BatchGetReplicaListForAdmin(
+         });
+ }
+ 
++std::optional<std::string> WrappedMasterService::GetFiniteSnapshotForAdmin(
++    const shared_cache_diagnostics::SnapshotRequest& request) {
++    const TenantId tenant(request.identity.tenant_id);
++    if (!tenant.IsValid() || (tenant != TenantId::Default() &&
++                              !master_service_.IsTenantQuotaEnabled()))
++        return std::nullopt;
++    return master_service_.GetFiniteSnapshotForAdmin(request);
++}
++
+ tl::expected<GetReplicaListResponse, ErrorCode>
+ WrappedMasterService::GetReplicaListForAdmin(const std::string& key,
+                                              const std::string& tenant_id) {
+@@ -1738,6 +1757,9 @@ void RegisterRpcService(
+         &wrapped_master_service);
+     server.register_handler<&mooncake::WrappedMasterService::BatchReplicaClear>(
+         &wrapped_master_service);
++    server.register_handler<
++        &mooncake::WrappedMasterService::BatchReplicaClearForTenant>(
++        &wrapped_master_service);
+     server.register_handler<
+         &mooncake::WrappedMasterService::GetReplicaListByRegex>(
+         &wrapped_master_service);
+diff --git a/mooncake-store/src/shared_cache_diagnostics.cpp b/mooncake-store/src/shared_cache_diagnostics.cpp
+new file mode 100644
+index 0000000..8cce434
+--- /dev/null
++++ b/mooncake-store/src/shared_cache_diagnostics.cpp
+@@ -0,0 +1,593 @@
++#include "shared_cache_diagnostics.h"
++
++#include <openssl/evp.h>
++#include <openssl/hmac.h>
++#include <json/json.h>
++
++#include <atomic>
++#include <cctype>
++#include <cerrno>
++#include <chrono>
++#include <cstdlib>
++#include <deque>
++#include <fcntl.h>
++#include <mutex>
++#include <stdexcept>
++#include <thread>
++#include <unordered_set>
++#include <unordered_map>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace mooncake::shared_cache_diagnostics {
++namespace {
++using Clock = std::chrono::steady_clock;
++constexpr uint64_t kSummaryReserve = 1024;
++thread_local ReadPurpose read_purpose=ReadPurpose::Unknown;
++bool Label(const std::string& s) {
++    if (s.empty() || s.size() > 96) return false;
++    for (unsigned char c : s)
++        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
++    return true;
++}
++bool Hex(const std::string& s) {
++    if (s.size() != 64) return false;
++    for (char c : s) if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f')) return false;
++    return true;
++}
++std::string EncodeJson(const Json::Value& v) {
++    Json::StreamWriterBuilder builder;
++    builder["indentation"] = "";
++    return Json::writeString(builder, v) + "\n";
++}
++const char* Name(Kind k) {
++    switch (k) {
++        case Kind::SelectedRead: return "selected_read";
++        case Kind::ReadReturn: return "read_return";
++        case Kind::BackendRead: return "backend_read_return";
++        case Kind::PromotionCommit: return "promotion_commit";
++        case Kind::PromotionFailure: return "promotion_failure";
++    }
++    return "unknown";
++}
++const char* Name(Tier t) {
++    switch (t) {
++        case Tier::Memory: return "MEMORY";
++        case Tier::NoF: return "NOF";
++        case Tier::LocalDisk: return "LOCAL_DISK";
++        case Tier::Disk: return "DISK";
++        case Tier::Dfs: return "DFS";
++        default: return "UNKNOWN";
++    }
++}
++const char* Name(Backend b) {
++    switch (b) {
++        case Backend::FilePerKey: return "file_per_key";
++        case Backend::Bucket: return "bucket";
++        case Backend::OffsetAllocator: return "offset_allocator";
++        default: return "none";
++    }
++}
++bool WriteAll(int fd, const std::string& s) {
++    size_t done = 0;
++    while (done < s.size()) {
++        auto n = write(fd, s.data() + done, s.size() - done);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) return false;
++        done += static_cast<size_t>(n);
++    }
++    return true;
++}
++}  // namespace
++
++std::string Identifier(const Config& c, const std::string& domain,
++                       const std::string& tenant, const std::string& value) {
++    std::string data = domain;
++    data.push_back('\0');
++    for (const auto* field : {&c.case_id, &c.epoch, &tenant, &value}) {
++        if (field->size() > 65536) throw std::invalid_argument("diagnostic field too large");
++        const auto n = static_cast<uint32_t>(field->size());
++        for (int shift : {24, 16, 8, 0}) data.push_back(static_cast<char>(n >> shift));
++        data += *field;
++    }
++    unsigned char digest[EVP_MAX_MD_SIZE];
++    unsigned int length = 0;
++    if (!HMAC(EVP_sha256(), c.key_salt.data(), static_cast<int>(c.key_salt.size()),
++              reinterpret_cast<const unsigned char*>(data.data()), data.size(),
++              digest, &length) || length != 32)
++        throw std::runtime_error("diagnostic HMAC failed");
++    static constexpr char hex[] = "0123456789abcdef";
++    std::string result;
++    result.reserve(64);
++    for (unsigned int i = 0; i < length; ++i) {
++        result += hex[digest[i] >> 4]; result += hex[digest[i] & 15];
++    }
++    return result;
++}
++
++struct Capture::Impl {
++    Config config;
++    std::unordered_set<std::string> allowed;
++    std::unordered_map<std::string,uint64_t> reads;
++    std::mutex mutex;
++    std::deque<std::string> queue;
++    Clock::time_point deadline;
++    uint64_t emitted = 0, dropped = 0, rejected = 0, bytes = 0, attempts = 0;
++    std::atomic<bool> expired{false};
++    explicit Impl(Config c) : config(std::move(c)) {
++        if (!Label(config.case_id) || !Label(config.epoch) || !Label(config.rank) ||
++            !Label(config.component) || config.tenant_id.empty() ||
++            config.tenant_id.size() > 256 || config.key_salt.size() < 16 ||
++            config.key_salt.size() > 256 || !config.max_keys || config.max_keys > 256 ||
++            config.key_ids.empty() || config.key_ids.size() > config.max_keys ||
++            !config.max_events || config.max_events > 8192 ||
++            config.max_bytes < 4096 || config.max_bytes > 16 * 1024 * 1024 ||
++            !config.max_duration_ms || config.max_duration_ms > 120000 ||
++            config.max_requests != 1 || !config.queue_capacity || config.queue_capacity > 1024)
++            throw std::invalid_argument("invalid bounded diagnostic manifest");
++        for (const auto& id : config.key_ids)
++            if (!Hex(id) || !allowed.insert(id).second)
++                throw std::invalid_argument("invalid diagnostic key allowlist");
++        deadline = Clock::now() + std::chrono::milliseconds(config.max_duration_ms);
++    }
++};
++
++ReadPurposeScope::ReadPurposeScope(ReadPurpose value) noexcept {
++    if (Capture::Global().Enabled()) {
++        active_=true; previous_=read_purpose; read_purpose=value;
++    }
++}
++ReadPurposeScope::~ReadPurposeScope() { if(active_) read_purpose=previous_; }
++ReadPurpose ReadPurposeScope::Current() noexcept { return read_purpose; }
++
++Capture::Capture() = default;
++Capture::Capture(Config c) : impl_(std::make_unique<Impl>(std::move(c))) {}
++Capture::~Capture() = default;
++bool Capture::Enabled() const noexcept { return impl_ && !impl_->expired.load(); }
++bool Capture::OwnerEnabled() const noexcept {
++    return Enabled() && impl_->config.capture_owner_drain;
++}
++void Capture::EmitOwner(const OwnerDrainSnapshot& owner) noexcept {
++    if (!OwnerEnabled()) return;
++    try {
++        std::lock_guard<std::mutex> guard(impl_->mutex);
++        auto& s = *impl_;
++        if (Clock::now() >= s.deadline) {
++            s.expired = true;
++            ++s.dropped;
++            return;
++        }
++        if (++s.attempts > s.config.max_events * 4 ||
++            s.emitted >= s.config.max_events ||
++            s.queue.size() >= s.config.queue_capacity) {
++            ++s.dropped;
++            return;
++        }
++        Json::Value v;
++        v["schema"] = "phala.shared-cache.owner-drain.v1";
++        v["kind"] = "owner_drain";
++        v["case_id"] = s.config.case_id;
++        v["epoch"] = s.config.epoch;
++        v["tenant_id"] = s.config.tenant_id;
++        v["pid"] = Json::Int64(getpid());
++        const auto id = [&](const char* domain, const std::string& raw) {
++            return Identifier(s.config, domain, s.config.tenant_id, raw);
++        };
++        v["owner_id"] = id("phala.shared-cache-owner.v1", owner.owner);
++        v["store_instance_id"] =
++            id("phala.shared-cache-owner.v1", owner.instance);
++        v["scope_id"] = id("phala.shared-cache-owner.v1", owner.scope);
++        v["backend_path_id"] = id("phala.shared-cache-file.v1", owner.path);
++        v["owner_client_requested_tenant_id"] = owner.client_tenant;
++        v["coverage"] = "owner_global_bucket";
++        v["sample_time_unix_ms"] = Json::UInt64(owner.sample_time_unix_ms);
++        v["init_completed_unix_ms"] =
++            Json::UInt64(owner.init_completed_unix_ms);
++        v["scan_completed_unix_ms"] =
++            Json::UInt64(owner.scan_completed_unix_ms);
++        v["owner_sample_sequence"] = Json::UInt64(owner.sample_sequence);
++        v["activity_sequence"] = Json::UInt64(owner.activity_sequence);
++        const char* names[] = {
++            "loads",      "offloads", "promotions",         "removes",
++            "heartbeats", "rescans",  "leased_read_buffers"};
++        for (size_t i = 0; i < owner.active.size(); ++i)
++            v["active"][names[i]] = Json::UInt64(owner.active[i]);
++        v["pending"]["backend_writes"] = Json::UInt64(owner.pending_writes);
++        v["pending"]["backend_evictions"] =
++            Json::UInt64(owner.pending_evictions);
++        v["pending"]["ungrouped_offloads"] =
++            Json::UInt64(owner.pending_ungrouped);
++        v["pending"]["read_guards"] = Json::UInt64(owner.read_guards);
++        v["bucket_count"] = Json::UInt64(owner.bucket_count);
++        v["covered_buckets"] = Json::UInt64(owner.covered_buckets);
++        v["available"] = owner.available;
++        v["consistent"] = owner.consistent;
++        v["backend_initialized"] = owner.backend_initialized;
++        v["bucket_eviction_policy"] = owner.eviction_policy;
++        v["disk_watermark_eviction"] = owner.watermark_eviction;
++        v["metadata_resync_pending"] = owner.resync_pending;
++        v["draining"] = owner.draining;
++        v["heartbeat_ok"] = owner.heartbeat_ok;
++        const auto line = EncodeJson(v);
++        if (line.size() > 4096 ||
++            s.bytes + line.size() + kSummaryReserve > s.config.max_bytes) {
++            ++s.dropped;
++            return;
++        }
++        s.queue.push_back(line);
++        s.bytes += line.size();
++        ++s.emitted;
++    } catch (...) {
++        Lost();
++    }
++}
++bool Capture::BeginReadKeys(const std::string& tenant, const std::vector<std::string>& keys) noexcept {
++    if (!Enabled()) return false;
++    try {
++        std::lock_guard<std::mutex> guard(impl_->mutex);
++        auto& s=*impl_;
++        if (Clock::now()>=s.deadline) { s.expired=true; ++s.dropped; return false; }
++        if (keys.size()>256) { ++s.dropped; return false; }
++        if (tenant!=s.config.tenant_id) return false;
++        bool matched=false;
++        for (const auto& key:keys) {
++            if (++s.attempts>s.config.max_events*4) { ++s.dropped; return false; }
++            const auto id=Identifier(s.config,"phala.shared-cache-key.v1",tenant,key);
++            if (!s.allowed.count(id)) continue;
++            matched=true;
++            // Several component batches belong to one engine request. Only
++            // repeated reads of the same allowlisted object are ambiguous.
++            if (++s.reads[id]>s.config.max_requests) ++s.dropped;
++        }
++        return matched;
++    } catch (...) { Lost(); return false; }
++}
++void Capture::Lost() noexcept {
++    if (!impl_) return;
++    try { std::lock_guard<std::mutex> g(impl_->mutex); ++impl_->dropped; } catch (...) {}
++}
++void Capture::Emit(const std::string& tenant, const std::string& key,
++                   const Event& event) noexcept {
++    if (!Enabled()) return;
++    try {
++        std::lock_guard<std::mutex> guard(impl_->mutex);
++        auto& s = *impl_;
++        if (Clock::now() >= s.deadline) { s.expired = true; ++s.dropped; return; }
++        if (tenant != s.config.tenant_id) { ++s.rejected; return; }
++        if (++s.attempts>s.config.max_events*4) { ++s.dropped; return; }
++        const auto id = Identifier(s.config, "phala.shared-cache-key.v1", tenant, key);
++        if (!s.allowed.count(id)) { ++s.rejected; return; }
++        if (s.emitted >= s.config.max_events || s.queue.size() >= s.config.queue_capacity) {
++            ++s.dropped; return;
++        }
++        Json::Value v;
++        v["schema"] = "phala.shared-cache.native.v1";
++        v["case_id"] = s.config.case_id; v["epoch"] = s.config.epoch;
++        v["rank"] = s.config.rank; v["component"] = s.config.component;
++        v["pid"] = Json::Int64(getpid());
++        v["key_id"] = id; v["kind"] = Name(event.kind); v["tier"] = Name(event.tier);
++        v["read_purpose"] = event.purpose==ReadPurpose::ConsumerGet ? "consumer_get" : event.purpose==ReadPurpose::Promotion ? "promotion" : "unknown";
++        v["backend"] = Name(event.backend); v["sequence"] = Json::UInt64(s.emitted + 1);
++        v["replica_id"] = Json::UInt64(event.replica);
++        v["requested_bytes"] = Json::UInt64(event.requested_bytes);
++        v["returned_bytes"] = Json::Int64(event.returned_bytes);
++        v["error"] = event.error; v["committed"] = event.committed;
++        v["offset"] = Json::UInt64(event.offset);
++        if (!event.owner.empty()) v["owner_id"] = Identifier(s.config, "phala.shared-cache-owner.v1", tenant, event.owner);
++        if (!event.physical_file.empty()) v["file_id"] = Identifier(s.config, "phala.shared-cache-file.v1", tenant, event.physical_file);
++        const auto line = EncodeJson(v);
++        if (line.size() > 2048 || s.bytes + line.size() + kSummaryReserve > s.config.max_bytes) {
++            ++s.dropped; return;
++        }
++        s.queue.push_back(line); s.bytes += line.size(); ++s.emitted;
++    } catch (...) {
++        // Diagnostics are never allowed to throw into a serving path.
++        if (impl_) { try { std::lock_guard<std::mutex> g(impl_->mutex); ++impl_->dropped; } catch (...) {} }
++    }
++}
++Snapshot Capture::Drain() noexcept {
++    Snapshot result;
++    if (!impl_) return result;
++    try {
++        std::lock_guard<std::mutex> guard(impl_->mutex);
++        result.events.assign(impl_->queue.begin(), impl_->queue.end());
++        impl_->queue.clear(); result.emitted = impl_->emitted;
++        result.dropped = impl_->dropped; result.rejected = impl_->rejected;
++        result.bytes = impl_->bytes; result.complete = !result.dropped;
++    } catch (...) { Lost(); result.complete = false; }
++    return result;
++}
++
++struct Capture::Runtime {
++    Capture disabled;
++    std::unique_ptr<Capture> capture;
++    std::thread worker;
++    std::atomic<bool> stop{false};
++    int fd = -1;
++    std::atomic<Capture*> active{nullptr};
++    std::atomic<bool> waiting{false};
++    std::mutex arm_mutex;
++    std::string manifest_path;
++    explicit Runtime(const char* env_name) noexcept {
++        try {
++            const char* path = std::getenv(env_name);
++            if (!path || !*path) return;
++            manifest_path = path;
++            Load();
++        } catch (...) {
++        }
++    }
++    void Load() noexcept {
++        const char* path = manifest_path.c_str();
++        int input = -1;
++        try {
++            input = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
++            if (input < 0 && errno == ENOENT) {
++                waiting = true;
++                return;
++            }
++            waiting = false;
++            struct stat st{};
++            if (input < 0 || fstat(input, &st) || !S_ISREG(st.st_mode) ||
++                st.st_uid != geteuid() || (st.st_mode & 077) ||
++                st.st_size <= 0 || st.st_size > 65536)
++                throw std::runtime_error("diagnostic manifest rejected");
++            std::string data(static_cast<size_t>(st.st_size), '\0');
++            size_t pos = 0;
++            while (pos < data.size()) {
++                auto n = read(input, data.data() + pos, data.size() - pos);
++                if (n < 0 && errno == EINTR) continue;
++                if (n <= 0)
++                    throw std::runtime_error("diagnostic manifest short read");
++                pos += static_cast<size_t>(n);
++            }
++            close(input);
++            input = -1;
++            Json::Value v;
++            Json::CharReaderBuilder reader;
++            std::string errors;
++            reader["rejectDupKeys"] = true;
++            auto parser =
++                std::unique_ptr<Json::CharReader>(reader.newCharReader());
++            if (!parser->parse(data.data(), data.data() + data.size(), &v,
++                               &errors))
++                throw std::runtime_error("invalid diagnostic manifest JSON");
++            Config c;
++            if (v.isMember("capture_owner_drain") &&
++                !v["capture_owner_drain"].isBool())
++                throw std::runtime_error("invalid diagnostic owner mode");
++            c.capture_owner_drain =
++                v.get("capture_owner_drain", false).asBool();
++            c.case_id = v["case_id"].asString();
++            c.epoch = v["epoch"].asString();
++            c.tenant_id = v["tenant_id"].asString();
++            c.key_salt = v["key_salt"].asString();
++            c.rank = v["rank"].asString();
++            c.component = v["component"].asString();
++            for (const auto& key : v["key_ids"])
++                c.key_ids.push_back(key.asString());
++            c.max_keys = v["max_keys"].asUInt64();
++            c.max_events = v["max_events"].asUInt64();
++            c.max_bytes = v["max_bytes"].asUInt64();
++            c.max_duration_ms = v["max_duration_ms"].asUInt64();
++            c.max_requests = v["max_requests"].asUInt64();
++            capture = std::make_unique<Capture>(c);
++            fd = open(v["output_path"].asCString(),
++                      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++                      0600);
++            if (fd < 0) throw std::runtime_error("diagnostic output rejected");
++            worker = std::thread([this, c] {
++                try {
++                    const auto deadline=Clock::now()+std::chrono::milliseconds(c.max_duration_ms);
++                    bool ok=true;
++                    while (!stop && Clock::now()<deadline) {
++                        auto s=capture->Drain();
++                        for (const auto& line : s.events)
++                            ok = WriteAll(fd, line) && ok;
++                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
++                    }
++                    capture->impl_->expired=true;
++                    auto s=capture->Drain();
++                    for (const auto& line : s.events)
++                        ok = WriteAll(fd, line) && ok;
++                    Json::Value summary;
++                    summary["kind"] = "capture_summary";
++                    summary["emitted"] = Json::UInt64(s.emitted);
++                    summary["dropped"] = Json::UInt64(s.dropped);
++                    summary["rejected"] = Json::UInt64(s.rejected);
++                    summary["complete"] = s.complete && ok;
++                    summary["bytes"] = Json::UInt64(s.bytes);
++                    WriteAll(fd,EncodeJson(summary));
++                } catch (...) {
++                    capture->impl_->expired=true;
++                    WriteAll(fd,"{\"kind\":\"capture_summary\",\"complete\":false,\"writer_failed\":true}\n");
++                }
++            });
++            active.store(capture.get(), std::memory_order_release);
++        } catch (...) {
++            if (input >= 0) close(input);
++            if (fd >= 0) {
++                close(fd);
++                fd = -1;
++            }
++            capture.reset();
++            waiting = false;
++            // Fixed message only; parser errors can contain salt/input.
++            const char message[] =
++                "Mooncake shared cache diagnostics disabled: invalid "
++                "manifest/output\n";
++            const auto written =
++                write(STDERR_FILENO, message, sizeof(message) - 1);
++            (void)written;
++        }
++    }
++    Capture& Get() noexcept {
++        if (auto* current = active.load(std::memory_order_acquire))
++            return *current;
++        if (!waiting.load()) return disabled;
++        try {
++            std::lock_guard<std::mutex> guard(arm_mutex);
++            if (auto* current = active.load(std::memory_order_acquire))
++                return *current;
++            if (!waiting.load()) return disabled;
++            Load();
++            if (auto* current = active.load(std::memory_order_acquire))
++                return *current;
++        } catch (...) {
++            waiting = false;
++        }
++        return disabled;
++    }
++    ~Runtime() {
++        stop = true;
++        if (worker.joinable()) worker.join();
++        if (fd >= 0) close(fd);
++    }
++};
++Capture& Capture::Global() noexcept {
++    static Runtime runtime("MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST");
++    return runtime.Get();
++}
++Capture& Capture::OwnerGlobal() noexcept {
++    static Runtime runtime("MOONCAKE_SHARED_CACHE_OWNER_DRAIN_MANIFEST");
++    return runtime.Get();
++}
++
++std::optional<SnapshotRequest> AuthorizeSnapshot(
++    const std::string& tenant, const std::string& case_id,
++    const std::string& epoch, const std::string& sample_id,
++    const std::string& key_ids) noexcept {
++    struct Policy {
++        std::mutex mutex;
++        std::optional<SnapshotRequest> request;
++        std::unordered_set<std::string> samples;
++        uint64_t remaining = 0;
++        Policy() noexcept {
++            int fd = -1;
++            try {
++                const char* path =
++                    std::getenv("MOONCAKE_SHARED_CACHE_SNAPSHOT_MANIFEST");
++                if (!path || !*path) return;
++                fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
++                struct stat st{};
++                if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) ||
++                    st.st_uid != geteuid() || (st.st_mode & 0777) != 0600 ||
++                    st.st_size <= 0 || st.st_size > 65536)
++                    throw std::invalid_argument("manifest");
++                std::string data(static_cast<size_t>(st.st_size), '\0');
++                size_t pos = 0;
++                while (pos < data.size()) {
++                    const auto n =
++                        read(fd, data.data() + pos, data.size() - pos);
++                    if (n < 0 && errno == EINTR) continue;
++                    if (n <= 0) throw std::invalid_argument("manifest");
++                    pos += static_cast<size_t>(n);
++                }
++                close(fd);
++                fd = -1;
++                Json::CharReaderBuilder reader;
++                reader["rejectDupKeys"] = true;
++                reader["failIfExtra"] = true;
++                Json::Value v;
++                std::string errors;
++                std::unique_ptr<Json::CharReader> parser(
++                    reader.newCharReader());
++                if (!parser->parse(data.data(), data.data() + data.size(), &v,
++                                   &errors) ||
++                    !v.isObject())
++                    throw std::invalid_argument("manifest");
++                for (const char* name :
++                     {"tenant_id", "case_id", "epoch", "key_salt"})
++                    if (!v[name].isString())
++                        throw std::invalid_argument("manifest");
++                for (const char* name :
++                     {"max_snapshots", "max_duration_ms", "max_response_bytes",
++                      "max_total_logical_bytes"})
++                    if (!v[name].isUInt64())
++                        throw std::invalid_argument("manifest");
++                SnapshotRequest q;
++                q.identity.tenant_id = v["tenant_id"].asString();
++                q.identity.case_id = v["case_id"].asString();
++                q.identity.epoch = v["epoch"].asString();
++                q.identity.key_salt = v["key_salt"].asString();
++                remaining = v["max_snapshots"].asUInt64();
++                const auto duration = v["max_duration_ms"].asUInt64();
++                q.max_response_bytes = v["max_response_bytes"].asUInt64();
++                q.max_total_logical_bytes =
++                    v["max_total_logical_bytes"].asUInt64();
++                if (!Label(q.identity.case_id) || !Label(q.identity.epoch) ||
++                    q.identity.tenant_id.empty() ||
++                    q.identity.tenant_id.size() > 256 ||
++                    q.identity.key_salt.size() < 16 ||
++                    q.identity.key_salt.size() > 256 || !remaining ||
++                    remaining > 16 || !duration || duration > 120000 ||
++                    q.max_response_bytes < 4096 ||
++                    q.max_response_bytes > 1048576 ||
++                    !q.max_total_logical_bytes ||
++                    q.max_total_logical_bytes > 17179869184ULL ||
++                    !v["keys"].isArray() || v["keys"].empty() ||
++                    v["keys"].size() > 256)
++                    throw std::invalid_argument("manifest");
++                std::unordered_set<std::string> ids;
++                for (const auto& item : v["keys"]) {
++                    if (!item["key"].isString() || !item["key_id"].isString())
++                        throw std::invalid_argument("manifest");
++                    auto key = item["key"].asString();
++                    auto id = item["key_id"].asString();
++                    if (key.empty() || key.size() > 4096 ||
++                        key.find_first_of(",*?[]") != std::string::npos ||
++                        !Hex(id) || !ids.insert(id).second)
++                        throw std::invalid_argument("manifest");
++                    for (unsigned char c : key)
++                        if (c < 32 || c == 127)
++                            throw std::invalid_argument("manifest");
++                    if (Identifier(q.identity, "phala.shared-cache-key.v1",
++                                   q.identity.tenant_id, key) != id)
++                        throw std::invalid_argument("manifest");
++                    q.keys.emplace_back(std::move(id), std::move(key));
++                }
++                q.deadline = Clock::now() + std::chrono::milliseconds(duration);
++                request = std::move(q);
++            } catch (...) {
++                if (fd >= 0) close(fd);
++                request.reset();
++                remaining = 0;
++            }
++        }
++    };
++    static Policy policy;
++    try {
++        std::lock_guard<std::mutex> guard(policy.mutex);
++        if (!policy.request || !policy.remaining ||
++            Clock::now() >= policy.request->deadline || !Label(sample_id) ||
++            key_ids.size() > 16640 ||
++            tenant != policy.request->identity.tenant_id ||
++            case_id != policy.request->identity.case_id ||
++            epoch != policy.request->identity.epoch ||
++            policy.samples.count(sample_id))
++            return std::nullopt;
++        std::unordered_set<std::string> requested;
++        size_t start = 0;
++        while (start <= key_ids.size()) {
++            const auto end = key_ids.find(',', start);
++            const auto id = key_ids.substr(
++                start, end == std::string::npos ? end : end - start);
++            if (!Hex(id) || !requested.insert(id).second) return std::nullopt;
++            if (end == std::string::npos) break;
++            start = end + 1;
++        }
++        if (requested.size() != policy.request->keys.size())
++            return std::nullopt;
++        for (const auto& key : policy.request->keys)
++            if (!requested.count(key.first)) return std::nullopt;
++        auto result = *policy.request;
++        result.sample_id = sample_id;
++        policy.samples.insert(sample_id);
++        --policy.remaining;
++        return result;
++    } catch (...) {
++        return std::nullopt;
++    }
++}
++
++}  // namespace mooncake::shared_cache_diagnostics
+diff --git a/mooncake-store/src/storage_backend.cpp b/mooncake-store/src/storage_backend.cpp
+index e82bc2a..cf272b3 100644
+--- a/mooncake-store/src/storage_backend.cpp
++++ b/mooncake-store/src/storage_backend.cpp
+@@ -1,5 +1,7 @@
+ #include "serializer.h"
+ #include "storage_backend.h"
++#include "shared_cache_diagnostics.h"
++#include "tenant_id.h"
+ 
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -33,6 +35,26 @@
+ #include <ylt/util/tl/expected.hpp>
+ 
+ namespace {
++// Called only after the actual backend read returns. Scoped storage keys are
++// decoded exactly once so the client/master use the identical tenant/key ID.
++void DiagnosticBackendRead(const std::string& scoped_key,
++                          mooncake::shared_cache_diagnostics::Backend backend,
++                          const std::string& file, uint64_t offset,
++                          uint64_t expected, int64_t actual, int error) noexcept {
++    namespace sd = mooncake::shared_cache_diagnostics;
++    auto& capture = sd::Capture::Global();
++    if (!capture.Enabled()) return;
++    try {
++        const auto identity = mooncake::TenantId::ParseScopedKey(scoped_key);
++        sd::Event event{sd::Kind::BackendRead};
++        event.tier=sd::Tier::LocalDisk; event.backend=backend;
++        event.purpose=sd::ReadPurposeScope::Current();
++        event.physical_file=file; event.offset=offset;
++        event.requested_bytes=expected; event.returned_bytes=actual;
++        event.error=error;
++        capture.Emit(identity.first.value(),identity.second,event);
++    } catch (...) { capture.Lost(); }
++}
+ struct FdGuard {
+     int fd = -1;
+     explicit FdGuard(int f) : fd(f) {}
+@@ -1553,11 +1575,16 @@ tl::expected<void, ErrorCode> StorageBackendAdaptor::BatchLoad(
+ 
+         auto r = storage_backend_->LoadObject(path, kv_buf, kv_buf.size());
+         if (!r) {
++            DiagnosticBackendRead(key, shared_cache_diagnostics::Backend::FilePerKey,
++                                  path, 0, slice.size, -1, static_cast<int>(r.error()));
+             LOG(ERROR) << "Failed to load from file";
+             return tl::make_unexpected(r.error());
+         }
+ 
+         struct_pb::from_pb(kv, kv_buf);
++        DiagnosticBackendRead(key, shared_cache_diagnostics::Backend::FilePerKey,
++                              path, 0, slice.size, kv.value.size(),
++                              kv.value.size()==slice.size ? 0 : static_cast<int>(ErrorCode::FILE_READ_FAIL));
+ 
+         if (!kv.value.empty()) {
+             std::memcpy(slice.ptr, kv.value.data(), kv.value.size());
+@@ -2025,6 +2052,22 @@ tl::expected<void, ErrorCode> BucketStorageBackend::BatchLoad(
+ 
+             auto batch_read_result = uring_file->batch_read(
+                 read_descs.data(), static_cast<int>(read_descs.size()));
++            // Report each true io_uring descriptor, including short/error
++            // results; aligned read bytes are reduced to the logical payload.
++            if (shared_cache_diagnostics::Capture::Global().Enabled()) {
++              for (size_t i=0; i<read_descs.size(); ++i) {
++                const auto& desc=read_descs[i];
++                const auto& bp=batch_read_plans[i];
++                const auto& plan=*bp.plan;
++                const int64_t actual=desc.bytes_read>bp.offset_in_buffer ?
++                    static_cast<int64_t>(std::min<size_t>(desc.bytes_read-bp.offset_in_buffer, plan.dest_slice.size)) : 0;
++                const bool full=desc.completed && desc.error==ErrorCode::OK && desc.bytes_read>=bp.min_required;
++                DiagnosticBackendRead(plan.key, shared_cache_diagnostics::Backend::Bucket,
++                                      filepath_res.value(), plan.offset+plan.key_size,
++                                      plan.dest_slice.size, actual,
++                                      full ? 0 : static_cast<int>(ErrorCode::FILE_READ_FAIL));
++              }
++            }
+             if (!batch_read_result) {
+                 for (size_t i = 0; i < read_descs.size(); ++i) {
+                     if (read_descs[i].error == ErrorCode::OK) continue;
+@@ -2069,6 +2112,10 @@ tl::expected<void, ErrorCode> BucketStorageBackend::BatchLoad(
+             int64_t actual_offset = plan.offset + plan.key_size;
+             iovec iov{plan.dest_slice.ptr, plan.dest_slice.size};
+             auto read_result = file->vector_read(&iov, 1, actual_offset);
++            DiagnosticBackendRead(plan.key, shared_cache_diagnostics::Backend::Bucket,
++                                  filepath_res.value(), actual_offset, plan.dest_slice.size,
++                                  read_result ? static_cast<int64_t>(read_result.value()) : -1,
++                                  read_result ? (read_result.value()==plan.dest_slice.size ? 0 : static_cast<int>(ErrorCode::FILE_READ_FAIL)) : static_cast<int>(read_result.error()));
+             if (!read_result) {
+                 LOG(ERROR) << "vector_read failed for key: " << plan.key
+                            << ", bucket_id=" << plan.bucket_id
+@@ -2445,6 +2492,32 @@ size_t BucketStorageBackend::UngroupedOffloadingObjectsSize() const {
+     return ungrouped_offloading_objects_.size();
+ }
+ 
++StorageBackendInterface::DrainSnapshot BucketStorageBackend::GetDrainSnapshot()
++    const {
++    DrainSnapshot result;
++    {
++        SharedMutexLocker lock(&mutex_, shared_lock);
++        result.initialized = initialized_.load();
++        result.pending_writes = pending_write_keys_.size();
++        result.pending_evictions = pending_eviction_keys_.size();
++        result.bucket_count = buckets_.size();
++        std::ostringstream policy;
++        policy << bucket_backend_config_.eviction_policy;
++        result.eviction_policy = policy.str();
++        // Finite experiment only; never scan an unbounded production store.
++        if (buckets_.size() > 256) return result;
++        for (const auto& [id, bucket] : buckets_) {
++            (void)id;
++            result.read_guards +=
++                bucket->inflight_reads_.load(std::memory_order_acquire);
++            ++result.covered_buckets;
++        }
++    }
++    result.pending_ungrouped = UngroupedOffloadingObjectsSize();
++    result.available = true;
++    return result;
++}
++
+ tl::expected<void, ErrorCode> BucketStorageBackend::GroupOffloadingKeysByBucket(
+     const std::unordered_map<std::string, int64_t>& offloading_objects,
+     std::vector<std::vector<std::string>>& buckets_keys) {
+@@ -5366,6 +5439,7 @@ tl::expected<void, ErrorCode> OffsetAllocatorStorageBackend::BatchLoad(
+         // the data_file_ member) cannot destroy this file while we still have
+         // pending I/O on it in phase 2 (no shard lock held there).
+         std::shared_ptr<StorageFile> data_file;
++        std::string diagnostic_file;
+     };
+ 
+     std::vector<ReadPlan> read_plans;
+@@ -5400,7 +5474,8 @@ tl::expected<void, ErrorCode> OffsetAllocatorStorageBackend::BatchLoad(
+         read_plans.push_back(
+             ReadPlan{key, entry.offset, entry.value_size,
+                      entry.allocation,  // shared_ptr copy, increments refcount
+-                     dest_slice, data_file_});
++                     dest_slice, data_file_,
++                     shared_cache_diagnostics::Capture::Global().Enabled() ? data_file_path_ : std::string{}});
+ 
+         // Lock released here; allocation + data_file stay alive via shared_ptr
+     }
+@@ -5463,6 +5538,11 @@ tl::expected<void, ErrorCode> OffsetAllocatorStorageBackend::BatchLoad(
+         auto read_value_result = plan.data_file->vector_read(
+             &value_iov, 1,
+             plan.offset + RecordHeader::ValueOffsetInRecord(header.key_len));
++        DiagnosticBackendRead(plan.key, shared_cache_diagnostics::Backend::OffsetAllocator,
++                              plan.diagnostic_file, plan.offset+RecordHeader::ValueOffsetInRecord(header.key_len),
++                              plan.dest_slice.size,
++                              read_value_result ? static_cast<int64_t>(read_value_result.value()) : -1,
++                              read_value_result ? (read_value_result.value()==header.value_len ? 0 : static_cast<int>(ErrorCode::FILE_READ_FAIL)) : static_cast<int>(read_value_result.error()));
+         if (!read_value_result) {
+             LOG(ERROR) << "Failed to read value for key: " << plan.key
+                        << ", error: " << read_value_result.error();
+diff --git a/mooncake-store/tests/CMakeLists.txt b/mooncake-store/tests/CMakeLists.txt
+index fd64412..22c84e2 100644
+--- a/mooncake-store/tests/CMakeLists.txt
++++ b/mooncake-store/tests/CMakeLists.txt
+@@ -36,6 +36,10 @@ function(add_ha_test name)
+ endfunction()
+ 
+ add_store_test(buffer_allocator_test buffer_allocator_test.cpp)
++add_store_test(shared_cache_diagnostics_test shared_cache_diagnostics_test.cpp)
++# This standalone fixture uses assert for validation and runtime probes.
++target_compile_options(shared_cache_diagnostics_test PRIVATE -UNDEBUG)
++add_store_test(finite_snapshot_test finite_snapshot_test.cpp)
+ add_store_test(runtime_accelerator_test runtime_accelerator_test.cpp)
+ add_store_test(registered_pinned_memory_test registered_pinned_memory_test.cpp)
+ add_store_test(allocation_strategy_test allocation_strategy_test.cpp)
+diff --git a/mooncake-store/tests/file_storage_test.cpp b/mooncake-store/tests/file_storage_test.cpp
+index 8ed67a5..2d9b20e 100644
+--- a/mooncake-store/tests/file_storage_test.cpp
++++ b/mooncake-store/tests/file_storage_test.cpp
+@@ -2,6 +2,11 @@
+ #include <gtest/gtest.h>
+ 
+ #include <chrono>
++#include <condition_variable>
++#include <future>
++#include <fstream>
++#include <sys/stat.h>
++#include <json/json.h>
+ #include <cstring>
+ #include <cstdlib>
+ #include <filesystem>
+@@ -27,6 +32,11 @@ void UnsetEnv(const std::string& key) { unsetenv(key.c_str()); }
+ class FileStorageTest : public ::testing::Test {
+    protected:
+     std::string data_path;
++    void SetBackend(FileStorage& storage,
++                    std::shared_ptr<StorageBackendInterface> backend) {
++        storage.storage_backend_ = std::move(backend);
++    }
++
+     void SetUp() override {
+         google::InitGoogleLogging("FileStorageTest");
+         FLAGS_logtostderr = true;
+@@ -871,3 +881,213 @@ TEST_F(FileStorageTest, NullSsdMetricDoesNotCrash) {
+ }
+ 
+ }  // namespace mooncake
++
++namespace mooncake {
++class SlowDrainBucketBackend : public BucketStorageBackend {
++   public:
++    using BucketStorageBackend::BucketStorageBackend;
++    std::mutex gate;
++    std::condition_variable cv;
++    bool entered = false, released = false;
++    tl::expected<void, ErrorCode> BatchLoad(
++        std::unordered_map<std::string, Slice>& slices) override {
++        {
++            std::unique_lock<std::mutex> lock(gate);
++            entered = true;
++            cv.notify_all();
++            cv.wait(lock, [&] { return released; });
++        }
++        return BucketStorageBackend::BatchLoad(slices);
++    }
++};
++void SealPhaseManifest(const std::string& path, const std::string& output,
++                       bool owner) {
++    namespace sd = shared_cache_diagnostics;
++    sd::Config config;
++    config.case_id = "case1";
++    config.epoch = "epoch1";
++    config.tenant_id = "default";
++    config.key_salt = "fixture-salt-0123456789";
++    Json::Value v;
++    v["case_id"] = config.case_id;
++    v["epoch"] = config.epoch;
++    v["tenant_id"] = config.tenant_id;
++    v["key_salt"] = config.key_salt;
++    v["rank"] = "0";
++    v["component"] = "phase-fixture";
++    v["key_ids"].append(sd::Identifier(config, "phala.shared-cache-key.v1",
++                                       "default", "owner-key"));
++    v["max_keys"] = 1;
++    v["max_events"] = 64;
++    v["max_bytes"] = 65536;
++    v["max_duration_ms"] = owner ? 400 : 2000;
++    v["max_requests"] = 1;
++    v["capture_owner_drain"] = owner;
++    v["output_path"] = output;
++    const auto temporary = path + ".sealed";
++    {
++        std::ofstream stream(temporary);
++        stream << v;
++    }
++    ASSERT_EQ(chmod(temporary.c_str(), 0600), 0);
++    fs::rename(temporary, path);
++}
++std::vector<Json::Value> WaitPhaseSummary(const std::string& path) {
++    const auto deadline =
++        std::chrono::steady_clock::now() + std::chrono::seconds(5);
++    do {
++        std::ifstream stream(path);
++        std::string line;
++        std::vector<Json::Value> rows;
++        while (std::getline(stream, line)) {
++            Json::Value row;
++            Json::CharReaderBuilder builder;
++            std::string error;
++            auto parser =
++                std::unique_ptr<Json::CharReader>(builder.newCharReader());
++            if (!parser->parse(line.data(), line.data() + line.size(), &row,
++                               &error))
++                break;
++            rows.push_back(row);
++        }
++        if (!rows.empty() && rows.back()["kind"] == "capture_summary")
++            return rows;
++        std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    } while (std::chrono::steady_clock::now() < deadline);
++    return {};
++}
++TEST_F(FileStorageTest,
++       OwnerDrainThenLateReadPreservesIndependentCompleteCaptures) {
++    SetEnv("MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST",
++           data_path + "/absent-sealed-manifest.json");
++    SetEnv("MOONCAKE_SHARED_CACHE_OWNER_DRAIN_MANIFEST",
++           data_path + "/owner-manifest.json");
++    struct ResetEnv {
++        ~ResetEnv() {
++            UnsetEnv("MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST");
++            UnsetEnv("MOONCAKE_SHARED_CACHE_OWNER_DRAIN_MANIFEST");
++        }
++    } reset;
++    ASSERT_FALSE(shared_cache_diagnostics::Capture::Global().Enabled());
++    ASSERT_FALSE(shared_cache_diagnostics::Capture::OwnerGlobal().Enabled());
++    fs::create_directories(data_path + "/owner-master");
++    testing::InProcMaster master;
++    auto master_config = InProcMasterConfigBuilder()
++                             .set_enable_offload(true)
++                             .set_root_fs_dir(data_path + "/owner-master")
++                             .build();
++    ASSERT_TRUE(master.Start(master_config));
++    const auto endpoint = "127.0.0.1:" + std::to_string(getFreeTcpPort());
++    auto client = Client::Create(endpoint, master.metadata_url(), "tcp",
++                                 std::nullopt, master.master_address());
++    ASSERT_TRUE(client.has_value());
++    auto config = FileStorageConfig::FromEnvironment();
++    config.storage_backend_type = StorageBackendType::kBucket;
++    config.storage_filepath = data_path + "/owner-buckets";
++    config.local_buffer_size = 4 * 1024 * 1024;
++    config.heartbeat_interval_seconds = 1;
++    config.client_buffer_gc_interval_seconds = 1;
++    config.enable_disk_watermark_eviction = false;
++    fs::create_directories(config.storage_filepath);
++    auto bucket_config = BucketBackendConfig::FromEnvironment();
++    bucket_config.eviction_policy = BucketEvictionPolicy::NONE;
++    auto backend =
++        std::make_shared<SlowDrainBucketBackend>(config, bucket_config);
++    FileStorage storage(config, client.value(), endpoint);
++    SetBackend(storage, backend);
++    ASSERT_TRUE(storage.Init());
++    auto initial = storage.GetOwnerDrainSnapshot();
++    EXPECT_TRUE(initial.available);
++    EXPECT_TRUE(initial.backend_initialized);
++    EXPECT_GT(initial.init_completed_unix_ms, 0);
++    EXPECT_GT(initial.scan_completed_unix_ms, 0);
++    std::string payload(512, 'q');
++    std::unordered_map<std::string, std::vector<Slice>> values{
++        {"owner-key", {{payload.data(), payload.size()}}}};
++    ASSERT_TRUE(backend->BatchOffload(
++        values, [](const auto&, auto&) { return ErrorCode::OK; }));
++    const auto owner_output = data_path + "/owner-evidence.jsonl";
++    const auto event_output = data_path + "/read-evidence.jsonl";
++    SealPhaseManifest(data_path + "/owner-manifest.json", owner_output, true);
++    ASSERT_TRUE(FileStorageHeartbeat(storage));
++    std::this_thread::sleep_for(std::chrono::milliseconds(25));
++    ASSERT_TRUE(FileStorageHeartbeat(storage));
++    auto owner_rows = WaitPhaseSummary(owner_output);
++    ASSERT_GE(owner_rows.size(), 3);
++    ASSERT_TRUE(owner_rows.back()["complete"].asBool());
++    ASSERT_EQ(owner_rows.back()["dropped"].asUInt64(), 0);
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::OwnerGlobal().Enabled());
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::Global().Enabled());
++    for (size_t i = 0; i + 1 < owner_rows.size(); ++i) {
++        EXPECT_EQ(owner_rows[i]["kind"].asString(), "owner_drain");
++        EXPECT_TRUE(owner_rows[i]["available"].asBool());
++    }
++    // The finite pre-clear owner evidence is complete. Arm a distinct,
++    // previously absent capture for the subsequent actual backend read.
++    SealPhaseManifest(data_path + "/absent-sealed-manifest.json", event_output,
++                      false);
++    auto load = std::async(std::launch::async, [&] {
++        return storage.BatchGet({"owner-key"}, {512});
++    });
++    bool entered;
++    {
++        std::unique_lock<std::mutex> lock(backend->gate);
++        entered = backend->cv.wait_for(lock, std::chrono::seconds(5),
++                                       [&] { return backend->entered; });
++    }
++    auto blocked = storage.GetOwnerDrainSnapshot();
++    EXPECT_TRUE(entered);
++    EXPECT_GT(blocked.active[0], 0);
++    EXPECT_GT(blocked.active[6], 0);
++    EXPECT_EQ(blocked.bucket_count, blocked.covered_buckets);
++    EXPECT_GT(blocked.bucket_count, 0);
++    {
++        std::lock_guard<std::mutex> lock(backend->gate);
++        backend->released = true;
++    }
++    backend->cv.notify_all();
++    auto result = load.get();
++    ASSERT_TRUE(result.has_value());
++    EXPECT_EQ(std::memcmp(reinterpret_cast<void*>(result->pointers[0]),
++                          payload.data(), 512),
++              0);
++    auto leased = storage.GetOwnerDrainSnapshot();
++    EXPECT_EQ(leased.active[0], 0);
++    EXPECT_EQ(leased.active[6], 1);
++    EXPECT_TRUE(storage.ReleaseBuffer(result->batch_id));
++    auto drained = storage.GetOwnerDrainSnapshot();
++    EXPECT_EQ(drained.active[0], 0);
++    EXPECT_EQ(drained.active[6], 0);
++    EXPECT_EQ(drained.pending_writes, 0);
++    EXPECT_EQ(drained.pending_evictions, 0);
++    EXPECT_EQ(drained.read_guards, 0);
++    EXPECT_EQ(drained.instance, initial.instance);
++    EXPECT_GT(drained.activity_sequence, blocked.activity_sequence);
++    auto event_rows = WaitPhaseSummary(event_output);
++    ASSERT_GE(event_rows.size(), 2);
++    EXPECT_TRUE(event_rows.back()["complete"].asBool());
++    EXPECT_EQ(event_rows.back()["dropped"].asUInt64(), 0);
++    bool actual_read = false;
++    for (size_t i = 0; i + 1 < event_rows.size(); ++i) {
++        EXPECT_NE(event_rows[i]["kind"].asString(), "owner_drain");
++        if (event_rows[i]["kind"] == "backend_read_return") {
++            actual_read = true;
++            EXPECT_EQ(event_rows[i]["returned_bytes"].asInt64(), 512);
++            EXPECT_EQ(event_rows[i]["read_purpose"].asString(), "consumer_get");
++            EXPECT_EQ(event_rows[i]["case_id"], owner_rows[0]["case_id"]);
++            EXPECT_EQ(event_rows[i]["epoch"], owner_rows[0]["epoch"]);
++        }
++    }
++    EXPECT_TRUE(actual_read);
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::OwnerGlobal().Enabled());
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::Global().Enabled());
++    SealPhaseManifest(data_path + "/owner-manifest.json",
++                      data_path + "/must-not-rearm-owner.jsonl", true);
++    SealPhaseManifest(data_path + "/absent-sealed-manifest.json",
++                      data_path + "/must-not-rearm-read.jsonl", false);
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::OwnerGlobal().Enabled());
++    EXPECT_FALSE(shared_cache_diagnostics::Capture::Global().Enabled());
++    EXPECT_FALSE(fs::exists(data_path + "/must-not-rearm-owner.jsonl"));
++    EXPECT_FALSE(fs::exists(data_path + "/must-not-rearm-read.jsonl"));
++}
++}  // namespace mooncake
+diff --git a/mooncake-store/tests/finite_snapshot_test.cpp b/mooncake-store/tests/finite_snapshot_test.cpp
+new file mode 100644
+index 0000000..cdc22a7
+--- /dev/null
++++ b/mooncake-store/tests/finite_snapshot_test.cpp
+@@ -0,0 +1,324 @@
++#include <glog/logging.h>
++#include <gtest/gtest.h>
++#include <json/json.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <filesystem>
++#include <fstream>
++#include <thread>
++#include <ylt/coro_http/coro_http_client.hpp>
++#include "master_admin_service.h"
++#include "master_client.h"
++#include "rpc_service.h"
++#include "tenant_quota_policy_store.h"
++#include "utils.h"
++
++namespace mooncake::test {
++class FiniteSnapshotTest : public ::testing::Test {
++   protected:
++    const std::string tenant = "ds101-dsv4-nvfp4-static-50c8";
++    const std::string key = "private-native-key";
++    std::filesystem::path root;
++    std::shared_ptr<WrappedMasterService> service;
++    UUID writer = generate_uuid();
++    Segment segment;
++    shared_cache_diagnostics::Config identity;
++    void SetUp() override {
++        root = std::filesystem::temp_directory_path() /
++               UuidToString(generate_uuid());
++        std::filesystem::create_directories(root);
++        TenantQuotaPolicySnapshot policy;
++        policy.tenant_quotas = {{tenant, 1024 * 1024},
++                                {"tenant-b", 1024 * 1024},
++                                {"default", 1024 * 1024}};
++        std::ofstream(root / "quota.yaml")
++            << FormatTenantQuotaPolicyYaml(policy);
++        WrappedMasterServiceConfig config;
++        config.enable_metric_reporting = false;
++        config.enable_multi_tenants = true;
++        config.enable_offload = true;
++        config.promotion_on_hit = true;
++        config.promotion_admission_threshold = 1;
++        config.default_kv_lease_ttl = 300;
++        config.tenant_quota_connector_type = "file";
++        config.tenant_quota_connector_uri = (root / "quota.yaml").string();
++        service = std::make_shared<WrappedMasterService>(config);
++        segment.id = generate_uuid();
++        segment.name = "private-memory-segment";
++        segment.base = 0x600000000;
++        segment.size = 16 * 1024 * 1024;
++        ASSERT_TRUE(service->MountSegment(segment, writer));
++        ASSERT_TRUE(service->MountLocalDiskSegment(writer, true));
++        identity.case_id = "case1";
++        identity.epoch = "epoch1";
++        identity.tenant_id = tenant;
++        identity.key_salt = "fixture-salt-0123456789";
++    }
++    void TearDown() override {
++        service.reset();
++        std::filesystem::remove_all(root);
++        unsetenv("MOONCAKE_SHARED_CACHE_SNAPSHOT_MANIFEST");
++    }
++    std::string Id(const std::string& domain, const std::string& value) {
++        return shared_cache_diagnostics::Identifier(identity, domain, tenant,
++                                                    value);
++    }
++    shared_cache_diagnostics::SnapshotRequest Request(const std::string& t) {
++        shared_cache_diagnostics::SnapshotRequest q;
++        q.identity = identity;
++        q.identity.tenant_id = t;
++        q.sample_id = "direct";
++        q.keys = {{shared_cache_diagnostics::Identifier(
++                       q.identity, "phala.shared-cache-key.v1", t, key),
++                   key}};
++        q.max_response_bytes = 65536;
++        q.max_total_logical_bytes = 1048576;
++        q.deadline =
++            std::chrono::steady_clock::now() + std::chrono::seconds(10);
++        return q;
++    }
++    Json::Value Snapshot(const std::string& t) {
++        auto output = service->GetFiniteSnapshotForAdmin(Request(t));
++        EXPECT_TRUE(output);
++        Json::Value value;
++        if (output) {
++            Json::Reader reader;
++            EXPECT_TRUE(reader.parse(*output, value));
++        }
++        return value;
++    }
++    void Put(const std::string& t, bool complete = true) {
++        ReplicateConfig config;
++        config.replica_num = 1;
++        ASSERT_TRUE(service->PutStart(writer, key, 1024, config, t));
++        if (complete)
++            ASSERT_TRUE(service->PutEnd(writer, ObjectMeta{key, std::nullopt},
++                                        ReplicaType::MEMORY, t));
++    }
++    void Disk(const std::string& t) {
++        StorageObjectMetadata metadata;
++        metadata.bucket_id = 1;
++        metadata.offset = 0;
++        metadata.key_size = key.size();
++        metadata.data_size = 1024;
++        metadata.transport_endpoint = "private-owner-endpoint";
++        ASSERT_TRUE(service->NotifyOffloadSuccess(
++            writer, {OffloadTaskItem{.tenant_id = t, .key = key, .size = 1024}},
++            {metadata}));
++    }
++};
++
++TEST_F(FiniteSnapshotTest, HttpAllowlistAndAllReplicaStates) {
++    Put(tenant, false);
++    Disk(tenant);
++    Put("default");
++    const auto id = Id("phala.shared-cache-key.v1", key);
++    Json::Value manifest;
++    manifest["case_id"] = identity.case_id;
++    manifest["epoch"] = identity.epoch;
++    manifest["tenant_id"] = tenant;
++    manifest["key_salt"] = identity.key_salt;
++    manifest["max_snapshots"] = 2;
++    manifest["max_duration_ms"] = 120000;
++    manifest["max_response_bytes"] = 65536;
++    manifest["max_total_logical_bytes"] = 1048576;
++    manifest["keys"][0]["key_id"] = id;
++    manifest["keys"][0]["key"] = key;
++    const auto path = (root / "manifest.json").string();
++    std::ofstream(path) << manifest;
++    ASSERT_EQ(chmod(path.c_str(), 0600), 0);
++    ASSERT_EQ(
++        setenv("MOONCAKE_SHARED_CACHE_SNAPSHOT_MANIFEST", path.c_str(), 1), 0);
++    const auto port = getFreeTcpPort();
++    MasterAdminServer admin(port, false);
++    ASSERT_TRUE(admin.Start());
++    admin.SetRuntimeState(ha::MasterRuntimeState::kServing);
++    admin.SetServiceDelegate(service);
++    admin.SetServiceAvailable(true);
++    const std::string url =
++        "http://127.0.0.1:" + std::to_string(port) + "/batch_query_keys";
++    auto get = [&](const std::string& query) {
++        coro_http::coro_http_client client;
++        auto result = client.get(url + query);
++        return std::pair<int, std::string>{result.status,
++                                           std::string(result.resp_body)};
++    };
++    const std::string query = "?finite_snapshot=1&tenant_id=" + tenant +
++                              "&case_id=case1&epoch=epoch1&key_ids=" + id;
++    EXPECT_EQ(get("?finite_snapshot=1&key_ids=" + id).first, 400);
++    EXPECT_EQ(get(query + ",unknown&sample_id=invalid").first, 400);
++    EXPECT_EQ(get(query + "," + id + "&sample_id=duplicate").first, 400);
++    EXPECT_EQ(get(query + "&sample_id=raw&keys=" + key).first, 400);
++    EXPECT_EQ(get(query + "&sample_id=raw&keys=").first, 400);
++    EXPECT_EQ(get(query + "&sample_id=double&sample_id=again").first, 400);
++    EXPECT_EQ(
++        get(query + "&sample_id=long&extra=" + std::string(18000, 'x')).first,
++        400);
++    EXPECT_EQ(get("?finite_snapshot=1&tenant_id=default&case_id=case1&epoch="
++                  "epoch1&sample_id=wrong&key_ids=" +
++                  id)
++                  .first,
++              400);
++    auto first = get(query + "&sample_id=before");
++    ASSERT_EQ(first.first, 200) << first.second;
++    Json::Value body;
++    Json::Reader reader;
++    ASSERT_TRUE(reader.parse(first.second, body));
++    EXPECT_TRUE(body["master_multi_tenant_enabled"].asBool());
++    EXPECT_EQ(body["requested_tenant_id"].asString(), tenant);
++    EXPECT_EQ(body["effective_tenant_id"].asString(), tenant);
++    auto item = body["objects"][0];
++    EXPECT_TRUE(item["found"].asBool());
++    EXPECT_EQ(item["writer_id"].asString(),
++              Id("phala.shared-cache-owner.v1", UuidToString(writer)));
++    EXPECT_EQ(item["pending"]["processing"].asUInt64(), 1);
++    ASSERT_EQ(item["replicas"].size(), 2);
++    bool processing = false, disk = false;
++    for (const auto& replica : item["replicas"]) {
++        if (replica["type"] == "MEMORY") {
++            processing = replica["status"] == "PROCESSING";
++            EXPECT_EQ(replica["segment_ids"][0].asString(),
++                      Id("phala.shared-cache-segment.v1", segment.name));
++        }
++        if (replica["type"] == "LOCAL_DISK")
++            disk = replica["status"] == "COMPLETE";
++    }
++    EXPECT_TRUE(processing);
++    EXPECT_TRUE(disk);
++    for (const auto& raw :
++         {key, segment.name, UuidToString(writer), identity.key_salt,
++          std::string("private-owner-endpoint")})
++        EXPECT_EQ(first.second.find(raw), std::string::npos);
++    EXPECT_EQ(get(query + "&sample_id=before").first, 400);
++    EXPECT_EQ(get(query + "&sample_id=after").first, 200);
++    EXPECT_EQ(get(query + "&sample_id=exhausted").first, 400);
++    // Legacy/default observation remains available and keeps original shape.
++    auto legacy = get("?keys=" + key);
++    EXPECT_EQ(legacy.first, 200);
++    EXPECT_NE(legacy.second.find("values"), std::string::npos);
++    admin.Stop();
++}
++
++TEST_F(FiniteSnapshotTest, TenantRpcIsolationLeaseWriterAndNoSnapshotRenewal) {
++    Put(tenant);
++    Disk(tenant);
++    Put("tenant-b");
++    Put("default");
++    const int port = getFreeTcpPort();
++    coro_rpc::coro_rpc_server server(2, port, "127.0.0.1");
++    RegisterRpcService(server, *service);
++    auto started = server.async_start();
++    ASSERT_FALSE(started.hasResult());
++    const auto address = std::string("127.0.0.1:") + std::to_string(port);
++    MasterClient client(writer, nullptr, tenant),
++        other(writer, nullptr, "tenant-b"), legacy(writer);
++    ASSERT_EQ(client.Connect(address), ErrorCode::OK);
++    ASSERT_EQ(other.Connect(address), ErrorCode::OK);
++    ASSERT_EQ(legacy.Connect(address), ErrorCode::OK);
++    ASSERT_TRUE(service->GetReplicaList(
++        key, tenant));  // grants an actual lease, MEMORY already exists
++    EXPECT_FALSE(Snapshot(tenant)["objects"][0]["lease_expired"].asBool());
++    auto active = client.BatchReplicaClear({key}, writer, segment.name);
++    ASSERT_TRUE(active);
++    EXPECT_TRUE(active->empty());
++    std::this_thread::sleep_for(std::chrono::milliseconds(450));
++    auto wrong = client.BatchReplicaClear({key}, generate_uuid(), segment.name);
++    ASSERT_TRUE(wrong);
++    EXPECT_TRUE(wrong->empty());
++    auto before = Snapshot(tenant);
++    ASSERT_TRUE(before["objects"][0]["lease_expired"].asBool());
++    const auto promotions =
++        MasterMetricManager::instance().get_promotion_admitted();
++    auto cleared = client.BatchReplicaClear({key}, writer, segment.name);
++    ASSERT_TRUE(cleared);
++    EXPECT_EQ(*cleared, std::vector<std::string>{key});
++    auto after = Snapshot(tenant);
++    ASSERT_TRUE(after["objects"][0]["found"].asBool());
++    ASSERT_EQ(after["objects"][0]["replicas"].size(), 1);
++    EXPECT_EQ(after["objects"][0]["replicas"][0]["type"], "LOCAL_DISK");
++    EXPECT_EQ(MasterMetricManager::instance().get_promotion_admitted(),
++              promotions);
++    EXPECT_EQ(Snapshot("tenant-b")["objects"][0]["replicas"][0]["type"],
++              "MEMORY");
++    EXPECT_EQ(Snapshot("default")["objects"][0]["replicas"][0]["type"],
++              "MEMORY");
++    auto default_clear = legacy.BatchReplicaClear({key}, writer, segment.name);
++    ASSERT_TRUE(default_clear);
++    EXPECT_EQ(default_clear->size(), 1);
++    EXPECT_TRUE(Snapshot("tenant-b")["objects"][0]["found"].asBool());
++    auto limited = Request(tenant);
++    limited.max_total_logical_bytes = 1;
++    EXPECT_FALSE(service->GetFiniteSnapshotForAdmin(limited));
++    limited = Request(tenant);
++    limited.deadline = std::chrono::steady_clock::now();
++    EXPECT_FALSE(service->GetFiniteSnapshotForAdmin(limited));
++    // A deliberate real read admits work; the RO snapshot must report the
++    // actual task and leave it queued for its original disk owner.
++    ASSERT_TRUE(service->GetReplicaList(key, tenant));
++    auto pending = Snapshot(tenant);
++    EXPECT_EQ(pending["objects"][0]["pending"]["promotion"].asUInt64(), 1);
++    EXPECT_EQ(
++        pending["objects"][0]["pending"]["dynamic_replication"].asUInt64(), 0);
++    auto work_after = service->PromotionObjectHeartbeat(writer);
++    ASSERT_TRUE(work_after);
++    EXPECT_EQ(work_after->size(), 1);
++    server.stop();
++}
++
++TEST_F(FiniteSnapshotTest, OldMasterDoesNotFallbackToDefaultTenant) {
++    Put("default");
++    const int port = getFreeTcpPort();
++    coro_rpc::coro_rpc_server server(2, port, "127.0.0.1");
++    server.register_handler<&WrappedMasterService::ServiceReady>(service.get());
++    server.register_handler<&WrappedMasterService::BatchReplicaClear>(
++        service.get());
++    auto started = server.async_start();
++    ASSERT_FALSE(started.hasResult());
++    MasterClient client(writer, nullptr, tenant);
++    ASSERT_EQ(client.Connect("127.0.0.1:" + std::to_string(port)),
++              ErrorCode::OK);
++    auto result = client.BatchReplicaClear({key}, writer, segment.name);
++    EXPECT_FALSE(result);
++    EXPECT_TRUE(Snapshot("default")["objects"][0]["found"].asBool());
++    server.stop();
++}
++
++TEST_F(FiniteSnapshotTest, SingleTenantModeIsExplicitAndRejectsNonDefault) {
++    WrappedMasterServiceConfig config;
++    config.enable_metric_reporting = false;
++    config.default_kv_lease_ttl = 1;
++    WrappedMasterService single(config);
++    ASSERT_TRUE(single.MountSegment(segment, writer));
++    ReplicateConfig replication;
++    replication.replica_num = 1;
++    ASSERT_TRUE(single.PutStart(writer, key, 1024, replication, "default"));
++    ASSERT_TRUE(single.PutEnd(writer, ObjectMeta{key, std::nullopt},
++                              ReplicaType::MEMORY, "default"));
++    std::this_thread::sleep_for(std::chrono::milliseconds(5));
++    EXPECT_FALSE(single.GetFiniteSnapshotForAdmin(Request(tenant)));
++    auto clear =
++        single.BatchReplicaClearForTenant({key}, writer, segment.name, tenant);
++    EXPECT_FALSE(clear);
++    auto output = single.GetFiniteSnapshotForAdmin(Request("default"));
++    ASSERT_TRUE(output);
++    Json::Value body;
++    Json::Reader reader;
++    ASSERT_TRUE(reader.parse(*output, body));
++    EXPECT_FALSE(body["master_multi_tenant_enabled"].asBool());
++    EXPECT_EQ(body["requested_tenant_id"].asString(), "default");
++    EXPECT_EQ(body["effective_tenant_id"].asString(), "default");
++    ASSERT_TRUE(body["objects"][0]["found"].asBool());
++    auto cleared = single.BatchReplicaClear({key}, writer, segment.name);
++    ASSERT_TRUE(cleared);
++    EXPECT_EQ(*cleared, std::vector<std::string>{key});
++}
++}  // namespace mooncake::test
++
++int main(int argc, char** argv) {
++    google::InitGoogleLogging(argv[0]);
++    FLAGS_logtostderr = true;
++    ::testing::InitGoogleTest(&argc, argv);
++    auto result = RUN_ALL_TESTS();
++    google::ShutdownGoogleLogging();
++    return result;
++}
+diff --git a/mooncake-store/tests/promotion_on_hit_test.cpp b/mooncake-store/tests/promotion_on_hit_test.cpp
+index aef158c..5ab214a 100644
+--- a/mooncake-store/tests/promotion_on_hit_test.cpp
++++ b/mooncake-store/tests/promotion_on_hit_test.cpp
+@@ -1,3 +1,4 @@
++#include "shared_cache_diagnostics.h"
+ // Unit tests for the L2->L1 promotion-on-hit master-side path. Exercises
+ // the master-service entry points directly without going through the RPC
+ // layer.
+@@ -3243,5 +3244,6 @@ TEST_F(PromotionOnHitTest, RetryCandidate_ClearOnReload) {
+ 
+ int main(int argc, char** argv) {
+     ::testing::InitGoogleTest(&argc, argv);
++    (void)mooncake::shared_cache_diagnostics::Capture::Global();
+     return RUN_ALL_TESTS();
+ }
+diff --git a/mooncake-store/tests/run_shared_cache_diagnostics_cpu.sh b/mooncake-store/tests/run_shared_cache_diagnostics_cpu.sh
+new file mode 100644
+index 0000000..db16ef2
+--- /dev/null
++++ b/mooncake-store/tests/run_shared_cache_diagnostics_cpu.sh
+@@ -0,0 +1,12 @@
++#!/usr/bin/env bash
++set -euo pipefail
++root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
++build=${1:?Pass an isolated output directory}
++mkdir -p "$build"
++${CXX:-c++} -std=c++20 -Wall -Wextra -Werror -pthread \
++  -I"$root/mooncake-store/include" $(pkg-config --cflags jsoncpp) \
++  "$root/mooncake-store/src/shared_cache_diagnostics.cpp" \
++  "$root/mooncake-store/tests/shared_cache_diagnostics_test.cpp" \
++  $(pkg-config --libs jsoncpp) -lcrypto -o "$build/shared_cache_diagnostics_test"
++"$build/shared_cache_diagnostics_test"
++python3 "$root/mooncake-store/tests/test_shared_cache_diagnostics_runtime.py" "$build/shared_cache_diagnostics_test"
+diff --git a/mooncake-store/tests/shared_cache_diagnostics_test.cpp b/mooncake-store/tests/shared_cache_diagnostics_test.cpp
+new file mode 100644
+index 0000000..3c7b955
+--- /dev/null
++++ b/mooncake-store/tests/shared_cache_diagnostics_test.cpp
+@@ -0,0 +1,183 @@
++#include "shared_cache_diagnostics.h"
++
++#include <cassert>
++#include <atomic>
++#include <chrono>
++#include <iostream>
++#include <thread>
++#include <filesystem>
++#include <cstdlib>
++
++using namespace mooncake::shared_cache_diagnostics;
++
++Config Fixture() {
++    Config c;
++    c.case_id="case1"; c.epoch="epoch1"; c.tenant_id="default";
++    c.key_salt="fixture-salt-0123456789"; c.rank="0"; c.component="fixture";
++    c.key_ids={Identifier(c,"phala.shared-cache-key.v1","default","component-key")};
++    return c;
++}
++
++int main(int argc, char** argv) {
++    if (argc > 1 && std::string(argv[1]) == "--snapshot-policy") {
++        auto q = AuthorizeSnapshot("default", "case1", "epoch1", "sample1",
++                                   Fixture().key_ids[0]);
++        if (!q) return 3;
++        assert(!AuthorizeSnapshot("default", "case1", "epoch1", "sample1",
++                                  Fixture().key_ids[0]));
++        return 0;
++    }
++    if (argc > 2 && std::string(argv[1]).rfind("--late", 0) == 0) {
++        assert(!Capture::Global().Enabled());
++        if (std::string(argv[1]) == "--late-delayed")
++            std::this_thread::sleep_for(std::chrono::milliseconds(20));
++        const auto manifest =
++            std::getenv("MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST");
++        std::filesystem::rename(argv[2], manifest);
++        if (std::string(argv[1]) == "--late-invalid") {
++            assert(!Capture::Global().Enabled());
++            std::filesystem::rename(argv[3], manifest);
++            return Capture::Global().Enabled() ? 9 : 3;
++        }
++        if (!Capture::Global().Enabled()) return 3;
++        std::vector<std::thread> threads;
++        for (int i = 0; i < 8; ++i)
++            threads.emplace_back([] {
++                auto& capture = Capture::Global();
++                assert(capture.Enabled());
++                Event event{Kind::BackendRead};
++                capture.Emit("default", "component-key", event);
++            });
++        for (auto& thread : threads) thread.join();
++        return 0;
++    }
++    if (argc>1) {
++        auto& runtime=Capture::Global();
++        if (!runtime.Enabled()) return 3;
++        std::atomic<int> ready{0};
++        auto emit=[&](ReadPurpose purpose,int bytes) {
++            assert(ReadPurposeScope::Current()==ReadPurpose::Unknown);
++            {
++                ReadPurposeScope scope(purpose);
++                ++ready;
++                while(ready.load()<2) std::this_thread::yield();
++                assert(ReadPurposeScope::Current()==purpose);
++                Event event{Kind::BackendRead}; event.returned_bytes=bytes;
++                event.purpose=ReadPurposeScope::Current();
++                runtime.Emit("default","component-key",event);
++                { ReadPurposeScope nested(ReadPurpose::Unknown); }
++                assert(ReadPurposeScope::Current()==purpose);
++            }
++            assert(ReadPurposeScope::Current()==ReadPurpose::Unknown);
++        };
++        std::thread consumer([&]{emit(ReadPurpose::ConsumerGet,123);});
++        std::thread promotion([&]{emit(ReadPurpose::Promotion,456);});
++        consumer.join(); promotion.join();
++        assert(ReadPurposeScope::Current()==ReadPurpose::Unknown);
++        return 0;
++    }
++    auto config=Fixture();
++    assert(config.key_ids[0]=="6ef3b9cff0cca0e84d254e750accc0d9ddf413eb8fda38d47c58e461106ac6b3");
++    assert(Identifier(config,"phala.shared-cache-request.v1","default","component-key")!=config.key_ids[0]);
++    assert(Identifier(config,"phala.shared-cache-key.v1","other","component-key")!=config.key_ids[0]);
++    assert(Identifier(config,"phala.shared-cache-key.v1","default","component-key-more")!=config.key_ids[0]);
++
++    auto owner_config = config;
++    owner_config.capture_owner_drain = true;
++    Capture owner_capture(owner_config);
++    OwnerDrainSnapshot owner;
++    owner.owner = "private-owner-uuid";
++    owner.instance = "private-instance-uuid";
++    owner.scope = "private-owner-endpoint";
++    owner.path = "/private/backend/path";
++    owner.client_tenant = "default";
++    owner.available = true;
++    owner.consistent = true;
++    owner.backend_initialized = true;
++    owner.bucket_count = owner.covered_buckets = 2;
++    owner.active[0] = 1;
++    owner.active[6] = 1;
++    owner_capture.EmitOwner(owner);
++    auto owner_output = owner_capture.Drain();
++    assert(owner_output.complete && owner_output.events.size() == 1);
++    const auto& owner_line = owner_output.events[0];
++    for (const auto& secret :
++         {owner.owner, owner.instance, owner.scope, owner.path})
++        assert(owner_line.find(secret) == std::string::npos);
++    assert(owner_line.find("phala.shared-cache.owner-drain.v1") !=
++           std::string::npos);
++    assert(owner_line.find("\"loads\":1") != std::string::npos);
++    assert(owner_line.find("\"leased_read_buffers\":1") != std::string::npos);
++    assert(owner_line.size() <= 4096);
++    Capture owner_disabled(config);
++    owner_disabled.EmitOwner(owner);
++    assert(owner_disabled.Drain().events.empty());
++
++    Capture disabled;
++    assert(!disabled.Enabled() && !disabled.BeginReadKeys("default",{"component-key"}));
++    Event event{Kind::BackendRead}; event.tier=Tier::LocalDisk;
++    event.backend=Backend::OffsetAllocator; event.requested_bytes=4096;
++    event.returned_bytes=4096; event.owner="private-owner-address";
++    event.physical_file="private-file-name";
++    disabled.Emit("default",std::string(70000,'x'),event);
++    assert(disabled.Drain().events.empty());
++
++    auto multipool=config;
++    multipool.key_ids.push_back(Identifier(config,"phala.shared-cache-key.v1","default","second-pool"));
++    Capture pools(multipool);
++    assert(!pools.BeginReadKeys("default",{"unrelated"}));
++    assert(pools.BeginReadKeys("default",{"component-key"}));
++    assert(pools.BeginReadKeys("default",{"second-pool"}));
++    assert(pools.Drain().complete);
++    assert(pools.BeginReadKeys("default",{"component-key"}));
++    assert(!pools.Drain().complete);
++    Capture capture(config);
++    assert(capture.BeginReadKeys("default",{"component-key"}));
++    capture.Emit("other","component-key",event);
++    capture.Emit("default","not-allowed",event);
++    capture.Emit("default","component-key",event);
++    auto snapshot=capture.Drain();
++    assert(snapshot.events.size()==1 && snapshot.rejected==2 && snapshot.complete);
++    const auto& line=snapshot.events[0];
++    for (const auto& secret:{"component-key","fixture-salt","private-owner-address","private-file-name"})
++        assert(line.find(secret)==std::string::npos);
++    assert(line.find(config.key_ids[0])!=std::string::npos);
++    assert(line.find("\"returned_bytes\":4096")!=std::string::npos);
++
++    event.returned_bytes=3; event.error=1;
++    capture.Emit("default","component-key",event);
++    snapshot=capture.Drain();
++    assert(snapshot.events[0].find("\"returned_bytes\":3")!=std::string::npos);
++    assert(snapshot.events[0].find("\"error\":1")!=std::string::npos);
++    assert(capture.BeginReadKeys("default",{"component-key"}));
++    assert(!capture.Drain().complete);  // duplicate/concurrent request is incomplete
++
++    auto bounded=config; bounded.max_events=1;
++    Capture limit(bounded);
++    limit.Emit("default","component-key",event);
++    limit.Emit("default","component-key",event);
++    snapshot=limit.Drain(); assert(snapshot.emitted==1 && snapshot.dropped==1 && !snapshot.complete);
++
++    bounded=config; bounded.queue_capacity=1;
++    Capture queue(bounded);
++    queue.Emit("default","component-key",event); queue.Emit("default","component-key",event);
++    assert(queue.Drain().dropped==1);
++
++    bounded=config; bounded.max_bytes=4096;
++    Capture bytes(bounded);
++    for(int i=0;i<100;++i) bytes.Emit("default","component-key",event);
++    snapshot=bytes.Drain(); assert(snapshot.bytes+1024<=4096 && snapshot.dropped>0);
++
++    bounded=config; bounded.max_duration_ms=1;
++    Capture deadline(bounded);
++    std::this_thread::sleep_for(std::chrono::milliseconds(5));
++    deadline.Emit("default","component-key",event);
++    assert(deadline.Drain().dropped==1 && !deadline.Enabled());
++
++    Capture parallel(config);
++    std::thread first([&]{for(int i=0;i<30;++i)parallel.Emit("default","component-key",event);});
++    std::thread second([&]{for(int i=0;i<30;++i)parallel.Emit("default","component-key",event);});
++    first.join(); second.join(); assert(parallel.Drain().emitted==60);
++
++    std::cout << "shared cache diagnostic CPU fixtures passed\n";
++}
+diff --git a/mooncake-store/tests/storage_backend_test.cpp b/mooncake-store/tests/storage_backend_test.cpp
+index c58b236..a9424b3 100644
+--- a/mooncake-store/tests/storage_backend_test.cpp
++++ b/mooncake-store/tests/storage_backend_test.cpp
+@@ -1,3 +1,4 @@
++#include "shared_cache_diagnostics.h"
+ #include "storage_backend.h"
+ 
+ #include <glog/logging.h>
+@@ -5129,3 +5130,9 @@ TEST_F(StorageBackendTest, BucketBatchLoadRejectsShortRead) {
+ #endif
+ 
+ }  // namespace mooncake::test
++
++int main(int argc, char** argv) {
++    ::testing::InitGoogleTest(&argc, argv);
++    (void)mooncake::shared_cache_diagnostics::Capture::Global();
++    return RUN_ALL_TESTS();
++}
+diff --git a/mooncake-store/tests/test_shared_cache_backend_events.py b/mooncake-store/tests/test_shared_cache_backend_events.py
+new file mode 100644
+index 0000000..38b9f38
+--- /dev/null
++++ b/mooncake-store/tests/test_shared_cache_backend_events.py
+@@ -0,0 +1,55 @@
++"""Check diagnostic bytes/errors from real offset and io_uring backend reads."""
++
++import hashlib
++import hmac
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++binary = str(Path(sys.argv[1]).resolve())
++cases = [
++    ("OffsetAllocatorStorageBackend_BasicPutGet", ["key1", "key2", "key3"], "offset_allocator", False),
++    ("BucketBatchLoadUsesUringAcrossQueueDepth", [f"uring_batch_key_{i}" for i in range(40)], "bucket", False),
++    ("BucketBatchLoadRejectsShortRead", ["short_read_key_0", "short_read_key_1"], "bucket", True),
++]
++for test, keys, backend, expect_short in cases:
++    with tempfile.TemporaryDirectory() as directory:
++        root = Path(directory)
++        output, manifest = root / "capture.jsonl", root / "manifest.json"
++        ids = []
++        for key in keys:
++            fields = [b"backend-fixture", b"epoch1", b"default", key.encode()]
++            message = b"phala.shared-cache-key.v1\0" + b"".join(
++                len(value).to_bytes(4, "big") + value for value in fields
++            )
++            ids.append(hmac.new(b"fixture-salt-0123456789", message, hashlib.sha256).hexdigest())
++        config = dict(
++            case_id="backend-fixture", epoch="epoch1", tenant_id="default",
++            key_salt="fixture-salt-0123456789", rank="0", component="ssd-owner",
++            key_ids=ids, max_keys=64, max_events=128, max_bytes=262144,
++            max_duration_ms=120000, max_requests=1, output_path=str(output),
++        )
++        manifest.write_text(json.dumps(config))
++        manifest.chmod(0o600)
++        env = dict(os.environ, MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST=str(manifest), TMPDIR=directory)
++        result = subprocess.run([binary, f"--gtest_filter=StorageBackendTest.{test}"],
++                                env=env, cwd=directory, capture_output=True, timeout=120)
++        if result.returncode:
++            sys.stderr.buffer.write(result.stdout + result.stderr)
++            raise SystemExit(result.returncode)
++        assert b"[  PASSED  ] 1 test." in result.stdout, (test, result.stdout.decode(errors="replace"))
++        assert b"[  SKIPPED ]" not in result.stdout, test
++        records = [json.loads(line) for line in output.read_text().splitlines()]
++        assert records[-1]["kind"] == "capture_summary" and records[-1]["complete"], test
++        reads = [r for r in records if r["kind"] == "backend_read_return"]
++        assert reads and all(r["backend"] == backend and r["key_id"] in ids for r in reads), test
++        assert all(len(r["file_id"]) == 64 for r in reads)
++        if expect_short:
++            assert any(r["error"] != 0 and r["returned_bytes"] < r["requested_bytes"] for r in reads)
++        else:
++            assert {r["key_id"] for r in reads} == set(ids)
++            assert all(r["error"] == 0 and r["returned_bytes"] == r["requested_bytes"] for r in reads)
++        print(f"{test}: {len(reads)} actual backend read events verified")
+diff --git a/mooncake-store/tests/test_shared_cache_diagnostics_runtime.py b/mooncake-store/tests/test_shared_cache_diagnostics_runtime.py
+new file mode 100644
+index 0000000..1c52abe
+--- /dev/null
++++ b/mooncake-store/tests/test_shared_cache_diagnostics_runtime.py
+@@ -0,0 +1,150 @@
++"""Exercise the actual native manifest parser, output writer and shutdown."""
++
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++binary = str(Path(sys.argv[1]).resolve())
++with tempfile.TemporaryDirectory() as directory:
++    root = Path(directory)
++    manifest = root / "manifest.json"
++    output = root / "capture.jsonl"
++    config = dict(
++        case_id="case1",
++        epoch="epoch1",
++        tenant_id="default",
++        key_salt="fixture-salt-0123456789",
++        rank="0",
++        component="fixture",
++        key_ids=["6ef3b9cff0cca0e84d254e750accc0d9ddf413eb8fda38d47c58e461106ac6b3"],
++        max_keys=64,
++        max_events=32,
++        max_bytes=8192,
++        max_duration_ms=100,
++        max_requests=1,
++        output_path=str(output),
++    )
++    manifest.write_text(json.dumps(config))
++    manifest.chmod(0o600)
++    env = dict(os.environ, MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST=str(manifest))
++    result = subprocess.run(
++        [binary, "--runtime"], env=env, capture_output=True, check=True
++    )
++    data = output.read_text()
++    records = [json.loads(line) for line in data.splitlines()]
++    assert len(records) == 3
++    assert {(r["read_purpose"], r["returned_bytes"]) for r in records[:-1]} == {
++        ("consumer_get", 123),
++        ("promotion", 456),
++    }
++    assert records[-1]["kind"] == "capture_summary" and records[-1]["complete"]
++    assert output.stat().st_mode & 0o777 == 0o600
++    assert "component-key" not in data and config["key_salt"] not in data
++    assert str(output) not in data
++    # Never truncate a prior receipt; invalid output fails capture closed.
++    result = subprocess.run([binary, "--runtime"], env=env, capture_output=True)
++    assert result.returncode == 3 and output.read_text() == data
++    output.unlink()
++    manifest.chmod(0o644)
++    result = subprocess.run([binary, "--runtime"], env=env, capture_output=True)
++    assert result.returncode == 3 and not output.exists()
++    assert config["key_salt"].encode() not in result.stderr
++print("native manifest/output fixtures passed")
++
++with tempfile.TemporaryDirectory() as directory:
++    root = Path(directory)
++    for mode in ["--late", "--late-delayed", "--late-invalid"]:
++        manifest, staged, recovery, output = [
++            root / (mode + suffix)
++            for suffix in [".json", ".staged", ".recovery", ".jsonl"]
++        ]
++        config["output_path"] = str(output)
++        config["max_duration_ms"] = 1000
++        staged.write_text(json.dumps(config))
++        staged.chmod(0o600)
++        recovery.write_text(json.dumps(config))
++        recovery.chmod(0o600)
++        if mode == "--late-invalid":
++            staged.chmod(0o644)
++        env = dict(
++            os.environ,
++            MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST=str(manifest),
++        )
++        result = subprocess.run(
++            [binary, mode, str(staged), str(recovery)], env=env, capture_output=True
++        )
++        assert result.returncode == (
++            3 if mode == "--late-invalid" else 0
++        ), result.stderr
++        if mode != "--late-invalid":
++            records = [json.loads(line) for line in output.read_text().splitlines()]
++            assert len(records) == 9 and records[-1]["complete"]
++        else:
++            assert not output.exists()
++print(
++    "native sealed-manifest late arm, concurrency, delayed bootstrap and no-reload fixtures passed"
++)
++
++with tempfile.TemporaryDirectory() as directory:
++    root = Path(directory)
++    path = root / "snapshot.json"
++    config = dict(
++        case_id="case1",
++        epoch="epoch1",
++        tenant_id="default",
++        key_salt="fixture-salt-0123456789",
++        max_snapshots=1,
++        max_duration_ms=1000,
++        max_response_bytes=65536,
++        max_total_logical_bytes=1048576,
++        keys=[
++            dict(
++                key="component-key",
++                key_id="6ef3b9cff0cca0e84d254e750accc0d9ddf413eb8fda38d47c58e461106ac6b3",
++            )
++        ],
++    )
++    cases = [
++        ({}, 0),
++        ({"tenant_id": "other"}, 3),
++        ({"max_snapshots": 0}, 3),
++        ({"max_duration_ms": 120001}, 3),
++        ({"keys": config["keys"] * 2}, 3),
++        ({"keys": [dict(key="raw*wildcard", key_id=config["keys"][0]["key_id"])]}, 3),
++    ]
++    for overrides, expected in cases:
++        path.write_text(json.dumps(dict(config, **overrides)))
++        path.chmod(0o600)
++        env = dict(os.environ, MOONCAKE_SHARED_CACHE_SNAPSHOT_MANIFEST=str(path))
++        result = subprocess.run(
++            [binary, "--snapshot-policy"], env=env, capture_output=True
++        )
++        assert result.returncode == expected, result.stderr
++    path.write_text(json.dumps(config))
++    path.chmod(0o644)
++    result = subprocess.run([binary, "--snapshot-policy"], env=env, capture_output=True)
++    assert result.returncode == 3
++    path.unlink()
++    os.mkfifo(path, 0o600)
++    result = subprocess.run(
++        [binary, "--snapshot-policy"], env=env, capture_output=True, timeout=2
++    )
++    assert result.returncode == 3
++    fifo_env = dict(os.environ, MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST=str(path))
++    result = subprocess.run(
++        [binary, "--runtime"], env=fifo_env, capture_output=True, timeout=2
++    )
++    assert result.returncode == 3
++    path.unlink()
++    target = root / "valid.json"
++    target.write_text(json.dumps(config))
++    target.chmod(0o600)
++    path.symlink_to(target)
++    result = subprocess.run(
++        [binary, "--snapshot-policy"], env=env, capture_output=True, timeout=2
++    )
++    assert result.returncode == 3
++print("finite snapshot manifest bounds, tenant, replay and privacy fixtures passed")
+diff --git a/mooncake-store/tests/test_shared_cache_promotion_events.py b/mooncake-store/tests/test_shared_cache_promotion_events.py
+new file mode 100644
+index 0000000..6fe1eef
+--- /dev/null
++++ b/mooncake-store/tests/test_shared_cache_promotion_events.py
+@@ -0,0 +1,55 @@
++"""Run real MasterService fixtures and assert the actual emitted hook events."""
++
++import hashlib
++import hmac
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++
++binary = str(Path(sys.argv[1]).resolve())
++cases = [
++    ("NotifySuccessDecrementsCounter", "k_first", 1, 0),
++    ("NotifyRejectsNonHolder", "k_cold", 1, 0),
++    ("NotifyUnknownKey", "nonexistent", 0, 0),
++    ("ReaperPopsStagedMemoryReplicaOnExpiry", "k_cold", 0, 0),
++    ("NotifyFailureReleasesStateImmediately", "k_a", 0, 1),
++    ("NotifyFailureRejectsNonHolder", "k_cold", 0, 1),
++]
++for test, key, successes, failures in cases:
++    with tempfile.TemporaryDirectory() as directory:
++        root = Path(directory)
++        output, manifest = root / "capture.jsonl", root / "manifest.json"
++        fields = [b"promotion-fixture", b"epoch1", b"default", key.encode()]
++        message = b"phala.shared-cache-key.v1\0" + b"".join(
++            len(value).to_bytes(4, "big") + value for value in fields
++        )
++        key_id = hmac.new(b"fixture-salt-0123456789", message, hashlib.sha256).hexdigest()
++        config = dict(
++            case_id="promotion-fixture", epoch="epoch1", tenant_id="default",
++            key_salt="fixture-salt-0123456789", rank="0", component="master",
++            key_ids=[key_id], max_keys=1, max_events=16, max_bytes=16384,
++            max_duration_ms=120000, max_requests=1, output_path=str(output),
++        )
++        manifest.write_text(json.dumps(config))
++        manifest.chmod(0o600)
++        env = dict(os.environ, MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MANIFEST=str(manifest))
++        result = subprocess.run(
++            [binary, f"--gtest_filter=PromotionOnHitTest.{test}"],
++            env=env, capture_output=True, timeout=120,
++        )
++        if result.returncode:
++            sys.stderr.buffer.write(result.stdout + result.stderr)
++            raise SystemExit(result.returncode)
++        assert b"[  PASSED  ] 1 test." in result.stdout, (test, result.stdout.decode(errors="replace"))
++        assert b"[  SKIPPED ]" not in result.stdout, test
++        records = [json.loads(line) for line in output.read_text().splitlines()]
++        assert records[-1]["kind"] == "capture_summary" and records[-1]["complete"], test
++        committed = [r for r in records if r["kind"] == "promotion_commit"]
++        failed = [r for r in records if r["kind"] == "promotion_failure"]
++        assert len(committed) == successes and len(failed) == failures, (test, records)
++        assert all(r["committed"] and r["replica_id"] > 0 and r["key_id"] == key_id for r in committed)
++        assert all(not r["committed"] and r["error"] != 0 for r in failed)
++        print(f"{test}: {successes} commit / {failures} failure events verified")
+diff --git a/mooncake-transfer-engine/include/multi_transport.h b/mooncake-transfer-engine/include/multi_transport.h
+index bcdf472..54faac0 100644
+--- a/mooncake-transfer-engine/include/multi_transport.h
++++ b/mooncake-transfer-engine/include/multi_transport.h
+@@ -67,6 +67,9 @@ class MultiTransport {
+ 
+     Status getBatchTransferStatus(BatchID batch_id, TransferStatus &status);
+ 
++    Status getBatchTransportSelection(
++        BatchID batch_id, Transport::BatchTransportSelection &selection);
++
+     Transport *installTransport(const std::string &proto,
+                                 std::shared_ptr<Topology> topo);
+ 
+diff --git a/mooncake-transfer-engine/include/transfer_engine.h b/mooncake-transfer-engine/include/transfer_engine.h
+index a017212..712bf86 100644
+--- a/mooncake-transfer-engine/include/transfer_engine.h
++++ b/mooncake-transfer-engine/include/transfer_engine.h
+@@ -227,6 +227,9 @@ class TransferEngine {
+ 
+     Status getBatchTransferStatus(BatchID batch_id, TransferStatus& status);
+ 
++    Status getBatchTransportSelection(
++        BatchID batch_id, Transport::BatchTransportSelection& selection);
++
+     Status getNicLoadStats(std::vector<NicLoadStats>& stats) const;
+ 
+     Transport* getTransport(const std::string& proto);
+diff --git a/mooncake-transfer-engine/include/transfer_engine_impl.h b/mooncake-transfer-engine/include/transfer_engine_impl.h
+index 4c6116e..18687ee 100644
+--- a/mooncake-transfer-engine/include/transfer_engine_impl.h
++++ b/mooncake-transfer-engine/include/transfer_engine_impl.h
+@@ -389,6 +389,12 @@ class TransferEngineImpl {
+     device::NcclTransport* getOrCreateNcclTransport();
+ #endif
+ 
++    Status getBatchTransportSelection(
++        BatchID batch_id, Transport::BatchTransportSelection& selection) {
++        return multi_transports_->getBatchTransportSelection(batch_id,
++                                                             selection);
++    }
++
+     bool isTcpOnly() const { return multi_transports_->isTcpOnly(); }
+ 
+     int syncSegmentCache(const std::string& segment_name = "") {
+diff --git a/mooncake-transfer-engine/include/transport/transport.h b/mooncake-transfer-engine/include/transport/transport.h
+index 5ece720..b5da5f5 100644
+--- a/mooncake-transfer-engine/include/transport/transport.h
++++ b/mooncake-transfer-engine/include/transport/transport.h
+@@ -30,6 +30,7 @@
+ #include <functional>
+ #include <mutex>
+ #include <condition_variable>
++#include <map>
+ 
+ #include "common/base/status.h"
+ #include "transfer_metadata.h"
+@@ -47,6 +48,12 @@ class Transport {
+     friend class MultiTransport;
+ 
+    public:
++    struct BatchTransportSelection {
++        size_t task_count = 0;
++        size_t missing_transports = 0;
++        std::map<std::string, size_t> selected_transports;
++    };
++
+     using SegmentID = uint64_t;
+     using SegmentHandle = SegmentID;
+ 
+diff --git a/mooncake-transfer-engine/src/multi_transport.cpp b/mooncake-transfer-engine/src/multi_transport.cpp
+index 0e5c03e..730bc94 100644
+--- a/mooncake-transfer-engine/src/multi_transport.cpp
++++ b/mooncake-transfer-engine/src/multi_transport.cpp
+@@ -407,6 +407,21 @@ Status MultiTransport::getBatchTransferStatus(BatchID batch_id,
+     return Status::OK();
+ }
+ 
++Status MultiTransport::getBatchTransportSelection(
++    BatchID batch_id, Transport::BatchTransportSelection& selection) {
++    const auto& batch = *reinterpret_cast<const BatchDesc*>(batch_id);
++    selection = {};
++    selection.task_count = batch.task_list.size();
++    for (const auto& task : batch.task_list) {
++        if (!task.transport_) {
++            ++selection.missing_transports;
++            continue;
++        }
++        ++selection.selected_transports[task.transport_->getName()];
++    }
++    return Status::OK();
++}
++
+ Transport* MultiTransport::installTransport(const std::string& proto,
+                                             std::shared_ptr<Topology> topo) {
+ #ifdef USE_NCCL_HOST
+diff --git a/mooncake-transfer-engine/src/transfer_engine.cpp b/mooncake-transfer-engine/src/transfer_engine.cpp
+index a1efc86..f0b5aeb 100644
+--- a/mooncake-transfer-engine/src/transfer_engine.cpp
++++ b/mooncake-transfer-engine/src/transfer_engine.cpp
+@@ -280,6 +280,11 @@ device::NcclTransport* TransferEngine::getOrCreateNcclTransport() {
+ }
+ #endif
+ 
++Status TransferEngine::getBatchTransportSelection(
++    BatchID batch_id, Transport::BatchTransportSelection& selection) {
++    return impl_->getBatchTransportSelection(batch_id, selection);
++}
++
+ bool TransferEngine::isTcpOnly() const { return impl_->isTcpOnly(); }
+ 
+ int TransferEngine::syncSegmentCache(const std::string& segment_name) {
+@@ -824,6 +829,15 @@ device::NcclTransport* TransferEngine::getOrCreateNcclTransport() {
+ }
+ #endif
+ 
++Status TransferEngine::getBatchTransportSelection(
++    BatchID batch_id, Transport::BatchTransportSelection& selection) {
++    if (use_tent_) {
++        selection = {};
++        return Status::NotImplemented("Classic batch transport selection only");
++    }
++    return impl_->getBatchTransportSelection(batch_id, selection);
++}
++
+ bool TransferEngine::isTcpOnly() const {
+     if (use_tent_)
+         // TENT already rejects TCP loopback transfers when MC_STORE_MEMCPY
+diff --git a/mooncake-transfer-engine/tests/CMakeLists.txt b/mooncake-transfer-engine/tests/CMakeLists.txt
+index b2ee2c8..8008d6b 100644
+--- a/mooncake-transfer-engine/tests/CMakeLists.txt
++++ b/mooncake-transfer-engine/tests/CMakeLists.txt
+@@ -19,6 +19,12 @@ target_link_libraries(transport_uint_test PUBLIC transfer_engine gtest
+                                                  gtest_main)
+ add_test(NAME transport_uint_test COMMAND transport_uint_test)
+ 
++add_executable(pd_batch_diagnostics_test
++               ${WORKSPACE}/pd_batch_diagnostics_test.cpp)
++target_link_libraries(pd_batch_diagnostics_test PUBLIC transfer_engine gtest
++                                                       gtest_main)
++add_test(NAME pd_batch_diagnostics_test COMMAND pd_batch_diagnostics_test)
++
+ # Hardware-free tests for FlagCX transport range and descriptor validation.
+ add_executable(flagcx_transport_internal_test
+                ${WORKSPACE}/flagcx_transport_internal_test.cpp)
+@@ -50,8 +56,8 @@ add_test(NAME rdma_endpoint_state_test COMMAND rdma_endpoint_state_test)
+ 
+ # Regression test for the reconnect storm of issue #3299: repeated local
+ # completion faults toward one peer RNIC must pause that path instead of
+-# re-handshaking it forever. The rail monitor is plain per-worker-pool state,
+-# so this runs on every CI runner without an RDMA device.
++# re-handshaking it forever. The rail monitor is plain per-worker-pool state, so
++# this runs on every CI runner without an RDMA device.
+ add_executable(worker_pool_rail_state_test
+                ${WORKSPACE}/worker_pool_rail_state_test.cpp)
+ target_link_libraries(worker_pool_rail_state_test PUBLIC transfer_engine gtest
+diff --git a/mooncake-transfer-engine/tests/pd_batch_diagnostics_test.cpp b/mooncake-transfer-engine/tests/pd_batch_diagnostics_test.cpp
+new file mode 100644
+index 0000000..2a755af
+--- /dev/null
++++ b/mooncake-transfer-engine/tests/pd_batch_diagnostics_test.cpp
+@@ -0,0 +1,114 @@
++#include <gtest/gtest.h>
++
++#include "multi_transport.h"
++
++using namespace mooncake;
++
++namespace {
++class CompletingTransport : public Transport {
++   public:
++    explicit CompletingTransport(const char* name) : name_(name) {}
++    TransferStatusEnum next = TransferStatusEnum::WAITING;
++    size_t bytes = 0;
++    size_t polls = 0;
++    Status submitTransfer(BatchID,
++                          const std::vector<TransferRequest>&) override {
++        return Status::OK();
++    }
++    Status getTransferStatus(BatchID id, size_t task_id,
++                             TransferStatus& status) override {
++        ++polls;
++        status.s = next;
++        status.transferred_bytes = bytes;
++        if (next != TransferStatusEnum::WAITING)
++            reinterpret_cast<BatchDesc*>(id)->task_list[task_id].is_finished =
++                true;
++        return Status::OK();
++    }
++
++   private:
++    const char* getName() const override { return name_; }
++    int registerLocalMemory(void*, size_t, const std::string&, bool,
++                            bool) override {
++        return 0;
++    }
++    int unregisterLocalMemory(void*, bool) override { return 0; }
++    int registerLocalMemoryBatch(const std::vector<BufferEntry>&,
++                                 const std::string&) override {
++        return 0;
++    }
++    int unregisterLocalMemoryBatch(const std::vector<void*>&) override {
++        return 0;
++    }
++    const char* name_;
++};
++
++TEST(PDBatchDiagnostics, WaitsForEveryNativeTaskAndPreservesSelection) {
++    std::string name = "offline";
++    MultiTransport engine(nullptr, name);
++    CompletingTransport nvlink("nvlink_intraNode");
++    auto id = engine.allocateBatchID(2);
++    auto& tasks = reinterpret_cast<Transport::BatchDesc*>(id)->task_list;
++    tasks.emplace_back().transport_ = &nvlink;
++    tasks.emplace_back().transport_ = &nvlink;
++    Transport::TransferStatus status;
++    ASSERT_TRUE(engine.getBatchTransferStatus(id, status).ok());
++    EXPECT_EQ(status.s, Transport::TransferStatusEnum::WAITING);
++    EXPECT_EQ(status.transferred_bytes, 0);
++    EXPECT_FALSE(engine.freeBatchID(id).ok());
++    Transport::BatchTransportSelection selection;
++    ASSERT_TRUE(engine.getBatchTransportSelection(id, selection).ok());
++    EXPECT_EQ(selection.task_count, 2);
++    EXPECT_EQ(selection.selected_transports.at("nvlink_intraNode"), 2);
++    EXPECT_EQ(selection.missing_transports, 0);
++    nvlink.next = Transport::TransferStatusEnum::COMPLETED;
++    nvlink.bytes = 123;
++    ASSERT_TRUE(engine.getBatchTransferStatus(id, status).ok());
++    EXPECT_EQ(status.s, Transport::TransferStatusEnum::COMPLETED);
++    EXPECT_EQ(status.transferred_bytes, 246);
++    EXPECT_EQ(nvlink.polls, 4);
++    ASSERT_TRUE(engine.getBatchTransferStatus(id, status).ok());
++    EXPECT_EQ(status.transferred_bytes, 246);
++    EXPECT_EQ(nvlink.polls, 4);
++    ASSERT_TRUE(engine.freeBatchID(id).ok());
++}
++
++TEST(PDBatchDiagnostics, ReportsMixedTransportAndNativeFailure) {
++    std::string name = "offline";
++    MultiTransport engine(nullptr, name);
++    CompletingTransport nvlink("nvlink_intraNode"), tcp("tcp");
++    auto id = engine.allocateBatchID(2);
++    auto& tasks = reinterpret_cast<Transport::BatchDesc*>(id)->task_list;
++    tasks.emplace_back().transport_ = &nvlink;
++    tasks.emplace_back().transport_ = &tcp;
++    Transport::BatchTransportSelection selection;
++    ASSERT_TRUE(engine.getBatchTransportSelection(id, selection).ok());
++    EXPECT_EQ(selection.selected_transports.size(), 2);
++    EXPECT_EQ(selection.selected_transports.at("tcp"), 1);
++    nvlink.next = Transport::TransferStatusEnum::COMPLETED;
++    nvlink.bytes = 99;
++    tcp.next = Transport::TransferStatusEnum::FAILED;
++    Transport::TransferStatus status;
++    ASSERT_TRUE(engine.getBatchTransferStatus(id, status).ok());
++    EXPECT_EQ(status.s, Transport::TransferStatusEnum::FAILED);
++    EXPECT_EQ(status.transferred_bytes, 99);
++    ASSERT_TRUE(engine.freeBatchID(id).ok());
++}
++
++TEST(PDBatchDiagnostics, EmptyAndMissingTransportCannotProveNvlink) {
++    std::string name = "offline";
++    MultiTransport engine(nullptr, name);
++    auto id = engine.allocateBatchID(1);
++    Transport::BatchTransportSelection selection;
++    ASSERT_TRUE(engine.getBatchTransportSelection(id, selection).ok());
++    EXPECT_EQ(selection.task_count, 0);
++    EXPECT_TRUE(selection.selected_transports.empty());
++    auto& task =
++        reinterpret_cast<Transport::BatchDesc*>(id)->task_list.emplace_back();
++    task.is_finished = true;
++    ASSERT_TRUE(engine.getBatchTransportSelection(id, selection).ok());
++    EXPECT_EQ(selection.task_count, 1);
++    EXPECT_EQ(selection.missing_transports, 1);
++    ASSERT_TRUE(engine.freeBatchID(id).ok());
++}
++}  // namespace

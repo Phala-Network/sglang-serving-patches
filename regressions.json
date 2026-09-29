@@ -47,6 +47,18 @@
       {
         "name": "pd-request-batch-correlation",
         "path": "test/manual/phala/test_pd_batch_correlation_cpu.py"
+      },
+      {
+        "name": "shared-seed-callsites",
+        "path": "test/manual/phala/test_shared_cache_seed_callsite_cpu.py"
+      },
+      {
+        "name": "shared-seed-capture",
+        "path": "test/registered/cpu/test_shared_cache_seed_capture.py"
+      },
+      {
+        "name": "shared-writer-owner-control",
+        "path": "test/registered/cpu/test_shared_cache_control.py"
       }
     ],
     "model-fixtures": [

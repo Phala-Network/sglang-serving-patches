@@ -1,0 +1,3782 @@
+diff --git a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+index e95bf0c3c9e7ff6b92c8182e5758773af673967a..76a7fdd02643bc062cb7b55df76d742a4aaa509e 100644
+--- a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
++++ b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+@@ -1,8 +1,13 @@
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ import logging
++import os
++import re
+ import threading
+ import time
++import uuid
+ from typing import TYPE_CHECKING
+ from weakref import WeakKeyDictionary as WeakKeyDict
+ 
+@@ -29,7 +34,10 @@ from sglang.srt.mem_cache.memory_pool import (
+     MLATokenToKVPool,
+     ReqToTokenPool,
+ )
+-from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
++from sglang.srt.mem_cache.shared_cache_diagnostics import (
++    shared_cache_diagnostics,
++    shared_cache_seed_capture,
++)
+ from sglang.srt.mem_cache.storage_backend_config import (
+     load_storage_backend_extra_config,
+ )
+@@ -162,7 +170,9 @@ class DecodeKVCacheOffloadManager:
+             )
+ 
+         self.ongoing_offload = {}
++        self.offload_page_starts = {}
+         self.ongoing_backup = {}
++        self.shared_cache_d_worker_id = uuid.uuid4().hex
+         self.offload_extra_pools = {}
+         self.backup_extra_pools = {}
+         # Keyed by Req identity (rids can be reused while a D2H copy is still
+@@ -289,6 +299,7 @@ class DecodeKVCacheOffloadManager:
+             incremental_tokens,
+             time.time(),
+         )
++        self.offload_page_starts[ack_id] = start // self.page_size
+         state.inc_len += incremental_aligned_len
+         if self.is_dsv4:
+             # Chunk-cache SWA eviction is independent of this manager. Complete
+@@ -386,6 +397,7 @@ class DecodeKVCacheOffloadManager:
+                     start_time,
+                     prior_hash,
+                     self.offload_extra_pools.pop(ack_id, None),
++                    page_start=self.offload_page_starts.pop(ack_id, None),
+                 )
+                 if req in self.offloaded_state:
+                     self.offloaded_state[req].last_hash = last_hash
+@@ -424,6 +436,27 @@ class DecodeKVCacheOffloadManager:
+             dsv4_complete = (
+                 self._dsv4_backup_complete(storage_operation) if self.is_dsv4 else None
+             )
++            if self.is_dsv4 and getattr(
++                storage_operation, "shared_cache_seed_selected", False
++            ):
++                try:
++                    seed_sealed = shared_cache_seed_capture.backup_ack(
++                        request_id=req_id,
++                        operation_id=ack_id,
++                        complete=dsv4_complete,
++                        tokens=storage_operation.completed_tokens,
++                        expected_tokens=len(storage_operation.token_ids),
++                    )
++                except Exception:
++                    shared_cache_seed_capture.fail_closed()
++                    seed_sealed = False
++                if seed_sealed and shared_cache_seed_capture.sealed_path:
++                    try:
++                        shared_cache_diagnostics.arm_from_manifest(
++                            shared_cache_seed_capture.sealed_path
++                        )
++                    except Exception:
++                        shared_cache_seed_capture.fail_closed()
+             if self.is_dsv4:
+                 shared_cache_diagnostics.record_backup(
+                     phase="ack",
+@@ -478,16 +511,30 @@ class DecodeKVCacheOffloadManager:
+         start_time,
+         prior_hash,
+         extra_pools=None,
++        *,
++        page_start=None,
+     ):
+         """Trigger async backup from host to storage."""
+         page_hashes = self._compute_prefix_hash(req, incremental_tokens, prior_hash)
+         for transfer in extra_pools or []:
+             transfer.keys = page_hashes
++        seed_selected = self.is_dsv4 and self._arm_seed_operation(
++            req, page_hashes, extra_pools, page_start
++        )
+         try:
+             ack_id = self.cache_controller.write_storage(
+                 host_indices,
+                 incremental_tokens,
+                 hash_value=page_hashes,
++                **(
++                    {
++                        "diagnostic_request_id": req.rid,
++                        "diagnostic_page_start": page_start,
++                        "seed_selected": seed_selected,
++                    }
++                    if self.is_dsv4
++                    else {}
++                ),
+                 **({"extra_pools": extra_pools} if extra_pools else {}),
+             )
+         except Exception:
+@@ -519,6 +566,67 @@ class DecodeKVCacheOffloadManager:
+             )
+         return page_hashes[-1] if len(page_hashes) > 0 else prior_hash
+ 
++    def _arm_seed_operation(self, req, page_hashes, extra_pools, page_start):
++        if not os.getenv("SGLANG_SHARED_CACHE_SEED_CAPTURE_CONFIG"):
++            return False
++        request_ref = getattr(req, "pd_diagnostic_request_ref", None)
++        if (
++            not isinstance(request_ref, str)
++            or not re.fullmatch(r"[0-9a-f]{64}", request_ref)
++            or type(page_start) is not int
++            or page_start < 0
++            or not page_hashes
++        ):
++            return False
++        try:
++            cc = self.cache_controller
++            storage_config = cc.storage_config
++            if storage_config.tp_size != 1 or storage_config.pp_size != 1:
++                return False
++            store = cc.storage_backend
++            schema = self.decode_host_mem_pool.storage_schema
++            transfers = [
++                transfer for transfer in extra_pools or [] if cc.should_backup(transfer)
++            ]
++            if {str(item.name) for item in transfers} != {
++                str(name) for name in store.registered_pools
++            }:
++                return False
++            components = []
++            for transfer in transfers:
++                _, multiplier = store._get_hybrid_page_component_keys(
++                    page_hashes[:1], transfer
++                )
++                components.extend(
++                    f"{transfer.name}:{index}" for index in range(multiplier)
++                )
++            if not components or len(components) != len(set(components)):
++                return False
++            schema_id = hashlib.sha256(
++                json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
++            ).hexdigest()
++            return shared_cache_seed_capture.arm(
++                {
++                    "request_ref": request_ref,
++                    "backend_tag": storage_config.extra_config["extra_backend_tag"],
++                    "model_revision": schema["revision"],
++                    "kv_schema": schema_id,
++                    "page_range": {
++                        "start": page_start,
++                        "end": page_start + len(page_hashes),
++                    },
++                    "required_components": sorted(components),
++                    "rank": storage_config.tp_rank,
++                },
++                actual_request_id=req.rid,
++                actual_store_instance_id=store.shared_cache_store_instance_id,
++                actual_d_worker_id=self.shared_cache_d_worker_id,
++                actual_tenant_id=store.config.tenant_id,
++            )
++        except Exception:
++            shared_cache_seed_capture.fail_closed()
++            return False
++
+     def _compute_prefix_hash(self, req: Req, tokens, prior_hash=""):
+         """Match prefill storage hashes."""
+         page_hashes = []
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index f9085aa0566799d743e2b14e77093da380edf965..34644910b6f4fb16d8014cd1dfc3274fcca68727 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -1164,6 +1164,65 @@ async def clear_hicache_storage_backend():
+     )
+ 
+ 
++async def _read_shared_cache_clear_selectors(request: Request) -> dict[str, str]:
++    max_body_bytes = 512
++    await validate_json_request(request)
++    content_length = request.headers.get("content-length")
++    if content_length is not None:
++        try:
++            content_length_value = int(content_length)
++            if content_length_value < 0:
++                raise HTTPException(status_code=400, detail="invalid_content_length")
++            if content_length_value > max_body_bytes:
++                raise HTTPException(status_code=413, detail="request_body_too_large")
++        except ValueError:
++            raise HTTPException(status_code=400, detail="invalid_content_length") from None
++    body = bytearray()
++    async for chunk in request.stream():
++        if len(body) + len(chunk) > max_body_bytes:
++            raise HTTPException(status_code=413, detail="request_body_too_large")
++        body.extend(chunk)
++    from sglang.srt.managers.shared_cache_control import (
++        SharedCacheControlError,
++        parse_clear_selector_body,
++    )
++
++    try:
++        value = parse_clear_selector_body(bytes(body), maximum=max_body_bytes)
++    except SharedCacheControlError as exc:
++        status = 413 if exc.reason == "request_body_too_large" else 422
++        if exc.reason == "invalid_json":
++            status = 400
++        raise HTTPException(status_code=status, detail=exc.reason) from None
++    return value
++
++
++@app.api_route("/shared-cache/memory/clear", methods=["POST"])
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
++async def clear_shared_cache_memory(request: Request):
++    """Run the configured one-shot clear for the original D writer store."""
++    if not (get_serving().api_key or get_serving().admin_api_key):
++        return ORJSONResponse(
++            {"success": False, "reason": "api_token_required"},
++            status_code=HTTPStatus.FORBIDDEN,
++        )
++    selectors = await _read_shared_cache_clear_selectors(request)
++    result = await _global_state.tokenizer_manager.clear_shared_cache_memory(
++        manifest_id=selectors["manifest_id"],
++        manifest_sha256=selectors["manifest_sha256"],
++        request_id=selectors["request_id"],
++    )
++    return ORJSONResponse(
++        {
++            "success": result.success,
++            "reason": result.reason,
++            "unknown": result.unknown,
++            "receipt": result.receipt,
++        },
++        status_code=HTTPStatus.OK if result.success else HTTPStatus.CONFLICT,
++    )
++
++
+ # example usage:
+ # curl -s -X PUT http://127.0.0.1:30000/hicache/storage-backend \
+ #  -H 'Content-Type: application/json' \
+diff --git a/python/sglang/srt/managers/cache_controller.py b/python/sglang/srt/managers/cache_controller.py
+index c55c564b8d8d8247db4d58a6d2360e7f875da167..8496e61ad3cf2bda0376dca8e636855860f5293c 100644
+--- a/python/sglang/srt/managers/cache_controller.py
++++ b/python/sglang/srt/managers/cache_controller.py
+@@ -1204,7 +1204,20 @@ class HiCacheController:
+ 
+         for start in range(0, len(page_hashes), STORAGE_BATCH_SIZE):
+             batch_hashes = page_hashes[start : start + STORAGE_BATCH_SIZE]
+-            extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys)
++            extra_info = HiCacheStorageExtraInfo(
++                prefix_keys=prefix_keys,
++                extra_info={
++                    "shared_cache_diag_request_id": getattr(
++                        operation, "shared_cache_diag_request_id", None
++                    ),
++                    "shared_cache_diag_operation_id": operation.id,
++                    "shared_cache_diag_page_start": (
++                        operation.storage_start // self.page_size + i // self.page_size
++                    ),
++                    "shared_cache_diag_base_hashes": list(operation.hash_value),
++                    "shared_cache_diag_page_size": self.page_size,
++                },
++            )
+             hit_page_num = self.storage_backend.batch_exists(batch_hashes, extra_info)
+             hash_value.extend(batch_hashes[:hit_page_num])
+             storage_query_count += hit_page_num * self.page_size
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 760af879621f7bc28a58151675f73c28f95c1e84..25d15dc15fade7471f5e80ada8be010d9363b964 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -1680,6 +1680,19 @@ class ClearHiCacheReqOutput(BaseReq, kw_only=True):
+     success: bool
+ 
+ 
++class SharedCacheClearMemoryReqInput(BaseReq, kw_only=True):
++    manifest_id: str
++    manifest_sha256: str
++    request_id: str
++
++
++class SharedCacheClearMemoryReqOutput(BaseReq, kw_only=True):
++    success: bool
++    reason: str = ""
++    unknown: bool = False
++    receipt: Optional[Dict[str, Any]] = None
++
++
+ class FlushCacheReqInput(BaseReq, kw_only=True):
+     timeout_s: Optional[float] = None
+ 
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 2394fe86ab2718b71dfa4542c456cadf1b4275cf..5ddc21ccad0d25a9082767f6f9dbd7077eb29b27 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -18,6 +18,7 @@ import faulthandler
+ import logging
+ import math
+ import os
++import re
+ import signal
+ import sys
+ import time
+@@ -172,6 +173,8 @@ from sglang.srt.managers.io_struct import (
+     SetInternalStateReq,
+     SetInternalStateReqOutput,
+     ShutdownReq,
++    SharedCacheClearMemoryReqInput,
++    SharedCacheClearMemoryReqOutput,
+     SlowDownReqInput,
+     SlowDownReqOutput,
+     TokenizedEmbeddingReqInput,
+@@ -186,6 +189,12 @@ from sglang.srt.managers.io_struct import (
+     UpdateWeightVersionReqOutput,
+     sock_send,
+ )
++from sglang.srt.managers.shared_cache_control import (
++    SharedCacheControlError,
++    clear_from_configured_artifacts,
++    validate_clear_selectors,
++    validate_single_decode_writer,
++)
+ from sglang.srt.managers.load_snapshot import create_load_snapshot_writer
+ from sglang.srt.managers.min_free_slots_delayer import (
+     MinFreeSlotsDelayer,
+@@ -1775,6 +1784,7 @@ class Scheduler(
+                 (BatchTokenizedEmbeddingReqInput, self.handle_batch_embedding_request),
+                 (FlushCacheReqInput, self.flush_wrapper.handle),
+                 (ClearHiCacheReqInput, self.clear_hicache_storage_wrapped),
++                (SharedCacheClearMemoryReqInput, self.clear_shared_cache_memory),
+                 (AttachHiCacheStorageReqInput, self.attach_hicache_storage_wrapped),
+                 (DetachHiCacheStorageReqInput, self.detach_hicache_storage_wrapped),
+                 (AbortReq, self.abort_request),
+@@ -4896,6 +4906,45 @@ class Scheduler(
+             if_success = False
+         return ClearHiCacheReqOutput(success=if_success)
+ 
++    def clear_shared_cache_memory(
++        self, recv_req: SharedCacheClearMemoryReqInput
++    ) -> SharedCacheClearMemoryReqOutput:
++        if getattr(self, "_shared_cache_clear_unknown", False):
++            return SharedCacheClearMemoryReqOutput(
++                success=False, reason="prior_clear_result_unknown", unknown=True
++            )
++        try:
++            validate_clear_selectors(
++                recv_req.manifest_id,
++                recv_req.manifest_sha256,
++                recv_req.request_id,
++            )
++            validate_single_decode_writer(self.server_args, self.disaggregation_mode)
++        except SharedCacheControlError as exc:
++            return SharedCacheClearMemoryReqOutput(
++                success=False, reason=exc.reason
++            )
++        try:
++            receipt = clear_from_configured_artifacts(
++                self,
++                manifest_id=recv_req.manifest_id,
++                manifest_sha256=recv_req.manifest_sha256,
++            )
++        except SharedCacheControlError as exc:
++            if exc.unknown:
++                self._shared_cache_clear_unknown = True
++            return SharedCacheClearMemoryReqOutput(
++                success=False, reason=exc.reason, unknown=exc.unknown
++            )
++        except Exception:
++            self._shared_cache_clear_unknown = True
++            logger.warning("Finite shared-cache clear outcome is unknown")
++            return SharedCacheClearMemoryReqOutput(
++                success=False, reason="clear_result_unknown", unknown=True
++            )
++        receipt["request_id"] = recv_req.request_id
++        return SharedCacheClearMemoryReqOutput(success=True, receipt=receipt)
++
+     @scheduler_stage_method(SCHEDULER_STAGE_IDLE)
+     def on_idle(self):
+         """Idle housekeeping: guard, check, metrics, reset, sleep."""
+diff --git a/python/sglang/srt/managers/shared_cache_control.py b/python/sglang/srt/managers/shared_cache_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6183b2ed76e48b2711ae5077198bf94c5b0620ef
+--- /dev/null
++++ b/python/sglang/srt/managers/shared_cache_control.py
+@@ -0,0 +1,1035 @@
++from __future__ import annotations
++
++import hashlib
++import hmac
++import json
++import os
++import re
++import stat
++import struct
++import threading
++import time
++import urllib.parse
++import urllib.request
++import uuid
++from pathlib import Path
++from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
++
++MAX_MANIFEST_BYTES = 64 * 1024
++MAX_KEYS = 256
++MAX_LOGICAL_BYTES = 16 * 1024 * 1024 * 1024
++MAX_RESPONSE_BYTES = 1024 * 1024
++MAX_OWNER_DRAIN_BYTES = 1024 * 1024
++MAX_OWNER_DRAIN_EVENTS = 4096
++MAX_CONTROL_DURATION_MS = 120_000
++_CLEAR_QUIET_MS = 250
++_LABEL = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
++_HEX = re.compile(r"^[0-9a-f]{64}$")
++_NATIVE_UUID_PAIR = re.compile(r"^([0-9]+)-([0-9]+)$")
++_FORBIDDEN_KEY = re.compile(r"[*?\[\]\x00-\x1f\x7f,]")
++_UINT64_MAX = (1 << 64) - 1
++_PENDING_FIELDS = (
++    "processing",
++    "offload",
++    "promotion",
++    "promotion_candidate",
++    "replication",
++    "dynamic_replication",
++)
++
++
++class SharedCacheControlError(RuntimeError):
++    def __init__(self, reason: str, *, unknown: bool = False):
++        super().__init__(reason)
++        self.reason = reason
++        self.unknown = unknown
++
++
++def validate_clear_selectors(manifest_id, manifest_sha256, request_id=None) -> None:
++    if not isinstance(manifest_id, str) or not _LABEL.fullmatch(manifest_id):
++        raise SharedCacheControlError("invalid_manifest_selector")
++    if not isinstance(manifest_sha256, str) or not _HEX.fullmatch(manifest_sha256):
++        raise SharedCacheControlError("invalid_manifest_selector")
++    if request_id is not None and (
++        not isinstance(request_id, str) or not _LABEL.fullmatch(request_id)
++    ):
++        raise SharedCacheControlError("invalid_request_id")
++
++
++def validate_single_decode_writer(topology: Any, mode: Any) -> None:
++    mode_value = getattr(mode, "value", mode)
++    if mode_value != "decode":
++        raise SharedCacheControlError("decode_writer_required")
++    required_one = (
++        "tp_size",
++        "dp_size",
++        "pp_size",
++        "dcp_size",
++        "attn_cp_size",
++        "nnodes",
++    )
++    if any(getattr(topology, name, None) != 1 for name in required_one):
++        raise SharedCacheControlError("unsupported_topology")
++
++
++def parse_clear_selector_body(body: bytes, *, maximum: int = 512) -> Dict[str, str]:
++    if not isinstance(body, bytes) or len(body) > maximum:
++        raise SharedCacheControlError("request_body_too_large")
++    try:
++        value = json.loads(body)
++    except (UnicodeDecodeError, json.JSONDecodeError):
++        raise SharedCacheControlError("invalid_json") from None
++    fields = {"manifest_id", "manifest_sha256", "request_id"}
++    if not isinstance(value, dict) or set(value) != fields:
++        raise SharedCacheControlError("invalid_selector_fields")
++    validate_clear_selectors(
++        value["manifest_id"], value["manifest_sha256"], value["request_id"]
++    )
++    return value
++
++
++def _stable_id(salt: bytes, domain: bytes, case_id: str, epoch: str, tenant: str, value: str) -> str:
++    message = bytearray(domain)
++    for field in (case_id, epoch, tenant, value):
++        encoded = field.encode("utf-8")
++        message.extend(struct.pack(">I", len(encoded)))
++        message.extend(encoded)
++    return hmac.new(salt, message, hashlib.sha256).hexdigest()
++
++
++def _canonical_native_uuid_pair(value: Any) -> str:
++    if not isinstance(value, str):
++        raise ValueError("native UUID pair must be a string")
++    match = _NATIVE_UUID_PAIR.fullmatch(value)
++    if match is None:
++        raise ValueError("invalid native UUID pair")
++    first, second = (int(part) for part in match.groups())
++    if first > _UINT64_MAX or second > _UINT64_MAX:
++        raise ValueError("native UUID pair component is out of range")
++    return f"{first}-{second}"
++
++
++def _private_json(path: str, *, maximum: int) -> Dict[str, Any]:
++    file_path = Path(path)
++    try:
++        metadata = file_path.lstat()
++        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
++            raise SharedCacheControlError("private_file_required")
++        if metadata.st_size > maximum:
++            raise SharedCacheControlError("file_too_large")
++        flags = (
++            os.O_RDONLY
++            | getattr(os, "O_NOFOLLOW", 0)
++            | getattr(os, "O_NONBLOCK", 0)
++        )
++        fd = os.open(file_path, flags)
++        try:
++            opened = os.fstat(fd)
++            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
++                raise SharedCacheControlError("file_changed")
++            if hasattr(os, "getuid") and opened.st_uid != os.getuid():
++                raise SharedCacheControlError("wrong_file_owner")
++            with os.fdopen(fd, "rb", closefd=False) as source:
++                payload = source.read(maximum + 1)
++        finally:
++            os.close(fd)
++    except SharedCacheControlError:
++        raise
++    except (OSError, ValueError):
++        raise SharedCacheControlError("file_unavailable") from None
++    if len(payload) > maximum:
++        raise SharedCacheControlError("file_too_large")
++    try:
++        value = json.loads(payload)
++    except (UnicodeDecodeError, json.JSONDecodeError):
++        raise SharedCacheControlError("invalid_json") from None
++    if not isinstance(value, dict):
++        raise SharedCacheControlError("invalid_document")
++    return value
++
++
++def _private_jsonl(path: str) -> tuple[list[Dict[str, Any]], Dict[str, Any]]:
++    file_path = Path(path)
++    try:
++        metadata = file_path.lstat()
++        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
++            raise SharedCacheControlError("owner_drain_private_file_required")
++        if metadata.st_size > MAX_OWNER_DRAIN_BYTES:
++            raise SharedCacheControlError("owner_drain_file_too_large")
++        flags = (
++            os.O_RDONLY
++            | getattr(os, "O_NOFOLLOW", 0)
++            | getattr(os, "O_NONBLOCK", 0)
++        )
++        fd = os.open(file_path, flags)
++        try:
++            opened = os.fstat(fd)
++            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
++                raise SharedCacheControlError("owner_drain_file_changed")
++            if hasattr(os, "getuid") and opened.st_uid != os.getuid():
++                raise SharedCacheControlError("owner_drain_wrong_file_owner")
++            with os.fdopen(fd, "rb", closefd=False) as source:
++                payload = source.read(MAX_OWNER_DRAIN_BYTES + 1)
++        finally:
++            os.close(fd)
++    except SharedCacheControlError:
++        raise
++    except (OSError, ValueError):
++        raise SharedCacheControlError("owner_drain_file_unavailable") from None
++    if len(payload) > MAX_OWNER_DRAIN_BYTES or not payload.endswith(b"\n"):
++        raise SharedCacheControlError("owner_drain_file_incomplete")
++
++    def reject_duplicate_keys(pairs):
++        result = {}
++        for key, value in pairs:
++            if key in result:
++                raise ValueError("duplicate JSON field")
++            result[key] = value
++        return result
++
++    lines = payload.splitlines(keepends=True)
++    if not lines or len(lines) > MAX_OWNER_DRAIN_EVENTS + 1:
++        raise SharedCacheControlError("owner_drain_event_count_invalid")
++    records = []
++    summary = None
++    byte_count = 0
++    for index, raw_line in enumerate(lines):
++        if not raw_line.endswith(b"\n") or raw_line.endswith(b"\r\n"):
++            raise SharedCacheControlError("owner_drain_line_invalid")
++        encoded = raw_line[:-1]
++        if not encoded or len(encoded) > 4096:
++            raise SharedCacheControlError("owner_drain_line_invalid")
++        try:
++            value = json.loads(encoded, object_pairs_hook=reject_duplicate_keys)
++        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
++            raise SharedCacheControlError("owner_drain_invalid_jsonl") from None
++        if not isinstance(value, dict):
++            raise SharedCacheControlError("owner_drain_invalid_record")
++        if value.get("kind") == "capture_summary":
++            if index != len(lines) - 1 or summary is not None:
++                raise SharedCacheControlError("owner_drain_summary_not_final")
++            summary = value
++            continue
++        if summary is not None:
++            raise SharedCacheControlError("owner_drain_record_after_summary")
++        if value.get("schema") not in (
++            "phala.shared-cache.owner-drain.v1",
++            "phala.shared-cache.native.v1",
++        ):
++            raise SharedCacheControlError("owner_drain_schema_mismatch")
++        records.append(value)
++        byte_count += len(raw_line)
++    if summary is None:
++        raise SharedCacheControlError("owner_drain_summary_missing")
++    for field in ("emitted", "dropped", "rejected", "bytes"):
++        value = summary.get(field)
++        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
++            raise SharedCacheControlError("owner_drain_summary_invalid")
++    if (
++        summary.get("complete") is not True
++        or summary["dropped"] != 0
++        or summary["emitted"] != len(records)
++        or summary["emitted"] > MAX_OWNER_DRAIN_EVENTS
++        or summary["bytes"] != byte_count
++    ):
++        raise SharedCacheControlError("owner_drain_capture_incomplete")
++    return records, summary
++
++
++def validate_owner_drain(
++    records: Iterable[Mapping[str, Any]],
++    manifest: Mapping[str, Any],
++    master_evidence: Mapping[str, Any],
++    *,
++    summary: Mapping[str, Any],
++    quiet_ms: int,
++    now_ms: int,
++    freshness_ms: int = 30_000,
++) -> Dict[str, Any]:
++    records = list(records)
++    for field in ("emitted", "dropped", "rejected", "bytes"):
++        value = summary.get(field)
++        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
++            raise SharedCacheControlError("owner_drain_summary_invalid")
++    if (
++        summary.get("complete") is not True
++        or summary["dropped"] != 0
++        or summary["emitted"] != len(records)
++    ):
++        raise SharedCacheControlError("owner_drain_capture_incomplete")
++    mappings = master_evidence.get("ssd_owner_mappings")
++    if not isinstance(mappings, list) or not mappings:
++        raise SharedCacheControlError("ssd_owner_mappings_missing")
++
++    expected_owners = {}
++    expected_owner_ids = manifest.get("_expected_ssd_owner_ids", {})
++    expected_scope_ids = manifest.get("_expected_ssd_scope_ids", {})
++    for entry in manifest["keys"]:
++        owner_id = expected_owner_ids.get(entry["ssd_owner_uuid"])
++        scope_id = expected_scope_ids.get(entry["ssd_scope"])
++        if not owner_id or not scope_id:
++            raise SharedCacheControlError("manifest_ssd_identity_invalid")
++        if owner_id in expected_owners and expected_owners[owner_id] != scope_id:
++            raise SharedCacheControlError("manifest_ssd_owner_scope_conflict")
++        expected_owners[owner_id] = scope_id
++
++    mapping_by_owner = {}
++    instance_ids = set()
++    mapping_fields = {
++        "owner_id",
++        "store_instance_id",
++        "scope_id",
++        "backend_path_id",
++        "pid",
++        "init_completed_unix_ms",
++        "scan_completed_unix_ms",
++    }
++    for item in mappings:
++        if not isinstance(item, Mapping) or set(item) != mapping_fields:
++            raise SharedCacheControlError("ssd_owner_mapping_invalid")
++        owner_id = item["owner_id"]
++        if (
++            not isinstance(owner_id, str)
++            or not _HEX.fullmatch(owner_id)
++            or owner_id in mapping_by_owner
++            or expected_owners.get(owner_id) != item["scope_id"]
++        ):
++            raise SharedCacheControlError("ssd_owner_mapping_identity_mismatch")
++        for field in ("store_instance_id", "scope_id", "backend_path_id"):
++            value = item[field]
++            if not isinstance(value, str) or not _HEX.fullmatch(value):
++                raise SharedCacheControlError("ssd_owner_mapping_identity_invalid")
++        pid = item["pid"]
++        initialized = item["init_completed_unix_ms"]
++        scanned = item["scan_completed_unix_ms"]
++        if (
++            not isinstance(pid, int)
++            or isinstance(pid, bool)
++            or pid <= 0
++            or not isinstance(initialized, int)
++            or isinstance(initialized, bool)
++            or initialized <= 0
++            or not isinstance(scanned, int)
++            or isinstance(scanned, bool)
++            or scanned <= 0
++        ):
++            raise SharedCacheControlError("ssd_owner_mapping_lifecycle_invalid")
++        instance_id = item["store_instance_id"]
++        if instance_id in instance_ids:
++            raise SharedCacheControlError("ssd_owner_instance_not_unique")
++        instance_ids.add(instance_id)
++        mapping_by_owner[owner_id] = item
++    if set(mapping_by_owner) != set(expected_owners):
++        raise SharedCacheControlError("ssd_owner_mapping_set_mismatch")
++
++    active_fields = (
++        "loads",
++        "offloads",
++        "promotions",
++        "removes",
++        "heartbeats",
++        "rescans",
++        "leased_read_buffers",
++    )
++    pending_fields = (
++        "backend_writes",
++        "backend_evictions",
++        "ungrouped_offloads",
++        "read_guards",
++    )
++    by_owner = {owner_id: [] for owner_id in expected_owners}
++    for sample in records:
++        if sample.get("schema") == "phala.shared-cache.native.v1":
++            if sample.get("case_id") != manifest["case_id"] or sample.get("epoch") != manifest["epoch"]:
++                raise SharedCacheControlError("owner_drain_event_identity_mismatch")
++            continue
++        owner_id = sample.get("owner_id")
++        mapping = mapping_by_owner.get(owner_id)
++        active = sample.get("active")
++        pending = sample.get("pending")
++        sequence = sample.get("owner_sample_sequence")
++        activity_sequence = sample.get("activity_sequence")
++        sample_time = sample.get("sample_time_unix_ms")
++        initialized = sample.get("init_completed_unix_ms")
++        scanned = sample.get("scan_completed_unix_ms")
++        bucket_count = sample.get("bucket_count")
++        covered = sample.get("covered_buckets")
++        if (
++            sample.get("schema") != "phala.shared-cache.owner-drain.v1"
++            or sample.get("kind") != "owner_drain"
++            or sample.get("case_id") != manifest["case_id"]
++            or sample.get("epoch") != manifest["epoch"]
++            or sample.get("tenant_id") != manifest["tenant"]
++            or sample.get("owner_client_requested_tenant_id") != manifest["tenant"]
++            or sample.get("coverage") != "owner_global_bucket"
++            or mapping is None
++            or not isinstance(sample.get("pid"), int)
++            or isinstance(sample.get("pid"), bool)
++            or sample.get("scope_id") != mapping["scope_id"]
++            or sample.get("store_instance_id") != mapping["store_instance_id"]
++            or sample.get("backend_path_id") != mapping["backend_path_id"]
++            or sample.get("pid") != mapping["pid"]
++            or initialized != mapping["init_completed_unix_ms"]
++            or scanned != mapping["scan_completed_unix_ms"]
++            or not isinstance(sequence, int)
++            or isinstance(sequence, bool)
++            or sequence < 0
++            or not isinstance(activity_sequence, int)
++            or isinstance(activity_sequence, bool)
++            or activity_sequence < 0
++            or not isinstance(sample_time, int)
++            or isinstance(sample_time, bool)
++            or sample_time < scanned
++            or sample_time < initialized
++            or sample_time > now_ms + 1000
++            or not isinstance(bucket_count, int)
++            or isinstance(bucket_count, bool)
++            or not 1 <= bucket_count <= 256
++            or not isinstance(covered, int)
++            or isinstance(covered, bool)
++            or covered != bucket_count
++            or not isinstance(active, Mapping)
++            or not isinstance(pending, Mapping)
++            or any(
++                not isinstance(group.get(field), int)
++                or isinstance(group.get(field), bool)
++                or group[field] < 0
++                for group, fields in ((active, active_fields), (pending, pending_fields))
++                for field in fields
++            )
++            or sample.get("available") is not True
++            or sample.get("consistent") is not True
++            or sample.get("backend_initialized") is not True
++            or str(sample.get("bucket_eviction_policy", "")).upper() != "NONE"
++            or sample.get("disk_watermark_eviction") is not False
++            or sample.get("metadata_resync_pending") is not False
++            or sample.get("draining") is not False
++            or sample.get("heartbeat_ok") is not True
++        ):
++            raise SharedCacheControlError("owner_drain_sample_invalid")
++        by_owner[owner_id].append(sample)
++
++    if any(not samples for samples in by_owner.values()):
++        raise SharedCacheControlError("owner_drain_sample_missing")
++    quiet_intervals = []
++    sample_counts = {}
++    for owner_id, samples in by_owner.items():
++        ordered = sorted(samples, key=lambda item: item["owner_sample_sequence"])
++        if any(
++            current["owner_sample_sequence"] != previous["owner_sample_sequence"] + 1
++            or current["sample_time_unix_ms"] < previous["sample_time_unix_ms"]
++            for previous, current in zip(ordered, ordered[1:])
++        ):
++            raise SharedCacheControlError("owner_drain_sequence_discontinuous")
++        last_time = ordered[-1]["sample_time_unix_ms"]
++        if last_time > now_ms + 1000 or max(0, now_ms - last_time) > freshness_ms:
++            raise SharedCacheControlError("owner_drain_sample_stale")
++        zero_fields = (*active_fields, *pending_fields)
++        run_start = None
++        prior = None
++        for sample in ordered:
++            counts = sample["active"] | sample["pending"]
++            is_zero = all(counts[field] == 0 for field in zero_fields)
++            if not is_zero:
++                run_start = None
++            elif (
++                prior is None
++                or run_start is None
++                or not all(
++                    prior[group][field] == 0
++                    for group, fields in (("active", active_fields), ("pending", pending_fields))
++                    for field in fields
++                )
++                or prior["activity_sequence"] != sample["activity_sequence"]
++            ):
++                run_start = sample["sample_time_unix_ms"]
++            prior = sample
++        if run_start is None or ordered[-1]["sample_time_unix_ms"] - run_start < quiet_ms:
++            raise SharedCacheControlError("owner_drain_quiet_window_missing")
++        quiet_intervals.append((run_start, last_time))
++        sample_counts[owner_id] = len(ordered)
++
++    common_start = max(start for start, _ in quiet_intervals)
++    common_end = min(end for _, end in quiet_intervals)
++    if common_end - common_start < quiet_ms or now_ms - common_end > freshness_ms:
++        raise SharedCacheControlError("owner_drain_global_quiet_window_missing")
++    return {
++        "owner_count": len(mapping_by_owner),
++        "sample_counts": sample_counts,
++        "quiet_start_unix_ms": common_start,
++        "quiet_end_unix_ms": common_end,
++        "capture_summary": {
++            "emitted": summary["emitted"],
++            "rejected": summary["rejected"],
++            "bytes": summary["bytes"],
++        },
++    }
++
++
++def load_manifest(path: str, manifest_id: str, manifest_sha256: str) -> Dict[str, Any]:
++    if not _LABEL.fullmatch(manifest_id or "") or not _HEX.fullmatch(manifest_sha256 or ""):
++        raise SharedCacheControlError("invalid_manifest_selector")
++    manifest = _private_json(path, maximum=MAX_MANIFEST_BYTES)
++    expected = manifest.get("manifest_sha256")
++    unsigned = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
++    calculated = hashlib.sha256(
++        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++    ).hexdigest()
++    if not hmac.compare_digest(str(expected or ""), calculated):
++        raise SharedCacheControlError("manifest_hash_mismatch")
++    if not hmac.compare_digest(calculated, manifest_sha256):
++        raise SharedCacheControlError("manifest_hash_mismatch")
++    if manifest.get("manifest_id") != manifest_id or manifest.get("manifest_version") != 1:
++        raise SharedCacheControlError("manifest_selector_mismatch")
++    for field in ("run_id", "case_id", "epoch", "tenant", "backend_tag", "model_revision", "kv_schema"):
++        if not _LABEL.fullmatch(str(manifest.get(field) or "")):
++            raise SharedCacheControlError("invalid_manifest_metadata")
++    if manifest.get("exact_nonempty_MEMORY_segment") in (None, ""):
++        raise SharedCacheControlError("empty_memory_segment")
++    raw_segment = manifest["exact_nonempty_MEMORY_segment"]
++    if not isinstance(raw_segment, str) or _FORBIDDEN_KEY.search(raw_segment):
++        raise SharedCacheControlError("invalid_memory_segment")
++    salt = manifest.get("key_salt")
++    if not isinstance(salt, str) or not salt or len(salt.encode()) > 256:
++        raise SharedCacheControlError("invalid_manifest_salt")
++    keys = manifest.get("keys")
++    components = manifest.get("required_components")
++    if not isinstance(keys, list) or not 1 <= len(keys) <= MAX_KEYS:
++        raise SharedCacheControlError("invalid_key_count")
++    if not isinstance(components, list) or not components:
++        raise SharedCacheControlError("invalid_component_set")
++    if any(not _LABEL.fullmatch(str(item)) for item in components):
++        raise SharedCacheControlError("invalid_component_set")
++    total = 0
++    seen = set()
++    seen_components = set()
++    context = (manifest["case_id"], manifest["epoch"], manifest["tenant"])
++    for item in keys:
++        if not isinstance(item, dict):
++            raise SharedCacheControlError("invalid_key_entry")
++        key = item.get("key")
++        size = item.get("logical_bytes")
++        component = item.get("component")
++        if not isinstance(key, str) or not key or len(key.encode()) > 4096 or _FORBIDDEN_KEY.search(key):
++            raise SharedCacheControlError("invalid_key")
++        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
++            raise SharedCacheControlError("invalid_logical_bytes")
++        if not _LABEL.fullmatch(str(component or "")) or component not in components:
++            raise SharedCacheControlError("invalid_component")
++        if item.get("rank") != 0:
++            raise SharedCacheControlError("unsupported_topology")
++        page_range = item.get("page_range")
++        if not isinstance(page_range, str) or not _LABEL.fullmatch(page_range):
++            raise SharedCacheControlError("invalid_page_range")
++        key_id = _stable_id(
++            salt.encode(), b"phala.shared-cache-key.v1\0", *context, key
++        )
++        if item.get("key_id") != key_id or key_id in seen:
++            raise SharedCacheControlError("key_id_mismatch_or_duplicate")
++        seen.add(key_id)
++        seen_components.add(component)
++        item["key_id"] = key_id
++        replica_ids = item.get("ssd_replica_ids")
++        if (
++            not isinstance(replica_ids, list)
++            or not replica_ids
++            or any(not isinstance(replica_id, int) or isinstance(replica_id, bool) for replica_id in replica_ids)
++            or len(set(replica_ids)) != len(replica_ids)
++        ):
++            raise SharedCacheControlError("invalid_ssd_replica_ids")
++        for identity_field in ("ssd_owner_uuid", "ssd_scope"):
++            if not isinstance(item.get(identity_field), str) or not item[identity_field]:
++                raise SharedCacheControlError("missing_ssd_identity")
++        total += size
++        if total > MAX_LOGICAL_BYTES:
++            raise SharedCacheControlError("logical_bytes_too_large")
++    if seen_components != set(components):
++        raise SharedCacheControlError("incomplete_components")
++    for field in ("original_D_worker_id", "original_writer_client_id", "original_store_instance_id"):
++        if not isinstance(manifest.get(field), str) or not manifest[field]:
++            raise SharedCacheControlError("missing_writer_identity")
++    return manifest
++
++
++def expected_identities(manifest: Mapping[str, Any]) -> tuple[str, str]:
++    salt = manifest["key_salt"].encode()
++    context = (manifest["case_id"], manifest["epoch"], manifest["tenant"])
++    try:
++        writer_uuid = _canonical_native_uuid_pair(
++            manifest["original_writer_client_id"]
++        )
++        owner_uuids = {
++            item["ssd_owner_uuid"]: _canonical_native_uuid_pair(item["ssd_owner_uuid"])
++            for item in manifest["keys"]
++        }
++    except (ValueError, TypeError, KeyError, AttributeError):
++        raise SharedCacheControlError("invalid_writer_identity") from None
++    writer_id = _stable_id(
++        salt, b"phala.shared-cache-owner.v1\0", *context, writer_uuid
++    )
++    segment_id = _stable_id(
++        salt,
++        b"phala.shared-cache-segment.v1\0",
++        *context,
++        manifest["exact_nonempty_MEMORY_segment"],
++    )
++    manifest["_expected_writer_id"] = writer_id
++    manifest["_expected_segment_id"] = segment_id
++    manifest["_expected_ssd_owner_ids"] = {
++        raw: _stable_id(salt, b"phala.shared-cache-owner.v1\0", *context, normalized)
++        for raw, normalized in owner_uuids.items()
++    }
++    manifest["_expected_ssd_scope_ids"] = {
++        item["ssd_scope"]: _stable_id(
++            salt,
++            b"phala.shared-cache-owner.v1\0",
++            *context,
++            item["ssd_scope"],
++        )
++        for item in manifest["keys"]
++    }
++    return writer_id, segment_id
++
++
++def burn_once(manifest_path: str, manifest_sha256: str) -> None:
++    marker = f"{manifest_path}.{manifest_sha256}.consumed"
++    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
++    try:
++        fd = os.open(marker, flags, 0o600)
++        with os.fdopen(fd, "w", encoding="ascii") as output:
++            output.write("consumed\n")
++            output.flush()
++            os.fsync(output.fileno())
++    except FileExistsError:
++        raise SharedCacheControlError("manifest_already_consumed") from None
++    except OSError:
++        raise SharedCacheControlError("cannot_consume_manifest") from None
++
++
++def clear_from_configured_artifacts(
++    scheduler: Any,
++    *,
++    manifest_id: str,
++    manifest_sha256: str,
++    snapshot_timeout_s: float = 3.0,
++) -> Dict[str, Any]:
++    validate_clear_selectors(manifest_id, manifest_sha256)
++    manifest_path = os.getenv("SGLANG_SHARED_CACHE_CLEAR_MANIFEST")
++    evidence_path = os.getenv("SGLANG_SHARED_CACHE_MASTER_EVIDENCE")
++    owner_drain_path = os.getenv("SGLANG_SHARED_CACHE_OWNER_DRAIN_EVIDENCE")
++    admin_url = os.getenv("SGLANG_SHARED_CACHE_NATIVE_ADMIN_URL")
++    if not manifest_path or not evidence_path or not owner_drain_path or not admin_url:
++        raise SharedCacheControlError("clear_control_not_configured")
++    manifest = load_manifest(manifest_path, manifest_id, manifest_sha256)
++    evidence = _private_json(evidence_path, maximum=MAX_MANIFEST_BYTES)
++    if evidence.get("schema") != "phala.shared-cache.master-evidence.v1":
++        raise SharedCacheControlError("master_evidence_schema_mismatch")
++    writer_id, segment_id = expected_identities(manifest)
++    burn_once(manifest_path, manifest_sha256)
++
++    def read_snapshot(sample_id: str) -> Mapping[str, Any]:
++        return read_native_snapshot(
++            admin_url,
++            manifest,
++            sample_id,
++            timeout=snapshot_timeout_s,
++            max_response_bytes=MAX_RESPONSE_BYTES,
++        )
++
++    storage_backend = getattr(
++        getattr(
++            getattr(scheduler, "decode_offload_manager", None),
++            "cache_controller",
++            None,
++        ),
++        "storage_backend",
++        None,
++    )
++    native_store = getattr(storage_backend, "store", None)
++    if native_store is None:
++        raise SharedCacheControlError("storage_backend_missing")
++    return execute_bounded_clear(
++        scheduler=scheduler,
++        native_store=native_store,
++        manifest=manifest,
++        snapshot_reader=read_snapshot,
++        master_evidence=evidence,
++        writer_id=writer_id,
++        segment_id=segment_id,
++        owner_drain_evidence_path=owner_drain_path,
++        quiet_ms=_CLEAR_QUIET_MS,
++        duration_ms=30_000,
++    )
++
++
++def _safe_admin_url(value: str) -> str:
++    try:
++        parsed = urllib.parse.urlsplit(value)
++        port = parsed.port
++    except ValueError:
++        raise SharedCacheControlError("invalid_admin_url") from None
++    if (
++        parsed.scheme not in ("http", "https")
++        or not parsed.hostname
++        or parsed.username is not None
++        or parsed.password is not None
++        or parsed.query
++        or parsed.fragment
++        or parsed.path not in ("", "/")
++        or port is None
++    ):
++        raise SharedCacheControlError("invalid_admin_url")
++    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/batch_query_keys", "", ""))
++
++
++def read_native_snapshot(
++    admin_url: str,
++    manifest: Mapping[str, Any],
++    sample_id: str,
++    *,
++    timeout: float,
++    max_response_bytes: int,
++    opener: Callable[..., Any] = urllib.request.urlopen,
++) -> Dict[str, Any]:
++    key_ids = [item["key_id"] for item in manifest["keys"]]
++    query = urllib.parse.urlencode(
++        {
++            "finite_snapshot": "1",
++            "tenant_id": manifest["tenant"],
++            "case_id": manifest["case_id"],
++            "epoch": manifest["epoch"],
++            "sample_id": sample_id,
++            "key_ids": ",".join(key_ids),
++        }
++    )
++    request = urllib.request.Request(
++        f"{_safe_admin_url(admin_url)}?{query}",
++        headers={"Accept": "application/json"},
++        method="GET",
++    )
++    try:
++        with opener(request, timeout=timeout) as response:
++            body = response.read(max_response_bytes + 1)
++    except Exception:
++        raise SharedCacheControlError("snapshot_unavailable") from None
++    if len(body) > max_response_bytes or len(body) > MAX_RESPONSE_BYTES:
++        raise SharedCacheControlError("snapshot_too_large")
++    try:
++        value = json.loads(body)
++    except (UnicodeDecodeError, json.JSONDecodeError):
++        raise SharedCacheControlError("invalid_snapshot") from None
++    if not isinstance(value, dict):
++        raise SharedCacheControlError("invalid_snapshot")
++    return value
++
++
++def validate_snapshot(
++    snapshot: Mapping[str, Any],
++    manifest: Mapping[str, Any],
++    sample_id: str,
++    *,
++    expected_writer_id: str,
++    expected_segment_id: str,
++    expect_memory: bool = True,
++) -> Dict[str, Any]:
++    tenant = manifest["tenant"]
++    multi_tenant_enabled = snapshot.get("master_multi_tenant_enabled")
++    if (
++        snapshot.get("schema") != "phala.shared-cache.snapshot.v1"
++        or snapshot.get("success") is not True
++        or snapshot.get("case_id") != manifest["case_id"]
++        or snapshot.get("epoch") != manifest["epoch"]
++        or snapshot.get("tenant_id") != tenant
++        or snapshot.get("requested_tenant_id") != tenant
++        or snapshot.get("effective_tenant_id") != tenant
++        or not isinstance(multi_tenant_enabled, bool)
++        or (tenant != "default" and multi_tenant_enabled is not True)
++        or snapshot.get("sample_id") != sample_id
++        or not isinstance(snapshot.get("master_pid"), int)
++        or not isinstance(snapshot.get("sample_time_unix_ms"), int)
++        or snapshot.get("backend_drain_available") is not False
++    ):
++        raise SharedCacheControlError("snapshot_identity_mismatch")
++    objects = snapshot.get("objects")
++    if not isinstance(objects, list) or len(objects) != len(manifest["keys"]):
++        raise SharedCacheControlError("snapshot_object_count_mismatch")
++    by_id = {item.get("key_id"): item for item in objects if isinstance(item, dict)}
++    expected_ids = {item["key_id"] for item in manifest["keys"]}
++    if len(by_id) != len(objects) or set(by_id) != expected_ids:
++        raise SharedCacheControlError("snapshot_key_set_mismatch")
++    ack_objects = []
++    for entry in manifest["keys"]:
++        obj = by_id[entry["key_id"]]
++        if (
++            obj.get("found") is not True
++            or obj.get("logical_bytes") != entry["logical_bytes"]
++            or obj.get("writer_id") != expected_writer_id
++            or obj.get("lease_expired") is not True
++        ):
++            raise SharedCacheControlError("object_precondition_failed")
++        pending = obj.get("pending")
++        if not isinstance(pending, dict) or any(
++            pending.get(field) != 0 or isinstance(pending.get(field), bool)
++            for field in _PENDING_FIELDS
++        ):
++            raise SharedCacheControlError("native_work_pending")
++        replicas = obj.get("replicas")
++        if not isinstance(replicas, list):
++            raise SharedCacheControlError("replica_state_missing")
++        memory_targets = []
++        disk_targets = []
++        for replica in replicas:
++            if not isinstance(replica, dict):
++                raise SharedCacheControlError("invalid_replica_state")
++            kind = replica.get("type")
++            if kind == "MEMORY" and expected_segment_id in replica.get("segment_ids", []):
++                memory_targets.append(replica)
++            if kind == "LOCAL_DISK" and replica.get("id") in entry["ssd_replica_ids"]:
++                disk_targets.append(replica)
++            if kind == "NoF":
++                raise SharedCacheControlError("nof_replica_present")
++        if expect_memory:
++            if len(memory_targets) != 1:
++                raise SharedCacheControlError("memory_target_mismatch")
++            memory = memory_targets[0]
++            if memory.get("status") != "COMPLETE" or memory.get("readable") is not True or memory.get("refcount") != 0:
++                raise SharedCacheControlError("memory_target_not_clearable")
++        elif memory_targets:
++            raise SharedCacheControlError("memory_target_survived_clear")
++        if {item.get("id") for item in disk_targets} != set(entry["ssd_replica_ids"]):
++            raise SharedCacheControlError("ssd_replica_set_mismatch")
++        for replica in disk_targets:
++            if (
++                replica.get("status") != "COMPLETE"
++                or replica.get("readable") is not True
++                or replica.get("owner_id")
++                != manifest["_expected_ssd_owner_ids"].get(entry["ssd_owner_uuid"])
++                or replica.get("scope_id")
++                != manifest["_expected_ssd_scope_ids"].get(entry["ssd_scope"])
++            ):
++                raise SharedCacheControlError("ssd_replica_not_preserved")
++        ack_objects.append(
++            {
++                "key_id": entry["key_id"],
++                "logical_bytes": entry["logical_bytes"],
++                "ssd_replica_ids": sorted(entry["ssd_replica_ids"]),
++            }
++        )
++    return {
++        "master_pid": snapshot["master_pid"],
++        "sample_time_unix_ms": snapshot["sample_time_unix_ms"],
++        "objects": ack_objects,
++    }
++
++
++def scheduler_drain_snapshot(scheduler: Any) -> Dict[str, int]:
++    manager = getattr(scheduler, "decode_offload_manager", None)
++    if manager is None:
++        raise SharedCacheControlError("decode_offload_disabled")
++    controller = getattr(manager, "cache_controller", None)
++    if controller is None:
++        raise SharedCacheControlError("cache_controller_missing")
++    ack_backup = getattr(controller, "ack_backup_queue", None)
++    backup = getattr(controller, "backup_queue", None)
++    if ack_backup is None or backup is None:
++        raise SharedCacheControlError("backup_queue_missing")
++    queues = {
++        "scheduler_busy": int(not bool(scheduler.is_fully_idle())),
++        "ongoing_offload": len(getattr(manager, "ongoing_offload", {})),
++        "ongoing_backup": len(getattr(manager, "ongoing_backup", {})),
++        "offload_inflight": len(getattr(manager, "offload_inflight", {})),
++        "ack_write": len(getattr(controller, "ack_write_queue", [])),
++        "ack_backup": int(ack_backup.qsize()),
++        "backup_queue": int(backup.qsize()),
++        "write_queue": len(getattr(controller, "write_queue", [])),
++        "ack_load": len(getattr(controller, "ack_load_queue", [])),
++        "ack_prefetch": int(
++            getattr(controller, "ack_prefetch_queue", None).qsize()
++            if getattr(controller, "ack_prefetch_queue", None) is not None
++            else -1
++        ),
++    }
++    return queues
++
++
++def require_stable_drain(scheduler: Any, *, quiet_ms: int, sample_ms: int = 50) -> Dict[str, int]:
++    if not 50 <= quiet_ms <= 5000:
++        raise SharedCacheControlError("invalid_quiet_interval")
++    deadline = time.monotonic() + quiet_ms / 1000
++    previous = scheduler_drain_snapshot(scheduler)
++    if any(value != 0 for value in previous.values()):
++        raise SharedCacheControlError("scheduler_not_drained")
++    while time.monotonic() < deadline:
++        time.sleep(min(sample_ms / 1000, max(0.0, deadline - time.monotonic())))
++        current = scheduler_drain_snapshot(scheduler)
++        if current != previous or any(value != 0 for value in current.values()):
++            raise SharedCacheControlError("scheduler_drain_changed")
++    return previous
++
++
++def execute_bounded_clear(
++    *,
++    scheduler: Any,
++    native_store: Any,
++    manifest: Mapping[str, Any],
++    snapshot_reader: Callable[[str], Mapping[str, Any]],
++    master_evidence: Mapping[str, Any],
++    writer_id: str,
++    segment_id: str,
++    owner_drain_evidence_path: Optional[str] = None,
++    quiet_ms: int = _CLEAR_QUIET_MS,
++    duration_ms: int = 30_000,
++    now_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
++) -> Dict[str, Any]:
++    if not 1000 <= duration_ms <= MAX_CONTROL_DURATION_MS:
++        raise SharedCacheControlError("invalid_control_duration")
++    if quiet_ms != _CLEAR_QUIET_MS:
++        raise SharedCacheControlError("invalid_quiet_interval")
++    validate_single_decode_writer(
++        getattr(scheduler, "server_args", None),
++        getattr(scheduler, "disaggregation_mode", None),
++    )
++    started = time.monotonic()
++    case_id = manifest["case_id"]
++    epoch = manifest["epoch"]
++    storage_backend = getattr(
++        getattr(
++            getattr(scheduler, "decode_offload_manager", None),
++            "cache_controller",
++            None,
++        ),
++        "storage_backend",
++        None,
++    )
++    if storage_backend is None:
++        raise SharedCacheControlError("storage_backend_missing")
++    if native_store is not getattr(storage_backend, "store", None):
++        raise SharedCacheControlError("original_store_mismatch")
++    if (
++        getattr(storage_backend, "shared_cache_store_instance_id", None)
++        != manifest["original_store_instance_id"]
++    ):
++        raise SharedCacheControlError("original_store_instance_mismatch")
++    if (
++        getattr(scheduler.ps, "tp_size", None) != 1
++        or getattr(scheduler.ps, "dp_size", None) != 1
++        or getattr(scheduler.ps, "pp_size", None) != 1
++        or getattr(scheduler.ps, "attn_cp_size", None) != 1
++    ):
++        raise SharedCacheControlError("unsupported_topology")
++    if not isinstance(master_evidence, Mapping):
++        raise SharedCacheControlError("master_evidence_missing")
++    if (
++        master_evidence.get("case_id") != case_id
++        or master_evidence.get("epoch") != epoch
++        or master_evidence.get("tenant_id") != manifest["tenant"]
++        or master_evidence.get("requested_tenant_id") != manifest["tenant"]
++        or master_evidence.get("effective_tenant_id") != manifest["tenant"]
++        or not isinstance(master_evidence.get("master_multi_tenant_enabled"), bool)
++        or (
++            manifest["tenant"] != "default"
++            and master_evidence.get("master_multi_tenant_enabled") is not True
++        )
++        or master_evidence.get("backend_tag") != manifest["backend_tag"]
++        or master_evidence.get("d_worker_id") != manifest["original_D_worker_id"]
++        or master_evidence.get("store_instance_id") != manifest["original_store_instance_id"]
++        or not isinstance(master_evidence.get("master_pid"), int)
++        or isinstance(master_evidence.get("master_pid"), bool)
++        or not isinstance(master_evidence.get("init_scan_completed_unix_ms"), int)
++        or isinstance(master_evidence.get("init_scan_completed_unix_ms"), bool)
++        or isinstance(master_evidence.get("sample_time_unix_ms"), bool)
++        or master_evidence.get("init_scan_completed_unix_ms") > master_evidence.get("sample_time_unix_ms", 0)
++        or master_evidence.get("bucket_eviction_policy") != "none"
++        or master_evidence.get("disk_watermark_eviction") is not False
++        or not isinstance(master_evidence.get("sample_time_unix_ms"), int)
++        or now_ms() - master_evidence["sample_time_unix_ms"] > 30_000
++    ):
++        raise SharedCacheControlError("master_evidence_invalid")
++    before_sample_id = uuid.uuid4().hex
++    before = snapshot_reader(before_sample_id)
++    before_ack = validate_snapshot(
++        before,
++        manifest,
++        before_sample_id,
++        expected_writer_id=writer_id,
++        expected_segment_id=segment_id,
++    )
++    if before_ack["master_pid"] != master_evidence["master_pid"]:
++        raise SharedCacheControlError("master_instance_mismatch")
++    drain = require_stable_drain(scheduler, quiet_ms=quiet_ms)
++    if not owner_drain_evidence_path:
++        raise SharedCacheControlError("owner_drain_evidence_missing")
++    owner_records, owner_summary = _private_jsonl(owner_drain_evidence_path)
++    owner_drain = validate_owner_drain(
++        owner_records,
++        manifest,
++        master_evidence,
++        summary=owner_summary,
++        quiet_ms=quiet_ms,
++        now_ms=now_ms(),
++    )
++    keys = [item["key"] for item in manifest["keys"]]
++    memory_segment = manifest["exact_nonempty_MEMORY_segment"]
++    remaining = duration_ms - int((time.monotonic() - started) * 1000)
++    if remaining <= 0:
++        raise SharedCacheControlError("control_deadline_before_clear")
++    result_holder: Dict[str, Any] = {}
++
++    def clear_once():
++        try:
++            result_holder["result"] = native_store.batch_replica_clear(keys, memory_segment)
++        except Exception:
++            result_holder["error"] = True
++
++    clear_thread = threading.Thread(target=clear_once, name="shared-cache-clear", daemon=True)
++    clear_thread.start()
++    clear_thread.join(remaining / 1000)
++    if clear_thread.is_alive():
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("clear_result_unknown", unknown=True)
++    if "error" in result_holder:
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("clear_result_unknown", unknown=True)
++    cleared = result_holder.get("result")
++    if not isinstance(cleared, Iterable) or isinstance(cleared, (str, bytes)):
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("clear_result_unknown", unknown=True)
++    cleared_list = list(cleared)
++    if len(cleared_list) != len(set(cleared_list)) or set(cleared_list) != set(keys):
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("partial_clear_result", unknown=True)
++    if (time.monotonic() - started) * 1000 > duration_ms:
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("clear_deadline_exceeded", unknown=True)
++    after_sample_id = uuid.uuid4().hex
++    after = snapshot_reader(after_sample_id)
++    after_ack = validate_snapshot(
++        after,
++        manifest,
++        after_sample_id,
++        expected_writer_id=writer_id,
++        expected_segment_id=segment_id,
++        expect_memory=False,
++    )
++    if (
++        after_ack["master_pid"] != before_ack["master_pid"]
++        or after_ack["objects"] != before_ack["objects"]
++        or scheduler_drain_snapshot(scheduler) != drain
++    ):
++        scheduler._shared_cache_clear_unknown = True
++        raise SharedCacheControlError("postcondition_failed", unknown=True)
++    return {
++        "success": True,
++        "manifest_sha256": manifest["manifest_sha256"],
++        "requested_key_ids": [item["key_id"] for item in manifest["keys"]],
++        "cleared_key_ids": [item["key_id"] for item in manifest["keys"]],
++        "key_count": len(keys),
++        "logical_bytes": sum(item["logical_bytes"] for item in manifest["keys"]),
++        "memory_segment_id": segment_id,
++        "master_pid": before_ack["master_pid"],
++        "sample_before_unix_ms": before_ack["sample_time_unix_ms"],
++        "sample_after_unix_ms": after_ack["sample_time_unix_ms"],
++        "drain": drain,
++        "owner_drain": owner_drain,
++        "completed_at_unix_ms": now_ms(),
++    }
+diff --git a/python/sglang/srt/managers/tokenizer_control_mixin.py b/python/sglang/srt/managers/tokenizer_control_mixin.py
+index eee062d5cc8a2ad5575cba492cbcb7ab92b560f3..59753f1b61843895be1a9de3b340cad7e7201e92 100644
+--- a/python/sglang/srt/managers/tokenizer_control_mixin.py
++++ b/python/sglang/srt/managers/tokenizer_control_mixin.py
+@@ -60,6 +60,8 @@ from sglang.srt.managers.io_struct import (
+     ScaleElasticEPReqOutput,
+     SendWeightsToRemoteInstanceReqInput,
+     SendWeightsToRemoteInstanceReqOutput,
++    SharedCacheClearMemoryReqInput,
++    SharedCacheClearMemoryReqOutput,
+     SetInternalStateReq,
+     SetInternalStateReqOutput,
+     SlowDownReqInput,
+@@ -76,6 +78,11 @@ from sglang.srt.managers.io_struct import (
+     UpdateWeightVersionReqOutput,
+ )
+ from sglang.srt.managers.load_snapshot import LoadSnapshot
++from sglang.srt.managers.shared_cache_control import (
++    SharedCacheControlError,
++    validate_clear_selectors,
++    validate_single_decode_writer,
++)
+ from sglang.srt.runtime_context import (
+     get_lora,
+     get_parallel,
+@@ -120,6 +127,7 @@ _COMMUNICATOR_SPECS = [
+     ("remove_external_corpus", RemoveExternalCorpusReqOutput),
+     ("list_external_corpora", ListExternalCorporaReqOutput),
+     ("clear_hicache_storage", ClearHiCacheReqOutput),
++    ("clear_shared_cache_memory", SharedCacheClearMemoryReqOutput),
+     ("attach_hicache_storage", AttachHiCacheStorageReqOutput),
+     ("detach_hicache_storage", DetachHiCacheStorageReqOutput),
+     ("profile", ProfileReqOutput),
+@@ -318,6 +326,33 @@ class TokenizerControlMixin:
+             0
+         ]
+ 
++    async def clear_shared_cache_memory(
++        self: TokenizerManager,
++        manifest_id: str,
++        manifest_sha256: str,
++        request_id: str,
++    ) -> SharedCacheClearMemoryReqOutput:
++        try:
++            validate_clear_selectors(manifest_id, manifest_sha256, request_id)
++            validate_single_decode_writer(
++                self.server_args, getattr(self, "disaggregation_mode", None)
++            )
++        except SharedCacheControlError as exc:
++            return SharedCacheClearMemoryReqOutput(success=False, reason=exc.reason)
++        self.auto_create_handle_loop()
++        results = await self.clear_shared_cache_memory_communicator(
++            SharedCacheClearMemoryReqInput(
++                manifest_id=manifest_id,
++                manifest_sha256=manifest_sha256,
++                request_id=request_id,
++            )
++        )
++        if len(results) != 1:
++            return SharedCacheClearMemoryReqOutput(
++                success=False, reason="unsupported_topology", unknown=True
++            )
++        return results[0]
++
+     async def attach_hicache_storage(
+         self: TokenizerManager,
+         hicache_storage_backend: str,
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+index 8a3994d9784667378679ad733bc4977bbe579d93..2be12c4ab4ddf78c572cce168f8c54956fda1944 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py
+@@ -39,6 +39,7 @@ from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
+ from sglang.srt.mem_cache.storage_backend_config import (
+     load_storage_backend_extra_config,
+ )
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_seed_capture
+ 
+ if TYPE_CHECKING:
+     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+@@ -603,6 +604,9 @@ class HybridCacheController(BaseHiCacheController):
+         hash_value: Optional[List[str]] = None,
+         prefix_keys: Optional[List[str]] = None,
+         extra_pools: Optional[list[PoolTransfer]] = None,
++        diagnostic_request_id: Optional[str] = None,
++        diagnostic_page_start: Optional[int] = None,
++        seed_selected: bool = False,
+     ) -> int:
+         operation = StorageOperation(
+             host_indices,
+@@ -611,6 +615,18 @@ class HybridCacheController(BaseHiCacheController):
+             prefix_keys=prefix_keys,
+             pool_transfers=extra_pools,
+         )
++        operation.shared_cache_diag_request_id = diagnostic_request_id
++        operation.shared_cache_diag_page_start = diagnostic_page_start or 0
++        operation.shared_cache_seed_selected = False
++        if seed_selected and diagnostic_request_id is not None:
++            try:
++                operation.shared_cache_seed_selected = (
++                    shared_cache_seed_capture.bind_operation(
++                        diagnostic_request_id, operation.id
++                    )
++                )
++            except Exception:
++                shared_cache_seed_capture.fail_closed()
+         self.backup_queue.put(operation)
+         return operation.id
+ 
+@@ -754,7 +770,23 @@ class HybridCacheController(BaseHiCacheController):
+         if backup_transfers:
+             self._resolve_sidecar_kv_derived_pool_transfers(operation)
+             self._resolve_sidecar_nonkv_derived_pool_transfers(operation)
+-            results = self.storage_backend.batch_set_v2(backup_transfers)
++            results = self.storage_backend.batch_set_v2(
++                backup_transfers,
++                HiCacheStorageExtraInfo(
++                    extra_info={
++                        "shared_cache_diag_request_id": getattr(
++                            operation, "shared_cache_diag_request_id", None
++                        ),
++                        "shared_cache_diag_operation_id": operation.id,
++                        "shared_cache_diag_page_start": getattr(
++                            operation, "shared_cache_diag_page_start", 0
++                        )
++                        + operation.storage_start // self.page_size,
++                        "shared_cache_diag_base_hashes": list(operation.hash_value),
++                        "shared_cache_diag_page_size": self.page_size,
++                    }
++                ),
++            )
+             pool_hits = count_pool_hits(results)
+             operation.pool_storage_result.update_extra_pool_hit_pages(pool_hits)
+ 
+diff --git a/python/sglang/srt/mem_cache/shared_cache_diagnostics.py b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+index 15e2ac238896d58d39bff3b3c4b8044fc9b2ae3b..a16fa22360801826b14614bf7afc57b1e6665206 100644
+--- a/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
++++ b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+@@ -2,7 +2,9 @@ import hashlib
+ import hmac
+ import json
+ import logging
++import os
+ import re
++import stat
+ import struct
+ import threading
+ import time
+@@ -19,6 +21,10 @@ _MAX_KEYS_PER_EVENT = 256
+ _MAX_REQUESTS = 1024
+ _MAX_DURATION_MS = 300000
+ _MAX_CAPTURE_FAILURES = 1024
++_SEED_MAX_KEYS = 256
++_SEED_MAX_BYTES = 16 * 1024 * 1024 * 1024
++_SEED_MAX_EVENTS = 1024
++_SEED_MAX_DURATION_MS = 120000
+ 
+ 
+ def _swallow_capture_errors(method):
+@@ -169,6 +175,71 @@ class SharedCacheDiagnostics:
+             return None
+         return self._key_id(value, tenant_id)
+ 
++    def arm_from_manifest(self, path):
++        """Load the sealed seed key allowlist once into the default-off collector."""
++        try:
++            document = _read_private_json(path, maximum=64 * 1024)
++            if document.get("schema") != "phala.shared-cache.seed-manifest.v1":
++                return False
++            keys = document.get("keys")
++            if not isinstance(keys, list) or not keys or len(keys) > _SEED_MAX_KEYS:
++                return False
++            salt = document.get("key_salt")
++            case_id = document.get("case_id")
++            epoch = document.get("epoch")
++            tenant_id = document.get("tenant_id")
++            if not salt or not case_id or not epoch or not tenant_id:
++                return False
++            unsigned = {
++                key: value for key, value in document.items() if key != "manifest_sha256"
++            }
++            calculated_digest = hashlib.sha256(
++                json.dumps(
++                    unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
++                ).encode()
++            ).hexdigest()
++            if document.get("manifest_sha256") != calculated_digest:
++                return False
++            calculated = {
++                _shared_cache_id(
++                    salt.encode(), b"phala.shared-cache-key.v1\0", case_id,
++                    epoch, tenant_id, key.get("key"),
++                )
++                for key in keys
++                if isinstance(key, dict) and isinstance(key.get("key"), str)
++            }
++            declared = {item.get("key_id") for item in keys if isinstance(item, dict)}
++            if len(calculated) != len(keys) or declared != calculated:
++                return False
++            with self._lock:
++                if self.enabled:
++                    return False
++                self._salt = salt.encode()
++                self._case_id = case_id
++                self._epoch = epoch
++                self._key_ids = declared
++                self._max_events = min(
++                    _MAX_EVENTS, max(1, int(document.get("max_events", 256)))
++                )
++                self._max_keys = min(_MAX_KEYS, max(1, len(keys)))
++                self._max_bytes = min(
++                    _MAX_BYTES,
++                    max(
++                        _TRUNCATION_RESERVE_BYTES,
++                        int(document.get("max_total_logical_bytes", _MAX_BYTES)),
++                    ),
++                )
++                self._max_requests = 1
++                self._max_duration_s = min(
++                    _MAX_DURATION_MS,
++                    max(1, int(document.get("max_duration_ms", 60000))),
++                ) / 1000
++                self._started_at = time.monotonic()
++                self.enabled = True
++            return True
++        except Exception:
++            return False
++
+     def _request_id(self, value, tenant_id="default"):
+         return self._stable_id(b"phala.shared-cache-request.v1\0", tenant_id, value)
+ 
+@@ -444,6 +515,491 @@ class SharedCacheDiagnostics:
+         self.flush_truncation()
+ 
+ 
++def _read_private_json(path, *, maximum):
++    metadata = os.lstat(path)
++    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
++        raise ValueError("private regular file required")
++    if metadata.st_size > maximum:
++        raise ValueError("private file too large")
++    flags = (
++        os.O_RDONLY
++        | getattr(os, "O_NOFOLLOW", 0)
++        | getattr(os, "O_NONBLOCK", 0)
++    )
++    fd = os.open(path, flags)
++    try:
++        opened = os.fstat(fd)
++        if (metadata.st_dev, metadata.st_ino) != (opened.st_dev, opened.st_ino):
++            raise ValueError("private file changed")
++        if hasattr(os, "getuid") and opened.st_uid != os.getuid():
++            raise ValueError("private file owner mismatch")
++        with os.fdopen(fd, "rb", closefd=False) as source:
++            raw = source.read(maximum + 1)
++    finally:
++        os.close(fd)
++    if len(raw) > maximum:
++        raise ValueError("private file too large")
++    value = json.loads(raw)
++    if not isinstance(value, dict):
++        raise ValueError("private object required")
++    return value
++
++
++def _shared_cache_id(salt, domain, case_id, epoch, tenant_id, value):
++    message = bytearray(domain)
++    for field in (case_id, epoch, tenant_id, value):
++        encoded = str(field).encode("utf-8")
++        message.extend(struct.pack(">I", len(encoded)))
++        message.extend(encoded)
++    return hmac.new(salt, message, hashlib.sha256).hexdigest()
++
++
++def _write_all(fd, payload):
++    view = memoryview(payload)
++    while view:
++        written = os.write(fd, view)
++        if written <= 0:
++            raise OSError("short write")
++        view = view[written:]
++
++
++class SharedCacheSeedCapture:
++    """One-request producer for exact D-writer keys and successful backup ACK."""
++
++    def __init__(self, *, log=logger):
++        self._log = log
++        self._lock = threading.Lock()
++        self._config = None
++        self._operation_id = None
++        self._entries = {}
++        self._events = 0
++        self._total_bytes = 0
++        self._failed = None
++        self._fd = None
++        self._provisional_path = None
++        self._sealed_path = None
++        self._started = None
++        self._sealed = False
++
++    def arm(
++        self,
++        selectors,
++        *,
++        actual_request_id,
++        actual_store_instance_id,
++        actual_d_worker_id,
++        actual_tenant_id,
++    ):
++        path = os.getenv("SGLANG_SHARED_CACHE_SEED_CAPTURE_CONFIG")
++        if not path:
++            return False
++        with self._lock:
++            if self._config is not None:
++                return False
++            try:
++                config = _read_private_json(path, maximum=64 * 1024)
++                if config.get("schema") != "phala.shared-cache.seed-config.v1":
++                    return False
++                if any(config.get(key) != value for key, value in selectors.items()):
++                    return False
++                if not isinstance(actual_request_id, str) or not 1 <= len(actual_request_id) <= 256:
++                    return False
++                if config.get("tenant_id") != actual_tenant_id:
++                    return False
++                request_ref = selectors.get("request_ref")
++                page_range = selectors.get("page_range")
++                rank = selectors.get("rank")
++                components = selectors.get("required_components")
++                if (
++                    not isinstance(request_ref, str)
++                    or not re.fullmatch(r"[0-9a-f]{64}", request_ref)
++                    or not isinstance(page_range, dict)
++                    or type(page_range.get("start")) is not int
++                    or type(page_range.get("end")) is not int
++                    or page_range["start"] < 0
++                    or page_range["end"] <= page_range["start"]
++                    or type(rank) is not int
++                    or rank != 0
++                    or not isinstance(components, list)
++                    or not components
++                    or components != sorted(set(components))
++                ):
++                    return False
++                if config.get("model_revision") is not None and not isinstance(
++                    config.get("model_revision"), str
++                ):
++                    return False
++                config["store_instance_id"] = actual_store_instance_id
++                config["d_worker_id"] = actual_d_worker_id
++                config["request_id"] = actual_request_id
++                config["page_range"] = page_range
++                config["rank"] = rank
++                if not all(
++                    isinstance(config.get(key), str) and config[key]
++                    for key in (
++                        "run_id", "case_id", "epoch", "request_id", "tenant_id",
++                        "backend_tag", "kv_schema", "d_worker_id",
++                        "store_instance_id", "key_salt", "output_dir",
++                    )
++                ):
++                    return False
++                max_keys = int(config.get("max_keys", 0))
++                max_bytes = int(config.get("max_logical_bytes", 0))
++                max_events = int(config.get("max_events", 0))
++                max_duration = int(config.get("max_duration_ms", 0))
++                max_artifact = int(config.get("max_artifact_bytes", 0))
++                required = config.get("required_components")
++                if not (
++                    1 <= max_keys <= _SEED_MAX_KEYS
++                    and 1 <= max_bytes <= _SEED_MAX_BYTES
++                    and 1 <= max_events <= _SEED_MAX_EVENTS
++                    and 1 <= max_duration <= _SEED_MAX_DURATION_MS
++                    and 1024 <= max_artifact <= 64 * 1024
++                    and isinstance(required, list)
++                    and required
++                    and len(required) <= 64
++                    and all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,96}", x) for x in required)
++                ):
++                    return False
++                directory = config["output_dir"]
++                dir_stat = os.lstat(directory)
++                if not stat.S_ISDIR(dir_stat.st_mode) or stat.S_IMODE(dir_stat.st_mode) != 0o700:
++                    return False
++                if hasattr(os, "getuid") and dir_stat.st_uid != os.getuid():
++                    return False
++                seed_id = config.get("seed_id")
++                if not isinstance(seed_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", seed_id):
++                    return False
++                provisional = os.path.join(directory, f"{seed_id}.provisional.json")
++                sealed = os.path.join(directory, f"{seed_id}.seed.json")
++                if os.path.lexists(provisional) or os.path.lexists(sealed):
++                    return False
++                flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
++                self._fd = os.open(provisional, flags, 0o600)
++                self._config = config
++                self._provisional_path = provisional
++                self._sealed_path = sealed
++                self._started = time.monotonic()
++                self._write_provisional_locked()
++                if self._failed:
++                    os.close(self._fd)
++                    self._fd = None
++                    self._config = None
++                    return False
++                return True
++            except Exception:
++                if self._fd is not None:
++                    os.close(self._fd)
++                    self._fd = None
++                self._config = None
++                return False
++
++    def bind_operation(self, request_id, operation_id):
++        with self._lock:
++            if self._sealed or self._config is None or request_id != self._config["request_id"]:
++                return False
++            if time.monotonic() - self._started > int(self._config["max_duration_ms"]) / 1000:
++                self._failed = "duration_exceeded"
++                return False
++            if self._operation_id is not None:
++                self._failed = "multiple_backup_operations"
++                return False
++            self._operation_id = int(operation_id)
++            self._write_provisional_locked()
++            return True
++
++    def fail_closed(self, reason="capture_hook_error"):
++        try:
++            with self._lock:
++                if not self._sealed and self._config is not None and self._failed is None:
++                    self._failed = reason
++                    self._write_provisional_locked()
++        except Exception:
++            return
++
++    def prepare_batch(self, context, *, pool, component_names, keys, sizes):
++        if not isinstance(context, dict):
++            return None
++        with self._lock:
++            if self._sealed or self._config is None or self._failed:
++                return None
++            request_id = context.get(
++                "request_id", context.get("shared_cache_diag_request_id")
++            )
++            operation_id = context.get(
++                "operation_id", context.get("shared_cache_diag_operation_id")
++            )
++            if (
++                request_id != self._config["request_id"]
++                or operation_id != self._operation_id
++            ):
++                return None
++            if self._operation_id is None:
++                self._failed = "operation_not_bound"
++                return None
++            if time.monotonic() - self._started > int(self._config["max_duration_ms"]) / 1000:
++                self._failed = "duration_exceeded"
++                return None
++            if len(keys) != len(sizes) or len(keys) != len(component_names):
++                self._failed = "batch_shape_mismatch"
++                return None
++            if self._events >= int(self._config["max_events"]):
++                self._failed = "event_budget_exceeded"
++                return None
++            pending = []
++            pending_key_ids = set()
++            start = int(context.get("page_start", 0))
++            for index, (key, size, component) in enumerate(zip(keys, sizes, component_names)):
++                if not isinstance(key, str) or not key or len(key.encode()) > 4096:
++                    self._failed = "invalid_key"
++                    return None
++                size = self._size_bytes(size)
++                if size <= 0:
++                    self._failed = "invalid_size"
++                    return None
++                key_id = self._key_id(key)
++                if key_id in self._entries or key_id in pending_key_ids:
++                    self._failed = "duplicate_key"
++                    return None
++                if component not in self._config["required_components"]:
++                    self._failed = "unexpected_component"
++                    return None
++                if len(self._entries) + len(pending) >= int(self._config["max_keys"]):
++                    self._failed = "key_budget_exceeded"
++                    return None
++                if self._total_bytes + sum(item["logical_bytes"] for item in pending) + size > int(self._config["max_logical_bytes"]):
++                    self._failed = "byte_budget_exceeded"
++                    return None
++                page_indexes = context.get("page_indexes")
++                page_index = (
++                    page_indexes[index]
++                    if isinstance(page_indexes, list) and index < len(page_indexes)
++                    else start + index // max(1, int(context.get("key_multiplier", 1)))
++                )
++                page_range = self._config["page_range"]
++                if not page_range["start"] <= page_index < page_range["end"]:
++                    self._failed = "page_outside_selected_range"
++                    return None
++                pending.append(
++                    {
++                        "key_id": key_id,
++                        "key": key,
++                        "rank": 0,
++                        "component": component,
++                        "page_index": page_index,
++                        "logical_bytes": size,
++                        "native_result": None,
++                        "already_present": None,
++                    }
++                )
++                pending_key_ids.add(key_id)
++            for entry in pending:
++                self._entries[entry["key_id"]] = entry
++            self._events += 1
++            self._write_provisional_locked()
++            return [entry["key_id"] for entry in pending]
++
++    def complete_batch(self, token, *, exists, results):
++        if token is None:
++            return
++        with self._lock:
++            if self._sealed:
++                return
++            if len(token) != len(exists) or len(token) != len(results):
++                self._failed = "result_shape_mismatch"
++                return
++            for key_id, existed, result in zip(token, exists, results):
++                entry = self._entries.get(key_id)
++                if entry is None:
++                    self._failed = "prepared_key_lost"
++                    return
++                entry["already_present"] = existed == 1
++                entry["native_result"] = int(result)
++                if existed == 1 or int(result) != 0:
++                    self._failed = "put_not_new_success"
++            self._total_bytes = sum(item["logical_bytes"] for item in self._entries.values())
++            self._write_provisional_locked()
++
++    def backup_ack(self, *, request_id, operation_id, complete, tokens, expected_tokens):
++        with self._lock:
++            if self._sealed or self._config is None or request_id != self._config["request_id"]:
++                return False
++            if time.monotonic() - self._started > int(self._config["max_duration_ms"]) / 1000:
++                self._failed = self._failed or "duration_exceeded"
++                self._write_provisional_locked()
++                return False
++            if operation_id != self._operation_id or not complete or tokens != expected_tokens:
++                self._failed = self._failed or "backup_incomplete"
++                self._write_provisional_locked()
++                return False
++            if self._failed:
++                return False
++            components = {item["component"] for item in self._entries.values()}
++            if components != set(self._config["required_components"]):
++                self._failed = "missing_component"
++                self._write_provisional_locked()
++                return False
++            page_components = {
++                (item["page_index"], item["component"])
++                for item in self._entries.values()
++            }
++            page_range = self._config["page_range"]
++            expected_page_components = {
++                (page_index, component)
++                for page_index in range(page_range["start"], page_range["end"])
++                for component in self._config["required_components"]
++            }
++            if page_components != expected_page_components:
++                self._failed = "incomplete_page_components"
++                self._write_provisional_locked()
++                return False
++            if not self._entries or any(
++                item["native_result"] != 0 or item["already_present"] is not False
++                for item in self._entries.values()
++            ):
++                self._failed = "put_incomplete"
++                self._write_provisional_locked()
++                return False
++            document = self._producer_document_locked()
++            return self._atomic_seal_locked(document)
++
++    def _key_id(self, key):
++        config = self._config
++        return _shared_cache_id(
++            config["key_salt"].encode(),
++            b"phala.shared-cache-key.v1\0",
++            config["case_id"], config["epoch"], config["tenant_id"], key,
++        )
++
++    @property
++    def sealed_path(self):
++        return self._sealed_path
++
++    @staticmethod
++    def _size_bytes(size):
++        if isinstance(size, (list, tuple)):
++            return sum(int(part) for part in size)
++        return int(size)
++
++    def _producer_document_locked(self):
++        config = self._config
++        entries = sorted(self._entries.values(), key=lambda item: (item["rank"], item["component"], item["page_index"], item["key_id"]))
++        doc = {
++            "schema": "phala.shared-cache.seed-manifest.v1",
++            "run_id": config["run_id"],
++            "seed_id": config["seed_id"],
++            "case_id": config["case_id"],
++            "epoch": config["epoch"],
++            "tenant_id": config["tenant_id"],
++            "backend_tag": config["backend_tag"],
++            "model_revision": config["model_revision"],
++            "kv_schema": config["kv_schema"],
++            "d_worker_id": config["d_worker_id"],
++            "store_instance_id": config["store_instance_id"],
++            "request_id": config["request_id"],
++            "request_ref": config["request_ref"],
++            "operation_id": self._operation_id,
++            "rank": config["rank"],
++            "page_range": config["page_range"],
++            "key_salt": config["key_salt"],
++            "required_components": config["required_components"],
++            "max_snapshots": config.get("max_snapshots", 4),
++            "max_duration_ms": config.get("snapshot_max_duration_ms", 120000),
++            "max_response_bytes": config.get("max_response_bytes", 1048576),
++            "max_total_logical_bytes": config["max_logical_bytes"],
++            "key_count": len(entries),
++            "logical_bytes": self._total_bytes,
++            "keys": [
++                {
++                    "key_id": item["key_id"],
++                    "key": item["key"],
++                    "rank": item["rank"],
++                    "component": item["component"],
++                    "page_index": item["page_index"],
++                    "logical_bytes": item["logical_bytes"],
++                }
++                for item in entries
++            ],
++            "put_results": [
++                {
++                    "key_id": item["key_id"],
++                    "native_result": item["native_result"],
++                    "already_present": item["already_present"],
++                }
++                for item in entries
++            ],
++            "backup_ack": {"operation_id": self._operation_id, "complete": True},
++        }
++        canonical = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++        doc["manifest_sha256"] = __import__("hashlib").sha256(canonical).hexdigest()
++        return doc
++
++    def _write_provisional_locked(self):
++        if self._fd is None:
++            return
++        doc = {
++            "schema": "phala.shared-cache.seed-provisional.v1",
++            "request_id": self._config["request_id"],
++            "operation_id": self._operation_id,
++            "failed": self._failed,
++            "events": self._events,
++            "entries": list(self._entries.values()),
++        }
++        raw = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++        if len(raw) > int(self._config["max_artifact_bytes"]):
++            self._failed = "artifact_budget_exceeded"
++            return
++        try:
++            os.lseek(self._fd, 0, os.SEEK_SET)
++            os.ftruncate(self._fd, 0)
++            _write_all(self._fd, raw)
++            os.fsync(self._fd)
++        except OSError:
++            self._failed = "artifact_write_failed"
++
++    def _atomic_seal_locked(self, document):
++        raw = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++        if len(raw) > int(self._config["max_artifact_bytes"]):
++            self._failed = "artifact_budget_exceeded"
++            self._write_provisional_locked()
++            return False
++        temp_path = self._sealed_path + ".tmp"
++        if os.path.lexists(temp_path) or os.path.lexists(self._sealed_path):
++            self._failed = "artifact_exists"
++            self._write_provisional_locked()
++            return False
++        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
++        fd = os.open(temp_path, flags, 0o600)
++        try:
++            _write_all(fd, raw)
++            os.fsync(fd)
++        finally:
++            os.close(fd)
++        try:
++            os.link(temp_path, self._sealed_path, follow_symlinks=False)
++            os.unlink(temp_path)
++            dir_fd = os.open(self._config["output_dir"], os.O_RDONLY)
++            try:
++                os.fsync(dir_fd)
++            finally:
++                os.close(dir_fd)
++        except Exception:
++            try:
++                os.unlink(temp_path)
++            except OSError:
++                pass
++            self._failed = "seal_failed"
++            self._write_provisional_locked()
++            return False
++        os.close(self._fd)
++        self._fd = None
++        self._sealed = True
++        return True
++
++
++shared_cache_seed_capture = SharedCacheSeedCapture()
++
++
+ shared_cache_diagnostics = SharedCacheDiagnostics(
+     enabled=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS.get(),
+     key_salt=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEY_SALT.get(),
+diff --git a/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py b/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
+index 3091b3432fe601bdda74833cfb442b9db0342cc8..976699a19c8778182bff6727f186e0b57687e0db 100644
+--- a/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
++++ b/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
+@@ -23,7 +23,10 @@ from sglang.srt.mem_cache.hicache_storage import (
+ )
+ from sglang.srt.mem_cache.pool_host import HostKVCache, HostTensorAllocator
+ from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
+-from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
++from sglang.srt.mem_cache.shared_cache_diagnostics import (
++    shared_cache_diagnostics,
++    shared_cache_seed_capture,
++)
+ from sglang.srt.observability.metrics_collector import StorageMetrics
+ 
+ DEFAULT_LOCAL_BUFFER_SIZE = 16 * 1024 * 1024  # 16 MB
+@@ -279,6 +282,7 @@ class MooncakeBaseStore:
+     def __init__(self):
+         self.store = None
+         self.config = None
++        self.shared_cache_store_instance_id = uuid.uuid4().hex
+ 
+     def _import_mooncake_store(self):
+         try:
+@@ -927,7 +931,12 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+         final_pages = restorable[-1] if restorable else 0
+         return PoolTransferResult(final_pages, hit_count, restorable)
+ 
+-    def _batch_io_v2(self, transfers: List[PoolTransfer], is_set: bool):
++    def _batch_io_v2(
++        self,
++        transfers: List[PoolTransfer],
++        is_set: bool,
++        extra_info: Optional[HiCacheStorageExtraInfo] = None,
++    ):
+         # Unified v2 I/O path: each PoolTransfer can expand to one or more
+         # storage objects per logical page, but API still reports page-level result.
+         results: dict = {}
+@@ -951,6 +960,52 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+                 )
+ 
+             if is_set:
++                diag_context = (
++                    getattr(extra_info, "extra_info", None) if extra_info else None
++                )
++                if diag_context:
++                    diag_context = dict(diag_context)
++                    base_hashes = diag_context.get(
++                        "shared_cache_diag_base_hashes", []
++                    )
++                    page_start = int(
++                        diag_context.get("shared_cache_diag_page_start", 0)
++                    )
++                    page_index_by_hash = {
++                        value: page_start + index
++                        for index, value in enumerate(base_hashes)
++                    }
++                    component_indexes = [
++                        f"{transfer.name}:{index % key_multiplier}"
++                        for index in range(len(key_strs))
++                    ]
++                    transfer_keys = transfer.keys or []
++                    page_indexes = []
++                    for index in range(len(key_strs)):
++                        page_offset = index // max(1, key_multiplier)
++                        hash_value = (
++                            transfer_keys[page_offset]
++                            if page_offset < len(transfer_keys)
++                            else None
++                        )
++                        page_indexes.append(
++                            page_index_by_hash.get(hash_value, page_start + page_offset)
++                        )
++                    diag_context["page_indexes"] = page_indexes
++                    diag_context["key_multiplier"] = key_multiplier
++                    try:
++                        diag_token = shared_cache_seed_capture.prepare_batch(
++                            diag_context,
++                            pool=str(transfer.name),
++                            component_names=component_indexes,
++                            keys=key_strs,
++                            sizes=element_size_list,
++                        )
++                    except Exception:
++                        shared_cache_seed_capture.fail_closed()
++                        diag_token = None
++                else:
++                    diag_token = None
+                 group_ids = (
+                     self._expand_group_ids(tagged_keys, key_multiplier)
+                     if self._can_use_group_semantics()
+@@ -968,6 +1023,12 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+                     )
+                     for i, res in zip(missing_idx, put_results):
+                         io_results[i] = res
++                try:
++                    shared_cache_seed_capture.complete_batch(
++                        diag_token, exists=exist_result, results=io_results
++                    )
++                except Exception:
++                    shared_cache_seed_capture.fail_closed()
+             else:
+                 io_results = self._get_batch_zero_copy_impl(
+                     key_strs, ptr_list, element_size_list
+@@ -1007,14 +1068,14 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+         transfers: List[PoolTransfer],
+         extra_info: Optional[HiCacheStorageExtraInfo] = None,
+     ) -> dict:
+-        return self._batch_io_v2(transfers, is_set=False)
++        return self._batch_io_v2(transfers, is_set=False, extra_info=extra_info)
+ 
+     def batch_set_v2(
+         self,
+         transfers: List[PoolTransfer],
+         extra_info: Optional[HiCacheStorageExtraInfo] = None,
+     ) -> dict:
+-        return self._batch_io_v2(transfers, is_set=True)
++        return self._batch_io_v2(transfers, is_set=True, extra_info=extra_info)
+ 
+     def _get_mha_split_heads_buffer_meta(self, keys, indices):
+         ptr_list, element_size_list = (
+@@ -1168,6 +1229,30 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+             if self._can_use_group_semantics()
+             else None
+         )
++        diag_context = getattr(extra_info, "extra_info", None) if extra_info else None
++        if diag_context:
++            diag_context = dict(diag_context)
++            page_start = int(diag_context.get("shared_cache_diag_page_start", 0))
++            diag_context["page_indexes"] = [
++                page_start + index // max(1, key_multiplier)
++                for index in range(len(key_strs))
++            ]
++            diag_context["key_multiplier"] = key_multiplier
++            try:
++                diag_token = shared_cache_seed_capture.prepare_batch(
++                    diag_context,
++                    pool="kv",
++                    component_names=[
++                        f"kv:{index % key_multiplier}" for index in range(len(key_strs))
++                    ],
++                    keys=key_strs,
++                    sizes=buffer_sizes,
++                )
++            except Exception:
++                shared_cache_seed_capture.fail_closed()
++                diag_token = None
++        else:
++            diag_token = None
+         exist_result = self._batch_exist(key_strs)
+ 
+         set_keys = []
+@@ -1204,6 +1289,13 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+             for i in range(len(set_indices)):
+                 set_results[set_indices[i]] = put_results[i]
+ 
++        try:
++            shared_cache_seed_capture.complete_batch(
++                diag_token, exists=exist_result, results=set_results
++            )
++        except Exception:
++            shared_cache_seed_capture.fail_closed()
++
+         return self._batch_postprocess(set_results, is_set_operate=True)
+ 
+     def set(
+diff --git a/test/manual/phala/test_shared_cache_seed_callsite_cpu.py b/test/manual/phala/test_shared_cache_seed_callsite_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..87705f3425d6791866ccc16127e03fef6c1469e2
+--- /dev/null
++++ b/test/manual/phala/test_shared_cache_seed_callsite_cpu.py
+@@ -0,0 +1,418 @@
++"""Run real D enqueue, hybrid PUT, and whole ACK methods without a GPU."""
++
++import ast
++import hashlib
++import json
++import os
++import queue
++import re
++import tempfile
++import time
++import unittest
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import Mock, patch
++
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def load_methods(path, class_name, names, namespace):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    owner = next(
++        item
++        for item in tree.body
++        if isinstance(item, ast.ClassDef) and item.name == class_name
++    )
++    owner.bases = []
++    owner.body = [
++        item
++        for item in owner.body
++        if isinstance(item, ast.FunctionDef) and item.name in names
++    ]
++    module = ast.Module(
++        body=[
++            ast.ImportFrom(
++                module="__future__", names=[ast.alias(name="annotations")], level=0
++            ),
++            owner,
++        ],
++        type_ignores=[],
++    )
++    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
++    return namespace[class_name]()
++
++
++def load_capture():
++    path = SRT / "mem_cache/shared_cache_diagnostics.py"
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    tree.body = [
++        node
++        for node in tree.body
++        if not (
++            isinstance(node, ast.ImportFrom) and node.module == "sglang.srt.environ"
++        )
++        and not (
++            isinstance(node, ast.Assign)
++            and any(
++                isinstance(target, ast.Name) and target.id == "shared_cache_diagnostics"
++                for target in node.targets
++            )
++        )
++    ]
++    namespace = {"__name__": "seed_callsite_cpu_fixture"}
++    exec(compile(tree, str(path), "exec"), namespace)
++    namespace["shared_cache_diagnostics"] = namespace["SharedCacheDiagnostics"](
++        enabled=False, log=Mock()
++    )
++    return namespace["SharedCacheSeedCapture"](), namespace
++
++
++class Indices(list):
++    def long(self):
++        return self
++
++    def dim(self):
++        return 1
++
++    def numel(self):
++        return len(self)
++
++    def __getitem__(self, key):
++        value = super().__getitem__(key)
++        return Indices(value) if isinstance(key, slice) else value
++
++
++class Request:
++    def __init__(self, **values):
++        self.__dict__.update(values)
++
++
++class StorageOperation:
++    next_id = 0
++
++    def __init__(
++        self, host_indices, token_ids, *, hash_value, prefix_keys, pool_transfers
++    ):
++        StorageOperation.next_id += 1
++        self.id = StorageOperation.next_id
++        self.host_indices = host_indices
++        self.token_ids = token_ids
++        self.hash_value = hash_value
++        self.pool_transfers = pool_transfers
++        self.completed_tokens = 0
++        self.storage_start = 0
++        self.pool_storage_result = NS(extra_pool_hit_pages={})
++        self.pool_storage_result.update_extra_pool_hit_pages = (
++            self.pool_storage_result.extra_pool_hit_pages.update
++        )
++
++
++def count_pool_hits(results):
++    return {
++        name: values.index(False) if False in values else len(values)
++        for name, values in results.items()
++    }
++
++
++class SharedCacheSeedCallsiteTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.directory = Path(self.temp.name)
++        self.directory.chmod(0o700)
++        self.path = self.directory / "capture.json"
++        self.env = patch.dict(
++            os.environ, {"SGLANG_SHARED_CACHE_SEED_CAPTURE_CONFIG": str(self.path)}
++        )
++        self.env.start()
++        self.addCleanup(self.env.stop)
++        self.capture, self.capture_namespace = load_capture()
++        self.log = Mock()
++        self.diagnostics = Mock()
++        self.operations = []
++        self.native_calls = []
++        self.results = [0, 0]
++        self.exists = [0, 0]
++        self.schema = {"revision": None, "pools": [["pool_a"], ["pool_b"]]}
++        namespace = {
++            "shared_cache_seed_capture": self.capture,
++            "shared_cache_diagnostics": self.diagnostics,
++            "logger": self.log,
++            "hashlib": hashlib,
++            "json": json,
++            "os": os,
++            "re": re,
++            "time": time,
++            "StorageOperation": StorageOperation,
++            "HiCacheStorageExtraInfo": NS,
++            "count_pool_hits": count_pool_hits,
++            "DEFAULT_TENANT_ID": "default",
++        }
++        self.store = load_methods(
++            SRT / "mem_cache/storage/mooncake_store/mooncake_store.py",
++            "MooncakeStore",
++            {"_batch_io_v2", "batch_set_v2", "_filter_group_ids"},
++            namespace,
++        )
++        self.store.config = NS(tenant_id="default")
++        self.store.shared_cache_store_instance_id = "actual-store-incarnation"
++        self.store.registered_pools = {
++            name: NS(page_size=2, get_page_buffer_meta=lambda _indices: ([10], [8]))
++            for name in ("pool_a", "pool_b")
++        }
++        self.store._tag_keys = lambda keys: ["actual-tag_" + key for key in keys]
++        self.store._get_hybrid_page_component_keys = lambda keys, transfer: (
++            [key + "_" + transfer.name for key in keys],
++            1,
++        )
++        self.store._can_use_group_semantics = lambda: False
++        self.store._batch_exist = lambda _keys: self.exists[:1]
++        self.store._batch_postprocess = lambda results, **_kwargs: [
++            value == 0 for value in results
++        ]
++
++        def native_put(keys, _ptrs, _sizes, _groups):
++            # This is reached from the actual store method during queue.put.
++            if self.capture._config is not None and not self.capture._sealed_path:
++                self.assertIsNotNone(self.capture._operation_id)
++            self.native_calls.append(list(keys))
++            return [self.results[len(self.native_calls) % 2 - 1]]
++
++        self.store._put_batch_zero_copy_impl = native_put
++        self.controller = load_methods(
++            SRT / "mem_cache/hybrid_cache/hybrid_cache_controller.py",
++            "HybridCacheController",
++            {"write_storage", "_page_backup"},
++            namespace,
++        )
++        self.controller.page_size = 2
++        self.controller.storage_config = NS(
++            tp_size=1,
++            pp_size=1,
++            tp_rank=0,
++            extra_config={"extra_backend_tag": "actual-tag"},
++        )
++        self.controller.storage_backend = self.store
++        self.controller.backup_skip = True
++        self.controller.should_backup = lambda _transfer: True
++        self.controller._resolve_sidecar_kv_derived_pool_transfers = lambda _op: None
++        self.controller._resolve_sidecar_nonkv_derived_pool_transfers = lambda _op: None
++        self.controller.ack_backup_queue = queue.Queue()
++
++        def consume_immediately(operation):
++            self.operations.append(operation)
++            if operation.shared_cache_seed_selected:
++                self.assertEqual(self.capture._operation_id, operation.id)
++            self.controller._page_backup(operation)
++            self.controller.ack_backup_queue.put(operation)
++
++        self.controller.backup_queue = NS(put=consume_immediately)
++        self.manager = load_methods(
++            SRT / "disaggregation/decode_kvcache_offload_manager.py",
++            "DecodeKVCacheOffloadManager",
++            {
++                "_arm_seed_operation",
++                "_trigger_backup",
++                "_check_backup_progress",
++                "_dsv4_backup_complete",
++                "offload_kv_cache",
++                "_check_offload_progress",
++                "_prefill_offloaded_len",
++                "_mark_offload_started",
++                "_mark_offload_finished",
++                "_has_inflight_offload",
++            },
++            namespace,
++        )
++        self.manager.is_dsv4 = True
++        self.manager.cache_controller = self.controller
++        self.manager.decode_host_mem_pool = NS(
++            storage_schema=self.schema, free=Mock(), release_transfers=Mock()
++        )
++        self.manager.shared_cache_d_worker_id = "actual-D-incarnation"
++        self.manager.page_size = 2
++        self.manager.offload_stride = 2
++        self.manager.ongoing_backup = {}
++        self.manager.backup_extra_pools = {}
++        self.manager._compute_prefix_hash = lambda _req, _tokens, prior=None: [
++            "actual-page-hash" + str(prior)
++        ]
++        self.req = Request(
++            rid="random-internal-rid", pd_diagnostic_request_ref="a" * 64
++        )
++        self.config = {
++            "schema": "phala.shared-cache.seed-config.v1",
++            "run_id": "run",
++            "seed_id": "seed",
++            "case_id": "case",
++            "epoch": "epoch",
++            "request_ref": self.req.pd_diagnostic_request_ref,
++            "tenant_id": "default",
++            "backend_tag": "actual-tag",
++            "model_revision": None,
++            "kv_schema": hashlib.sha256(
++                json.dumps(self.schema, sort_keys=True, separators=(",", ":")).encode()
++            ).hexdigest(),
++            "page_range": {"start": 8, "end": 9},
++            "rank": 0,
++            "key_salt": "offline-fixture-salt",
++            "output_dir": str(self.directory),
++            "required_components": ["pool_a:0", "pool_b:0"],
++            "max_keys": 8,
++            "max_logical_bytes": 128,
++            "max_events": 8,
++            "max_duration_ms": 30000,
++            "max_artifact_bytes": 65536,
++        }
++        self.write_config()
++
++    def write_config(self):
++        self.path.write_text(json.dumps(self.config), encoding="utf-8")
++        self.path.chmod(0o600)
++
++    def transfers(self):
++        return [
++            NS(name=name, host_indices=Indices([0, 1]), keys=None)
++            for name in ("pool_a", "pool_b")
++        ]
++
++    def submit(self, page_start=8, prior=None):
++        self.manager._trigger_backup(
++            self.req,
++            Indices([0, 1]),
++            [1, 2],
++            time.time(),
++            prior,
++            self.transfers(),
++            page_start=page_start,
++        )
++
++    def ack(self):
++        self.manager._check_backup_progress(1)
++
++    def test_selects_exact_second_operation_and_binds_before_immediate_put(self):
++        self.submit(page_start=7, prior="first")
++        self.assertIsNone(self.capture._config)
++        self.assertFalse(self.operations[0].shared_cache_seed_selected)
++        self.ack()
++        self.submit(page_start=8, prior="second")
++        self.assertTrue(self.operations[1].shared_cache_seed_selected)
++        self.assertEqual(self.capture._operation_id, self.operations[1].id)
++        self.assertEqual({x["page_index"] for x in self.capture._entries.values()}, {8})
++        self.ack()
++        sealed = self.directory / "seed.seed.json"
++        self.assertTrue(sealed.is_file())
++        document = json.loads(sealed.read_text())
++        self.assertEqual(document["request_id"], self.req.rid)
++        self.assertEqual(
++            document["store_instance_id"], self.store.shared_cache_store_instance_id
++        )
++        self.assertEqual(document["d_worker_id"], self.manager.shared_cache_d_worker_id)
++        original = sealed.read_bytes()
++        entries = dict(self.capture._entries)
++        self.submit(page_start=9, prior="third")
++        self.ack()
++        self.assertFalse(self.operations[2].shared_cache_seed_selected)
++        self.assertEqual(sealed.read_bytes(), original)
++        self.assertEqual(self.capture._entries, entries)
++        self.assertIsNone(self.capture._failed)
++        self.assertEqual(len(self.native_calls), 6)
++
++    def test_missing_or_wrong_server_ref_cannot_arm(self):
++        for value in (None, "forged", "b" * 64):
++            self.req.pd_diagnostic_request_ref = value
++            self.submit()
++            self.ack()
++            self.assertIsNone(self.capture._config)
++        self.assertEqual(len(self.native_calls), 6)
++
++    def test_actual_runtime_selectors_must_match_private_config(self):
++        for field, wrong in (
++            ("backend_tag", "other-tag"),
++            ("model_revision", "other-revision"),
++            ("kv_schema", "b" * 64),
++            ("tenant_id", "other-tenant"),
++            ("required_components", ["pool_a:0"]),
++        ):
++            with self.subTest(field=field):
++                original = self.config[field]
++                self.config[field] = wrong
++                self.write_config()
++                self.submit()
++                self.ack()
++                self.assertIsNone(self.capture._config)
++                self.config[field] = original
++
++    def test_incomplete_pool_put_cannot_seal_whole_group_ack(self):
++        self.results = [0, -1]
++        self.submit()
++        self.assertFalse(self.manager._dsv4_backup_complete(self.operations[0]))
++        self.ack()
++        self.assertFalse((self.directory / "seed.seed.json").exists())
++
++    def test_bind_failure_does_not_retry_or_skip_real_enqueue(self):
++        with patch.object(self.capture, "bind_operation", side_effect=RuntimeError):
++            self.submit()
++        self.assertFalse(self.operations[0].shared_cache_seed_selected)
++        self.assertEqual(len(self.operations), 1)
++        self.assertEqual(len(self.native_calls), 2)
++        self.ack()
++        self.assertFalse((self.directory / "seed.seed.json").exists())
++
++    def test_arm_failure_does_not_retry_real_put(self):
++        with patch.object(self.capture, "arm", side_effect=RuntimeError):
++            self.submit()
++        self.assertEqual(len(self.operations), 1)
++        self.assertEqual(len(self.native_calls), 2)
++        self.assertFalse(self.operations[0].shared_cache_seed_selected)
++
++    def test_unregistered_pool_or_multirank_cannot_make_partial_manifest(self):
++        self.store.registered_pools["missing"] = NS()
++        self.submit()
++        self.ack()
++        self.assertIsNone(self.capture._config)
++        del self.store.registered_pools["missing"]
++        self.controller.storage_config.tp_size = 2
++        self.submit()
++        self.ack()
++        self.assertIsNone(self.capture._config)
++
++    def test_offload_submission_saves_page_range_before_request_frontier_moves(self):
++        self.manager.req_to_token_pool = NS(req_to_token={0: Indices(range(64))})
++        self.req.kv = NS(req_pool_idx=0)
++        self.req.origin_input_ids = list(range(16))
++        self.req.output_ids = [20, 21, 22]
++        self.req.finished = lambda: False
++        self.manager.request_counter = 0
++        self.manager.offload_inflight = {}
++        self.manager.offloaded_state = {self.req: NS(last_hash="prior", inc_len=0)}
++        self.manager.ongoing_offload = {}
++        self.manager.offload_page_starts = {}
++        self.manager.offload_extra_pools = {}
++        self.manager._dsv4_device_transfers = lambda _indices: self.transfers()
++        self.manager._all_ranks_ready = lambda ready: ready
++        event = NS(synchronize=Mock())
++        self.controller.ack_write_queue = []
++
++        def d2h_write(*, node_id, **_kwargs):
++            self.controller.ack_write_queue.append(
++                NS(node_ids=[node_id], finish_event=event)
++            )
++            return Indices([0, 1])
++
++        self.controller.write = d2h_write
++        self.assertTrue(self.manager.offload_kv_cache(self.req))
++        self.assertEqual(self.manager.offload_page_starts, {1: 8})
++        self.req.output_ids.extend(range(32))
++        self.manager._check_offload_progress(1)
++        self.assertTrue(self.operations[0].shared_cache_seed_selected)
++        self.assertEqual(self.operations[0].shared_cache_diag_page_start, 8)
++        self.assertEqual(self.manager.offload_page_starts, {})
++        self.ack()
++        self.assertTrue((self.directory / "seed.seed.json").exists())
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/cpu/test_shared_cache_control.py b/test/registered/cpu/test_shared_cache_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..40ff83817419b5810be0dc16c4d2aff1ed49db96
+--- /dev/null
++++ b/test/registered/cpu/test_shared_cache_control.py
+@@ -0,0 +1,951 @@
++import asyncio
++from queue import Queue
++import hashlib
++import json
++from types import SimpleNamespace
++
++import pytest
++
++from sglang.srt.managers.shared_cache_control import (
++    SharedCacheControlError,
++    _PENDING_FIELDS,
++    _private_jsonl,
++    execute_bounded_clear,
++    expected_identities,
++    load_manifest,
++    clear_from_configured_artifacts,
++    _stable_id,
++    parse_clear_selector_body,
++    validate_clear_selectors,
++    validate_owner_drain,
++    validate_single_decode_writer,
++    validate_snapshot,
++)
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=3, suite="base-a-test-cpu")
++
++
++def _clear_context(tenant="tenant-1", multi_tenant_enabled=True):
++    store = object()
++    backend = SimpleNamespace(
++        store=store,
++        shared_cache_store_instance_id="store-1",
++    )
++    scheduler = SimpleNamespace(
++        decode_offload_manager=SimpleNamespace(
++            cache_controller=SimpleNamespace(storage_backend=backend)
++        ),
++        ps=SimpleNamespace(tp_size=1, dp_size=1, pp_size=1, attn_cp_size=1),
++        server_args=SimpleNamespace(
++            tp_size=1,
++            dp_size=1,
++            pp_size=1,
++            dcp_size=1,
++            attn_cp_size=1,
++            nnodes=1,
++        ),
++        disaggregation_mode="decode",
++    )
++    manifest = {
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant": tenant,
++        "backend_tag": "backend-1",
++        "original_D_worker_id": "writer-1",
++        "original_store_instance_id": "store-1",
++        "manifest_sha256": "a" * 64,
++    }
++    master_evidence = {
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant_id": tenant,
++        "requested_tenant_id": tenant,
++        "effective_tenant_id": tenant,
++        "master_multi_tenant_enabled": multi_tenant_enabled,
++        "backend_tag": "backend-1",
++        "d_worker_id": "writer-1",
++        "store_instance_id": "store-1",
++        "master_pid": 100,
++        "init_scan_completed_unix_ms": 900,
++        "bucket_eviction_policy": "none",
++        "disk_watermark_eviction": False,
++        "sample_time_unix_ms": 1000,
++    }
++    return scheduler, store, manifest, master_evidence
++
++
++def _owner_drain_fixture():
++    manifest = {
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant": "default",
++        "keys": [
++            {
++                "ssd_owner_uuid": "2-2",
++                "ssd_scope": "endpoint-1",
++            }
++        ],
++    }
++    owner_id = _stable_id(
++        b"test-salt",
++        b"phala.shared-cache-owner.v1\0",
++        "case-1",
++        "epoch-1",
++        "default",
++        manifest["keys"][0]["ssd_owner_uuid"],
++    )
++    scope_id = _stable_id(
++        b"test-salt",
++        b"phala.shared-cache-owner.v1\0",
++        "case-1",
++        "epoch-1",
++        "default",
++        "endpoint-1",
++    )
++    manifest["_expected_ssd_owner_ids"] = {
++        manifest["keys"][0]["ssd_owner_uuid"]: owner_id
++    }
++    manifest["_expected_ssd_scope_ids"] = {"endpoint-1": scope_id}
++    mapping = {
++        "owner_id": owner_id,
++        "store_instance_id": "c" * 64,
++        "scope_id": scope_id,
++        "backend_path_id": "d" * 64,
++        "pid": 200,
++        "init_completed_unix_ms": 600,
++        "scan_completed_unix_ms": 700,
++    }
++    evidence = {"ssd_owner_mappings": [mapping]}
++    sample = {
++        "schema": "phala.shared-cache.owner-drain.v1",
++        "kind": "owner_drain",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant_id": "default",
++        "pid": 200,
++        "owner_id": owner_id,
++        "store_instance_id": mapping["store_instance_id"],
++        "scope_id": scope_id,
++        "backend_path_id": mapping["backend_path_id"],
++        "owner_client_requested_tenant_id": "default",
++        "coverage": "owner_global_bucket",
++        "sample_time_unix_ms": 750,
++        "init_completed_unix_ms": 600,
++        "scan_completed_unix_ms": 700,
++        "owner_sample_sequence": 1,
++        "activity_sequence": 8,
++        "active": {
++            field: 0
++            for field in (
++                "loads",
++                "offloads",
++                "promotions",
++                "removes",
++                "heartbeats",
++                "rescans",
++                "leased_read_buffers",
++            )
++        },
++        "pending": {
++            field: 0
++            for field in (
++                "backend_writes",
++                "backend_evictions",
++                "ungrouped_offloads",
++                "read_guards",
++            )
++        },
++        "bucket_count": 1,
++        "covered_buckets": 1,
++        "available": True,
++        "consistent": True,
++        "backend_initialized": True,
++        "bucket_eviction_policy": "NONE",
++        "disk_watermark_eviction": False,
++        "metadata_resync_pending": False,
++        "draining": False,
++        "heartbeat_ok": True,
++    }
++    records = [
++        {**sample, "sample_time_unix_ms": t, "owner_sample_sequence": seq}
++        for seq, t in ((10, 750), (11, 875), (12, 1000))
++    ]
++    return manifest, evidence, mapping, records
++
++
++def _write_owner_jsonl(path, records, *, summary_overrides=None):
++    lines = [
++        json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
++        for item in records
++    ]
++    summary = {
++        "kind": "capture_summary",
++        "emitted": len(lines),
++        "dropped": 0,
++        "rejected": 0,
++        "complete": True,
++        "bytes": sum(len(line) + 1 for line in lines),
++        **(summary_overrides or {}),
++    }
++    path.write_bytes(
++        b"".join(line + b"\n" for line in lines)
++        + json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
++        + b"\n"
++    )
++    path.chmod(0o600)
++    return summary
++
++
++def test_owner_drain_jsonl_requires_complete_final_summary(tmp_path):
++    _, _, _, records = _owner_drain_fixture()
++    path = tmp_path / "owner.jsonl"
++    _write_owner_jsonl(path, records)
++    parsed, summary = _private_jsonl(str(path))
++    assert len(parsed) == 3
++    assert summary["complete"] is True
++
++    valid = path.read_bytes()
++    cases = (
++        (valid.rsplit(b"{\"bytes\"", 1)[0], "owner_drain_summary_missing"),
++        (valid[:-1], "owner_drain_file_incomplete"),
++    )
++    for payload, reason in cases:
++        path.write_bytes(payload)
++        path.chmod(0o600)
++        with pytest.raises(SharedCacheControlError, match=reason):
++            _private_jsonl(str(path))
++
++    _write_owner_jsonl(path, records, summary_overrides={"dropped": 1})
++    with pytest.raises(SharedCacheControlError, match="owner_drain_capture_incomplete"):
++        _private_jsonl(str(path))
++
++    _write_owner_jsonl(path, records)
++    lines = path.read_bytes().splitlines()
++    path.write_bytes(lines[-1] + b"\n" + b"\n".join(lines[:-1]) + b"\n")
++    path.chmod(0o600)
++    with pytest.raises(SharedCacheControlError, match="owner_drain_summary_not_final"):
++        _private_jsonl(str(path))
++
++
++def test_owner_drain_jsonl_counts_mixed_event_bytes_including_lf(tmp_path):
++    _, _, _, owner_records = _owner_drain_fixture()
++    native_record = {
++        "schema": "phala.shared-cache.native.v1",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "kind": "cache_event",
++    }
++    records = [*owner_records, native_record]
++    path = tmp_path / "mixed-owner.jsonl"
++    summary = _write_owner_jsonl(path, records)
++    event_lines = path.read_bytes().splitlines(keepends=True)[:-1]
++    assert summary["emitted"] == len(records)
++    assert summary["bytes"] == sum(map(len, event_lines))
++    parsed, parsed_summary = _private_jsonl(str(path))
++    assert parsed == records
++    assert parsed_summary == summary
++
++    _write_owner_jsonl(
++        path,
++        records,
++        summary_overrides={"bytes": sum(len(line) - 1 for line in event_lines)},
++    )
++    with pytest.raises(SharedCacheControlError, match="owner_drain_capture_incomplete"):
++        _private_jsonl(str(path))
++
++
++def test_expected_identities_match_native_uint64_pair_format():
++    manifest = {
++        "key_salt": "test-salt",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant": "default",
++        "original_writer_client_id": "1102750741119211504-12071701333474074511",
++        "exact_nonempty_MEMORY_segment": "MEMORY-cold",
++        "keys": [
++            {
++                "ssd_owner_uuid": "00018446744073709551615-0000000000000000007",
++                "ssd_scope": "endpoint-1",
++            }
++        ],
++    }
++    writer_hash, segment_hash = expected_identities(manifest)
++    context = ("case-1", "epoch-1", "default")
++    assert writer_hash == _stable_id(
++        b"test-salt",
++        b"phala.shared-cache-owner.v1\0",
++        *context,
++        "1102750741119211504-12071701333474074511",
++    )
++    assert segment_hash == _stable_id(
++        b"test-salt",
++        b"phala.shared-cache-segment.v1\0",
++        *context,
++        "MEMORY-cold",
++    )
++    assert manifest["_expected_ssd_owner_ids"][
++        "00018446744073709551615-0000000000000000007"
++    ] == _stable_id(
++        b"test-salt",
++        b"phala.shared-cache-owner.v1\0",
++        *context,
++        "18446744073709551615-7",
++    )
++
++    manifest["original_writer_client_id"] = "18446744073709551616-1"
++    with pytest.raises(SharedCacheControlError, match="invalid_writer_identity"):
++        expected_identities(manifest)
++
++
++def test_owner_drain_uses_time_coverage_not_fixed_sample_count():
++    manifest, evidence, _, records = _owner_drain_fixture()
++    two_samples = [
++        {**records[0], "owner_sample_sequence": 20, "sample_time_unix_ms": 750},
++        {**records[1], "owner_sample_sequence": 21, "sample_time_unix_ms": 1000},
++    ]
++    summary = {
++        "emitted": 2,
++        "dropped": 0,
++        "rejected": 0,
++        "bytes": 0,
++        "complete": True,
++    }
++    receipt = validate_owner_drain(
++        two_samples,
++        manifest,
++        evidence,
++        summary=summary,
++        quiet_ms=250,
++        now_ms=1000,
++    )
++    assert receipt["quiet_start_unix_ms"] == 750
++    assert receipt["quiet_end_unix_ms"] == 1000
++
++
++def test_owner_drain_accepts_scan_before_init():
++    manifest, evidence, mapping, records = _owner_drain_fixture()
++    mapping["scan_completed_unix_ms"] = 550
++    for sample in records:
++        sample["scan_completed_unix_ms"] = 550
++    receipt = validate_owner_drain(
++        records,
++        manifest,
++        evidence,
++        summary={"emitted": len(records), "dropped": 0, "rejected": 0, "bytes": 0, "complete": True},
++        quiet_ms=250,
++        now_ms=1000,
++    )
++    assert receipt["quiet_end_unix_ms"] == 1000
++
++
++def test_owner_drain_accepts_same_millisecond_samples_with_increasing_sequence():
++    manifest, evidence, _, records = _owner_drain_fixture()
++    records[2]["sample_time_unix_ms"] = records[1]["sample_time_unix_ms"]
++    records.append({**records[2], "owner_sample_sequence": 13, "sample_time_unix_ms": 1000})
++    receipt = validate_owner_drain(
++        records,
++        manifest,
++        evidence,
++        summary={"emitted": len(records), "dropped": 0, "rejected": 0, "bytes": 0, "complete": True},
++        quiet_ms=250,
++        now_ms=1000,
++    )
++    assert receipt["quiet_start_unix_ms"] == 750
++    assert receipt["quiet_end_unix_ms"] == 1000
++
++
++def test_owner_drain_fails_on_sequence_activity_or_freshness_gap():
++    manifest, evidence, _, records = _owner_drain_fixture()
++    summary = {
++        "emitted": 3,
++        "dropped": 0,
++        "rejected": 0,
++        "bytes": 0,
++        "complete": True,
++    }
++    cases = []
++    gap = [dict(item) for item in records]
++    gap[1]["owner_sample_sequence"] += 1
++    cases.append((gap, 1000, "owner_drain_sequence_discontinuous"))
++    activity = [dict(item) for item in records]
++    activity[-1]["activity_sequence"] += 1
++    cases.append((activity, 1000, "owner_drain_quiet_window_missing"))
++    stale = [dict(item) for item in records]
++    cases.append((stale, 40_000, "owner_drain_sample_stale"))
++    changed_owner = [dict(item) for item in records]
++    changed_owner[-1]["backend_path_id"] = "e" * 64
++    cases.append((changed_owner, 1000, "owner_drain_sample_invalid"))
++    before_init = [dict(item) for item in records]
++    before_init[-1]["sample_time_unix_ms"] = 599
++    cases.append((before_init, 1000, "owner_drain_sample_invalid"))
++    for samples, now_ms, reason in cases:
++        with pytest.raises(SharedCacheControlError, match=reason):
++            validate_owner_drain(
++                samples,
++                manifest,
++                evidence,
++                summary=summary,
++                quiet_ms=250,
++                now_ms=now_ms,
++            )
++
++
++def test_clear_requires_actual_multitenant_master_evidence():
++    assert "dynamic_replication" in _PENDING_FIELDS
++    invalid_evidence = [
++        {"master_multi_tenant_enabled": False},
++        {"requested_tenant_id": "default"},
++        {"effective_tenant_id": "default"},
++        {"requested_tenant_id": None},
++    ]
++    for overrides in invalid_evidence:
++        scheduler, store, manifest, evidence = _clear_context()
++        evidence.update(overrides)
++        with pytest.raises(SharedCacheControlError, match="master_evidence_invalid"):
++            execute_bounded_clear(
++                scheduler=scheduler,
++                native_store=store,
++                manifest=manifest,
++                snapshot_reader=lambda _sample_id: pytest.fail(
++                    "invalid master evidence must be rejected before snapshots"
++                ),
++                master_evidence=evidence,
++                writer_id="writer-hash",
++                segment_id="segment-hash",
++                now_ms=lambda: 1000,
++            )
++
++
++def test_fully_idle_scheduler_is_a_drained_state():
++    controller = SimpleNamespace(
++        ack_backup_queue=Queue(),
++        backup_queue=Queue(),
++        ack_write_queue=[],
++        write_queue=[],
++        ack_load_queue=[],
++        ack_prefetch_queue=Queue(),
++    )
++    manager = SimpleNamespace(
++        cache_controller=controller,
++        ongoing_offload={},
++        ongoing_backup={},
++        offload_inflight={},
++    )
++    scheduler = SimpleNamespace(
++        decode_offload_manager=manager,
++        is_fully_idle=lambda: True,
++    )
++    from sglang.srt.managers.shared_cache_control import require_stable_drain
++
++    assert require_stable_drain(scheduler, quiet_ms=50) == {
++        "scheduler_busy": 0,
++        "ongoing_offload": 0,
++        "ongoing_backup": 0,
++        "offload_inflight": 0,
++        "ack_write": 0,
++        "ack_backup": 0,
++        "backup_queue": 0,
++        "write_queue": 0,
++        "ack_load": 0,
++        "ack_prefetch": 0,
++    }
++
++
++def test_clear_does_not_trust_configured_tenant_as_effective_tenant():
++    scheduler, store, manifest, evidence = _clear_context()
++    scheduler.decode_offload_manager.cache_controller.storage_backend.config = (
++        SimpleNamespace(tenant_id="tenant-1")
++    )
++    evidence["effective_tenant_id"] = "default"
++    with pytest.raises(SharedCacheControlError, match="master_evidence_invalid"):
++        execute_bounded_clear(
++            scheduler=scheduler,
++            native_store=store,
++            manifest=manifest,
++            snapshot_reader=lambda _sample_id: pytest.fail(
++                "effective tenant mismatch must be rejected before snapshots"
++            ),
++            master_evidence=evidence,
++            writer_id="writer-hash",
++            segment_id="segment-hash",
++            now_ms=lambda: 1000,
++        )
++
++
++def test_default_tenant_is_allowed_when_master_multitenancy_is_disabled():
++    scheduler, store, manifest, evidence = _clear_context(
++        tenant="default", multi_tenant_enabled=False
++    )
++    with pytest.raises(SharedCacheControlError, match="snapshot_identity_mismatch"):
++        execute_bounded_clear(
++            scheduler=scheduler,
++            native_store=store,
++            manifest=manifest,
++            snapshot_reader=lambda _sample_id: {},
++            master_evidence=evidence,
++            writer_id="writer-hash",
++            segment_id="segment-hash",
++            now_ms=lambda: 1000,
++        )
++
++
++def test_snapshot_checks_effective_tenant_and_mode():
++    manifest = {
++        "tenant": "default",
++        "case_id": "c",
++        "epoch": "e",
++        "keys": [{"key_id": "k", "logical_bytes": 1, "ssd_replica_ids": []}],
++        "_expected_ssd_owner_ids": {},
++        "_expected_ssd_scope_ids": {},
++    }
++    snapshot = {
++        "schema": "phala.shared-cache.snapshot.v1",
++        "success": True,
++        "case_id": "c",
++        "epoch": "e",
++        "tenant_id": "default",
++        "requested_tenant_id": "default",
++        "effective_tenant_id": "default",
++        "master_multi_tenant_enabled": False,
++        "sample_id": "sample",
++        "master_pid": 1,
++        "sample_time_unix_ms": 1,
++        "backend_drain_available": False,
++        "objects": [
++            {
++                "key_id": "k",
++                "found": True,
++                "logical_bytes": 1,
++                "writer_id": "writer",
++                "lease_expired": True,
++                "pending": {field: 0 for field in _PENDING_FIELDS},
++                "replicas": [
++                    {
++                        "type": "MEMORY",
++                        "segment_ids": ["segment"],
++                        "status": "COMPLETE",
++                        "readable": True,
++                        "refcount": 0,
++                    }
++                ],
++            }
++        ],
++    }
++    ack = validate_snapshot(
++        snapshot,
++        manifest,
++        "sample",
++        expected_writer_id="writer",
++        expected_segment_id="segment",
++    )
++    assert ack["master_pid"] == 1
++    snapshot["effective_tenant_id"] = "default-fallback"
++    with pytest.raises(SharedCacheControlError, match="snapshot_identity_mismatch"):
++        validate_snapshot(
++            snapshot,
++            manifest,
++            "sample",
++            expected_writer_id="writer",
++            expected_segment_id="segment",
++        )
++
++
++def test_clear_selector_bounds_and_exact_decode_topology():
++    validate_clear_selectors("manifest-1", "a" * 64, "request-1")
++    for values in (
++        ("x" * 65, "a" * 64, "request-1"),
++        ("manifest-1", "a" * 63, "request-1"),
++        ("manifest-1", "a" * 64, "x" * 65),
++    ):
++        with pytest.raises(SharedCacheControlError):
++            validate_clear_selectors(*values)
++
++    topology = SimpleNamespace(
++        tp_size=1,
++        dp_size=1,
++        pp_size=1,
++        dcp_size=1,
++        attn_cp_size=1,
++        nnodes=1,
++    )
++    validate_single_decode_writer(topology, "decode")
++    with pytest.raises(SharedCacheControlError, match="unsupported_topology"):
++        validate_single_decode_writer(SimpleNamespace(**{**topology.__dict__, "attn_cp_size": 2}), "decode")
++    with pytest.raises(SharedCacheControlError, match="decode_writer_required"):
++        validate_single_decode_writer(topology, "prefill")
++
++
++def test_clear_http_body_accepts_only_bounded_selectors():
++    body = json.dumps(
++        {
++            "manifest_id": "manifest-1",
++            "manifest_sha256": "a" * 64,
++            "request_id": "request-1",
++        }
++    ).encode()
++    assert parse_clear_selector_body(body)["manifest_id"] == "manifest-1"
++    for raw, reason in (
++        (body + b" " * 512, "request_body_too_large"),
++        (
++            json.dumps(
++                {
++                    "manifest_id": "manifest-1",
++                    "manifest_sha256": "a" * 64,
++                    "request_id": "request-1",
++                    "path": "/tmp/anything",
++                }
++            ).encode(),
++            "invalid_selector_fields",
++        ),
++        (b"not-json", "invalid_json"),
++    ):
++        with pytest.raises(SharedCacheControlError, match=reason):
++            parse_clear_selector_body(raw)
++
++
++def test_clear_requires_control_artifacts_before_native_access(monkeypatch):
++    for name in (
++        "SGLANG_SHARED_CACHE_CLEAR_MANIFEST",
++        "SGLANG_SHARED_CACHE_MASTER_EVIDENCE",
++        "SGLANG_SHARED_CACHE_NATIVE_ADMIN_URL",
++    ):
++        monkeypatch.delenv(name, raising=False)
++    with pytest.raises(SharedCacheControlError, match="clear_control_not_configured"):
++        clear_from_configured_artifacts(
++            object(), manifest_id="manifest-1", manifest_sha256="a" * 64
++        )
++    with pytest.raises(SharedCacheControlError, match="invalid_manifest_selector"):
++        clear_from_configured_artifacts(
++            object(), manifest_id="/tmp/manifest.json", manifest_sha256="a" * 64
++        )
++
++
++def test_tokenizer_rejects_invalid_clear_before_ipc():
++    from sglang.srt.managers.tokenizer_control_mixin import TokenizerControlMixin
++
++    class Manager:
++        server_args = SimpleNamespace()
++        disaggregation_mode = "decode"
++
++        def auto_create_handle_loop(self):
++            pytest.fail("invalid selectors must fail before IPC setup")
++
++        async def clear_shared_cache_memory_communicator(self, _request):
++            pytest.fail("invalid selectors must fail before IPC")
++
++    result = asyncio.run(
++        TokenizerControlMixin.clear_shared_cache_memory(
++            Manager(), "manifest-1", "bad-sha", "request-1"
++        )
++    )
++    assert not result.success
++    assert result.reason == "invalid_manifest_selector"
++
++
++def test_clear_uses_store_instance_identity_from_live_wrapper():
++    scheduler, store, manifest, evidence = _clear_context()
++    scheduler.decode_offload_manager.cache_controller.storage_backend.shared_cache_store_instance_id = (
++        "other-store"
++    )
++    with pytest.raises(SharedCacheControlError, match="original_store_instance_mismatch"):
++        execute_bounded_clear(
++            scheduler=scheduler,
++            native_store=store,
++            manifest=manifest,
++            snapshot_reader=lambda _sample_id: pytest.fail(
++                "different store instance must be rejected before snapshots"
++            ),
++            master_evidence=evidence,
++            writer_id="writer-hash",
++            segment_id="segment-hash",
++            now_ms=lambda: 1000,
++        )
++
++
++def test_original_writer_clear_handler_flow_and_stable_drain(tmp_path):
++    salt = "test-salt"
++    writer_client_id = "1102750741119211504-12071701333474074511"
++    owner_uuid = "123-456"
++    manifest = {
++        "manifest_version": 1,
++        "manifest_id": "manifest-1",
++        "run_id": "run-1",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "model_revision": "revision-1",
++        "kv_schema": "schema-1",
++        "tenant": "default",
++        "backend_tag": "backend-1",
++        "original_D_worker_id": "writer-1",
++        "original_writer_client_id": writer_client_id,
++        "original_store_instance_id": "store-1",
++        "exact_nonempty_MEMORY_segment": "MEMORY-cold",
++        "key_salt": salt,
++        "required_components": ["kv"],
++        "keys": [
++            {
++                "key": "exact-key",
++                "logical_bytes": 4096,
++                "rank": 0,
++                "component": "kv",
++                "page_range": "0-0",
++                "ssd_replica_ids": [2],
++                "ssd_owner_uuid": owner_uuid,
++                "ssd_scope": "endpoint-1",
++            }
++        ],
++    }
++    key = manifest["keys"][0]
++    key["key_id"] = _stable_id(
++        salt.encode(),
++        b"phala.shared-cache-key.v1\0",
++        "case-1",
++        "epoch-1",
++        "default",
++        key["key"],
++    )
++    unsigned = dict(manifest)
++    manifest["manifest_sha256"] = hashlib.sha256(
++        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++    ).hexdigest()
++    manifest_path = tmp_path / "manifest.json"
++    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
++    manifest_path.chmod(0o600)
++    manifest = load_manifest(
++        str(manifest_path), "manifest-1", manifest["manifest_sha256"]
++    )
++    writer_hash, segment_hash = expected_identities(manifest)
++    ssd_owner_hash = _stable_id(
++        salt.encode(), b"phala.shared-cache-owner.v1\0", "case-1", "epoch-1", "default", owner_uuid
++    )
++    ssd_scope_hash = _stable_id(
++        salt.encode(),
++        b"phala.shared-cache-owner.v1\0",
++        "case-1",
++        "epoch-1",
++        "default",
++        "endpoint-1",
++    )
++    ssd = {
++        "id": 2,
++        "type": "LOCAL_DISK",
++        "status": "COMPLETE",
++        "readable": True,
++        "refcount": 0,
++        "segment_ids": [],
++        "owner_id": ssd_owner_hash,
++        "scope_id": ssd_scope_hash,
++    }
++    memory = {
++        "id": 1,
++        "type": "MEMORY",
++        "status": "COMPLETE",
++        "readable": True,
++        "refcount": 0,
++        "segment_ids": [segment_hash],
++        "owner_id": None,
++        "scope_id": None,
++    }
++    pending = {
++        field: 0
++        for field in (
++            "processing",
++            "offload",
++            "promotion",
++            "promotion_candidate",
++            "replication",
++            "dynamic_replication",
++        )
++    }
++
++    def snapshot(sample_id, with_memory):
++        return {
++            "schema": "phala.shared-cache.snapshot.v1",
++            "success": True,
++            "case_id": "case-1",
++            "epoch": "epoch-1",
++            "tenant_id": "default",
++            "requested_tenant_id": "default",
++            "effective_tenant_id": "default",
++            "master_multi_tenant_enabled": False,
++            "sample_id": sample_id,
++            "master_pid": 100,
++            "sample_time_unix_ms": 1000,
++            "backend_drain_available": False,
++            "objects": [
++                {
++                    "key_id": key["key_id"],
++                    "found": True,
++                    "logical_bytes": 4096,
++                    "writer_id": writer_hash,
++                    "lease_expired": True,
++                    "pending": pending,
++                    "replicas": ([memory] if with_memory else []) + [ssd],
++                }
++            ],
++        }
++
++    class NativeStore:
++        def __init__(self):
++            self.calls = []
++
++        def batch_replica_clear(self, keys, segment):
++            self.calls.append((list(keys), segment))
++            return list(keys)
++
++    native = NativeStore()
++    controller = SimpleNamespace(
++        ack_backup_queue=Queue(),
++        backup_queue=Queue(),
++        ack_write_queue=[],
++        write_queue=[],
++        ack_load_queue=[],
++        ack_prefetch_queue=Queue(),
++        storage_backend=SimpleNamespace(
++            store=native,
++            shared_cache_store_instance_id="store-1",
++        ),
++    )
++    scheduler = SimpleNamespace(
++        decode_offload_manager=SimpleNamespace(
++            cache_controller=controller,
++            ongoing_offload={},
++            ongoing_backup={},
++            offload_inflight={},
++        ),
++        ps=SimpleNamespace(tp_size=1, dp_size=1, pp_size=1, attn_cp_size=1),
++        server_args=SimpleNamespace(
++            tp_size=1,
++            dp_size=1,
++            pp_size=1,
++            dcp_size=1,
++            attn_cp_size=1,
++            nnodes=1,
++        ),
++        disaggregation_mode="decode",
++        is_fully_idle=lambda: True,
++    )
++    evidence = {
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant_id": "default",
++        "requested_tenant_id": "default",
++        "effective_tenant_id": "default",
++        "master_multi_tenant_enabled": False,
++        "backend_tag": "backend-1",
++        "d_worker_id": "writer-1",
++        "store_instance_id": "store-1",
++        "master_pid": 100,
++        "init_scan_completed_unix_ms": 900,
++        "bucket_eviction_policy": "none",
++        "disk_watermark_eviction": False,
++        "sample_time_unix_ms": 1000,
++        "ssd_owner_mappings": [
++            {
++                "owner_id": ssd_owner_hash,
++                "store_instance_id": "c" * 64,
++                "scope_id": ssd_scope_hash,
++                "backend_path_id": "d" * 64,
++                "pid": 200,
++                "init_completed_unix_ms": 600,
++                "scan_completed_unix_ms": 700,
++            }
++        ],
++    }
++
++    owner_sample = {
++        "schema": "phala.shared-cache.owner-drain.v1",
++        "kind": "owner_drain",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant_id": "default",
++        "pid": 200,
++        "owner_id": ssd_owner_hash,
++        "store_instance_id": "c" * 64,
++        "scope_id": ssd_scope_hash,
++        "backend_path_id": "d" * 64,
++        "owner_client_requested_tenant_id": "default",
++        "coverage": "owner_global_bucket",
++        "init_completed_unix_ms": 600,
++        "scan_completed_unix_ms": 700,
++        "activity_sequence": 8,
++        "active": {
++            field: 0
++            for field in (
++                "loads",
++                "offloads",
++                "promotions",
++                "removes",
++                "heartbeats",
++                "rescans",
++                "leased_read_buffers",
++            )
++        },
++        "pending": {
++            field: 0
++            for field in (
++                "backend_writes",
++                "backend_evictions",
++                "ungrouped_offloads",
++                "read_guards",
++            )
++        },
++        "bucket_count": 1,
++        "covered_buckets": 1,
++        "available": True,
++        "consistent": True,
++        "backend_initialized": True,
++        "bucket_eviction_policy": "NONE",
++        "disk_watermark_eviction": False,
++        "metadata_resync_pending": False,
++        "draining": False,
++        "heartbeat_ok": True,
++    }
++    owner_records = [
++        {
++            **owner_sample,
++            "owner_sample_sequence": sequence,
++            "sample_time_unix_ms": sample_time,
++        }
++        for sequence, sample_time in ((10, 750), (11, 875), (12, 1000))
++    ]
++    owner_lines = [
++        json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
++        for item in owner_records
++    ]
++    owner_summary = {
++        "kind": "capture_summary",
++        "emitted": len(owner_records),
++        "dropped": 0,
++        "rejected": 0,
++        "complete": True,
++        "bytes": sum(len(line) + 1 for line in owner_lines),
++    }
++    owner_drain_path = tmp_path / "owner-drain.jsonl"
++    owner_drain_path.write_bytes(
++        b"".join(line + b"\n" for line in owner_lines)
++        + json.dumps(owner_summary, sort_keys=True, separators=(",", ":")).encode()
++        + b"\n"
++    )
++    owner_drain_path.chmod(0o600)
++
++    def read_snapshot(sample_id):
++        return snapshot(sample_id, with_memory=len(native.calls) == 0)
++
++    receipt = execute_bounded_clear(
++        scheduler=scheduler,
++        native_store=native,
++        manifest=manifest,
++        snapshot_reader=read_snapshot,
++        master_evidence=evidence,
++        writer_id=writer_hash,
++        segment_id=segment_hash,
++        owner_drain_evidence_path=str(owner_drain_path),
++        quiet_ms=250,
++        duration_ms=1000,
++        now_ms=lambda: 1000,
++    )
++    assert receipt["success"] is True
++    assert native.calls == [(["exact-key"], "MEMORY-cold")]
++    assert receipt["cleared_key_ids"] == [key["key_id"]]
+diff --git a/test/registered/cpu/test_shared_cache_seed_capture.py b/test/registered/cpu/test_shared_cache_seed_capture.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f03e117ade77b490512e232d1b3e2bd483e1e83
+--- /dev/null
++++ b/test/registered/cpu/test_shared_cache_seed_capture.py
+@@ -0,0 +1,75 @@
++import time
++from unittest.mock import patch
++
++import pytest
++
++from sglang.srt.mem_cache.shared_cache_diagnostics import (
++    SharedCacheSeedCapture,
++    _write_all,
++)
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=3, suite="base-a-test-cpu")
++
++
++def _capture():
++    capture = SharedCacheSeedCapture()
++    capture._config = {
++        "request_id": "request-1",
++        "case_id": "case-1",
++        "epoch": "epoch-1",
++        "tenant_id": "tenant-1",
++        "key_salt": "salt",
++        "max_duration_ms": 1000,
++        "max_events": 4,
++        "max_keys": 8,
++        "max_logical_bytes": 1024,
++        "required_components": ["kv:0"],
++        "request_ref": "a" * 64,
++        "page_range": {"start": 0, "end": 1},
++        "rank": 0,
++    }
++    capture._started = time.monotonic()
++    capture._operation_id = 7
++    return capture
++
++
++def test_duplicate_keys_inside_one_batch_fail_closed():
++    capture = _capture()
++    token = capture.prepare_batch(
++        {"request_id": "request-1", "operation_id": 7},
++        pool="kv",
++        component_names=["kv:0", "kv:0"],
++        keys=["same-key", "same-key"],
++        sizes=[1, 1],
++    )
++    assert token is None
++    assert capture._failed == "duplicate_key"
++    assert capture._entries == {}
++
++
++def test_backup_ack_after_deadline_cannot_seal():
++    capture = _capture()
++    capture._config["max_duration_ms"] = 1
++    capture._started = time.monotonic() - 1
++    assert not capture.backup_ack(
++        request_id="request-1",
++        operation_id=7,
++        complete=True,
++        tokens=1,
++        expected_tokens=1,
++    )
++    assert capture._failed == "duration_exceeded"
++
++
++def test_artifact_writer_retries_short_writes():
++    chunks = []
++
++    def short_write(_fd, data):
++        size = min(2, len(data))
++        chunks.append(bytes(data[:size]))
++        return size
++
++    with patch("sglang.srt.mem_cache.shared_cache_diagnostics.os.write", short_write):
++        _write_all(1, b"abcdef")
++    assert b"".join(chunks) == b"abcdef"
