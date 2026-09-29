@@ -1,0 +1,1424 @@
+diff --git a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+index 836f7632d887b12e7d89206b6007263e5dd0061b..e95bf0c3c9e7ff6b92c8182e5758773af673967a 100644
+--- a/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
++++ b/python/sglang/srt/disaggregation/decode_kvcache_offload_manager.py
+@@ -29,6 +29,7 @@ from sglang.srt.mem_cache.memory_pool import (
+     MLATokenToKVPool,
+     ReqToTokenPool,
+ )
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
+ from sglang.srt.mem_cache.storage_backend_config import (
+     load_storage_backend_extra_config,
+ )
+@@ -420,7 +421,27 @@ class DecodeKVCacheOffloadManager:
+                 continue
+             req_id, host_indices, start_time = pending
+             extra_pools = self.backup_extra_pools.pop(ack_id, None)
+-            if self.is_dsv4 and not self._dsv4_backup_complete(storage_operation):
++            dsv4_complete = (
++                self._dsv4_backup_complete(storage_operation) if self.is_dsv4 else None
++            )
++            if self.is_dsv4:
++                shared_cache_diagnostics.record_backup(
++                    phase="ack",
++                    request_id=req_id,
++                    operation_id=ack_id,
++                    complete=dsv4_complete,
++                    tokens=storage_operation.completed_tokens,
++                    tenant_id=getattr(
++                        getattr(
++                            getattr(self.cache_controller, "storage_backend", None),
++                            "config",
++                            None,
++                        ),
++                        "tenant_id",
++                        "default",
++                    ),
++                )
++            if self.is_dsv4 and not dsv4_complete:
+                 # Cache writes are best effort. Complete-pool lookup on P stops
+                 # at the missing page; later chunks cannot bridge this gap.
+                 logger.warning(
+@@ -479,6 +500,23 @@ class DecodeKVCacheOffloadManager:
+         if extra_pools:
+             self.backup_extra_pools[ack_id] = extra_pools
+         self.ongoing_backup[ack_id] = (req.rid, host_indices, start_time)
++        if self.is_dsv4:
++            shared_cache_diagnostics.record_backup(
++                phase="submitted",
++                request_id=req.rid,
++                operation_id=ack_id,
++                complete=False,
++                tokens=len(incremental_tokens),
++                tenant_id=getattr(
++                    getattr(
++                        getattr(self.cache_controller, "storage_backend", None),
++                        "config",
++                        None,
++                    ),
++                    "tenant_id",
++                    "default",
++                ),
++            )
+         return page_hashes[-1] if len(page_hashes) > 0 else prior_hash
+ 
+     def _compute_prefix_hash(self, req: Req, tokens, prior_hash=""):
+diff --git a/python/sglang/srt/disaggregation/prefill.py b/python/sglang/srt/disaggregation/prefill.py
+index 456918be4a379477d3fc26cff8d7d9e1fc573cad..9e9d39bfb94652bfaa839a110853a5f658f0151a 100644
+--- a/python/sglang/srt/disaggregation/prefill.py
++++ b/python/sglang/srt/disaggregation/prefill.py
+@@ -73,6 +73,7 @@ from sglang.srt.mem_cache.common import (
+ )
+ from sglang.srt.mem_cache.deepseek_v4_memory_pool import DeepSeekV4TokenToKVPool
+ from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
+ from sglang.srt.observability.req_time_stats import set_schedule_time_batch
+ from sglang.srt.observability.scheduler_stage_metrics import (
+     SCHEDULER_STAGE_GET_NEXT_BATCH,
+@@ -94,6 +95,14 @@ if TYPE_CHECKING:
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++def _record_shared_cache_diagnostic_failure() -> None:
++    try:
++        shared_cache_diagnostics.record_capture_failure()
++    except Exception:
++        pass
++
++
+ _is_npu = is_npu()
+ 
+ 
+@@ -717,6 +726,28 @@ class SchedulerDisaggregationPrefillMixin:
+ 
+         if copy_done is not None:
+             copy_done.synchronize()
++        try:
++            capture_enabled = shared_cache_diagnostics.enabled
++        except Exception:
++            _record_shared_cache_diagnostic_failure()
++            capture_enabled = False
++        if capture_enabled:
++            for req in batch.reqs:
++                try:
++                    extend_range = req.extend_range
++                    if extend_range is None:
++                        continue
++                    h_tokens = len(req.prefix_indices) + req.host_hit_length
++                    shared_cache_diagnostics.record_prefill_forward(
++                        request_id=req.rid,
++                        h_tokens=h_tokens,
++                        n_tokens=len(req.origin_input_ids),
++                        forward_start=extend_range.start,
++                        forward_end=extend_range.end,
++                        tail_complete=req.inflight_middle_chunks <= 0,
++                    )
++                except Exception:
++                    _record_shared_cache_diagnostic_failure()
+         auxiliary_output_starts = (
+             self.batch_result_processor.snapshot_auxiliary_output_starts(batch, result)
+         )
+@@ -988,6 +1019,7 @@ class SchedulerDisaggregationPrefillMixin:
+                 # todo: set Transferring correctly in backend
+                 undone_reqs.append(req)
+             elif poll == KVPoll.Success:  # transfer done
++                self._record_c128_transfer_completion(req, completed=True)
+                 if not isinstance(req.finished_reason, FINISH_ABORT):
+                     req.finished_reason = FINISH_LENGTH(length=0)
+                 release_kv_cache(req, self.tree_cache)  # unlock the tree
+@@ -999,6 +1031,7 @@ class SchedulerDisaggregationPrefillMixin:
+                 done_reqs.append(req)
+                 req.time_stats.set_prefill_kv_transfer_finish_time()
+             elif poll == KVPoll.Failed:
++                self._record_c128_transfer_completion(req, completed=False)
+                 self.handle_inflight_transfer_failure(req)
+                 done_reqs.append(req)
+             else:
+@@ -1294,6 +1327,7 @@ class SchedulerDisaggregationPrefillMixin:
+             return
+ 
+         state_indices: Optional[List] = None
++        state_types = []
+         if last_chunk:
+             self.disagg_metadata_buffers.set_buf(req)
+ 
+@@ -1402,6 +1436,35 @@ class SchedulerDisaggregationPrefillMixin:
+             state_indices = [
+                 payloads[st]() if st in payloads else None for st in state_types
+             ]
++            try:
++                if (
++                    shared_cache_diagnostics.enabled
++                    and StateType.DSV4_REQUEST_STATE in state_types
++                ):
++                    c128_indices = state_indices[
++                        state_types.index(StateType.DSV4_REQUEST_STATE)
++                    ]
++                    kv_cache = self.token_to_kv_pool_allocator.get_kvcache()
++                    c128_pool = next(
++                        (
++                            pool
++                            for pool in kv_cache.compress_state_pools
++                            if pool is not None
++                            and pool.request_scoped
++                            and pool.ratio == 128
++                        ),
++                        None,
++                    )
++                    req._shared_cache_diag_c128 = {
++                        "room": req.bootstrap_room,
++                        "index_count": (
++                            0 if c128_indices is None else len(c128_indices)
++                        ),
++                        "online": bool(c128_pool and c128_pool.online),
++                        "sender_mode": type(req.disagg_kv_sender).__name__,
++                    }
++            except Exception:
++                _record_shared_cache_diagnostic_failure()
+ 
+         if self.enable_staging:
+             # One sender.send per grid slot; the sender's cumulative page
+@@ -1447,6 +1510,30 @@ class SchedulerDisaggregationPrefillMixin:
+         else:
+             self.disagg_prefill_pending_chunk_rids.add(req.rid)
+ 
++    @staticmethod
++    def _record_c128_transfer_completion(req: Req, *, completed: bool) -> None:
++        try:
++            transfer = getattr(req, "_shared_cache_diag_c128", None)
++            if transfer is None:
++                return
++            shared_cache_diagnostics.record_c128_transfer(
++                request_id=req.rid,
++                room=transfer["room"],
++                index_count=transfer["index_count"],
++                online=transfer["online"],
++                sender_mode=transfer["sender_mode"],
++                completed=completed,
++            )
++        except Exception:
++            _record_shared_cache_diagnostic_failure()
++        finally:
++            try:
++                delattr(req, "_shared_cache_diag_c128")
++            except AttributeError:
++                pass
++            except Exception:
++                _record_shared_cache_diagnostic_failure()
++
+     def optimistic_release_and_requeue(self: Scheduler, req: Req) -> None:
+         """Release KV cache and requeue an optimistic prefill request."""
+         max_attempts = get_disagg().optimistic_prefill_attempts
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 95b36d72a09afe14cf40efb9126d5f84af7edbbe..04a723604e9679b43263f85c0069949f73be4b89 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -806,6 +806,19 @@ class Envs:
+     SGLANG_MOONCAKE_SEND_AUX_TCP = EnvBool(False)
+     # Exact submitted PD batch sizes and synchronous return; no content/addresses.
+     SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS = EnvBool(False)
++    # Bounded shared-cache correctness capture. Key identities are HMACed with
++    # a caller-provided per-experiment salt; capture stays off without both.
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS = EnvBool(False)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEY_SALT = EnvStr(None)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_CASE_ID = EnvStr(None)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_EPOCH = EnvStr(None)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEY_IDS = EnvStr(None)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_EVENTS = EnvInt(256)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_KEYS = EnvInt(2048)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_BYTES = EnvInt(1048576)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEYS_PER_EVENT = EnvInt(32)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_REQUESTS = EnvInt(32)
++    SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_DURATION_MS = EnvInt(60000)
+     SGLANG_ENABLE_FAILED_SESSION_PROBE = EnvBool(False)
+     SGLANG_FAILED_SESSION_PROBE_INTERVAL_S = EnvFloat(30.0)
+ 
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+index 246abe55d6d15c6f6a7d69047981372ead9f316e..2821e81f5783278b3a40fbd295e1b5bf7cab6630 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+@@ -20,6 +20,7 @@ from sglang.srt.mem_cache.memory_pool_host import (
+ from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
+ from sglang.srt.mem_cache.pool_host.allocation_budget import dsa_host_allocation_budget
+ from sglang.srt.mem_cache.pool_host.common import get_allocator_type
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
+ from sglang.srt.mem_cache.pool_host.dsa import DSAIndexerPoolHost
+ from sglang.srt.mem_cache.pool_host.mamba import MambaPoolHost
+ from sglang.srt.mem_cache.pool_host.mha import (
+@@ -660,7 +661,7 @@ def deepseek_v4_storage_schema(kvcache, host_pool_group):
+     """Stable physical schema; capacities and P/D process roles are excluded."""
+     parallel = get_parallel()
+     model = get_model()
+-    return {
++    schema = {
+         "version": 1,
+         # Served model identity is already part of the backend namespace.
+         # Local checkpoint mount paths and P/D roles must not split that namespace.
+@@ -688,6 +689,8 @@ def deepseek_v4_storage_schema(kvcache, host_pool_group):
+             for entry in host_pool_group.entries
+         ],
+     }
++    shared_cache_diagnostics.record_schema(schema)
++    return schema
+ 
+ 
+ def build_deepseek_v4_hicache_stack(
+diff --git a/python/sglang/srt/mem_cache/shared_cache_diagnostics.py b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..15e2ac238896d58d39bff3b3c4b8044fc9b2ae3b
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+@@ -0,0 +1,459 @@
++import hashlib
++import hmac
++import json
++import logging
++import re
++import struct
++import threading
++import time
++from functools import wraps
++
++from sglang.srt.environ import envs
++
++logger = logging.getLogger(__name__)
++_TRUNCATION_RESERVE_BYTES = 256
++_MAX_EVENTS = 4096
++_MAX_KEYS = 65536
++_MAX_BYTES = 64 * 1024 * 1024
++_MAX_KEYS_PER_EVENT = 256
++_MAX_REQUESTS = 1024
++_MAX_DURATION_MS = 300000
++_MAX_CAPTURE_FAILURES = 1024
++
++
++def _swallow_capture_errors(method):
++    @wraps(method)
++    def wrapped(self, *args, **kwargs):
++        if not self.enabled:
++            return None
++        try:
++            return method(self, *args, **kwargs)
++        except Exception:
++            with self._lock:
++                self._capture_failures = min(
++                    self._capture_failures + 1, _MAX_CAPTURE_FAILURES
++                )
++            return None
++
++    return wrapped
++
++
++class SharedCacheDiagnostics:
++    """Default-off, bounded event capture for shared-cache correctness tests."""
++
++    def __init__(
++        self,
++        *,
++        enabled=False,
++        key_salt=None,
++        case_id=None,
++        epoch=None,
++        key_ids=None,
++        max_events=256,
++        max_keys=2048,
++        max_bytes=1048576,
++        keys_per_event=32,
++        max_requests=32,
++        max_duration_ms=60000,
++        log=logger,
++    ):
++        safe_label = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
++        self.enabled = bool(
++            enabled
++            and key_salt
++            and len(key_salt.encode()) <= 256
++            and case_id
++            and safe_label.fullmatch(case_id)
++            and epoch
++            and safe_label.fullmatch(epoch)
++            and key_ids
++        )
++        self._salt = key_salt.encode() if self.enabled else None
++        self._case_id = case_id if self.enabled else None
++        self._epoch = epoch if self.enabled else None
++        self._max_events = min(_MAX_EVENTS, max(1, int(max_events)))
++        self._max_keys = min(_MAX_KEYS, max(0, int(max_keys)))
++        self._max_bytes = min(
++            _MAX_BYTES,
++            max(_TRUNCATION_RESERVE_BYTES, int(max_bytes)),
++        )
++        self._keys_per_event = min(_MAX_KEYS_PER_EVENT, max(1, int(keys_per_event)))
++        self._max_requests = min(_MAX_REQUESTS, max(0, int(max_requests)))
++        self._max_duration_s = (
++            min(_MAX_DURATION_MS, max(1, int(max_duration_ms))) / 1000
++        )
++        self._key_ids = {
++            value.strip().lower()
++            for value in (key_ids or "")[: _MAX_KEYS * 65].split(",")[: self._max_keys]
++            if re.fullmatch(r"[0-9a-fA-F]{64}", value.strip())
++        }
++        self._logger = log
++        self._lock = threading.Lock()
++        self._started_at = time.monotonic()
++        self._events = 0
++        self._keys = 0
++        self._keys_hashed = 0
++        self._requests = set()
++        self._bytes = 0
++        self._truncated = False
++        self._truncation_logged = False
++        self._dropped_events = 0
++        self._dropped_keys = 0
++        self._dropped_bytes = 0
++        self._dropped_requests = 0
++        self._capture_failures = 0
++
++    @property
++    def capture_failures(self):
++        return self._capture_failures
++
++    def record_capture_failure(self):
++        try:
++            with self._lock:
++                self._capture_failures = min(
++                    self._capture_failures + 1, _MAX_CAPTURE_FAILURES
++                )
++        except Exception:
++            pass
++
++    def _capture_open(self):
++        if not self.enabled:
++            return False
++        with self._lock:
++            if self._truncation_logged:
++                return False
++        if time.monotonic() - self._started_at <= self._max_duration_s:
++            return True
++        with self._lock:
++            self._truncated = True
++            self._dropped_events += 1
++        self.flush_truncation()
++        return False
++
++    def _register_request(self, request_id, tenant_id):
++        if len(str(request_id).encode()) > 256 or len(str(tenant_id).encode()) > 128:
++            with self._lock:
++                self._truncated = True
++                self._dropped_requests += 1
++            return None
++        request_ref = self._request_id(request_id, tenant_id)
++        with self._lock:
++            if request_ref in self._requests:
++                return request_ref
++            if len(self._requests) >= self._max_requests:
++                self._truncated = True
++                self._dropped_requests += 1
++                return None
++            self._requests.add(request_ref)
++        return request_ref
++
++    def _stable_id(self, domain, tenant_id, value):
++        fields = (
++            str(self._case_id),
++            str(self._epoch),
++            str(tenant_id or "default"),
++            str(value),
++        )
++        message = bytearray(domain)
++        for field in fields:
++            encoded = field.encode()
++            message.extend(struct.pack(">I", len(encoded)))
++            message.extend(encoded)
++        return hmac.new(self._salt, message, hashlib.sha256).hexdigest()
++
++    def _key_id(self, value, tenant_id):
++        return self._stable_id(b"phala.shared-cache-key.v1\0", tenant_id, value)
++
++    def key_id(self, value, tenant_id="default"):
++        if not self.enabled:
++            return None
++        return self._key_id(value, tenant_id)
++
++    def _request_id(self, value, tenant_id="default"):
++        return self._stable_id(b"phala.shared-cache-request.v1\0", tenant_id, value)
++
++    def _operation_id(self, value, tenant_id="default"):
++        return self._stable_id(b"phala.shared-cache-operation.v1\0", tenant_id, value)
++
++    def _emit(self, event, *, key_count=0):
++        if not self._capture_open():
++            return
++        event.setdefault("case_id", self._case_id)
++        event.setdefault("epoch", self._epoch)
++        encoded = json.dumps(event, separators=(",", ":"), sort_keys=True)
++        encoded_size = len(encoded.encode())
++        with self._lock:
++            if self._events >= self._max_events - 1:
++                self._truncated = True
++                self._dropped_events += 1
++                self._dropped_keys += key_count
++                return
++            if self._keys + key_count > self._max_keys:
++                self._truncated = True
++                self._dropped_keys += key_count
++                return
++            if self._bytes + encoded_size > self._max_bytes - _TRUNCATION_RESERVE_BYTES:
++                self._truncated = True
++                self._dropped_bytes += encoded_size
++                return
++            self._logger.info("shared_cache_diag %s", encoded)
++            self._events += 1
++            self._keys += key_count
++            self._bytes += encoded_size
++
++    @_swallow_capture_errors
++    def flush_truncation(self):
++        if not self.enabled:
++            return
++        with self._lock:
++            if not self._truncated or self._truncation_logged:
++                return
++            event = {
++                "event": "capture_truncated",
++                "dropped_bytes": self._dropped_bytes,
++                "dropped_events": self._dropped_events,
++                "dropped_keys": self._dropped_keys,
++                "dropped_requests": self._dropped_requests,
++            }
++            encoded = json.dumps(event, separators=(",", ":"), sort_keys=True)
++            if self._events >= self._max_events:
++                return
++            self._logger.warning("shared_cache_diag %s", encoded)
++            self._events += 1
++            self._bytes += len(encoded.encode())
++            self._truncation_logged = True
++
++    @_swallow_capture_errors
++    def record_schema(self, schema):
++        if not self._capture_open():
++            return
++        pools = []
++        for item in schema.get("pools", ())[: self._keys_per_event]:
++            if len(item) >= 6:
++                pools.append(
++                    {
++                        "name": str(item[0]),
++                        "page_size": int(item[1]),
++                        "layout": str(item[2]),
++                        "layer_num": int(item[3]),
++                        "dtype": str(item[4]),
++                    }
++                )
++        self._emit({"event": "registered_pools", "pools": pools}, key_count=len(pools))
++        if len(schema.get("pools", ())) > len(pools):
++            with self._lock:
++                self._truncated = True
++                self._dropped_keys += len(schema["pools"]) - len(pools)
++        self.flush_truncation()
++
++    @staticmethod
++    def _size_bytes(size):
++        if isinstance(size, (list, tuple)):
++            return sum(int(part) for part in size)
++        return int(size)
++
++    @_swallow_capture_errors
++    def record_io(
++        self,
++        *,
++        is_set,
++        pool,
++        keys,
++        sizes,
++        results,
++        exist_results=None,
++        tenant_id="default",
++    ):
++        if not self._capture_open():
++            return
++        limit = min(len(keys), self._keys_per_event)
++        components = []
++        filtered_keys = 0
++        for index in range(limit):
++            if len(keys[index].encode()) > 4096 or len(str(tenant_id).encode()) > 128:
++                filtered_keys += 1
++                continue
++            with self._lock:
++                if self._keys_hashed >= self._max_keys:
++                    self._truncated = True
++                    self._dropped_keys += len(keys) - index
++                    break
++                self._keys_hashed += 1
++            key_id = self._key_id(keys[index], tenant_id)
++            if key_id not in self._key_ids:
++                continue
++            if index >= len(sizes) or index >= len(results):
++                filtered_keys += 1
++                continue
++            size = self._size_bytes(sizes[index])
++            result = int(results[index])
++            component = {
++                "key_id": key_id,
++                "requested_bytes": size,
++                "result": result,
++            }
++            if is_set:
++                existed = (
++                    exist_results is not None
++                    and index < len(exist_results)
++                    and exist_results[index] == 1
++                )
++                component["already_present"] = bool(existed)
++                component["written"] = bool(not existed and result == 0)
++            else:
++                component["read_bytes"] = max(0, result)
++                component["short_read"] = 0 < result < size
++            components.append(component)
++        truncated = len(keys) > limit or self._keys_hashed >= self._max_keys
++        truncated = truncated or filtered_keys > 0
++        if components or filtered_keys:
++            self._emit(
++                {
++                    "event": "put_components" if is_set else "get_components",
++                    "pool": str(pool),
++                    "components": components,
++                    "filtered_keys": filtered_keys,
++                    "truncated": truncated,
++                },
++                key_count=len(components),
++            )
++        if truncated:
++            with self._lock:
++                self._truncated = True
++                self._dropped_keys += max(0, len(keys) - limit)
++                self._dropped_keys += filtered_keys
++        self.flush_truncation()
++
++    @_swallow_capture_errors
++    def record_backup(
++        self,
++        *,
++        phase,
++        request_id,
++        operation_id,
++        complete,
++        tokens,
++        tenant_id="default",
++    ):
++        if not self._capture_open():
++            return
++        request_ref = self._register_request(request_id, tenant_id)
++        if request_ref is None:
++            self.flush_truncation()
++            return
++        self._emit(
++            {
++                "event": "backup_" + phase,
++                "request_id": request_ref,
++                "operation_id": self._operation_id(operation_id, tenant_id),
++                "complete": bool(complete),
++                "tokens": int(tokens),
++            }
++        )
++        self.flush_truncation()
++
++    @_swallow_capture_errors
++    def record_prefetch(
++        self,
++        *,
++        request_id,
++        requested_tokens,
++        completed_tokens,
++        accepted,
++        tenant_id="default",
++    ):
++        if not self._capture_open():
++            return
++        request_ref = self._register_request(request_id, tenant_id)
++        if request_ref is None:
++            self.flush_truncation()
++            return
++        self._emit(
++            {
++                "event": "prefetch_boundary",
++                "request_id": request_ref,
++                "requested_tokens": int(requested_tokens),
++                "completed_tokens": int(completed_tokens),
++                "accepted": bool(accepted),
++            }
++        )
++        self.flush_truncation()
++
++    @_swallow_capture_errors
++    def record_prefill_forward(
++        self,
++        *,
++        request_id,
++        h_tokens,
++        n_tokens,
++        forward_start,
++        forward_end,
++        tail_complete,
++        tenant_id="default",
++    ):
++        if not self._capture_open():
++            return
++        request_ref = self._register_request(request_id, tenant_id)
++        if request_ref is None:
++            self.flush_truncation()
++            return
++        self._emit(
++            {
++                "event": "prefill_forward_complete",
++                "request_id": request_ref,
++                "h_tokens": int(h_tokens),
++                "n_tokens": int(n_tokens),
++                "suffix_tokens": max(0, int(n_tokens) - int(h_tokens)),
++                "forward_start": int(forward_start),
++                "forward_end": int(forward_end),
++                "forward_tokens": int(forward_end) - int(forward_start),
++                "tail_complete": bool(tail_complete),
++            }
++        )
++        self.flush_truncation()
++
++    @_swallow_capture_errors
++    def record_c128_transfer(
++        self,
++        *,
++        request_id,
++        room,
++        index_count,
++        online,
++        sender_mode,
++        completed,
++        tenant_id="default",
++    ):
++        if not self._capture_open():
++            return
++        request_ref = self._register_request(request_id, tenant_id)
++        if request_ref is None:
++            self.flush_truncation()
++            return
++        self._emit(
++            {
++                "event": "c128_transfer",
++                "request_id": request_ref,
++                "room": int(room),
++                "index_count": int(index_count),
++                "online": bool(online),
++                "sender_mode": str(sender_mode),
++                "completed": bool(completed),
++            }
++        )
++        self.flush_truncation()
++
++
++shared_cache_diagnostics = SharedCacheDiagnostics(
++    enabled=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS.get(),
++    key_salt=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEY_SALT.get(),
++    case_id=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_CASE_ID.get(),
++    epoch=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_EPOCH.get(),
++    key_ids=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEY_IDS.get(),
++    max_events=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_EVENTS.get(),
++    max_keys=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_KEYS.get(),
++    max_bytes=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_BYTES.get(),
++    keys_per_event=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_KEYS_PER_EVENT.get(),
++    max_requests=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_REQUESTS.get(),
++    max_duration_ms=envs.SGLANG_MOONCAKE_SHARED_CACHE_DIAGNOSTICS_MAX_DURATION_MS.get(),
++)
+diff --git a/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py b/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
+index fb9d7a51b58177ea9a6ec9d5bbec4b4a62cab924..3091b3432fe601bdda74833cfb442b9db0342cc8 100644
+--- a/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
++++ b/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py
+@@ -23,6 +23,7 @@ from sglang.srt.mem_cache.hicache_storage import (
+ )
+ from sglang.srt.mem_cache.pool_host import HostKVCache, HostTensorAllocator
+ from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
+ from sglang.srt.observability.metrics_collector import StorageMetrics
+ 
+ DEFAULT_LOCAL_BUFFER_SIZE = 16 * 1024 * 1024  # 16 MB
+@@ -971,8 +972,33 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
+                 io_results = self._get_batch_zero_copy_impl(
+                     key_strs, ptr_list, element_size_list
+                 )
++            shared_cache_diagnostics.record_io(
++                is_set=is_set,
++                pool=transfer.name,
++                keys=key_strs,
++                sizes=element_size_list,
++                results=io_results,
++                exist_results=exist_result if is_set else None,
++                tenant_id=getattr(
++                    getattr(self, "config", None), "tenant_id", DEFAULT_TENANT_ID
++                ),
++            )
++            page_io_results = io_results
++            if not is_set:
++                page_io_results = [
++                    1
++                    if index < len(element_size_list)
++                    and result
++                    == (
++                        sum(int(size) for size in element_size_list[index])
++                        if isinstance(element_size_list[index], (list, tuple))
++                        else int(element_size_list[index])
++                    )
++                    else -1
++                    for index, result in enumerate(io_results)
++                ]
+             results[transfer.name] = self._batch_postprocess(
+-                io_results, is_set_operate=is_set, key_multiplier=key_multiplier
++                page_io_results, is_set_operate=is_set, key_multiplier=key_multiplier
+             )
+         return results
+ 
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index f239255bd80ba3f0f448dc408f0a63383bf3d23d..3251146b75b5da89be5c0736b85869c2d470615a 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -46,6 +46,7 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
+ )
+ from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+ from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.shared_cache_diagnostics import shared_cache_diagnostics
+ from sglang.srt.mem_cache.storage_prefetch import StoragePrefetchRetries
+ from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
+ from sglang.srt.mem_cache.unified_cache.cache_action import (
+@@ -2257,9 +2258,40 @@ class UnifiedRadixCache(BasePrefixCache):
+             anchor_lock_params,
+             prefetch_key,
+         ):
++            shared_cache_diagnostics.record_prefetch(
++                request_id=request.rid,
++                requested_tokens=len(prefetch_key),
++                completed_tokens=completed_tokens,
++                accepted=False,
++                tenant_id=getattr(
++                    getattr(
++                        getattr(self.cache_controller, "storage_backend", None),
++                        "config",
++                        None,
++                    ),
++                    "tenant_id",
++                    "default",
++                ),
++            )
+             # Hybrid all-or-nothing check failed; result already discarded.
+             return
+ 
++        shared_cache_diagnostics.record_prefetch(
++            request_id=request.rid,
++            requested_tokens=len(prefetch_key),
++            completed_tokens=completed_tokens,
++            accepted=True,
++            tenant_id=getattr(
++                getattr(
++                    getattr(self.cache_controller, "storage_backend", None),
++                    "config",
++                    None,
++                ),
++                "tenant_id",
++                "default",
++            ),
++        )
++
+         allocated_tokens = len(host_indices)
+         if completed_tokens < allocated_tokens:
+             self._resolve_storage_prefetch_tokens(
+diff --git a/test/registered/unit/disaggregation/test_dsv4_decode_offload.py b/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
+index d18ad693325598b7980f31fb2bb7c8c9c7921ccf..c2d0651557eeb432484949df2e6f91f3c4a543c2 100644
+--- a/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
++++ b/test/registered/unit/disaggregation/test_dsv4_decode_offload.py
+@@ -30,6 +30,7 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+ )
+ from sglang.srt.mem_cache.memory_pool_host import LogicalHostPool
+ from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
++from sglang.srt.mem_cache.shared_cache_diagnostics import SharedCacheDiagnostics
+ from sglang.srt.mem_cache.radix_cache import RadixKey
+ from sglang.srt.mem_cache.storage.mooncake_store.mooncake_store import MooncakeStore
+ from sglang.srt.mem_cache.utils import get_hash_str, get_storage_hash_str
+@@ -465,6 +466,38 @@ class TestDSV4DecodeOffload(unittest.TestCase):
+             manager.decode_host_mem_pool.available_size(PoolName.SWA), PAGE * 16
+         )
+ 
++    def test_backup_diagnostics_correlate_submit_and_whole_group_ack(self):
++        capture_log = MagicMock()
++        diagnostics = SharedCacheDiagnostics(
++            enabled=True,
++            key_salt="shared-test-salt",
++            case_id="unit-case",
++            epoch="unit-epoch",
++            key_ids="0" * 64,
++            log=capture_log,
++        )
++        manager, _ = make_manager()
++        request = make_req(rid="private-request-id")
++
++        with patch(
++            "sglang.srt.disaggregation.decode_kvcache_offload_manager.shared_cache_diagnostics",
++            diagnostics,
++        ):
++            self.assertTrue(manager.offload_kv_cache(request))
++            manager._check_offload_progress(1)
++            operation = finish_storage(
++                manager, missing=PoolName.DEEPSEEK_V4_C4_INDEXER_SCALE
++            )
++
++        records = [call.args[1] for call in capture_log.info.call_args_list]
++        events = [json.loads(record) for record in records]
++        self.assertEqual(
++            [event["event"] for event in events], ["backup_submitted", "backup_ack"]
++        )
++        self.assertFalse(events[-1]["complete"])
++        self.assertEqual(events[-1]["tokens"], operation.completed_tokens)
++        self.assertNotIn("private-request-id", "\n".join(records))
++
+     def test_unified_layout_has_no_swa_state_but_has_c128_and_fp4_scale(self):
+         manager, _ = make_manager(unified=True)
+         self.assertTrue(manager.offload_kv_cache(make_req()))
+diff --git a/test/registered/unit/mem_cache/test_shared_cache_diagnostics.py b/test/registered/unit/mem_cache/test_shared_cache_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..70fc0fdee6e423321fa89bd2f3667a6ed5144e80
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_shared_cache_diagnostics.py
+@@ -0,0 +1,536 @@
++import json
++import unittest
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import torch
++
++from sglang.srt.disaggregation.base import KVPoll
++from sglang.srt.disaggregation.prefill import SchedulerDisaggregationPrefillMixin
++from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
++from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer
++from sglang.srt.mem_cache.base_prefix_cache import CacheRequestHandle
++from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
++    deepseek_v4_storage_schema,
++)
++from sglang.srt.mem_cache.shared_cache_diagnostics import SharedCacheDiagnostics
++from sglang.srt.mem_cache.storage.mooncake_store.mooncake_store import MooncakeStore
++from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
++
++class CaptureLog:
++    def __init__(self):
++        self.records = []
++
++    def info(self, _, message):
++        self.records.append(message)
++
++    def warning(self, _, message):
++        self.records.append(message)
++
++
++class TestSharedCacheDiagnostics(unittest.TestCase):
++    def make_capture(self, **kwargs):
++        log = CaptureLog()
++        key_salt = kwargs.pop("key_salt", "test-only-shared-salt")
++        if key_salt is None:
++            return (
++                SharedCacheDiagnostics(
++                    enabled=True,
++                    key_salt=None,
++                    case_id="unit-case",
++                    epoch="unit-epoch",
++                    key_ids="0" * 64,
++                    log=log,
++                    **kwargs,
++                ),
++                log,
++            )
++        case_id = kwargs.pop("case_id", "unit-case")
++        epoch = kwargs.pop("epoch", "unit-epoch")
++        allowed_keys = kwargs.pop(
++            "allowed_keys",
++            ["private-put-key-1", "private-put-key-2", "key-1", "key-2", "key-3"],
++        )
++        bootstrap = SharedCacheDiagnostics(
++            enabled=True,
++            key_salt=key_salt,
++            case_id=case_id,
++            epoch=epoch,
++            key_ids="bootstrap",
++        )
++        key_ids = ",".join(bootstrap.key_id(key) for key in allowed_keys) or "0" * 64
++        capture = SharedCacheDiagnostics(
++            enabled=True,
++            key_salt=key_salt,
++            case_id=case_id,
++            epoch=epoch,
++            key_ids=key_ids,
++            log=log,
++            **kwargs,
++        )
++        return capture, log
++
++    def events(self, log):
++        return [json.loads(record) for record in log.records]
++
++    def test_default_off_does_not_hash_or_emit(self):
++        capture = SharedCacheDiagnostics(enabled=False, key_salt="unused")
++        with patch(
++            "sglang.srt.mem_cache.shared_cache_diagnostics.hmac.new",
++            side_effect=AssertionError("disabled capture hashed a key"),
++        ):
++            capture.record_io(
++                is_set=False,
++                pool="KV",
++                keys=["private-object-key"],
++                sizes=[8],
++                results=[8],
++            )
++
++    def test_missing_salt_keeps_capture_off(self):
++        capture, log = self.make_capture(key_salt=None)
++        self.assertFalse(capture.enabled)
++        capture.record_schema({"pools": [["KV", 1, "layout", 1, "uint8", 4]]})
++        self.assertEqual(log.records, [])
++
++    def test_schema_reports_registered_pool_geometry_only(self):
++        capture, log = self.make_capture()
++        capture.record_schema(
++            {
++                "revision": "private-model-revision",
++                "pools": [
++                    ["KV", 256, "page_first", 8, "torch.uint8", 4096],
++                    ["C128", 128, "state", 3, "torch.float16", 8192],
++                ],
++            }
++        )
++        event = self.events(log)[0]
++        self.assertEqual(event["event"], "registered_pools")
++        self.assertEqual([p["name"] for p in event["pools"]], ["KV", "C128"])
++        self.assertNotIn("private-model-revision", log.records[0])
++
++    def test_schema_hook_reads_only_registered_entries(self):
++        capture, log = self.make_capture()
++        module = "sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler."
++        cache = SimpleNamespace(
++            kv_layout="page_first",
++            _unified_kv=True,
++            uniform_fp8=False,
++            layer_mapping=[SimpleNamespace(compress_ratio=4, compress_layer_id=1)],
++            start_layer=0,
++            end_layer=1,
++        )
++        pool = SimpleNamespace(
++            page_size=256,
++            layout="page_first",
++            layer_num=8,
++            dtype="torch.uint8",
++            item_bytes=4,
++            state_page_bytes=None,
++        )
++        group = SimpleNamespace(
++            entries=[SimpleNamespace(name=PoolName.KV, host_pool=pool)]
++        )
++        parallel = SimpleNamespace(
++            attn_tp_size=1,
++            attn_cp_size=1,
++            pp_size=1,
++            attn_cp_rank=0,
++        )
++        with (
++            patch(module + "get_parallel", return_value=parallel),
++            patch(module + "get_model", return_value=SimpleNamespace(revision="rev")),
++            patch(module + "shared_cache_diagnostics", capture),
++        ):
++            schema = deepseek_v4_storage_schema(cache, group)
++
++        self.assertEqual([pool[0] for pool in schema["pools"]], [str(PoolName.KV)])
++        self.assertEqual(self.events(log)[0]["pools"][0]["page_size"], 256)
++
++    def test_hmac_identity_is_tenant_case_epoch_and_domain_bound(self):
++        capture, _ = self.make_capture()
++        same = capture.key_id("exact-component-key", tenant_id="tenant-a")
++        self.assertEqual(
++            same, capture.key_id("exact-component-key", tenant_id="tenant-a")
++        )
++        self.assertNotEqual(
++            same, capture.key_id("exact-component-key", tenant_id="tenant-b")
++        )
++        self.assertNotEqual(
++            same,
++            capture._request_id("exact-component-key", tenant_id="tenant-a"),
++        )
++
++    def test_key_manifest_miss_is_ignored_without_truncating_capture(self):
++        capture, log = self.make_capture(allowed_keys=[])
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["unlisted-sensitive-key"],
++            sizes=[8],
++            results=[8],
++        )
++        events = self.events(log)
++        self.assertEqual(events, [])
++        self.assertFalse(capture._truncated)
++        self.assertNotIn("unlisted-sensitive-key", "\n".join(log.records))
++
++    def test_request_limit_counts_unique_hashed_requests(self):
++        capture, log = self.make_capture(max_requests=1)
++        capture.record_backup(
++            phase="submitted",
++            request_id="request-a",
++            operation_id=4,
++            complete=False,
++            tokens=10,
++        )
++        capture.record_backup(
++            phase="ack",
++            request_id="request-a",
++            operation_id=4,
++            complete=True,
++            tokens=10,
++        )
++        capture.record_backup(
++            phase="submitted",
++            request_id="request-b",
++            operation_id=5,
++            complete=False,
++            tokens=4,
++        )
++        events = self.events(log)
++        self.assertEqual(
++            [event["event"] for event in events[:2]], ["backup_submitted", "backup_ack"]
++        )
++        self.assertEqual(events[-1]["event"], "capture_truncated")
++        self.assertEqual(events[-1]["dropped_requests"], 1)
++        self.assertNotIn("request-a", "\n".join(log.records))
++
++    def test_duration_limit_stops_before_key_hashing(self):
++        with patch(
++            "sglang.srt.mem_cache.shared_cache_diagnostics.time.monotonic"
++        ) as now:
++            now.return_value = 1.0
++            capture, log = self.make_capture(max_duration_ms=1000)
++            now.return_value = 3.0
++            with patch(
++                "sglang.srt.mem_cache.shared_cache_diagnostics.hmac.new",
++                side_effect=AssertionError("expired capture hashed a key"),
++            ):
++                capture.record_io(
++                    is_set=False,
++                    pool="KV",
++                    keys=["private-object-key"],
++                    sizes=[8],
++                    results=[8],
++                )
++        self.assertEqual(self.events(log)[0]["event"], "capture_truncated")
++
++    def test_mooncake_batch_io_preserves_component_results_without_raw_keys(self):
++        component_keys = [
++            f"{pool}:private-put-key-{index}"
++            for pool in (PoolName.KV, PoolName.DEEPSEEK_V4_C4)
++            for index in (1, 2)
++        ]
++        capture, log = self.make_capture(allowed_keys=component_keys)
++        store = object.__new__(MooncakeStore)
++        pool = SimpleNamespace(
++            page_size=1,
++            get_page_buffer_meta=lambda indices: ([100, 200], [[2, 2], [2, 2]]),
++        )
++        store.registered_pools = {PoolName.KV: pool, PoolName.DEEPSEEK_V4_C4: pool}
++        store._tag_keys = lambda keys: keys
++        store._get_hybrid_page_component_keys = lambda keys, transfer: (
++            [f"{transfer.name}:{key}" for key in keys],
++            1,
++        )
++        store._can_use_group_semantics = lambda: False
++        store._filter_group_ids = lambda groups, indices: None
++        store._batch_exist = MagicMock(return_value=[1, 0])
++        store._put_batch_zero_copy_impl = MagicMock(return_value=[0])
++        store._get_batch_zero_copy_impl = MagicMock(return_value=[4, 2])
++
++        transfer = PoolTransfer(
++            PoolName.KV,
++            host_indices=torch.arange(2),
++            keys=["private-put-key-1", "private-put-key-2"],
++        )
++        sidecar = PoolTransfer(
++            PoolName.DEEPSEEK_V4_C4,
++            host_indices=torch.arange(2),
++            keys=["private-put-key-1", "private-put-key-2"],
++        )
++        with patch(
++            "sglang.srt.mem_cache.storage.mooncake_store.mooncake_store.shared_cache_diagnostics",
++            capture,
++        ):
++            self.assertEqual(
++                store._batch_io_v2([transfer, sidecar], is_set=True)[PoolName.KV],
++                [True, True],
++            )
++            self.assertEqual(
++                store._batch_io_v2([transfer, sidecar], is_set=False)[PoolName.KV],
++                [True, False],
++            )
++
++        put_kv, put_sidecar, get_kv, get_sidecar = self.events(log)
++        self.assertEqual(put_kv["event"], "put_components")
++        self.assertEqual(put_sidecar["pool"], str(PoolName.DEEPSEEK_V4_C4))
++        self.assertEqual(
++            [c["already_present"] for c in put_kv["components"]], [True, False]
++        )
++        self.assertEqual(
++            [c["written"] for c in put_sidecar["components"]], [False, True]
++        )
++        self.assertEqual([c["result"] for c in get_kv["components"]], [4, 2])
++        self.assertEqual([c["short_read"] for c in get_kv["components"]], [False, True])
++        self.assertNotEqual(
++            [c["key_id"] for c in get_kv["components"]],
++            [c["key_id"] for c in get_sidecar["components"]],
++        )
++        for raw_key in transfer.keys:
++            self.assertNotIn(raw_key, "\n".join(log.records))
++
++    def test_capture_limits_emit_one_truncation_summary(self):
++        capture, log = self.make_capture(
++            max_events=2,
++            max_keys=1,
++            keys_per_event=1,
++            allowed_keys=["key-1", "key-2", "key-3"],
++        )
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["key-1", "key-2"],
++            sizes=[1, 1],
++            results=[1, 1],
++        )
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["key-3"],
++            sizes=[1],
++            results=[1],
++        )
++        events = self.events(log)
++        self.assertEqual(len(events), 2)
++        self.assertEqual(events[0]["event"], "get_components")
++        self.assertTrue(events[0]["truncated"])
++        self.assertEqual(events[1]["event"], "capture_truncated")
++        self.assertGreaterEqual(events[1]["dropped_keys"], 1)
++
++    def test_non_allowlisted_keys_do_not_truncate_capture(self):
++        capture, log = self.make_capture(allowed_keys=["key-1"])
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["unknown-private-key"],
++            sizes=[],
++            results=[],
++        )
++        self.assertFalse(capture._truncated)
++        self.assertEqual(log.records, [])
++
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["key-1"],
++            sizes=[],
++            results=[],
++        )
++        events = self.events(log)
++        self.assertEqual(events[0]["event"], "get_components")
++        self.assertTrue(events[0]["truncated"])
++        self.assertEqual(events[0]["filtered_keys"], 1)
++
++    def test_capture_logging_failure_is_counted_and_never_propagates(self):
++        capture, _ = self.make_capture()
++        capture._logger.info = MagicMock(side_effect=RuntimeError("sink failed"))
++        capture.record_io(
++            is_set=False,
++            pool="KV",
++            keys=["key-1"],
++            sizes=[1],
++            results=[1],
++        )
++        self.assertEqual(capture.capture_failures, 1)
++
++    def test_malformed_capture_value_is_counted_and_never_propagates(self):
++        capture, _ = self.make_capture()
++        with patch.object(capture, "_key_id", side_effect=ValueError("bad key")):
++            capture.record_io(
++                is_set=False,
++                pool="KV",
++                keys=["key-1"],
++                sizes=[1],
++                results=[1],
++            )
++        self.assertEqual(capture.capture_failures, 1)
++
++    def test_prefill_forward_and_c128_completion_are_correlated(self):
++        capture, log = self.make_capture()
++        capture.record_prefill_forward(
++            request_id="private-prefill-request",
++            h_tokens=128,
++            n_tokens=385,
++            forward_start=128,
++            forward_end=385,
++            tail_complete=True,
++        )
++        capture.record_c128_transfer(
++            request_id="private-prefill-request",
++            room=77,
++            index_count=4,
++            online=False,
++            sender_mode="MooncakeKVSender",
++            completed=True,
++        )
++        forward, c128 = self.events(log)
++        self.assertEqual(forward["event"], "prefill_forward_complete")
++        self.assertEqual(forward["h_tokens"], 128)
++        self.assertEqual(forward["n_tokens"], 385)
++        self.assertEqual(forward["suffix_tokens"], 257)
++        self.assertEqual(forward["forward_tokens"], 257)
++        self.assertTrue(forward["tail_complete"])
++        self.assertEqual(forward["request_id"], c128["request_id"])
++        self.assertEqual(c128["index_count"], 4)
++        self.assertFalse(c128["online"])
++        self.assertTrue(c128["completed"])
++        self.assertNotIn("private-prefill-request", "\n".join(log.records))
++
++    def test_real_prefill_result_hook_records_total_n_after_copy(self):
++        capture, log = self.make_capture()
++        order = []
++        request = SimpleNamespace(
++            rid="private-prefill-request",
++            extend_range=SimpleNamespace(start=128, end=385),
++            prefix_indices=list(range(100)),
++            host_hit_length=28,
++            origin_input_ids=list(range(385)),
++            inflight_middle_chunks=0,
++        )
++
++        class BadDiagnosticRequest:
++            rid = "bad-request"
++
++            @property
++            def extend_range(self):
++                raise RuntimeError("bad diagnostic field")
++
++        bad_request = BadDiagnosticRequest()
++        result = SimpleNamespace(
++            logits_output=None,
++            next_token_ids=None,
++            extend_input_len_per_req=None,
++            extend_logprob_start_len_per_req=None,
++            copy_done=SimpleNamespace(synchronize=lambda: order.append("copy")),
++        )
++        batch = SimpleNamespace(reqs=[request, bad_request])
++        scheduler = SimpleNamespace(
++            batch_result_processor=SimpleNamespace(
++                snapshot_auxiliary_output_starts=lambda _batch, _result: (
++                    order.append("snapshot"),
++                    (_ for _ in ()).throw(StopIteration()),
++                )[1]
++            )
++        )
++
++        with patch(
++            "sglang.srt.disaggregation.prefill.shared_cache_diagnostics", capture
++        ):
++            with self.assertRaises(StopIteration):
++                SchedulerDisaggregationPrefillMixin.process_batch_result_disagg_prefill(
++                    scheduler, batch, result
++                )
++
++        event = self.events(log)[0]
++        self.assertEqual(order, ["copy", "snapshot"])
++        self.assertEqual(event["h_tokens"], 128)
++        self.assertEqual(event["n_tokens"], 385)
++        self.assertEqual(event["suffix_tokens"], 257)
++        self.assertEqual((event["forward_start"], event["forward_end"]), (128, 385))
++        self.assertEqual(capture.capture_failures, 1)
++
++    def test_real_prefill_transfer_handler_records_terminal_c128_and_cleans_up(self):
++        for poll, expected_completed in (
++            (KVPoll.Success, True),
++            (KVPoll.Failed, False),
++        ):
++            with self.subTest(poll=poll):
++                capture, log = self.make_capture()
++                request = SimpleNamespace(
++                    rid="private-transfer-request",
++                    pending_bootstrap=False,
++                    finished_reason=None,
++                    cache_request_handle=object(),
++                    bootstrap_host=FAKE_BOOTSTRAP_HOST,
++                    return_logprob=False,
++                    disagg_kv_sender=MagicMock(),
++                    time_stats=MagicMock(),
++                    _shared_cache_diag_c128={
++                        "room": 77,
++                        "index_count": 4,
++                        "online": False,
++                        "sender_mode": "MooncakeKVSender",
++                    },
++                )
++                scheduler = MagicMock()
++                scheduler.disagg_prefill_inflight_queue = [request]
++                scheduler._record_c128_transfer_completion = (
++                    SchedulerDisaggregationPrefillMixin._record_c128_transfer_completion
++                )
++
++                with (
++                    patch(
++                        "sglang.srt.disaggregation.prefill.shared_cache_diagnostics",
++                        capture,
++                    ),
++                    patch(
++                        "sglang.srt.disaggregation.prefill.poll_and_all_reduce_attn_cp_tp_group",
++                        return_value=[poll],
++                    ),
++                    patch("sglang.srt.disaggregation.prefill.release_kv_cache"),
++                    patch(
++                        "sglang.srt.disaggregation.prefill.maybe_release_metadata_buffer"
++                    ),
++                ):
++                    done = SchedulerDisaggregationPrefillMixin.process_disagg_prefill_inflight_queue(
++                        scheduler
++                    )
++
++                event = self.events(log)[0]
++                self.assertEqual(done, [request])
++                self.assertEqual(event["event"], "c128_transfer")
++                self.assertEqual(event["index_count"], 4)
++                self.assertEqual(event["completed"], expected_completed)
++                self.assertFalse(hasattr(request, "_shared_cache_diag_c128"))
++                self.assertEqual(scheduler.disagg_prefill_inflight_queue, [])
++
++    def test_p_recovery_boundary_uses_hashed_request_identity(self):
++        capture, log = self.make_capture()
++        request = CacheRequestHandle(rid="private-prefill-request", attempt_id=1)
++        cache = object.__new__(UnifiedRadixCache)
++        cache.ongoing_prefetch = {request: (None, [1, 2], None, None, None, None)}
++        cache._check_hybrid_prefetch_result = MagicMock(return_value=False)
++        operation = SimpleNamespace(
++            handle=request, completed_tokens=1, hash_value=["private-page-key"]
++        )
++        with patch(
++            "sglang.srt.mem_cache.unified_radix_cache.shared_cache_diagnostics",
++            capture,
++        ):
++            cache._handle_prefetch_result(operation)
++
++        event = self.events(log)[0]
++        self.assertEqual(event["event"], "prefetch_boundary")
++        self.assertFalse(event["accepted"])
++        self.assertEqual(event["completed_tokens"], 1)
++        self.assertNotIn("private-prefill-request", log.records[0])
++
++
++if __name__ == "__main__":
++    unittest.main()

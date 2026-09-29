@@ -20,11 +20,14 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `2a4015cabcc274629126051940528eb83707f428`, tree
-`b10d279da1e9ea7af55da4b91a615063b550bfae`: 31 protected steps plus 125 successor patches.
+The active selector binds engine `cd9bdadf0000f067766d219802f3f5f3e3fa9a40`, tree
+`e98bbf1b2c829e24a5122a5cd69658314b381b35`: 31 protected steps plus 129 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
-batch completion diagnostics. Governor runtime is pinned in the active selector;
+batch completion diagnostics. Its server-only HMAC joins the external request,
+actual P/D rooms and native selected transport/terminal byte records. The
+independent Mooncake native artifact is required for this diagnostic API.
+Governor runtime is pinned in the active selector;
 the protected historical Governor patch bytes remain unchanged.
 
 The gateway preserves explicit `include_reasoning: false`, `true` and omission
@@ -36,6 +39,11 @@ Source replay and CPU tests do not qualify native transport, GPU inference,
 DRAM/SSD cross-instance restoration or production. Those gates use the final
 immutable image and their authorized target owners. Native dependency and
 historical coverage boundaries remain in the linked maintenance records.
+
+The [independent Mooncake manifest](native/mooncake/manifest.json) pins its public
+v0.3.13 base, complete patch hash and reproduced tree. CI replays that native
+patch independently of the 160-step engine stack. Its full CUDA wheel and
+installed native API checks are required before publishing a diagnostic image.
 
 ## Protected historical baseline
 

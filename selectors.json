@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "2a4015cabcc274629126051940528eb83707f428",
-      "fork_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae",
-      "fork_branch": "codex/shared-startup-gov0210-20260929",
+      "fork_commit": "cd9bdadf0000f067766d219802f3f5f3e3fa9a40",
+      "fork_tree": "e98bbf1b2c829e24a5122a5cd69658314b381b35",
+      "fork_branch": "codex/pd-request-batch-correlation-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..2a4015cabcc274629126051940528eb83707f428",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..cd9bdadf0000f067766d219802f3f5f3e3fa9a40",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2466,11 +2466,39 @@
           "source_commit": "2a4015cabcc274629126051940528eb83707f428",
           "source_parent": "d7bc0510efbb1a3482b47a2b67b0f394c9fec028",
           "sha256": "af8909cf6da29ec42b1c2ab80aa7374ec33543e88f7df3dad0789a95f81f076b"
+        },
+        {
+          "id": "0050-shared-cache-bounded-diagnostics",
+          "path": "patches/common/0050-shared-cache-bounded-diagnostics.patch",
+          "source_commit": "7355d995d17854f017cb08a53a1a554eafd80e7c",
+          "source_parent": "2a4015cabcc274629126051940528eb83707f428",
+          "sha256": "3eb3e56ee780610c63bc5bda21a7908eef1ba2347fd8dc2a2ee8ee3f37650ee9"
+        },
+        {
+          "id": "0051-shared-diagnostics-transfer-regressions",
+          "path": "patches/common/0051-shared-diagnostics-transfer-regressions.patch",
+          "source_commit": "fd84e12ef5a11d9effaf7c565b919b91354f9729",
+          "source_parent": "7355d995d17854f017cb08a53a1a554eafd80e7c",
+          "sha256": "bce627f1284b0f9e8ad21ca611c1400b831660a35eb26c7d3a7fec874d0e8729"
+        },
+        {
+          "id": "0052-pd-request-room-native-batch-correlation",
+          "path": "patches/common/0052-pd-request-room-native-batch-correlation.patch",
+          "source_commit": "1c59119e645eafc8e7fd169896bde74479b8019c",
+          "source_parent": "fd84e12ef5a11d9effaf7c565b919b91354f9729",
+          "sha256": "eb4ea50ca2d41ad3f5c9138038243c88b3faf9d3d951d71843d4d3460803c9a0"
+        },
+        {
+          "id": "0053-pd-one-shot-capture-hardening",
+          "path": "patches/common/0053-pd-one-shot-capture-hardening.patch",
+          "source_commit": "cd9bdadf0000f067766d219802f3f5f3e3fa9a40",
+          "source_parent": "1c59119e645eafc8e7fd169896bde74479b8019c",
+          "sha256": "8747394461fb89627e0a17ee56531af53c006594dfdcdb545cce835d491d55e8"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Shared HiCache config validation, DSV4 startup safety and sanitized exception diagnostics; Governor 0.2.10/ABI5 runtime pin; source-only qualification, installed-image and GPU gates separate",
+      "status": "Bounded external request HMAC to actual PD room and native batch diagnostics; 42 shared diagnostics and 19 focused PD CPU checks passed; immutable installed image and physical NVLink gates remain separate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

@@ -1,0 +1,15 @@
+{
+  "schema": "phala.mooncake.independent-source.v1",
+  "upstream_repository": "https://github.com/kvcache-ai/Mooncake",
+  "upstream_tag": "v0.3.13",
+  "base_commit": "e5598b0992cc258b06d22f24d875480e8931a28e",
+  "source_commit": "54779c1863921277c7f1ef270b969b50af497a52",
+  "source_tree": "878f11d785e002e643bcac36c801e45a62ac628c",
+  "source_commit_scope": "Local source provenance; reproduce the exact tree using the public upstream base and the deterministic patch.",
+  "patch": "native/mooncake/native-v0.3.13-54779c1.patch",
+  "patch_sha256": "cff0ebbbceadfc6a005a9507c2fdd942e351bf8b38c6fd179c38962939c155ae",
+  "bundle_sha256": "a9efc03a975771605236894f4f01c1543fb0110bf133a1e1ad3e0b6125018ef6",
+  "wheel_version": "0.3.13+phala.shared.54779c1",
+  "scope": "Read-only exact-key snapshot and actual PD native batch diagnostics; owner drain is not included.",
+  "qualification": "CPU snapshot and real native Python TCP binding checks passed. Full CUDA wheel, installed runtime and physical NVLink acceptance remain separate gates."
+}

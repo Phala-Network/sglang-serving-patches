@@ -43,6 +43,10 @@
       {
         "name": "kv-backend",
         "path": "test/manual/phala/test_kv_backend_cpu.py"
+      },
+      {
+        "name": "pd-request-batch-correlation",
+        "path": "test/manual/phala/test_pd_batch_correlation_cpu.py"
       }
     ],
     "model-fixtures": [
@@ -79,17 +83,26 @@
       {
         "name": "cache-tiers",
         "path": "tools/sglang-simulator/test/test_simulation_cache_hit_ratio.py",
-        "args": ["-k", "in_process"]
+        "args": [
+          "-k",
+          "in_process"
+        ]
       },
       {
         "name": "replay-serving",
         "path": "tools/sglang-simulator/test/test_simulation_sglang_serving.py",
-        "args": ["-k", "replay or timestamp"]
+        "args": [
+          "-k",
+          "replay or timestamp"
+        ]
       },
       {
         "name": "cache-reuse",
         "path": "tools/sglang-simulator/test/test_simulation_cache_hit_ratio.py",
-        "args": ["-k", "second_replay"]
+        "args": [
+          "-k",
+          "second_replay"
+        ]
       }
     ],
     "simulator-aic": [

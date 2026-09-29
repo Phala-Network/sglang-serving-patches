@@ -1,0 +1,714 @@
+diff --git a/python/sglang/srt/disaggregation/decode.py b/python/sglang/srt/disaggregation/decode.py
+index 2fb8b369bfb0ddf857fbb68e40c05777ce5adcd1..67cd3c9c91e85137fe0184f9403f8de1c374fb2f 100644
+--- a/python/sglang/srt/disaggregation/decode.py
++++ b/python/sglang/srt/disaggregation/decode.py
+@@ -729,6 +729,12 @@ class DecodePreallocQueue(DecodeHiCachePreallocMixin):
+             bootstrap_addr=_bootstrap_addr(req),
+             bootstrap_room=req.bootstrap_room,
+         )
++        from sglang.srt.disaggregation.mooncake.pd_transfer_diagnostics import pd_batch_diagnostics
++
++        pd_batch_diagnostics.bind_worker(
++            req.rid, req.bootstrap_room, "decode", self.tp_rank,
++            getattr(req, "pd_diagnostic_request_ref", None),
++        )
+ 
+         decode_req = DecodeRequest(
+             req=req, kv_receiver=kv_receiver, is_rebootstrap=is_rebootstrap
+diff --git a/python/sglang/srt/disaggregation/mooncake/conn.py b/python/sglang/srt/disaggregation/mooncake/conn.py
+index 168c5908f28b1260a0452a94dc830b6e2d94cdd6..326a6d0c65c9be9d2ac5d7bc1a83809367190b28 100644
+--- a/python/sglang/srt/disaggregation/mooncake/conn.py
++++ b/python/sglang/srt/disaggregation/mooncake/conn.py
+@@ -657,8 +657,9 @@ class MooncakeKVManager(StagingManagerMixin, CommonKVManager):
+         src_addrs, dst_addrs, lengths = zip(*transfer_blocks)
+         diagnostic = envs.SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS.get()
+         try:
+-            ret = self.engine.batch_transfer_sync(
+-                mooncake_session_id, list(src_addrs), list(dst_addrs), list(lengths)
++            ret = self._transfer_native_batch(
++                mooncake_session_id, list(src_addrs), list(dst_addrs), list(lengths),
++                diagnostic_room, diagnostic_kind,
+             )
+         except Exception:
+             if diagnostic:
+@@ -672,6 +673,21 @@ class MooncakeKVManager(StagingManagerMixin, CommonKVManager):
+             )
+         return ret
+ 
++    def _transfer_native_batch(self, peer, sources, destinations, lengths, room, kind):
++        from sglang.srt.disaggregation.mooncake.pd_transfer_diagnostics import pd_batch_diagnostics
++
++        if pd_batch_diagnostics.active_room(room):
++            record = self.engine.batch_transfer_sync_diagnostic(
++                peer, sources, destinations, lengths
++            )
++            if record is not None:
++                pd_batch_diagnostics.record_native(
++                    room, kind, lengths, record, self.kv_args.engine_rank
++                )
++                return record["result"]
++            pd_batch_diagnostics.native_unavailable(room)
++        return self.engine.batch_transfer_sync(peer, sources, destinations, lengths)
++
+     def _log_pd_transfer_result(self, peer, lengths, result, room, kind):
+         # Only bounded, non-content fields. No addresses, raw session ID or exception.
+         # These are submitted bytes + synchronous completion, NOT a native byte field.
+@@ -1309,8 +1325,9 @@ class MooncakeKVManager(StagingManagerMixin, CommonKVManager):
+             length_list = [heads_bytes_per_token_to_send] * total_slices
+             diagnostic = envs.SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS.get()
+             try:
+-                ret = self.engine.batch_transfer_sync(
+-                    mooncake_session_id, src_addr_list, dst_addr_list, length_list
++                ret = self._transfer_native_batch(
++                    mooncake_session_id, src_addr_list, dst_addr_list, length_list,
++                    diagnostic_room, "kv",
+                 )
+             except Exception:
+                 if diagnostic:
+diff --git a/python/sglang/srt/disaggregation/mooncake/pd_transfer_diagnostics.py b/python/sglang/srt/disaggregation/mooncake/pd_transfer_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6c0ef25fd8a866bbc952b20e5a63e44f2067784
+--- /dev/null
++++ b/python/sglang/srt/disaggregation/mooncake/pd_transfer_diagnostics.py
+@@ -0,0 +1,302 @@
++"""Bounded request/room joins for the classic P/D native transfer API."""
++
++import os
++import re
++import json
++import stat
++import threading
++import time
++
++from sglang.srt.environ import envs
++from sglang.srt.mem_cache.shared_cache_diagnostics import (
++    SharedCacheDiagnostics,
++    _swallow_capture_errors,
++)
++
++
++class PDBatchDiagnostics(SharedCacheDiagnostics):
++    def __init__(
++        self, *, enabled=False, key_salt=None, case_id=None, epoch=None,
++        request_ids=None, tenant_id="default", config_path=None, **limits,
++    ):
++        super().__init__(enabled=False, **limits)
++        labels = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
++        self._request_allowlist = {
++            value.strip().lower()
++            for value in (request_ids or "")[: 1024 * 65].split(",")[:1024]
++            if re.fullmatch(r"[0-9a-fA-F]{64}", value.strip())
++        }
++        self.enabled = bool(
++            enabled and key_salt and len(key_salt.encode()) <= 256
++            and case_id and labels.fullmatch(case_id)
++            and epoch and labels.fullmatch(epoch)
++            and tenant_id and len(tenant_id.encode()) <= 128
++            and self._request_allowlist
++        )
++        self._salt = key_salt.encode() if self.enabled else None
++        self._case_id = case_id if self.enabled else None
++        self._epoch = epoch if self.enabled else None
++        self._tenant_id = tenant_id
++        self._rooms = {}
++        self._room_external = {}
++        self._blocked_rooms = set()
++        self._started_at = None
++        self._config_path = config_path
++        self._load_attempted = False
++
++    def _ensure_armed(self):
++        if self.enabled or self._load_attempted or not self._config_path:
++            return self.enabled
++        with self._lock:
++            if self.enabled or self._load_attempted:
++                return self.enabled
++            try:
++                if not os.path.isabs(self._config_path):
++                    self._load_attempted = True
++                    return False
++                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
++                fd = os.open(self._config_path, flags)
++            except FileNotFoundError:
++                return False
++            except OSError:
++                self._load_attempted = True
++                return False
++            self._load_attempted = True
++            try:
++                with os.fdopen(fd, "rb") as stream:
++                    info = os.fstat(stream.fileno())
++                    if (
++                        not stat.S_ISREG(info.st_mode)
++                        or stat.S_IMODE(info.st_mode) != 0o600
++                        or info.st_size > 65536
++                        or os.path.islink(self._config_path)
++                    ):
++                        return False
++                    data = stream.read(65537)
++                    if len(data) > 65536:
++                        return False
++                    config = json.loads(data)
++                allowed = {
++                    "schema", "key_salt", "case_id", "epoch", "tenant_id",
++                    "request_ids", "max_events", "max_bytes", "max_requests",
++                    "max_duration_ms",
++                }
++                if (
++                    not isinstance(config, dict) or set(config) - allowed
++                    or config.get("schema") != "phala.pd-batch-capture.v1"
++                    or not isinstance(config.get("request_ids"), list)
++                    or not 1 <= len(config["request_ids"]) <= 1024
++                    or any(not isinstance(item, str) for item in config["request_ids"])
++                ):
++                    return False
++                bounds = {"max_events": (2, 4096), "max_bytes": (1024, 67108864),
++                          "max_requests": (1, 1024), "max_duration_ms": (1, 300000)}
++                for name, (minimum, maximum) in bounds.items():
++                    if name in config and (
++                        type(config[name]) is not int or not minimum <= config[name] <= maximum
++                    ):
++                        return False
++                replacement = PDBatchDiagnostics(
++                    enabled=True, key_salt=config.get("key_salt"),
++                    case_id=config.get("case_id"), epoch=config.get("epoch"),
++                    tenant_id=config.get("tenant_id", "default"),
++                    request_ids=",".join(config["request_ids"]),
++                    **{name: config[name] for name in allowed if name.startswith("max_") and name in config},
++                    log=self._logger,
++                )
++                if not replacement.enabled:
++                    return False
++                for name in (
++                    "enabled", "_salt", "_case_id", "_epoch", "_tenant_id",
++                    "_request_allowlist", "_max_events", "_max_bytes",
++                    "_max_requests", "_max_duration_s",
++                ):
++                    setattr(self, name, getattr(replacement, name))
++                return True
++            except Exception:
++                return False
++
++    def external_request_ref(self, request_id):
++        if not isinstance(request_id, str) or not request_id or len(request_id.encode()) > 256:
++            return None
++        if not self._ensure_armed():
++            return None
++        ref = self._request_id(request_id, self._tenant_id)
++        return ref if ref in self._request_allowlist else None
++
++    def _start_capture(self, request_ref):
++        if not isinstance(request_ref, str) or not re.fullmatch(r"[0-9a-f]{64}", request_ref):
++            return False
++        if not self._ensure_armed() or request_ref not in self._request_allowlist:
++            return False
++        with self._lock:
++            if self._started_at is None:
++                self._started_at = time.monotonic()
++        return self._capture_open()
++
++    def _capture_open(self):
++        if self._started_at is None:
++            return False
++        return super()._capture_open()
++
++    def _room_id(self, room):
++        return self._stable_id(b"phala.pd-room.v1\0", self._tenant_id, room)
++
++    @_swallow_capture_errors
++    def bind_ingress(self, request_ref, rooms, role):
++        if not self._start_capture(request_ref):
++            return
++        if not isinstance(rooms, list):
++            rooms = [rooms]
++        if len(rooms) > self._max_requests:
++            self.record_capture_failure()
++            return
++        with self._lock:
++            if request_ref not in self._requests and len(self._requests) >= self._max_requests:
++                self._truncated = True
++                self._dropped_requests += 1
++                return
++            self._requests.add(request_ref)
++        for index, room in enumerate(rooms):
++            if type(room) is not int or not 0 <= room < 2**64:
++                continue
++            self._emit({
++                "event": "pd_ingress_bind", "engine": "pd",
++                "request_id": request_ref, "room_id": self._room_id(room),
++                "room_index": index, "role": role, "pid": os.getpid(),
++                "capture_tenant": self._tenant_id,
++            })
++        self.flush_truncation()
++
++    def bind_worker(self, request_id, room, role, rank, external_ref):
++        if not self._start_capture(external_ref):
++            return
++        return self._bind_worker(request_id, room, role, rank, external_ref)
++
++    @_swallow_capture_errors
++    def _bind_worker(self, request_id, room, role, rank, external_ref):
++        if type(room) is not int or not 0 <= room < 2**64:
++            return
++        request_ref = self._register_request(request_id, self._tenant_id)
++        if request_ref is None:
++            return
++        with self._lock:
++            if room in self._blocked_rooms:
++                return
++            previous = self._rooms.get(room)
++            if previous is not None and previous != request_ref:
++                # A reused room cannot adopt a previous request's attribution.
++                self._rooms.pop(room, None)
++                self._room_external.pop(room, None)
++                self._blocked_rooms.add(room)
++                self._capture_failures += 1
++                return
++            if room not in self._rooms and len(self._rooms) >= self._max_requests:
++                self._truncated = True
++                self._dropped_requests += 1
++                return
++            self._rooms[room] = request_ref
++            self._room_external[room] = external_ref
++        self._emit({
++            "event": "pd_worker_bind", "engine": "pd",
++            "internal_request_id": request_ref, "room_id": self._room_id(room),
++            "request_id": external_ref,
++            "role": role, "rank": rank, "pid": os.getpid(),
++            "capture_tenant": self._tenant_id,
++        })
++        self.flush_truncation()
++
++    def active_room(self, room):
++        if type(room) is not int or not self._capture_open():
++            return False
++        with self._lock:
++            return room in self._rooms and self._events < self._max_events - 1
++
++    @_swallow_capture_errors
++    def record_native(self, room, kind, lengths, record, rank):
++        if not self.active_room(room):
++            return
++        attempts = record["attempts"]
++        if not isinstance(attempts, list) or len(attempts) > 64:
++            self.record_capture_failure()
++            return
++        known = {"nvlink_intraNode", "tcp", "rdma", "local", "nvlink", "shm"}
++        sanitized = []
++        for index, item in enumerate(attempts):
++            selected = {}
++            for name, count in item["selected_transports"].items():
++                label = name if name in known else "unrecognized"
++                selected[label] = selected.get(label, 0) + int(count)
++            sanitized.append({
++                "attempt": index, "task_count": int(item["task_count"]),
++                "missing_transports": int(item["missing_transports"]),
++                "selected_transports": selected,
++                "terminal_status": item["terminal_status"]
++                if item["terminal_status"] in {
++                    "not_submitted", "waiting", "completed", "failed",
++                    "timeout", "submit_failed", "deadline_exceeded",
++                } else "unrecognized",
++                "transferred_bytes": int(item["transferred_bytes"]),
++            })
++        submitted = sum(lengths)
++        complete = bool(
++            record["result"] == 0 and submitted > 0 and sanitized
++            and not record["diagnostics_truncated"]
++            and sanitized[-1]["terminal_status"] == "completed"
++            and sanitized[-1]["transferred_bytes"] == submitted
++        )
++        nvlink_only = bool(complete and all(
++            item["task_count"] > 0 and item["missing_transports"] == 0
++            and item["selected_transports"] == {"nvlink_intraNode": item["task_count"]}
++            for item in sanitized
++        ))
++        self._emit({
++            "event": "pd_native_batch", "engine": "pd",
++            "room_id": self._room_id(room),
++            "request_id": self._room_external[room],
++            "internal_request_id": self._rooms[room],
++            "native_batch_id": self._operation_id(
++                f"{os.getpid()}:{record['batch_sequence']}", self._tenant_id
++            ),
++            "kind": kind if kind in {"kv", "state", "aux"} else "other",
++            "pid": os.getpid(), "worker": threading.get_native_id(), "rank": rank,
++            "capture_tenant": self._tenant_id, "entry_count": len(lengths),
++            "submitted_bytes": submitted, "native_result": int(record["result"]),
++            "attempts": sanitized, "diagnostics_truncated": bool(record["diagnostics_truncated"]),
++            "completed_with_exact_bytes": complete,
++            "all_attempts_nvlink_intra": nvlink_only,
++        })
++        self.flush_truncation()
++
++    @_swallow_capture_errors
++    def native_unavailable(self, room):
++        self.record_capture_failure()
++        self._emit({
++            "event": "pd_native_unavailable", "engine": "pd",
++            "room_id": self._room_id(room), "pid": os.getpid(),
++        })
++        self.flush_truncation()
++
++
++pd_batch_diagnostics = PDBatchDiagnostics(
++    config_path=os.getenv("SGLANG_MOONCAKE_PD_DIAGNOSTICS_CONFIG")
++    if envs.SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS.get() else None,
++)
++
++
++def bind_pd_ingress(obj, raw_request, role):
++    obj._pd_diagnostic_request_ref = None
++    try:
++        if raw_request is None:
++            return
++        ref = pd_batch_diagnostics.external_request_ref(raw_request.headers.get("x-request-id"))
++        obj._pd_diagnostic_request_ref = ref
++        if ref is None:
++            return
++        pd_batch_diagnostics.bind_ingress(
++            ref,
++            getattr(obj, "bootstrap_room", None),
++            str(getattr(role, "value", role)),
++        )
++    except Exception:
++        pd_batch_diagnostics.record_capture_failure()
+diff --git a/python/sglang/srt/disaggregation/prefill.py b/python/sglang/srt/disaggregation/prefill.py
+index 9e9d39bfb94652bfaa839a110853a5f658f0151a..61cfb1ac4514f8a37669a4d771dd7d3cf6fc2770 100644
+--- a/python/sglang/srt/disaggregation/prefill.py
++++ b/python/sglang/srt/disaggregation/prefill.py
+@@ -359,6 +359,12 @@ class PrefillBootstrapQueue:
+             pp_rank=self.pp_rank,
+             req_has_disagg_prefill_dp_rank=req.disagg_prefill_dp_rank is not None,
+         )
++        from sglang.srt.disaggregation.mooncake.pd_transfer_diagnostics import pd_batch_diagnostics
++
++        pd_batch_diagnostics.bind_worker(
++            req.rid, req.bootstrap_room, "prefill", self.tp_rank,
++            getattr(req, "pd_diagnostic_request_ref", None),
++        )
+         self._process_req(req)
+         req.pending_bootstrap = True
+         return True
+diff --git a/python/sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py b/python/sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py
+index 04305afda005631c5b65eaf3a0859c95e44cec3b..6f0a6b55217479ee2db1c013c19bf1f6f7f68b9d 100644
+--- a/python/sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py
++++ b/python/sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py
+@@ -267,6 +267,20 @@ class MooncakeTransferEngine:
+             )
+         return ret
+ 
++    def batch_transfer_sync_diagnostic(
++        self, session_id, buffers, peer_buffer_addresses, lengths
++    ):
++        method = getattr(self.engine, "batch_transfer_sync_write_diagnostic", None)
++        if method is None:
++            return None
++        try:
++            return method(session_id, buffers, peer_buffer_addresses, lengths)
++        except Exception:
++            return {
++                "result": -1, "batch_sequence": 0, "attempts": [],
++                "diagnostics_truncated": True,
++            }
++
+     def get_session_id(self):
+         return self.session_id
+ 
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 87134c4bdd059884252ce3cd6766557cb3d56f0a..6a43fad86466304aab0d384c00974a9068c47e6b 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -888,6 +888,7 @@ class GenerateReqInput:
+         # This avoids subtle bugs where different call sites get divergent objects.
+         cache = self.__dict__.setdefault("_sub_obj_cache", {})
+         if i in cache:
++            cache[i]._pd_diagnostic_request_ref = getattr(self, "_pd_diagnostic_request_ref", None)
+             return cache[i]
+         sub = GenerateReqInput(
+             rid=self.rid[i],
+@@ -977,10 +978,13 @@ class GenerateReqInput:
+             ),
+         )
+         cache[i] = sub
++        sub._pd_diagnostic_request_ref = getattr(self, "_pd_diagnostic_request_ref", None)
+         return sub
+ 
+ 
+ class TokenizedGenerateReqInput(BaseReq, kw_only=True):
++    # Server-derived allowlisted HMAC, never copied from public JSON fields.
++    pd_diagnostic_request_ref: Optional[str] = None
+     # Set only by TokenizerManager's internal health call, never from HTTP data.
+     is_internal_health_check: bool = False
+     input_text: Optional[Union[str, List[Union[str, List[str]]]]]
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 1cf86774be696a651e734df147222d7dacc4b822..2394fe86ab2718b71dfa4542c456cadf1b4275cf 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2920,6 +2920,7 @@ class Scheduler(
+             return
+ 
+         self._maybe_namespace_elastic_radix_cache(req)
++        req.pd_diagnostic_request_ref = recv_req.pd_diagnostic_request_ref
+ 
+         if mm_input_error is not None:
+             req.set_finish_with_abort(
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 48d0906cfa4ea88f06cfc7b8d19457518be23963..dce9729f86cb04e3e003a0cc414ea5accb7a8c22 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -861,6 +861,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             raise ValueError("Invalid internal health marker")
+         # Overwrite any attribute supplied by an external request object.
+         obj._internal_health_check = internal_health_check
++        from sglang.srt.disaggregation.mooncake.pd_transfer_diagnostics import bind_pd_ingress
++
++        bind_pd_ingress(obj, request, self.disaggregation_mode)
+ 
+         # Normalize the request
+         obj.normalize_batch_and_arguments()
+@@ -1552,6 +1555,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 bootstrap_host=obj.bootstrap_host,
+                 bootstrap_port=obj.bootstrap_port,
+                 bootstrap_room=bootstrap_room,
++                pd_diagnostic_request_ref=getattr(obj, "_pd_diagnostic_request_ref", None),
+                 lora_id=obj.lora_id,
+                 input_embeds=input_embeds,
+                 positional_embed_overrides=obj.positional_embed_overrides,
+diff --git a/sgl-model-gateway/src/routers/http/pd_router.rs b/sgl-model-gateway/src/routers/http/pd_router.rs
+index d5ca6557fefe0816cc3919357efe7f9eeded3605..b97d91596f7de81e3ed57cfbe714ff6e6d041f7c 100644
+--- a/sgl-model-gateway/src/routers/http/pd_router.rs
++++ b/sgl-model-gateway/src/routers/http/pd_router.rs
+@@ -1874,6 +1874,26 @@ mod tests {
+         assert!(prefill.is_healthy());
+     }
+ 
++    #[tokio::test]
++    async fn test_pd_diagnostic_external_request_header_reaches_both_workers() {
++        let router = create_test_pd_router();
++        let mut headers = HeaderMap::new();
++        headers.insert("x-request-id", "offline-correlation-fixture".parse().unwrap());
++        headers.insert("x-override-rid", "untrusted-body-alias".parse().unwrap());
++        for endpoint in ["http://prefill/generate", "http://decode/generate"] {
++            let request = router.build_post_with_headers(
++                &router.client, endpoint, &json!({"bootstrap_room": [1234, 5678]}),
++                Some(&headers), false,
++            ).build().unwrap();
++            assert_eq!(request.headers()["x-request-id"], "offline-correlation-fixture");
++            assert!(!request.headers().contains_key("x-override-rid"));
++            let missing = router.build_post_with_headers(
++                &router.client, endpoint, &json!({"bootstrap_room": 1234}), None, false,
++            ).build().unwrap();
++            assert!(!missing.headers().contains_key("x-request-id"));
++        }
++    }
++
+     #[tokio::test]
+     async fn test_empty_worker_lists() {
+         let router = create_test_pd_router();
+diff --git a/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py b/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
+index 051bd41b636d8215fbfa27c2436ca62769c629af..0cd4029c59be5f64d7bd7beee1c5a78269f2d758 100644
+--- a/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
++++ b/test/manual/phala/test_mooncake_pd_diagnostics_cpu.py
+@@ -25,6 +25,7 @@ def load_manager(namespace):
+     )
+     names = {
+         "_transfer_data",
++        "_transfer_native_batch",
+         "_log_pd_transfer_result",
+         "_send_kvcache_generic",
+         "send_kvcache_slice",
+diff --git a/test/manual/phala/test_pd_batch_correlation_cpu.py b/test/manual/phala/test_pd_batch_correlation_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c85c507a8f474ec7284194b9a60ae19cead29ba
+--- /dev/null
++++ b/test/manual/phala/test_pd_batch_correlation_cpu.py
+@@ -0,0 +1,188 @@
++"""Execute the bounded capture state and the real P/D submission path on CPU."""
++
++import copy
++import hashlib
++import hmac
++import json
++import os
++import struct
++import tempfile
++import unittest
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import Mock, patch
++
++from sglang.srt.disaggregation.mooncake import pd_transfer_diagnostics as diagnostics
++from sglang.srt.managers.io_struct import GenerateReqInput
++from test_mooncake_pd_diagnostics_cpu import load_manager
++
++
++def request_ref(value):
++    fields = ("case", "epoch", "default", value)
++    message = b"phala.shared-cache-request.v1\0"
++    for field in fields:
++        encoded = field.encode()
++        message += struct.pack(">I", len(encoded)) + encoded
++    return hmac.new(b"offline-fixture-salt", message, hashlib.sha256).hexdigest()
++
++
++def native_record(*, transport="nvlink_intraNode", status="completed", size=17):
++    return {
++        "result": 0 if status == "completed" else -1,
++        "batch_sequence": 7, "diagnostics_truncated": False,
++        "attempts": [{"attempt": 0, "task_count": 1, "missing_transports": 0,
++                      "selected_transports": {transport: 1},
++                      "terminal_status": status, "transferred_bytes": size}],
++    }
++
++
++class PDBatchCorrelationTests(unittest.TestCase):
++    def setUp(self):
++        self.log = Mock()
++        self.capture = diagnostics.PDBatchDiagnostics(
++            enabled=True, key_salt="offline-fixture-salt", case_id="case",
++            epoch="epoch", request_ids=request_ref("external-id"), log=self.log,
++        )
++        self.ref = request_ref("external-id")
++
++    def records(self):
++        return [json.loads(call.args[1]) for call in self.log.info.call_args_list]
++
++    def arm_worker(self, room=1234, internal="random-worker-rid"):
++        self.capture.bind_worker(internal, room, "prefill", 0, self.ref)
++
++    def test_header_gate_overwrites_forgery_and_joins_distinct_n2_rooms(self):
++        obj = NS(bootstrap_room=[1234, 5678], _pd_diagnostic_request_ref="forged")
++        with patch.object(diagnostics, "pd_batch_diagnostics", self.capture):
++            for headers in ({}, {"x-request-id": "wrong"}):
++                diagnostics.bind_pd_ingress(obj, NS(headers=headers), "prefill")
++                self.assertIsNone(obj._pd_diagnostic_request_ref)
++                self.assertIsNone(self.capture._started_at)
++            diagnostics.bind_pd_ingress(
++                obj, NS(headers={"x-request-id": "external-id"}), "prefill"
++            )
++        self.assertEqual(obj._pd_diagnostic_request_ref, self.ref)
++        self.arm_worker(1234, "choice-a")
++        self.arm_worker(5678, "choice-b")
++        self.capture.record_native(1234, "kv", [17], native_record(), 0)
++        records = self.records()
++        ingress = [row for row in records if row["event"] == "pd_ingress_bind"]
++        worker = [row for row in records if row["event"] == "pd_worker_bind"]
++        self.assertEqual(len(ingress), 2)
++        self.assertNotEqual(ingress[0]["room_id"], ingress[1]["room_id"])
++        self.assertEqual({row["room_id"] for row in ingress}, {row["room_id"] for row in worker})
++        self.assertEqual(records[-1]["request_id"], self.ref)
++        encoded = json.dumps(records)
++        for raw in ("external-id", "random-worker-rid", "choice-a", "choice-b", "offline-fixture-salt"):
++            self.assertNotIn(raw, encoded)
++
++    def test_real_n2_normalization_keeps_server_ref_after_regenerated_rids(self):
++        obj = GenerateReqInput(input_ids=[1, 2], sampling_params={"n": 2}, bootstrap_room=[1234, 5678])
++        obj._pd_diagnostic_request_ref = self.ref
++        obj.normalize_batch_and_arguments()
++        choices = [copy.copy(obj[i]) for i in range(2)]
++        self.assertEqual([item.bootstrap_room for item in choices], [1234, 5678])
++        old = [item.rid for item in choices]
++        for item in choices:
++            item.regenerate_rid()
++            self.assertEqual(item._pd_diagnostic_request_ref, self.ref)
++        self.assertNotEqual([item.rid for item in choices], old)
++        obj._pd_diagnostic_request_ref = None
++        self.assertIsNone(obj[0]._pd_diagnostic_request_ref)
++        self.assertNotIn("pd_diagnostic_request_ref", GenerateReqInput.__dataclass_fields__)
++
++    def test_native_truth_rejects_tcp_partial_bytes_retry_fallback_and_missing_tasks(self):
++        self.arm_worker()
++        for record in (native_record(transport="tcp"), native_record(size=16), native_record(status="failed")):
++            self.capture.record_native(1234, "kv", [17], record, 0)
++            self.assertFalse(self.records()[-1]["all_attempts_nvlink_intra"])
++        mixed = native_record()
++        mixed["attempts"].insert(0, native_record(transport="tcp", status="failed")["attempts"][0])
++        self.capture.record_native(1234, "kv", [17], mixed, 0)
++        self.assertTrue(self.records()[-1]["completed_with_exact_bytes"])
++        self.assertFalse(self.records()[-1]["all_attempts_nvlink_intra"])
++        self.capture.record_native(1234, "kv", [17], native_record(), 0)
++        self.assertTrue(self.records()[-1]["all_attempts_nvlink_intra"])
++        missing = native_record()
++        missing["attempts"][0]["missing_transports"] = 1
++        self.capture.record_native(1234, "kv", [17], missing, 0)
++        self.assertFalse(self.records()[-1]["all_attempts_nvlink_intra"])
++
++    def test_native_submission_is_once_and_capture_failure_never_resubmits(self):
++        manager = load_manager({"envs": NS(SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS=NS(get=lambda: False))})
++        manager.kv_args = NS(engine_rank=0)
++        manager.engine = NS(
++            batch_transfer_sync=Mock(return_value=0),
++            batch_transfer_sync_diagnostic=Mock(return_value=native_record()),
++        )
++        self.arm_worker()
++        with patch.object(diagnostics, "pd_batch_diagnostics", self.capture):
++            result = manager._transfer_data("private-endpoint", [(999, 777, 17)], diagnostic_room=1234)
++            self.assertEqual(result, 0)
++            manager.engine.batch_transfer_sync.assert_not_called()
++            manager.engine.batch_transfer_sync_diagnostic.assert_called_once()
++            self.log.info.side_effect = RuntimeError("private logger failure")
++            self.assertEqual(manager._transfer_data("private-endpoint", [(999, 777, 17)], diagnostic_room=1234), 0)
++            self.assertEqual(manager.engine.batch_transfer_sync_diagnostic.call_count, 2)
++            manager.engine.batch_transfer_sync.assert_not_called()
++        self.assertGreater(self.capture.capture_failures, 0)
++
++    def test_once_file_arm_is_private_and_does_not_start_for_mismatch_or_rearm_after_expiry(self):
++        with tempfile.TemporaryDirectory() as folder:
++            path = Path(folder) / "capture.json"
++            capture = diagnostics.PDBatchDiagnostics(config_path=str(path), log=self.log)
++            self.assertIsNone(capture.external_request_ref("external-id"))
++            config = {"schema": "phala.pd-batch-capture.v1", "key_salt": "offline-fixture-salt",
++                      "case_id": "case", "epoch": "epoch", "tenant_id": "default",
++                      "request_ids": [self.ref], "max_duration_ms": 1}
++            path.write_text(json.dumps(config), encoding="utf-8")
++            os.chmod(path, 0o600)
++            self.assertIsNone(capture.external_request_ref("wrong"))
++            self.assertIsNone(capture._started_at)
++            self.assertEqual(capture.external_request_ref("external-id"), self.ref)
++            self.assertIsNone(capture._started_at)
++            capture.bind_worker("internal", 1, "prefill", 0, self.ref)
++            capture._started_at -= 1
++            self.assertFalse(capture.active_room(1))
++            started = capture._started_at
++            config["max_duration_ms"] = 300000
++            path.write_text(json.dumps(config), encoding="utf-8")
++            capture.bind_worker("internal", 1, "prefill", 0, self.ref)
++            self.assertEqual(capture._started_at, started)
++            self.assertFalse(capture.active_room(1))
++
++    def test_symlink_oversize_or_permissions_are_permanent_rejections(self):
++        with tempfile.TemporaryDirectory() as folder:
++            actual = Path(folder) / "actual"
++            actual.write_text("{}", encoding="utf-8")
++            os.chmod(actual, 0o600)
++            link = Path(folder) / "link"
++            link.symlink_to(actual)
++            oversized = Path(folder) / "oversized"
++            oversized.write_bytes(b" " * 65537)
++            os.chmod(oversized, 0o600)
++            public = Path(folder) / "public"
++            public.write_text("{}", encoding="utf-8")
++            os.chmod(public, 0o644)
++            for path in (link, oversized, public):
++                capture = diagnostics.PDBatchDiagnostics(config_path=str(path), log=self.log)
++                self.assertIsNone(capture.external_request_ref("external-id"))
++                self.assertTrue(capture._load_attempted)
++                self.assertFalse(capture.enabled)
++
++    def test_bounds_and_reused_room_fail_closed(self):
++        self.arm_worker()
++        self.capture.bind_worker("other-internal", 1234, "prefill", 0, self.ref)
++        self.assertFalse(self.capture.active_room(1234))
++        self.arm_worker()
++        self.assertFalse(self.capture.active_room(1234))
++        limited = diagnostics.PDBatchDiagnostics(
++            enabled=True, key_salt="offline-fixture-salt", case_id="case", epoch="epoch",
++            request_ids=self.ref, max_events=2, log=self.log,
++        )
++        limited.bind_worker("internal", 1, "prefill", 0, self.ref)
++        self.assertFalse(limited.active_room(1))
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "2a4015cabcc274629126051940528eb83707f428",
-      "fork_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae",
-      "fork_branch": "codex/shared-startup-gov0210-20260929",
-      "patch_count": 125,
+      "fork_commit": "cd9bdadf0000f067766d219802f3f5f3e3fa9a40",
+      "fork_tree": "e98bbf1b2c829e24a5122a5cd69658314b381b35",
+      "fork_branch": "codex/pd-request-batch-correlation-20260929",
+      "patch_count": 129,
       "replay_mode": "exact",
-      "status": "Shared HiCache config validation, DSV4 startup safety and sanitized exception diagnostics; Governor 0.2.10/ABI5 runtime pin; source-only qualification, installed-image and GPU gates separate",
+      "status": "Bounded external request HMAC to actual PD room and native batch diagnostics; 42 shared diagnostics and 19 focused PD CPU checks passed; immutable installed image and physical NVLink gates remain separate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "b10d279da1e9ea7af55da4b91a615063b550bfae"
+      "replay_tree": "e98bbf1b2c829e24a5122a5cd69658314b381b35"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

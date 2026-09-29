@@ -11,6 +11,7 @@ on:
       - 'series'
       - 'patches/**'
       - 'integrations/**'
+      - 'native/**'
       - 'scripts/*.py'
       - 'tests/*.py'
       - 'regressions.json'
@@ -26,6 +27,7 @@ on:
       - 'series'
       - 'patches/**'
       - 'integrations/**'
+      - 'native/**'
       - 'scripts/*.py'
       - 'tests/*.py'
       - 'regressions.json'
@@ -129,3 +131,10 @@ jobs:
         run: python3 scripts/export_selectors.py --source "$SOURCE" --check
       - name: Verify the complete active unified stack
         run: python3 scripts/stack.py verify --source "$SOURCE"
+      - name: Verify independent Mooncake source export
+        shell: bash
+        run: |
+          native_source="$RUNNER_TEMP/mooncake-export-source"
+          git init --quiet "$native_source"
+          git -C "$native_source" fetch --no-tags --depth=1 https://github.com/kvcache-ai/Mooncake e5598b0992cc258b06d22f24d875480e8931a28e
+          python3 scripts/verify_mooncake_native.py --source "$native_source"
