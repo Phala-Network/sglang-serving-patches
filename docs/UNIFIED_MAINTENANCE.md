@@ -9,11 +9,12 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `3c5294560bb814f6bb2f96a004f53adc2118f3d2`; tree `ed2a2c6cffb088fceedc6140b841f8eb5868f97e`.
-- Ordered engine stack: 31 protected steps plus 153 successor steps.
+- Active engine: `02d395e257f891d060b9290f8aa826edc8744568`; tree `cc6ab4029ca449fb29032d5276951040c341e983`.
+- Ordered engine stack: 31 protected steps plus 154 successor steps.
 - R5 cold requests can opt into a request-scoped shared-read bypass with
   correlated Mooncake GET-call tracing and explicit device/host/storage cache
-  counters, including zeros. Ordinary requests retain their default behavior.
+  counters, including zeros. The native HTTP router forwards the flag to both
+  P/D workers; omitted and false requests retain their default behavior.
 - Host state occupancy reuses a uniquely declared SWA owner snapshot with matching
   pool geometry, retaining unknown/incomplete states. Affected source checks cover
   hostpool15/schema5/callsite10/two-operation21/consumer8/reader15; actual constructor and
@@ -23,8 +24,9 @@ model release workflows.
   the opportunity while the donor seed is absent.
 - Gateway request forwarding preserves explicit `include_reasoning` values and
   omission with vendored `openai-protocol` 1.0.0 and frozen Cargo locks. The focused
-  CPU harness covers serialization and loopback HTTP forwarding, not a whole
-  gateway process; installed wheel and standalone binary checks remain required.
+  CPU harness covers serialization and loopback HTTP forwarding. The cold bypass
+  regression exercises the actual Axum PD router and mock P/D HTTP workers;
+  the installed Python launcher fixture remains a final-image gate.
 - Shared startup repair validates HiCache storage configuration, keeps DSV4 decode
   startup safe, and sanitizes shared loader/storage exception diagnostics.
 - Runtime Governor: `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10, ABI5.

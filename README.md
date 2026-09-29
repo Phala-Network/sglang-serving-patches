@@ -20,8 +20,8 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `046599c305e80eac4f8aee2697e1f33fffeb2f0a`, tree
-`b6463e1b84cf38f9ab730755848cb687ff7b3620`: 31 protected steps plus 147 successor patches.
+The active selector binds engine `02d395e257f891d060b9290f8aa826edc8744568`, tree
+`cc6ab4029ca449fb29032d5276951040c341e983`: 31 protected steps plus 154 successor patches.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
@@ -45,6 +45,9 @@ The gateway preserves explicit `include_reasoning: false`, `true` and omission
 through a pinned vendored `openai-protocol` 1.0.0. The focused CPU harness verifies
 typed request serialization and loopback HTTP forwarding; installed gateway wheel
 and standalone binary acceptance remain separate build gates.
+The native `/generate` request also preserves true `cold_shared_read_bypass` through
+the ordinary router to both P/D workers while omitted and false requests retain
+their default behavior. The final installed Python launcher has its own HTTP gate.
 
 Source replay and CPU tests do not qualify native transport, GPU inference,
 DRAM/SSD cross-instance restoration or production. Those gates use the final

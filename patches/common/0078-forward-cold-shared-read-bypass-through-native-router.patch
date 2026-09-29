@@ -1,0 +1,450 @@
+diff --git a/sgl-model-gateway/benches/request_processing.rs b/sgl-model-gateway/benches/request_processing.rs
+index 33d114f7e6588752cf0a5aee0a59ecf3be2f029c..ae08fa3d473d9b324effa57d8eae305d9d2a148b 100644
+--- a/sgl-model-gateway/benches/request_processing.rs
++++ b/sgl-model-gateway/benches/request_processing.rs
+@@ -46,6 +46,7 @@ fn default_generate_request() -> GenerateRequest {
+         token_ids_logprob: None,
+         return_text_in_logprobs: false,
+         stream: false,
++        cold_shared_read_bypass: false,
+         log_metrics: true,
+         return_hidden_states: false,
+         modalities: None,
+diff --git a/sgl-model-gateway/tests/common/mock_worker.rs b/sgl-model-gateway/tests/common/mock_worker.rs
+index 131a5bbb63c2629df778bcc4b987181cef1cb201..a849fb8f3a99257605da54d9762f26d06caceb0e 100755
+--- a/sgl-model-gateway/tests/common/mock_worker.rs
++++ b/sgl-model-gateway/tests/common/mock_worker.rs
+@@ -310,6 +310,14 @@ async fn generate_handler(
+     let config = config.read().await;
+     let worker_id = format!("worker-{}", config.port);
+ 
++    if let Some(requests) = get_generate_captures()
++        .lock()
++        .unwrap()
++        .get_mut(&config.port)
++    {
++        requests.push(payload.clone());
++    }
++
+     if should_fail(&config).await {
+         return (
+             fail_status_code(config.port),
+@@ -479,6 +487,27 @@ async fn generate_handler(
+     }
+ }
+ 
++static GENERATE_CAPTURES: OnceLock<Mutex<HashMap<u16, Vec<serde_json::Value>>>> = OnceLock::new();
++
++fn get_generate_captures() -> &'static Mutex<HashMap<u16, Vec<serde_json::Value>>> {
++    GENERATE_CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
++}
++
++pub fn capture_generate_requests(port: u16) {
++    get_generate_captures()
++        .lock()
++        .unwrap()
++        .insert(port, Vec::new());
++}
++
++pub fn take_generate_requests(port: u16) -> Vec<serde_json::Value> {
++    get_generate_captures()
++        .lock()
++        .unwrap()
++        .remove(&port)
++        .unwrap_or_default()
++}
++
+ async fn chat_completions_handler(
+     State(config): State<Arc<RwLock<MockWorkerConfig>>>,
+     Json(payload): Json<serde_json::Value>,
+diff --git a/sgl-model-gateway/tests/installed_router_cold_forwarding.py b/sgl-model-gateway/tests/installed_router_cold_forwarding.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b3327a7f34f192f1883e6ac4b54c971db3ab874
+--- /dev/null
++++ b/sgl-model-gateway/tests/installed_router_cold_forwarding.py
+@@ -0,0 +1,219 @@
++"""Exercise the installed Python router extension against local HTTP workers.
++
++Run inside the final runtime image with this file mounted read-only. The launcher
++and extension must come from the image, with no source tree on PYTHONPATH.
++"""
++
++import json
++import socket
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.error import HTTPError, URLError
++from urllib.request import Request, urlopen
++
++
++def free_port():
++    with socket.socket() as sock:
++        sock.bind(("127.0.0.1", 0))
++        return sock.getsockname()[1]
++
++
++class Worker(ThreadingHTTPServer):
++    def __init__(self, role):
++        super().__init__(("127.0.0.1", free_port()), WorkerHandler)
++        self.role = role
++        self.requests = []
++        self.lock = threading.Lock()
++        self.thread = threading.Thread(target=self.serve_forever, daemon=True)
++        self.thread.start()
++
++    @property
++    def url(self):
++        return f"http://127.0.0.1:{self.server_port}"
++
++    def snapshot(self):
++        with self.lock:
++            return list(self.requests)
++
++    def close(self):
++        self.shutdown()
++        self.server_close()
++        self.thread.join(timeout=5)
++
++
++class WorkerHandler(BaseHTTPRequestHandler):
++    def log_message(self, *_args):
++        pass
++
++    def reply(self, status, payload, headers=None):
++        data = json.dumps(payload).encode()
++        self.send_response(status)
++        self.send_header("Content-Type", "application/json")
++        self.send_header("Content-Length", str(len(data)))
++        for key, value in (headers or {}).items():
++            self.send_header(key, value)
++        self.end_headers()
++        self.wfile.write(data)
++
++    def do_GET(self):
++        if self.path in ("/health", "/health_generate"):
++            self.reply(200, {"status": "healthy"})
++        elif self.path == "/model_info":
++            self.reply(200, {
++                "model_path": "mock-model-path",
++                "tokenizer_path": "mock-tokenizer-path",
++                "is_generation": True,
++                "preferred_sampling_params": {"temperature": 0.7},
++            })
++        elif self.path == "/server_info":
++            self.reply(200, {
++                "model_path": "mock-model-path",
++                "tokenizer_path": "mock-tokenizer-path",
++                "host": "127.0.0.1",
++                "port": self.server.server_port,
++                "dp_size": 1,
++                "tp_size": 1,
++                "internal_states": [{"waiting_queue_size": 0, "running_queue_size": 0}],
++            })
++        else:
++            self.reply(404, {"error": self.path})
++
++    def do_POST(self):
++        if self.path != "/generate":
++            self.reply(404, {"error": self.path})
++            return
++        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
++        payload = json.loads(data)
++        with self.server.lock:
++            self.server.requests.append((payload, dict(self.headers)))
++        self.reply(200, {
++            "text": f"decode-from-{self.server.role}",
++            "meta_info": {"prompt_tokens": 1, "completion_tokens": 1},
++        }, {"x-worker-id": self.server.role})
++
++
++LAUNCH = """
++from sglang_router.launch_router import launch_router
++from sglang_router.router_args import RouterArgs
++import sys
++mode, port, prefill, decode = sys.argv[1:]
++common = dict(host="127.0.0.1", port=int(port), policy="round_robin",
++              worker_startup_timeout_secs=15, worker_startup_check_interval=1,
++              request_timeout_secs=15, disable_retries=True)
++if mode == "pd":
++    args = RouterArgs(pd_disaggregation=True,
++                      prefill_urls=[(prefill, None)], decode_urls=[decode], **common)
++else:
++    args = RouterArgs(worker_urls=[prefill], **common)
++launch_router(args)
++"""
++
++
++def post(port, payload, headers=None):
++    request = Request(
++        f"http://127.0.0.1:{port}/generate",
++        data=json.dumps(payload).encode(),
++        headers={"Content-Type": "application/json", **(headers or {})},
++    )
++    try:
++        with urlopen(request, timeout=20) as response:
++            return response.status, json.loads(response.read()), dict(response.headers)
++    except HTTPError as error:
++        body = error.read().decode()
++        try:
++            body = json.loads(body)
++        except json.JSONDecodeError:
++            pass
++        return error.code, body, dict(error.headers)
++
++
++def wait_ready(port, process):
++    for _ in range(150):
++        if process.poll() is not None:
++            raise AssertionError(f"router exited early: {process.returncode}")
++        try:
++            with urlopen(f"http://127.0.0.1:{port}/health", timeout=1):
++                return
++        except (URLError, TimeoutError):
++            time.sleep(0.1)
++    raise AssertionError("router did not become ready")
++
++
++def check_forwarded(requests, suffix, expected_flag):
++    matches = [(body, headers) for body, headers in requests
++               if body.get("rid") == f"cold-fixture-{suffix}"]
++    assert len(matches) == 1, (suffix, requests)
++    body, headers = matches[0]
++    assert body["extra_key"] == f"key-{suffix}", body
++    assert body.get("cold_shared_read_bypass") == expected_flag, body
++    assert {key.lower(): value for key, value in headers.items()}[
++        "x-cold-test"
++    ] == f"header-{suffix}", headers
++
++
++def run_mode(mode):
++    prefill = Worker("prefill")
++    decode = Worker("decode") if mode == "pd" else None
++    port = free_port()
++    stderr_log = tempfile.TemporaryFile(mode="w+t")
++    process = subprocess.Popen(
++        [sys.executable, "-c", LAUNCH, mode, str(port), prefill.url,
++         decode.url if decode else prefill.url],
++        stdout=subprocess.DEVNULL, stderr=stderr_log, text=True,
++    )
++    try:
++        wait_ready(port, process)
++        for suffix, flag in (("true", True), ("false", False), ("omitted", None)):
++            payload = {
++                "text": "cold forwarding fixture", "stream": False,
++                "rid": f"cold-fixture-{suffix}", "extra_key": f"key-{suffix}",
++            }
++            if flag is not None:
++                payload["cold_shared_read_bypass"] = flag
++            status, response, response_headers = post(
++                port, payload, {"X-Cold-Test": f"header-{suffix}"}
++            )
++            assert status == 200, (mode, suffix, status, response)
++            expected_role = "decode" if mode == "pd" else "prefill"
++            assert response["text"] == f"decode-from-{expected_role}", response
++            assert {key.lower(): value for key, value in response_headers.items()}[
++                "x-worker-id"
++            ] == expected_role, response_headers
++
++        before = (len(prefill.snapshot()), len(decode.snapshot()) if decode else 0)
++        status, _, _ = post(port, {
++            "text": "invalid cold flag", "cold_shared_read_bypass": "true"
++        })
++        assert 400 <= status < 500, (mode, status)
++        after = (len(prefill.snapshot()), len(decode.snapshot()) if decode else 0)
++        assert after == before, (mode, before, after)
++
++        for worker in (prefill, decode) if decode else (prefill,):
++            requests = worker.snapshot()
++            assert len(requests) == 3, (mode, worker.role, requests)
++            for suffix, flag in (("true", True), ("false", None), ("omitted", None)):
++                check_forwarded(requests, suffix, flag)
++        print(f"{mode}: installed launcher forwarded 3 valid requests; invalid type rejected")
++    finally:
++        process.terminate()
++        try:
++            process.wait(timeout=10)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait(timeout=5)
++        if sys.exc_info()[0] is not None:
++            stderr_log.seek(0)
++            print(stderr_log.read()[-6000:], file=sys.stderr)
++        stderr_log.close()
++        prefill.close()
++        if decode:
++            decode.close()
++
++
++if __name__ == "__main__":
++    run_mode("pd")
++    run_mode("regular")
+diff --git a/sgl-model-gateway/tests/routing/pd_routing_test.rs b/sgl-model-gateway/tests/routing/pd_routing_test.rs
+index 6ad31453d7d26cf7003505acfccbe9681d6f0f8f..9b1a308cda609d948fe3b85f8a54fa8fc9da7d83 100644
+--- a/sgl-model-gateway/tests/routing/pd_routing_test.rs
++++ b/sgl-model-gateway/tests/routing/pd_routing_test.rs
+@@ -12,7 +12,10 @@ use smg::config::RouterConfig;
+ use tower::ServiceExt;
+ 
+ use crate::common::{
+-    mock_worker::{HealthStatus, MockWorkerConfig, WorkerType},
++    mock_worker::{
++        capture_generate_requests, take_generate_requests, HealthStatus, MockWorkerConfig,
++        WorkerType,
++    },
+     AppTestContext, TestWorkerConfig,
+ };
+ 
+@@ -20,6 +23,111 @@ use crate::common::{
+ mod pd_routing_tests {
+     use super::*;
+ 
++    #[tokio::test]
++    async fn test_native_generate_cold_bypass_reaches_both_pd_workers() {
++        let prefill_port = 19840;
++        let decode_port = 19841;
++        let config = RouterConfig::builder()
++            .prefill_decode_mode(
++                vec![(format!("http://127.0.0.1:{prefill_port}"), None)],
++                vec![format!("http://127.0.0.1:{decode_port}")],
++            )
++            .round_robin_policy()
++            .host("127.0.0.1")
++            .port(3804)
++            .max_payload_size(256 * 1024 * 1024)
++            .request_timeout_secs(30)
++            .worker_startup_timeout_secs(5)
++            .worker_startup_check_interval_secs(1)
++            .max_concurrent_requests(64)
++            .queue_timeout_secs(30)
++            .build_unchecked();
++        let ctx = AppTestContext::new_with_config(
++            config,
++            vec![
++                TestWorkerConfig::prefill(prefill_port),
++                TestWorkerConfig::decode(decode_port),
++            ],
++        )
++        .await;
++        let app = ctx.create_app().await;
++        capture_generate_requests(prefill_port);
++        capture_generate_requests(decode_port);
++
++        for (suffix, bypass) in [
++            ("true", Some(json!(true))),
++            ("false", Some(json!(false))),
++            ("omitted", None),
++        ] {
++            let rid = format!("cold-router-{suffix}");
++            let extra_key = format!("cold-key-{suffix}");
++            let mut payload = json!({
++                "text": "cold PD forwarding",
++                "stream": false,
++                "rid": rid,
++                "extra_key": extra_key,
++            });
++            if let Some(value) = bypass {
++                payload["cold_shared_read_bypass"] = value;
++            }
++            let req = Request::builder()
++                .method("POST")
++                .uri("/generate")
++                .header(CONTENT_TYPE, "application/json")
++                .body(Body::from(payload.to_string()))
++                .unwrap();
++            let resp = app.clone().oneshot(req).await.unwrap();
++            assert_eq!(resp.status(), StatusCode::OK, "case {suffix}");
++            assert_eq!(
++                resp.headers().get("x-worker-id").unwrap(),
++                format!("worker-{decode_port}"),
++                "decode response header must pass through"
++            );
++            let body = http_body_util::BodyExt::collect(resp.into_body())
++                .await
++                .unwrap()
++                .to_bytes();
++            assert_eq!(
++                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["text"],
++                "This is a mock response."
++            );
++        }
++
++        let req = Request::builder()
++            .method("POST")
++            .uri("/generate")
++            .header(CONTENT_TYPE, "application/json")
++            .body(Body::from(
++                json!({
++                    "text": "invalid cold flag",
++                    "cold_shared_read_bypass": "true",
++                })
++                .to_string(),
++            ))
++            .unwrap();
++        let resp = app.oneshot(req).await.unwrap();
++        assert!(resp.status().is_client_error());
++
++        for port in [prefill_port, decode_port] {
++            let requests = take_generate_requests(port);
++            assert_eq!(
++                requests.len(),
++                3,
++                "worker {port} must see three valid posts"
++            );
++            for (index, suffix) in ["true", "false", "omitted"].iter().enumerate() {
++                assert_eq!(requests[index]["rid"], format!("cold-router-{suffix}"));
++                assert_eq!(requests[index]["extra_key"], format!("cold-key-{suffix}"));
++                if *suffix == "true" {
++                    assert_eq!(requests[index]["cold_shared_read_bypass"], true);
++                } else {
++                    assert!(requests[index].get("cold_shared_read_bypass").is_none());
++                }
++            }
++        }
++        ctx.shutdown().await;
++    }
++
+     /// Test basic PD mode routing with prefill and decode workers
+     #[tokio::test]
+     async fn test_pd_mode_basic_routing() {
+diff --git a/sgl-model-gateway/tests/routing/test_openai_routing.rs b/sgl-model-gateway/tests/routing/test_openai_routing.rs
+index 5614f8c7578971a85494834b21d427d84a7d17ca..0147916ecf702332f9aa382d7dbe20c61e2ae319 100644
+--- a/sgl-model-gateway/tests/routing/test_openai_routing.rs
++++ b/sgl-model-gateway/tests/routing/test_openai_routing.rs
+@@ -612,6 +612,7 @@ async fn test_unsupported_endpoints() {
+         token_ids_logprob: None,
+         return_text_in_logprobs: false,
+         stream: false,
++        cold_shared_read_bypass: false,
+         log_metrics: true,
+         return_hidden_states: false,
+         modalities: None,
+diff --git a/sgl-model-gateway/vendor/openai-protocol-1.0.0/src/generate.rs b/sgl-model-gateway/vendor/openai-protocol-1.0.0/src/generate.rs
+index 0c81184745dfefa656004625044d9f804b4d37b3..2580c04e9cba1395c3fc90bd2bd7140a2276abb9 100644
+--- a/sgl-model-gateway/vendor/openai-protocol-1.0.0/src/generate.rs
++++ b/sgl-model-gateway/vendor/openai-protocol-1.0.0/src/generate.rs
+@@ -82,6 +82,10 @@ pub struct GenerateRequest {
+     #[serde(default)]
+     pub stream: bool,
+ 
++    /// Bypass shared cold-cache reads for this request in disaggregated serving.
++    #[serde(default, skip_serializing_if = "is_false")]
++    pub cold_shared_read_bypass: bool,
++
+     /// Whether to log metrics for this request (e.g. health_generate calls do not log metrics)
+     #[serde(default = "default_true")]
+     pub log_metrics: bool,
+@@ -169,6 +173,10 @@ pub struct GenerateRequest {
+     pub rid: Option<String>,
+ }
+ 
++fn is_false(value: &bool) -> bool {
++    !*value
++}
++
+ impl Normalizable for GenerateRequest {
+     // Use default no-op implementation - no normalization needed for GenerateRequest
+ }

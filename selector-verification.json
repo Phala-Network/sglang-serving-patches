@@ -1,6 +1,6 @@
 {
   "schema": "phala.sglang.selector-verification.v3",
-  "as_of": "2026-09-29",
+  "as_of": "2026-09-30",
   "source_repository": "https://github.com/Phala-Network/sglang",
   "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
   "frozen_base_replay_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "3c5294560bb814f6bb2f96a004f53adc2118f3d2",
-      "fork_tree": "ed2a2c6cffb088fceedc6140b841f8eb5868f97e",
-      "fork_branch": "codex/r5-cold-mainline-candidate-20260930",
-      "patch_count": 153,
+      "fork_commit": "02d395e257f891d060b9290f8aa826edc8744568",
+      "fork_tree": "cc6ab4029ca449fb29032d5276951040c341e983",
+      "fork_branch": "codex/r5-cold-pd-router-20260930",
+      "patch_count": 154,
       "replay_mode": "exact",
-      "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with exact GET trace and explicit zero cache counters; source qualification",
+      "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with router forwarding and explicit zero cache counters; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "ed2a2c6cffb088fceedc6140b841f8eb5868f97e"
+      "replay_tree": "cc6ab4029ca449fb29032d5276951040c341e983"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
