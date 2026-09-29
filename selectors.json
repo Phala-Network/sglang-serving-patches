@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
-      "fork_tree": "ae44fce033b1736adf1212baf154b04dbdcae82c",
+      "fork_commit": "4861f033ac5b845782769fcbeddc54ff6ce87e34",
+      "fork_tree": "2554182e627040269b2e6a9e96a99f258e274081",
       "fork_branch": "codex/r5-cold-pd-router-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..4861f033ac5b845782769fcbeddc54ff6ce87e34",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2692,6 +2692,13 @@
           "source_commit": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
           "source_parent": "3a8083b2fbbf10e7095fc7e1851f7c75e577a24d",
           "sha256": "9304560da6dfc5e3c9e61a132ed518d91e6ef831625da6a9bdded83972245a68"
+        },
+        {
+          "id": "0082-wait-for-installed-router-worker-readiness",
+          "path": "patches/common/0082-wait-for-installed-router-worker-readiness.patch",
+          "source_commit": "4861f033ac5b845782769fcbeddc54ff6ce87e34",
+          "source_parent": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
+          "sha256": "ec58544e7c0c5239bd2da85e0c26d4121ba1520cfbe54ef38a7795b8e3a217cf"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

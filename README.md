@@ -20,8 +20,10 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `ef5fd69265407664e7efad0a3fd2b458c49c7c9a`, tree
-`ae44fce033b1736adf1212baf154b04dbdcae82c`: 31 protected steps plus 157 successor patches.
+The active selector binds engine `4861f033ac5b845782769fcbeddc54ff6ce87e34`, tree
+`2554182e627040269b2e6a9e96a99f258e274081`: 31 protected steps plus 158 successor patches.
+The published router-only runtime source tag still binds `ef5fd69265407664e7efad0a3fd2b458c49c7c9a`;
+the successor changes only the installed-image forwarding test fixture.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
