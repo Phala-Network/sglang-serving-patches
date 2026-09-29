@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "f7831c1609a274e8ca656a6930e38ed981cb8ed3",
-      "fork_tree": "9e2c28a518cbde6754b909f5cdf9761a06d67498",
+      "fork_commit": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
+      "fork_tree": "0c1926d10bc39694cffffcddbc08d4db94a36c7c",
       "fork_branch": "codex/shared-owner-integration-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..f7831c1609a274e8ca656a6930e38ed981cb8ed3",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2545,11 +2545,46 @@
           "source_commit": "f7831c1609a274e8ca656a6930e38ed981cb8ed3",
           "source_parent": "d62c6b4cd88b5bfc50b1d3ca2fe6c95578ca1434",
           "sha256": "8ab1ebd49e20818c0664fd684508b3be2387b74dfecd1e3b093ce1b990dab232"
+        },
+        {
+          "id": "0061-shared-seed-schema-readback",
+          "path": "patches/common/0061-shared-seed-schema-readback.patch",
+          "source_commit": "f8a589611c1910ae36f2ee7514713d2a2de454b3",
+          "source_parent": "f7831c1609a274e8ca656a6930e38ed981cb8ed3",
+          "sha256": "02770eaf86406f1c8174d88fc67f905f57db7c9c184842876dd1c51b028cb2f4"
+        },
+        {
+          "id": "0062-shared-seed-two-operation-capture",
+          "path": "patches/common/0062-shared-seed-two-operation-capture.patch",
+          "source_commit": "5737fe83163357350f02a570d2fee78d019304d5",
+          "source_parent": "f8a589611c1910ae36f2ee7514713d2a2de454b3",
+          "sha256": "c8c715b1bc0c5ddacb2e03a311f95c26208cbb8cadc78f66f68d2c09f6449361"
+        },
+        {
+          "id": "0063-shared-seed-strict-native-outcome",
+          "path": "patches/common/0063-shared-seed-strict-native-outcome.patch",
+          "source_commit": "cd54ea37cd01155b15c2ec3a4b3e2e74a23e7589",
+          "source_parent": "5737fe83163357350f02a570d2fee78d019304d5",
+          "sha256": "19691ee416205e0ec21d6f5d2b6e325fda91fe296bbd7fddc04ac31690d01a6d"
+        },
+        {
+          "id": "0064-shared-clear-producer-identities",
+          "path": "patches/common/0064-shared-clear-producer-identities.patch",
+          "source_commit": "78005bd7b33dfe86699c347941104433abf63f7b",
+          "source_parent": "cd54ea37cd01155b15c2ec3a4b3e2e74a23e7589",
+          "sha256": "3f71c8f24e90b327036720dd136e01f581ad1c5546a5ae1c645c5fc91f9bac7c"
+        },
+        {
+          "id": "0065-shared-seed-schema-clear-source-ci",
+          "path": "patches/common/0065-shared-seed-schema-clear-source-ci.patch",
+          "source_commit": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
+          "source_parent": "78005bd7b33dfe86699c347941104433abf63f7b",
+          "sha256": "e7bc9da78c0f0a3bdc5b1d9d3bdd72e486190f7a88a373e755dd15deda013733"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Shared owner control plus bounded per-worker host-pool tensor allocation observability; real Torch source fixtures; source-only qualification",
+      "status": "Shared owner control, host pool and exact read-only seed schema; finite two-operation seed capture; explicit nullable revision and field-specific clear identities; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

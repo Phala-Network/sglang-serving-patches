@@ -1,0 +1,62 @@
+diff --git a/python/sglang/srt/mem_cache/shared_cache_diagnostics.py b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+index 98621d6e231fb0cc8bcee28b9bbcca18a40ce267..db8d8686436844ebe124d3d4d1daf92717345d6f 100644
+--- a/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
++++ b/python/sglang/srt/mem_cache/shared_cache_diagnostics.py
+@@ -1105,6 +1105,15 @@ class SharedCacheSeedCapture:
+                     self._failed = "duplicate_or_late_put_result"
+                     self._write_provisional_locked()
+                     return
++                if self._config["schema"].endswith(".v2") and (
++                    type(existed) is not int
++                    or existed != 0
++                    or type(result) is not int
++                    or result != 0
++                ):
++                    self._failed = "put_not_new_success"
++                    self._write_provisional_locked()
++                    return
+                 entry["already_present"] = existed == 1
+                 entry["native_result"] = int(result)
+                 if existed == 1 or int(result) != 0:
+diff --git a/test/manual/phala/test_shared_cache_seed_two_operation_cpu.py b/test/manual/phala/test_shared_cache_seed_two_operation_cpu.py
+index 889cb45447a1f87d035968db0ca8c821152e60d6..7c8be43d8869755d4fc61975a10157583d7488ea 100644
+--- a/test/manual/phala/test_shared_cache_seed_two_operation_cpu.py
++++ b/test/manual/phala/test_shared_cache_seed_two_operation_cpu.py
+@@ -325,6 +325,37 @@ class SharedCacheSeedMultiOperationTests(SeedCallsiteFixture):
+         self.assertEqual(self.capture._failed, "byte_budget_exceeded")
+         self.assertEqual(len(self.native_calls), 2)
+ 
++    def test_unknown_existence_and_coerced_native_results_are_not_success(self):
++        for existed, result in (
++            (-1, 0),
++            (None, 0),
++            (False, 0),
++            (0.0, 0),
++            ("0", 0),
++            (0, False),
++            (0, 0.5),
++            (0, "0"),
++            (0, None),
++        ):
++            with self.subTest(existed=existed, result=result):
++                case = SharedCacheSeedMultiOperationTests(
++                    "test_missing_second_operation_stays_provisional"
++                )
++                case.setUp()
++                try:
++                    case.exists = [existed, existed]
++                    case.results = [result, result]
++                    case.submit(page_start=2, prior="first")
++                    case.submit(page_start=3, prior="second")
++                    case.ack()
++                    case.ack()
++                    case.assert_unsealed()
++                    case.assertEqual(case.capture._failed, "put_not_new_success")
++                    case.assertEqual(len(case.operations), 2)
++                    case.assertEqual(len(case.native_calls), 4)
++                finally:
++                    case.doCleanups()
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
