@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
-      "fork_tree": "0c1926d10bc39694cffffcddbc08d4db94a36c7c",
+      "fork_commit": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
+      "fork_tree": "d8a58a105d3cbeade2baadf8df2c4040bea0c978",
       "fork_branch": "codex/shared-owner-integration-20260929",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..cce2757b8fe49af71a7a8d58fccb33702d36c82e",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2580,6 +2580,13 @@
           "source_commit": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
           "source_parent": "78005bd7b33dfe86699c347941104433abf63f7b",
           "sha256": "e7bc9da78c0f0a3bdc5b1d9d3bdd72e486190f7a88a373e755dd15deda013733"
+        },
+        {
+          "id": "0066-seed-schema-cpu-torch-ci-order",
+          "path": "patches/common/0066-seed-schema-cpu-torch-ci-order.patch",
+          "source_commit": "cce2757b8fe49af71a7a8d58fccb33702d36c82e",
+          "source_parent": "0d7c3b81ca7b42e25d19ce81fec8b4ef6b655540",
+          "sha256": "93615914414ca8d210dff82c865135cc423126ec22d58a79d027e0073b14db92"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
