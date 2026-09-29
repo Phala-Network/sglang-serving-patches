@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
-      "fork_tree": "aec424c6f31cf413a0a59494577343d3af0527de",
+      "fork_commit": "3c5294560bb814f6bb2f96a004f53adc2118f3d2",
+      "fork_tree": "ed2a2c6cffb088fceedc6140b841f8eb5868f97e",
       "fork_branch": "codex/r5-cold-mainline-candidate-20260930",
-      "patch_count": 152,
+      "patch_count": 153,
       "replay_mode": "exact",
       "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with exact GET trace and explicit zero cache counters; source qualification",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "aec424c6f31cf413a0a59494577343d3af0527de"
+      "replay_tree": "ed2a2c6cffb088fceedc6140b841f8eb5868f97e"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

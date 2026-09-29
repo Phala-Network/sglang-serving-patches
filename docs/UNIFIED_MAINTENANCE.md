@@ -9,8 +9,8 @@ model release workflows.
 ## Current Candidate
 
 - Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `d09ea8f5611e18c586a225dbf6862908139b7a0c`; tree `aec424c6f31cf413a0a59494577343d3af0527de`.
-- Ordered engine stack: 31 protected steps plus 152 successor steps.
+- Active engine: `3c5294560bb814f6bb2f96a004f53adc2118f3d2`; tree `ed2a2c6cffb088fceedc6140b841f8eb5868f97e`.
+- Ordered engine stack: 31 protected steps plus 153 successor steps.
 - R5 cold requests can opt into a request-scoped shared-read bypass with
   correlated Mooncake GET-call tracing and explicit device/host/storage cache
   counters, including zeros. Ordinary requests retain their default behavior.

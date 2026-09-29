@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
-      "fork_tree": "aec424c6f31cf413a0a59494577343d3af0527de",
+      "fork_commit": "3c5294560bb814f6bb2f96a004f53adc2118f3d2",
+      "fork_tree": "ed2a2c6cffb088fceedc6140b841f8eb5868f97e",
       "fork_branch": "codex/r5-cold-mainline-candidate-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d09ea8f5611e18c586a225dbf6862908139b7a0c",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..3c5294560bb814f6bb2f96a004f53adc2118f3d2",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2657,6 +2657,13 @@
           "source_commit": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
           "source_parent": "5ba30265ccf108fc27f077e6c73df0d03701d1d4",
           "sha256": "f91906b7efcecff6b7f31a04192e7f95a79a659d5887c364b4b18675f5dbabd1"
+        },
+        {
+          "id": "0077-reader-fixture-optional-trace",
+          "path": "patches/common/0077-reader-fixture-optional-trace.patch",
+          "source_commit": "3c5294560bb814f6bb2f96a004f53adc2118f3d2",
+          "source_parent": "d09ea8f5611e18c586a225dbf6862908139b7a0c",
+          "sha256": "3339b543a3d3eb7f8c32d00579968e51fd3cf31e29ed8067b7f9443d91eb4104"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
