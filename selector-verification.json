@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
-      "fork_branch": "codex/pd-lifecycle-p6-release",
-      "patch_count": 118,
+      "fork_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+      "fork_tree": "57d1dcd43bebbdf89c2057e2ada776826d0681d8",
+      "fork_branch": "codex/kimi-schema400-candidate",
+      "patch_count": 119,
       "replay_mode": "exact",
-      "status": "exact_source_replay_pd_lifecycle",
+      "status": "candidate_kimi_schema_precheck_native_pending",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98"
+      "replay_tree": "57d1dcd43bebbdf89c2057e2ada776826d0681d8"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

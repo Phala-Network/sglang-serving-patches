@@ -20,8 +20,9 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `d70b426a09acd0df5a6032687f3d431ff1df34e2`, tree
-`fc524c942e7c1d45d4bde2bf83bd81ec87b29d98`: 31 protected steps plus 118 successor patches.
+The active selector binds engine `bdd29d4c8d531ae09204da2f5135a96d4e1f84a5`, tree
+`57d1dcd43bebbdf89c2057e2ada776826d0681d8`: 31 protected steps plus 119 successor patches.
+This branch prepares a Kimi schema-precheck successor candidate; it is not a published release.
 The P6 tail adds PD upstream cancellation ownership and atomic bootstrap status
 transitions with cleared-room snapshot regressions.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128

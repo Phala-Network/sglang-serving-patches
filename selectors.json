@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
-      "fork_branch": "codex/pd-lifecycle-p6-release",
+      "fork_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+      "fork_tree": "57d1dcd43bebbdf89c2057e2ada776826d0681d8",
+      "fork_branch": "codex/kimi-schema400-candidate",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d70b426a09acd0df5a6032687f3d431ff1df34e2",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2418,11 +2418,18 @@
           "source_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
           "source_parent": "2196fbccbb504d2570476f43fa2580778bf96b14",
           "sha256": "d39e75c65f012e8c7ce54da57e0c2f55bf82643741fee67dbdaae2f378c2b6e8"
+        },
+        {
+          "id": "0093-kimi-parameter-schema-precheck",
+          "path": "patches/common/0093-kimi-parameter-schema-precheck.patch",
+          "source_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+          "source_parent": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
+          "sha256": "b7bd91558d9f697f6570274144e5f8ac7a7cbc5807c4d6ccefa5d1e6043825e5"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "exact_source_replay_pd_lifecycle",
+      "status": "candidate_kimi_schema_precheck_native_pending",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

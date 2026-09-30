@@ -56,6 +56,11 @@
         "name": "pd-bootstrap-status",
         "path": "test/manual/phala/test_pd_bootstrap_status_cpu.py",
         "simulator_hooks": true
+      },
+      {
+        "name": "kimi-schema-precheck",
+        "path": "test/manual/phala/test_kimi_schema_precheck_cpu.py",
+        "simulator_hooks": true
       }
     ],
     "model-fixtures": [
