@@ -20,9 +20,10 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `15ea03f801a16c7395c6dcb8b6a5f39f32eeeece`, tree
-`16d4e4ba5e8f165d743cc0a07042313590fabfcf`: 31 protected steps plus 120 successor patches.
-This branch prepares a Kimi schema-precheck successor candidate; it is not a published release.
+The active selector binds engine `491c353c20113e1271ebf47ec7b30dbf776cc39a`, tree
+`31e7350cf2bc3c7d0aca0d73489157882f88d32d`: 31 protected steps plus 121 successor patches.
+This branch prepares the common P7 successor with Kimi schema prechecks and
+Qwen3 Coder/Nemotron required-tool terminal whitespace. It is not a published release.
 The P6 tail adds PD upstream cancellation ownership and atomic bootstrap status
 transitions with cleared-room snapshot regressions.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128

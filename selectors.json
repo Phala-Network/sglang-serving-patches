@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
-      "fork_tree": "16d4e4ba5e8f165d743cc0a07042313590fabfcf",
-      "fork_branch": "codex/kimi-schema400-candidate",
+      "fork_commit": "491c353c20113e1271ebf47ec7b30dbf776cc39a",
+      "fork_tree": "31e7350cf2bc3c7d0aca0d73489157882f88d32d",
+      "fork_branch": "codex/unified-p7-candidate",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..491c353c20113e1271ebf47ec7b30dbf776cc39a",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2422,21 +2422,28 @@
         {
           "id": "0093-kimi-parameter-schema-precheck",
           "path": "patches/common/0093-kimi-parameter-schema-precheck.patch",
-          "source_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+          "source_commit": "483ffed08b99c3351d23582eabe17f9fecfebe35",
           "source_parent": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
           "sha256": "b7bd91558d9f697f6570274144e5f8ac7a7cbc5807c4d6ccefa5d1e6043825e5"
         },
         {
           "id": "0094-kimi-installed-fixture-boundary",
           "path": "patches/common/0094-kimi-installed-fixture-boundary.patch",
-          "source_commit": "15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
-          "source_parent": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+          "source_commit": "b69f255d37463b4ba9d1f3d7cfb3030078af18f0",
+          "source_parent": "483ffed08b99c3351d23582eabe17f9fecfebe35",
           "sha256": "66e51efd4ae3da6c3ea0d19994b7e2a68d6ba5cc7227cd1babf830e5e26d14a4"
+        },
+        {
+          "id": "0095-required-tool-terminal-whitespace",
+          "path": "patches/models/qwen/0095-required-tool-terminal-whitespace.patch",
+          "source_commit": "491c353c20113e1271ebf47ec7b30dbf776cc39a",
+          "source_parent": "b69f255d37463b4ba9d1f3d7cfb3030078af18f0",
+          "sha256": "e5a76186a205e522a9e70e0324705051c49fbc33b25536106364848b7e7f3c59"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "candidate_kimi_schema_precheck_native_pending",
+      "status": "candidate_unified_p7_quality_gates_pending",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
