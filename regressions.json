@@ -47,6 +47,10 @@
       {
         "name": "pd-runtime-cleanup",
         "path": "test/manual/phala/test_pd_runtime_cleanup_cpu.py"
+      },
+      {
+        "name": "pd-cache-backend",
+        "path": "test/manual/phala/test_pd_cache_backend_cpu.py"
       }
     ],
     "model-fixtures": [

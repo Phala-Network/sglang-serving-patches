@@ -8,49 +8,13 @@ model release workflows.
 
 ## Current Candidate
 
-- Official source: `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (`v0.5.20`).
-- Active engine: `4861f033ac5b845782769fcbeddc54ff6ce87e34`; tree `2554182e627040269b2e6a9e96a99f258e274081`.
-- Ordered engine stack: 31 protected steps plus 158 successor steps. The final
-  increment only waits for actual P/D worker readiness in the installed-image
-  fixture; the earlier immutable runtime source tag remains at `ef5fd692`.
-- R5 cold requests can opt into a request-scoped shared-read bypass with
-  correlated Mooncake GET-call tracing and explicit device/host/storage cache
-  counters, including zeros. The native HTTP router forwards the flag to both
-  P/D workers; omitted and false requests retain their default behavior.
-- Host state occupancy reuses a uniquely declared SWA owner snapshot with matching
-  pool geometry, retaining unknown/incomplete states. Affected source checks cover
-  hostpool15/schema5/callsite10/two-operation21/consumer8/reader15; actual constructor and
-  sealed operation/key IDs0/1 are explicit contracts. Installed-image and live
-  capacity acceptance remain separate. Reader diagnostics use a fixed-path
-  one-shot late arm with operation-owned GET/prefetch/C128 context, retaining
-  the opportunity while the donor seed is absent.
-- Gateway request forwarding preserves explicit `include_reasoning` values and
-  omission with vendored `openai-protocol` 1.0.0 and frozen Cargo locks. The focused
-  CPU harness covers serialization and loopback HTTP forwarding. The cold bypass
-  regression exercises the actual Axum PD router and mock P/D HTTP workers;
-  the installed Python launcher fixture remains a final-image gate.
-- Shared startup repair validates HiCache storage configuration, keeps DSV4 decode
-  startup safe, and sanitizes shared loader/storage exception diagnostics.
-- Runtime Governor: `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10, ABI5.
-- New source: trusted internal health identity and learning isolation; DSV4 decode
-  hybrid HiCache snapshots and sidecar completeness; default-off
-  `SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS=1` logs submitted PD batch bytes,
-  count and synchronous result with hashed room/peer correlation. No content,
-  pointer or full argument logging; submitted bytes plus completion are not a
-  public native `transferred_bytes` field.
-- Exact replay and focused CPU checks are source evidence. Final installed-image
-  pairing, GPU health/cold-start learning, transport and DRAM/SSD restoration
-  remain separate acceptance gates. Earlier immutable release tags are unchanged.
-
-The shared KV native wheel still requires the matching `sgl_kernel.kvcacheio`
-wrapper installed by the image builder. Historical selector/native source
-records retain their identities and limitations; source includes the current
-metrics initfix and DSV4 response-format bridge.
-
-PD parallel sampling now assigns each choice its normalized independent bootstrap
-room and associated metadata, skips synthetic PD warmup, and preserves non-PD
-warmup and failure cleanup. Real-import CPU and final-image gates are distinct
-from real HTTP P/D transport acceptance.
+- Active engine: `6f7fb4713946cb4ef913da89dfb62d71c6e82461`; tree `7d182dafbf142c484dbacee131e2c2f12ea6782b`.
+- Ordered stack: 31 protected plus 115 successor steps (146 total), verified by full replay.
+- PD decode responses retain prefill device/host/storage hit counts and omit a backend name because the existing handoff does not carry a trusted prefill backend identity. Local and prefill reporting keep their original backend names.
+- The prior cleanup removed bespoke seed/reader/arm/finite/manifest/clear/collector protocols and task-specific host-pool readback. DSV4 hybrid offload, complete components/C128, ordinary transfer, startup safety and cancellation/reclamation remain.
+- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. Native source stays at the public upstream-equivalent cleanup tree.
+- Gateway `include_reasoning` forwarding and ordinary authentication are retained. The shared KV native wheel requires the matching installed `sgl_kernel.kvcacheio` wrapper.
+- Source replay and CPU checks are source evidence; installed-image checks, GPU transport/restoration and target acceptance remain separate. Earlier immutable tags are unchanged.
 
 ## Verify and Prepare
 

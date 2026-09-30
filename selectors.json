@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "2630e01bd6396776371573e2c3bf0044f71ec5b2",
-      "fork_tree": "aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f",
-      "fork_branch": "codex/pd-runtime-cleanup-20260930",
+      "fork_commit": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
+      "fork_tree": "7d182dafbf142c484dbacee131e2c2f12ea6782b",
+      "fork_branch": "codex/pd-cache-backend-label-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..2630e01bd6396776371573e2c3bf0044f71ec5b2",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..6f7fb4713946cb4ef913da89dfb62d71c6e82461",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2390,6 +2390,13 @@
           "source_parent": "72f4e0ab0485761400be55960bad317f16ea3b41",
           "sha256": "ceba98f1579313a18a79b696cf7853893b47efcd3f61b219920a156073db7ca9",
           "summary": "Retain DSV4 hybrid decode offload, complete component/C128 recovery, shared startup safety, trusted health and parallel sampling ownership; remove bespoke PD evidence protocols and task-specific host-pool readback."
+        },
+        {
+          "id": "0089-pd-cache-backend-attribution",
+          "path": "patches/common/0089-pd-cache-backend-attribution.patch",
+          "source_commit": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
+          "source_parent": "2630e01bd6396776371573e2c3bf0044f71ec5b2",
+          "sha256": "0d9dddd68d6bec1398df5848847f4bb2d1dd3ffa63b7c27ddf7efb126b7d598f"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
