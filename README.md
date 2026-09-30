@@ -20,10 +20,10 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `6f480c3635afba17d8d1e0ecd4979c2fabba91cd`, tree
-`843b7ea91648ab6939db36d9bc468b4ae1d83cae`: 31 protected steps plus 114 successor patches.
+The active selector binds engine `2630e01bd6396776371573e2c3bf0044f71ec5b2`, tree
+`aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f`: 31 protected steps plus 114 successor patches.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128
-recovery, shared startup safety, host-pool accounting, trusted health and parallel
+recovery, shared startup safety, trusted health and parallel
 sampling ownership. Bespoke seed/reader/arm/finite capture, shared clear APIs,
 PD batch collectors and the cold_shared_read test protocol have been removed.
 Standard HiCache/D offload, transfer, cancellation/resource cleanup and strict

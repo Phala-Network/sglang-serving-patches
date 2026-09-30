@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "6f480c3635afba17d8d1e0ecd4979c2fabba91cd",
-      "fork_tree": "843b7ea91648ab6939db36d9bc468b4ae1d83cae",
+      "fork_commit": "2630e01bd6396776371573e2c3bf0044f71ec5b2",
+      "fork_tree": "aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f",
       "fork_branch": "codex/pd-runtime-cleanup-20260930",
       "patch_count": 114,
       "replay_mode": "exact",
       "status": "exact_source_replay_clean_pd_runtime",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "843b7ea91648ab6939db36d9bc468b4ae1d83cae"
+      "replay_tree": "aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

@@ -8,8 +8,8 @@ consumer; historical files under a model directory with no selected ID remain
 pending source material.
 
 The active complete-source selector is `unified-v0520-governor-r6`: engine
-`6f480c3635afba17d8d1e0ecd4979c2fabba91cd`, tree
-`843b7ea91648ab6939db36d9bc468b4ae1d83cae`.
+`2630e01bd6396776371573e2c3bf0044f71ec5b2`, tree
+`aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f`.
 It cleanly replays the protected 31-step engine428 baseline and 114 successor
 patches. Common fixes occur once with model-specific guards.
 

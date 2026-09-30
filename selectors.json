@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "6f480c3635afba17d8d1e0ecd4979c2fabba91cd",
-      "fork_tree": "843b7ea91648ab6939db36d9bc468b4ae1d83cae",
+      "fork_commit": "2630e01bd6396776371573e2c3bf0044f71ec5b2",
+      "fork_tree": "aa7db7067e81d464ecdc413ad9005fa0ca9e2f1f",
       "fork_branch": "codex/pd-runtime-cleanup-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..6f480c3635afba17d8d1e0ecd4979c2fabba91cd",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..2630e01bd6396776371573e2c3bf0044f71ec5b2",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2386,10 +2386,10 @@
         {
           "id": "0088-dsv4-cache-correctness-without-pd-evidence-protocols",
           "path": "patches/common/0088-dsv4-cache-correctness-without-pd-evidence-protocols.patch",
-          "source_range": "72f4e0ab0485761400be55960bad317f16ea3b41..6f480c3635afba17d8d1e0ecd4979c2fabba91cd",
+          "source_range": "72f4e0ab0485761400be55960bad317f16ea3b41..2630e01bd6396776371573e2c3bf0044f71ec5b2",
           "source_parent": "72f4e0ab0485761400be55960bad317f16ea3b41",
-          "sha256": "ce35ccd15429ddae517e406eb100cfbbc8163795caeca02dd61332cb533d7054",
-          "summary": "Retain DSV4 hybrid decode offload, complete component/C128 recovery, host-pool accounting, shared startup safety, trusted health and parallel sampling ownership; remove bespoke PD evidence protocols."
+          "sha256": "ceba98f1579313a18a79b696cf7853893b47efcd3f61b219920a156073db7ca9",
+          "summary": "Retain DSV4 hybrid decode offload, complete component/C128 recovery, shared startup safety, trusted health and parallel sampling ownership; remove bespoke PD evidence protocols and task-specific host-pool readback."
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

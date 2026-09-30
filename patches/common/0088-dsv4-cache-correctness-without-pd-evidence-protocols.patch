@@ -1,5 +1,5 @@
 diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
-index bc54836bcfccb8c8e9a2a0765ef074cdb7948821..90e747557d27b67b9aa4bf2635d8d595eb1fb357 100644
+index bc54836bcfccb8c8e9a2a0765ef074cdb7948821..71837fa62a91e34ee81ddc43b84cad1d18927be5 100644
 --- a/.github/workflows/phala-source-check.yml
 +++ b/.github/workflows/phala-source-check.yml
 @@ -26,7 +26,7 @@ jobs:
@@ -19,20 +19,14 @@ index bc54836bcfccb8c8e9a2a0765ef074cdb7948821..90e747557d27b67b9aa4bf2635d8d595
            python test/manual/phala/test_hugetlb_shared_accounting_cpu.py
            python test/manual/test_glm53_dsa_host_budget.py
            python test/manual/phala/test_srt_log_transform.py
-@@ -64,8 +65,13 @@ jobs:
+@@ -64,6 +65,7 @@ jobs:
            python test/manual/unit/function_call/test_qwen_complete_call_cpu.py
            python test/manual/unit/entrypoints/openai/test_qwen_historical_source_semantics.py
            python test/manual/unit/model_executor/model_runner_components/test_marlin_breakable_source_contract.py
 +          python test/manual/phala/test_pd_runtime_cleanup_cpu.py
            python test/manual/test_hicache_async_ack_sync.py
            python -m pytest -q test/manual/unit/entrypoints/test_health_generate_lifecycle.py
-+      - name: Host-pool CPU backing regressions
-+        run: |
-+          python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
-+          python test/registered/unit/mem_cache/test_host_pool_observability.py -v
        # Native Rust/kernel checks and the complete upstream lint remain manual
-       # in lint.yml. Real-tokenizer/template and torch GGUF tests additionally
-       # run in the pinned local CPU environment; this is not GPU acceptance.
 diff --git a/.gitignore b/.gitignore
 index 3a7295ffc9d7ef03e376b2d418971a9c7162f9e2..4fb6c1456a38948104dedc6b7f6068d871b1f93c 100644
 --- a/.gitignore
@@ -546,7 +540,7 @@ index 26679e634712cd3386bac65499be1a02c742990d..e4ba187b25c2810cbe7dfaa7d2abda62
          # Require reasoning for the request
          self.require_reasoning = require_reasoning
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98cff31b0a 100644
+index d06d863e9577405d2b0185bb2dbd76e3eb035082..1cf86774be696a651e734df147222d7dacc4b822 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
 @@ -278,7 +278,7 @@ from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
@@ -558,15 +552,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
      validate_input_length,
  )
  from sglang.srt.mem_cache import kv_cache_builder
-@@ -291,6 +291,7 @@ from sglang.srt.mem_cache.common import (
- from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
- from sglang.srt.model_loader.utils import get_resolved_model_impl
- from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
-+from sglang.srt.observability.host_pool import host_pool_observability
- from sglang.srt.observability.metrics_collector import SchedulerMetricsCollector
- from sglang.srt.observability.req_time_stats import (
-     flush_trace_batch,
-@@ -357,7 +358,10 @@ from sglang.srt.utils.weight_versions import (
+@@ -357,7 +357,10 @@ from sglang.srt.utils.weight_versions import (
      compute_weight_version_spans,
      record_weight_version_events,
  )
@@ -578,7 +564,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
  
  if is_mps():
      CudaStreamContext = nullcontext
-@@ -642,6 +646,9 @@ class Scheduler(
+@@ -642,6 +645,9 @@ class Scheduler(
                      else self.tp_cpu_group
                  ),
                  tree_cache=self.tree_cache,
@@ -588,7 +574,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
              )
          else:
              self.decode_offload_manager = None
-@@ -2127,7 +2134,7 @@ class Scheduler(
+@@ -2127,7 +2133,7 @@ class Scheduler(
                  vmm_errors = self._materialize_cuda_vmm_inputs(recv_req)
  
              # Skip health check when server is busy — ongoing requests already carry health info.
@@ -597,7 +583,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
                  for_health_check=True
              ):
                  self.return_health_check_ipcs.append(
-@@ -2818,6 +2825,7 @@ class Scheduler(
+@@ -2818,6 +2824,7 @@ class Scheduler(
                  extra_key=recv_req.extra_key,
                  cache_salt=recv_req.cache_salt,
                  http_worker_ipc=recv_req.http_worker_ipc,
@@ -605,7 +591,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
                  dllm_config=self.dllm_config,
                  time_stats=recv_req.time_stats,
                  multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
-@@ -3300,7 +3308,10 @@ class Scheduler(
+@@ -3300,7 +3307,10 @@ class Scheduler(
          if self.chunked_req is not None:
              waiting_count += 1
          decision = self.governor.admit_request(
@@ -617,7 +603,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
          )
          if decision["allowed"]:
              return False
-@@ -3500,6 +3511,7 @@ class Scheduler(
+@@ -3500,6 +3510,7 @@ class Scheduler(
              dimensions=recv_req.dimensions,
              lora_id=recv_req.lora_id,
              http_worker_ipc=recv_req.http_worker_ipc,
@@ -625,7 +611,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
              time_stats=recv_req.time_stats,
              return_pooled_hidden_states=recv_req.return_pooled_hidden_states,
              multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
-@@ -4807,7 +4819,8 @@ class Scheduler(
+@@ -4807,7 +4818,8 @@ class Scheduler(
          is_prefill = mode.is_extend_without_speculative()
          if not (is_prefill or mode.is_decode() or mode.is_target_verify()):
              return
@@ -635,26 +621,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
              return
          prev = self._prev_step
          self._prev_step = (batch.forward_iter, batch.launch_ts, is_prefill)
-@@ -5210,6 +5223,18 @@ class Scheduler(
-             target_graph_memory_usage=self.tp_worker.graph_memory_usage,
-             draft_graph_memory_usage=draft_graph_memory_usage,
-         )
-+        try:
-+            ret["host_pool_observability"] = host_pool_observability(
-+                self, role=get_disagg().disaggregation_mode
-+            )
-+        except Exception:
-+            # Observability must not fail server_info or expose exception text.
-+            ret["host_pool_observability"] = {
-+                "schema": "sglang.host-pool-observability.v1",
-+                "status": "incomplete",
-+                "error": "snapshot_unavailable",
-+                "unique_backing_bytes": None,
-+            }
-         ret["startup_time"] = self.startup_time
-         ret["effective_max_running_requests_per_dp"] = self.max_running_requests
- 
-@@ -6072,8 +6097,7 @@ def run_scheduler_process(
+@@ -6072,8 +6084,7 @@ def run_scheduler_process(
          scheduler.run_event_loop()
  
      except Exception:
@@ -664,7 +631,7 @@ index d06d863e9577405d2b0185bb2dbd76e3eb035082..349b2f1657e582fa655ae6bd025f5a98
          parent_process.send_signal(signal.SIGQUIT)
          # Opt-in: SIGKILL the pgroup so sibling ranks don't spew thousands
          # of NCCL/TCPStore tracebacks before they finally die.
-@@ -6107,6 +6131,7 @@ def _make_abort_req(
+@@ -6107,6 +6118,7 @@ def _make_abort_req(
          on_abort_emitted(req)
      return AbortReq(
          rid=req.rid,
@@ -1456,475 +1423,6 @@ index 5d3f5c1592a5d0e745daeef319f79c657c0f4ad9..a13e799da13a759a7dc884c96b075775
  
          self.apply_runtime_config(
              storage_backend=storage_backend,
-diff --git a/python/sglang/srt/observability/host_pool.py b/python/sglang/srt/observability/host_pool.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..0cbe09f1132f3bc7dd848bd79f039a36fd6ec631
---- /dev/null
-+++ b/python/sglang/srt/observability/host_pool.py
-@@ -0,0 +1,463 @@
-+"""Bounded, on-demand host KV tensor accounting for scheduler server_info.
-+
-+Storage addresses are used only inside one snapshot to union aliases. Neither
-+addresses nor tensor contents are serialized. This is not process RSS or a
-+measurement of allocator overhead, metadata, registration, or OS ownership.
-+"""
-+
-+import os
-+import time
-+from numbers import Integral
-+
-+import torch
-+
-+MAX_ENTRIES = 64
-+MAX_TENSORS = 1024
-+# These implementations own data only through DATA_FIELDS. New pool kinds
-+# require an explicit review before this surface can claim complete coverage.
-+SUPPORTED_POOL_KINDS = {
-+    "LogicalHostPool",
-+    "DeepSeekV4PagedHostPool",
-+    "DeepSeekV4StateHostPool",
-+    "MHATokenToKVPoolHost",
-+    "MHATokenToKOnlyPoolHost",
-+    "AsymmetricMHATokenToKVPoolHost",
-+    "MLATokenToKVPoolHost",
-+    "MambaPoolHost",
-+}
-+DATA_FIELDS = (
-+    "kv_buffer",
-+    "k_buffer",
-+    "v_buffer",
-+    "index_k_buffer",
-+    "index_k_scale_buffer",
-+    "temporal_buffer",
-+    "conv_buffer",
-+)
-+SIZING_FIELDS = (
-+    "size_per_token",
-+    "item_bytes",
-+    "state_page_bytes",
-+    "num_host_pages",
-+    "layer_num",
-+    "page_num",
-+    "dcp_size",
-+)
-+
-+
-+def _integer(value):
-+    return (
-+        int(value)
-+        if isinstance(value, Integral) and not isinstance(value, bool)
-+        else None
-+    )
-+
-+
-+def _union_bytes(intervals):
-+    end = total = 0
-+    for start, stop in sorted(set(intervals)):
-+        total += max(0, stop - max(start, end))
-+        end = max(end, stop)
-+    return total
-+
-+
-+def _groups(scheduler):
-+    """Only known ownership paths; never traverse model/request object graphs."""
-+    cache = getattr(scheduler, "tree_cache", None)
-+    controller = getattr(cache, "cache_controller", None)
-+    primary = getattr(cache, "host_pool_group", None)
-+    if primary is None:
-+        primary = getattr(controller, "mem_pool_host", None)
-+    if primary is None:
-+        primary = getattr(cache, "token_to_kv_pool_host", None)
-+    if primary is not None:
-+        yield "hicache", primary
-+    offload = getattr(scheduler, "decode_offload_manager", None)
-+    writeback = getattr(offload, "decode_host_mem_pool", None)
-+    if writeback is not None:
-+        yield "decode_writeback", writeback
-+    sparse = getattr(scheduler, "hisparse_coordinator", None)
-+    sparse_pool = getattr(sparse, "mem_pool_host", None)
-+    if sparse_pool is not None:
-+        yield "hisparse", sparse_pool
-+
-+
-+def _capacity_snapshot(pool):
-+    """One nonblocking capacity read; state sidecars have no free-list API."""
-+    snapshot = dict(capacity=None, logical=None, free=None, geometry={}, issues=[])
-+    lock = getattr(pool, "lock", None)
-+    if lock is None or not lock.acquire(blocking=False):
-+        snapshot["issues"].append("capacity_lock_unavailable")
-+        return snapshot
-+    try:
-+        snapshot["capacity"] = _integer(getattr(pool, "size", None))
-+        snapshot["logical"] = _integer(getattr(pool, "logical_size", None))
-+        snapshot["geometry"] = {
-+            field: _integer(getattr(pool, field, None))
-+            for field in ("page_size", "num_host_pages", "swa_page_size")
-+        }
-+        if type(pool).__name__ != "DeepSeekV4StateHostPool":
-+            snapshot["free"] = _integer(pool.available_size())
-+    except Exception:
-+        snapshot["issues"].append("capacity_unavailable")
-+    finally:
-+        lock.release()
-+    return snapshot
-+
-+
-+def _state_index_sources(scheduler, group_name, group):
-+    """Read the actual transfer declarations, never infer ownership by name."""
-+    if group_name == "hicache":
-+        owner = getattr(scheduler, "tree_cache", None)
-+        same_group = getattr(owner, "host_pool_group", None) is group
-+        specs = getattr(owner, "sidecar_pool_specs", None)
-+    elif group_name == "decode_writeback":
-+        owner = getattr(scheduler, "decode_offload_manager", None)
-+        same_group = getattr(owner, "decode_host_mem_pool", None) is group
-+        specs = getattr(owner, "sidecar_specs", None)
-+    else:
-+        return {}
-+    if (
-+        not same_group
-+        or not isinstance(specs, (list, tuple))
-+        or len(specs) > MAX_ENTRIES
-+    ):
-+        return {}
-+    sources = {}
-+    for spec in specs:
-+        name = getattr(spec, "pool_name", None)
-+        name = getattr(name, "value", name)
-+        source = getattr(spec, "indices_from_pool", None)
-+        source = getattr(source, "value", source)
-+        if isinstance(name, str):
-+            sources[name] = source if name not in sources else None
-+    return sources
-+
-+
-+def _state_occupancy(name, snapshot, sources, named_pools, snapshots):
-+    source = sources.get(name)
-+    candidates = named_pools.get(source, []) if isinstance(source, str) else []
-+    if source != "swa" or len(candidates) != 1:
-+        return None, "occupancy_owner_unavailable"
-+    owner = candidates[0]
-+    observed = snapshots[id(owner)]
-+    if type(owner).__name__ != "DeepSeekV4PagedHostPool" or observed["issues"]:
-+        return None, "occupancy_owner_unavailable"
-+    capacity, logical, free = (observed[key] for key in ("capacity", "logical", "free"))
-+    geometry, own_geometry = observed["geometry"], snapshot["geometry"]
-+    page, pages = geometry.get("page_size"), geometry.get("num_host_pages")
-+    if (
-+        snapshot["issues"]
-+        or capacity is None
-+        or logical is None
-+        or free is None
-+        or capacity != logical
-+        or not 0 <= free <= logical
-+        or page is None
-+        or page <= 0
-+        or pages is None
-+        or pages <= 0
-+        or capacity != page * pages
-+        or snapshot["capacity"] != capacity
-+        or snapshot["logical"] != logical
-+        or own_geometry.get("page_size") != page
-+        or own_geometry.get("swa_page_size") != page
-+        or own_geometry.get("num_host_pages") != pages
-+        or free % page != 0
-+    ):
-+        return None, "occupancy_owner_geometry_mismatch"
-+    return free, None
-+
-+
-+def _scheduler_rank(scheduler, rank):
-+    value = getattr(scheduler, rank, None)
-+    if value is None:
-+        process_state = getattr(scheduler, "ps", None)
-+        value = getattr(process_state, rank, None)
-+    return _integer(value)
-+
-+
-+def host_pool_observability(scheduler, *, role):
-+    """Return schema v1, scoped to this returned scheduler worker and snapshot."""
-+    started = time.time_ns() // 1_000_000
-+    report = {
-+        "schema": "sglang.host-pool-observability.v1",
-+        "scope": "host_pool_data_tensor_storages",
-+        "identity_scope": "this_worker_snapshot_only",
-+        "consistency": "capacity_per_pool_lock_backing_best_effort",
-+        "worker": {
-+            "pid": os.getpid(),
-+            "role": role,
-+            **{
-+                rank: _scheduler_rank(scheduler, rank)
-+                for rank in ("tp_rank", "pp_rank", "dp_rank")
-+            },
-+        },
-+        "parallel_state": {
-+            "tp_rank": _scheduler_rank(scheduler, "tp_rank"),
-+            "pp_rank": _scheduler_rank(scheduler, "pp_rank"),
-+            "dp_rank": _scheduler_rank(scheduler, "dp_rank"),
-+            "tp_size": _integer(
-+                getattr(getattr(scheduler, "ps", None), "tp_size", None)
-+            ),
-+            "pp_size": _integer(
-+                getattr(getattr(scheduler, "ps", None), "pp_size", None)
-+            ),
-+            "dp_size": _integer(
-+                getattr(getattr(scheduler, "ps", None), "dp_size", None)
-+            ),
-+            "dp_disabled": _scheduler_rank(scheduler, "dp_rank") is None
-+            or _integer(getattr(getattr(scheduler, "ps", None), "dp_size", None))
-+            in (None, 1),
-+            "source": "scheduler.ps",
-+        },
-+        "capture_started_unix_ms": started,
-+        "groups": [],
-+        "backings": [],
-+        "metadata_bytes": None,
-+        "metadata_status": "unknown",
-+        "allocator_overhead_bytes": None,
-+        "allocator_ownership_status": "unknown",
-+        "limits": {"entries": MAX_ENTRIES, "tensors": MAX_TENSORS},
-+        "logical_capacity_sum_semantics": "entry_capacities_including_aliases_not_usable_token_budget",
-+        "unique_backing_bytes_semantics": "union_of_observed_cpu_storage_address_spans",
-+    }
-+    # Keep Tensor/storage references alive until all address-based unions finish.
-+    references = []
-+    storages = {}
-+    all_intervals = []
-+    entry_count = tensor_count = 0
-+    complete = True
-+    for group_name, group in _groups(scheduler):
-+        group_complete = True
-+        entries = getattr(group, "entries", None)
-+        if entries is None:
-+            entries = [("kv", group)]
-+        elif isinstance(entries, (list, tuple)):
-+            if len(entries) > MAX_ENTRIES - entry_count:
-+                complete = group_complete = False
-+            entries = [
-+                (getattr(entry.name, "value", entry.name), entry.host_pool)
-+                for entry in entries[: MAX_ENTRIES - entry_count]
-+            ]
-+        else:
-+            complete = group_complete = False
-+            entries = []
-+        # Reuse the same owner's snapshot for its entry and every sidecar,
-+        # independent of entry order. Never reacquire an owner or nest locks.
-+        snapshots = {}
-+        for _, pool in entries:
-+            if id(pool) not in snapshots:
-+                snapshots[id(pool)] = _capacity_snapshot(pool)
-+        named_pools = {}
-+        for name, pool in entries:
-+            named_pools.setdefault(name, []).append(pool)
-+        sources = _state_index_sources(scheduler, group_name, group)
-+        group_result = {"name": group_name, "entries": []}
-+        group_intervals = []
-+        for name, pool in entries:
-+            if entry_count >= MAX_ENTRIES:
-+                complete = group_complete = False
-+                break
-+            entry_count += 1
-+            result = {
-+                "name": str(name),
-+                "kind": type(pool).__name__,
-+                "layout": getattr(pool, "layout", None),
-+                "page_size": _integer(getattr(pool, "page_size", None)),
-+                "capacity_unit": "token_slots",
-+                "sizing_inputs": {
-+                    field: _integer(getattr(pool, field, None))
-+                    for field in SIZING_FIELDS
-+                },
-+                "pin_memory_configured": getattr(pool, "pin_memory", None),
-+                "allocator_class": (
-+                    type(pool.allocator).__name__
-+                    if getattr(pool, "allocator", None) is not None
-+                    else None
-+                ),
-+                "allocator_ownership_status": "unknown",
-+                "metadata_bytes": None,
-+                "metadata_status": "unknown",
-+                "tensors": [],
-+                "issues": [],
-+            }
-+            if type(pool).__name__ not in SUPPORTED_POOL_KINDS:
-+                result["issues"].append("unsupported_pool_kind")
-+            intervals = []
-+            snapshot = snapshots[id(pool)]
-+            capacity, logical, free = (
-+                snapshot[key] for key in ("capacity", "logical", "free")
-+            )
-+            result["issues"].extend(snapshot["issues"])
-+            if type(pool).__name__ == "DeepSeekV4StateHostPool":
-+                result["occupancy_source"] = sources.get(name)
-+                result["occupancy_semantics"] = "shared_transfer_indices"
-+                free, issue = _state_occupancy(
-+                    name, snapshot, sources, named_pools, snapshots
-+                )
-+                if issue:
-+                    result["issues"].append(issue)
-+            valid = (
-+                capacity is not None
-+                and logical is not None
-+                and free is not None
-+                and capacity >= 0
-+                and 0 <= free <= logical
-+            )
-+            result["logical_capacity"] = logical
-+            result["logical_free"] = free if valid else None
-+            result["logical_used"] = logical - free if valid else None
-+            result["physical_slot_capacity"] = capacity
-+            # DCP logical indices can share physical rows. Free-list length
-+            # alone does not prove which physical rows are occupied.
-+            physical_known = valid and capacity == logical
-+            result["physical_slot_free"] = free if physical_known else None
-+            result["physical_slot_used"] = logical - free if physical_known else None
-+            result["capacity_status"] = "observed" if physical_known else "unknown"
-+            if not physical_known:
-+                result["issues"].append("physical_occupancy_unknown")
-+            backing_issue_start = len(result["issues"])
-+            for field in DATA_FIELDS:
-+                value = getattr(pool, field, None)
-+                if value is None:
-+                    continue
-+                tensors = value if isinstance(value, (list, tuple)) else (value,)
-+                if len(tensors) > MAX_TENSORS - tensor_count:
-+                    result["issues"].append("tensor_limit")
-+                for index, tensor in enumerate(tensors[: MAX_TENSORS - tensor_count]):
-+                    tensor_count += 1
-+                    if (
-+                        not isinstance(tensor, torch.Tensor)
-+                        or tensor.device.type != "cpu"
-+                    ):
-+                        result["issues"].append("non_cpu_or_unknown_tensor")
-+                        continue
-+                    try:
-+                        storage = tensor.untyped_storage()
-+                        references.extend((tensor, storage))
-+                        start, size = storage.data_ptr(), storage.nbytes()
-+                        key = (start, size)
-+                        if key not in storages:
-+                            backing_id = f"backing_{len(storages)}"
-+                            storages[key] = backing_id
-+                            report["backings"].append(
-+                                {"id": backing_id, "storage_bytes": size}
-+                            )
-+                        offset = tensor.storage_offset() * tensor.element_size()
-+                        extent = (
-+                            0
-+                            if tensor.numel() == 0
-+                            else (
-+                                1
-+                                + sum(
-+                                    (dim - 1) * stride
-+                                    for dim, stride in zip(
-+                                        tensor.shape, tensor.stride()
-+                                    )
-+                                )
-+                            )
-+                            * tensor.element_size()
-+                        )
-+                        if (
-+                            any(stride < 0 for stride in tensor.stride())
-+                            or offset + extent > size
-+                        ):
-+                            raise ValueError("unsupported span")
-+                        result["tensors"].append(
-+                            {
-+                                "field": field,
-+                                "index": index,
-+                                "backing_id": storages[key],
-+                                "storage_bytes": size,
-+                                "byte_offset": offset,
-+                                "byte_span": extent,
-+                                "tensor_bytes": tensor.numel() * tensor.element_size(),
-+                                "contiguous": tensor.is_contiguous(),
-+                                "torch_is_pinned": tensor.is_pinned(),
-+                            }
-+                        )
-+                        intervals.append((start, start + size))
-+                    except Exception:
-+                        result["issues"].append("tensor_storage_unavailable")
-+            # The DSv4 anchor explicitly owns no KV storage. Other missing
-+            # buffers are unknown, never an invented zero-byte allocation.
-+            if not result["tensors"] and type(pool).__name__ != "LogicalHostPool":
-+                result["issues"].append("data_backing_unavailable")
-+            result["backing_status"] = (
-+                "observed"
-+                if len(result["issues"]) == backing_issue_start
-+                and type(pool).__name__ in SUPPORTED_POOL_KINDS
-+                else "unknown"
-+            )
-+            result["issues"] = sorted(set(result["issues"]))
-+            result["status"] = "complete" if not result["issues"] else "incomplete"
-+            result["observed_unique_backing_bytes"] = _union_bytes(intervals)
-+            result["unique_backing_bytes"] = (
-+                result["observed_unique_backing_bytes"]
-+                if not result["issues"]
-+                else None
-+            )
-+            group_complete &= not result["issues"]
-+            group_intervals.extend(intervals)
-+            group_result["entries"].append(result)
-+        group_result["status"] = "complete" if group_complete else "incomplete"
-+        group_result["observed_unique_backing_bytes"] = _union_bytes(group_intervals)
-+        group_result["unique_backing_bytes"] = (
-+            group_result["observed_unique_backing_bytes"] if group_complete else None
-+        )
-+        group_result["logical_capacity_sum"] = (
-+            sum(entry["logical_capacity"] for entry in group_result["entries"])
-+            if all(
-+                entry["logical_capacity"] is not None
-+                for entry in group_result["entries"]
-+            )
-+            else None
-+        )
-+        all_intervals.extend(group_intervals)
-+        complete &= group_complete
-+        report["groups"].append(group_result)
-+    # Distinct torch storage wrappers may still overlap the same allocation
-+    # (e.g. frombuffer). Expose relative overlap coordinates, never addresses.
-+    components = []
-+    for start, stop in sorted(set(all_intervals)):
-+        if components and start < components[-1][1]:
-+            components[-1][1] = max(components[-1][1], stop)
-+        else:
-+            components.append([start, stop])
-+    report["allocations"] = [
-+        {"id": f"allocation_{index}", "bytes": stop - start}
-+        for index, (start, stop) in enumerate(components)
-+    ]
-+    component_index = 0
-+    backing_rows = {row["id"]: row for row in report["backings"]}
-+    for (start, size), backing_id in sorted(storages.items()):
-+        while (
-+            component_index + 1 < len(components)
-+            and start >= components[component_index][1]
-+        ):
-+            component_index += 1
-+        if components:
-+            backing_rows[backing_id].update(
-+                allocation_id=f"allocation_{component_index}",
-+                allocation_byte_offset=start - components[component_index][0],
-+            )
-+    report["status"] = (
-+        "not_present"
-+        if not report["groups"]
-+        else "complete"
-+        if complete
-+        else "incomplete"
-+    )
-+    report["observed_unique_backing_bytes"] = _union_bytes(all_intervals)
-+    report["unique_backing_bytes"] = (
-+        report["observed_unique_backing_bytes"] if complete else None
-+    )
-+    report["logical_capacity_sum"] = (
-+        sum(group["logical_capacity_sum"] for group in report["groups"])
-+        if complete
-+        and all(group["logical_capacity_sum"] is not None for group in report["groups"])
-+        else None
-+    )
-+    report["capture_finished_unix_ms"] = time.time_ns() // 1_000_000
-+    return report
 diff --git a/python/sglang/utils.py b/python/sglang/utils.py
 index 568026dd527858f454d10eae8464f6aea2e761a3..51a8be28ac37a63bc00a7fc5d17e5c7cf3b3167d 100644
 --- a/python/sglang/utils.py
@@ -22266,7 +21764,7 @@ index 37a27a1a303a8974798c51cb8e4b36702a9d511a..a3643e14803c1e2d4584d2d0076b94ea
              try:
 diff --git a/test/manual/phala/test_pd_runtime_cleanup_cpu.py b/test/manual/phala/test_pd_runtime_cleanup_cpu.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..27c9b1e96ce9606636b1a1133b203ff4f688e977
+index 0000000000000000000000000000000000000000..ef83740e3234897b3e88b02c99e3366345500489
 --- /dev/null
 +++ b/test/manual/phala/test_pd_runtime_cleanup_cpu.py
 @@ -0,0 +1,105 @@
@@ -22311,7 +21809,7 @@ index 0000000000000000000000000000000000000000..27c9b1e96ce9606636b1a1133b203ff4
 +            r"cold_shared_read|SGLANG_MOONCAKE_PD_TRANSFER_DIAGNOSTICS|"
 +            r"SGLANG_PD_BATCH_DIAGNOSTICS|batch_memory_replica_clear|"
 +            r"batch_transfer_sync_diagnostic|diagnostic_snapshot|"
-+            r"/shared-cache/(?:memory|snapshot)|SharedCacheClearMemory"
++            r"/shared-cache/(?:memory|snapshot)|SharedCacheClearMemory|host_pool_observability"
 +        )
 +        roots = [
 +            (SRT, "*.py"),
@@ -23693,442 +23191,6 @@ index 9046a6941516d48a46942d98de3740d1a64cb777..b471ca964d1466babf4fb81ee2090497
              patch.object(
                  assembler, "_deepseek_v4_num_host_pages", return_value=(2, 0, 0)
              ),
-diff --git a/test/registered/unit/mem_cache/test_host_pool_observability.py b/test/registered/unit/mem_cache/test_host_pool_observability.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..2a24534c6423326cfcda403313073a80e01b3bea
---- /dev/null
-+++ b/test/registered/unit/mem_cache/test_host_pool_observability.py
-@@ -0,0 +1,430 @@
-+"""CPU-only tests of the production serializer with real torch storages."""
-+
-+import ast
-+import importlib.util
-+import json
-+import sys
-+import threading
-+import types
-+import unittest
-+from pathlib import Path
-+from types import SimpleNamespace
-+
-+import torch
-+
-+ROOT = Path(__file__).resolve().parents[4]
-+if importlib.util.find_spec("sglang") is None:
-+    for package in ("sglang", "sglang.test", "sglang.test.ci"):
-+        source_package = types.ModuleType(package)
-+        source_package.__path__ = [str(ROOT / "python" / package.replace(".", "/"))]
-+        source_package.__spec__ = importlib.util.spec_from_loader(
-+            package, loader=None, is_package=True
-+        )
-+        sys.modules[package] = source_package
-+
-+from sglang.test.ci.ci_register import register_cpu_ci
-+
-+register_cpu_ci(est_time=2, suite="base-a-test-cpu")
-+
-+MODULE_PATH = ROOT / "python/sglang/srt/observability/host_pool.py"
-+spec = importlib.util.spec_from_file_location("host_pool_observability", MODULE_PATH)
-+observer = importlib.util.module_from_spec(spec)
-+spec.loader.exec_module(observer)
-+
-+
-+class DeepSeekV4PagedHostPool:
-+    """Lightweight known-pool metadata; all tensor/storage methods are real."""
-+
-+    def __init__(self, buffer, *, capacity=32, free=24):
-+        self.kv_buffer = buffer
-+        self.size = self.logical_size = capacity
-+        self.free = free
-+        self.page_size = 4
-+        self.layout = "layer_first"
-+        self.item_bytes = 16
-+        self.pin_memory = False
-+        self.lock = threading.RLock()
-+
-+    def available_size(self):
-+        return self.free
-+
-+
-+def group(**pools):
-+    return SimpleNamespace(
-+        entries=[
-+            SimpleNamespace(name=name, host_pool=pool) for name, pool in pools.items()
-+        ]
-+    )
-+
-+
-+def scheduler(primary=None, writeback=None):
-+    return SimpleNamespace(
-+        tree_cache=SimpleNamespace(host_pool_group=primary),
-+        decode_offload_manager=SimpleNamespace(decode_host_mem_pool=writeback),
-+        tp_rank=0,
-+        pp_rank=0,
-+        dp_rank=0,
-+    )
-+
-+
-+def state_pool():
-+    # Use the real unsupported free-list contract, not a mock returning zero.
-+    path = MODULE_PATH.parents[1] / "mem_cache/memory_pool_host.py"
-+    tree = ast.parse(path.read_text(encoding="utf-8"))
-+    owner = next(
-+        n
-+        for n in tree.body
-+        if isinstance(n, ast.ClassDef) and n.name == "DeepSeekV4StateHostPool"
-+    )
-+    method = next(
-+        n
-+        for n in owner.body
-+        if isinstance(n, ast.FunctionDef) and n.name == "available_size"
-+    )
-+    namespace = {}
-+    exec(
-+        compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"),
-+        namespace,
-+    )
-+    cls = type(
-+        "DeepSeekV4StateHostPool",
-+        (DeepSeekV4PagedHostPool,),
-+        {"available_size": namespace["available_size"]},
-+    )
-+    pool = cls(torch.zeros(16, dtype=torch.uint8))
-+    pool.pool_name = "deepseek_v4_c4_state"
-+    pool.swa_page_size = pool.page_size
-+    pool.num_host_pages = pool.size // pool.page_size
-+    return pool
-+
-+
-+def state_worker(*, decode=False, reverse=False):
-+    state = state_pool()
-+    swa = DeepSeekV4PagedHostPool(torch.zeros(32, dtype=torch.uint8))
-+    swa.num_host_pages = swa.size // swa.page_size
-+    pools = {"swa": swa, "deepseek_v4_c4_state": state}
-+    if reverse:
-+        pools = dict(reversed(list(pools.items())))
-+    g = group(**pools)
-+    worker = scheduler(writeback=g) if decode else scheduler(primary=g)
-+    owner = worker.decode_offload_manager if decode else worker.tree_cache
-+    specs = [SimpleNamespace(pool_name="deepseek_v4_c4_state", indices_from_pool="swa")]
-+    setattr(owner, "sidecar_specs" if decode else "sidecar_pool_specs", specs)
-+    return worker, swa, state
-+
-+
-+class TestHostPoolObservability(unittest.TestCase):
-+    def test_real_views_group_and_worker_alias_dedup(self):
-+        buffer = torch.arange(64, dtype=torch.float32)
-+        pool = DeepSeekV4PagedHostPool(buffer)
-+        pool.v_buffer = buffer[4:20:2]
-+        writeback_alias = DeepSeekV4PagedHostPool(buffer[16:32])
-+        independent = DeepSeekV4PagedHostPool(torch.zeros(8, dtype=torch.uint8))
-+        report = observer.host_pool_observability(
-+            scheduler(group(c4=pool), group(c4=writeback_alias, state=independent)),
-+            role="decode",
-+        )
-+        self.assertEqual(report["status"], "complete")
-+        self.assertEqual(report["unique_backing_bytes"], 264)
-+        self.assertEqual(report["logical_capacity_sum"], 96)
-+        self.assertEqual(
-+            [g["unique_backing_bytes"] for g in report["groups"]], [256, 264]
-+        )
-+        entry = report["groups"][0]["entries"][0]
-+        self.assertEqual(entry["logical_capacity"], 32)
-+        self.assertEqual(entry["physical_slot_used"], 8)
-+        self.assertEqual(entry["physical_slot_free"], 24)
-+        first, view = entry["tensors"]
-+        self.assertEqual(first["backing_id"], view["backing_id"])
-+        self.assertEqual(view["byte_offset"], 16)
-+        self.assertEqual(view["byte_span"], 60)
-+        self.assertEqual(view["tensor_bytes"], 32)
-+        self.assertFalse(view["contiguous"])
-+        self.assertIsNone(entry["metadata_bytes"])
-+        self.assertEqual(entry["metadata_status"], "unknown")
-+        self.assertEqual(entry["allocator_ownership_status"], "unknown")
-+        self.assertIsNone(entry["allocator_class"])
-+        payload = json.dumps(report)
-+        self.assertNotIn(str(buffer.data_ptr()), payload)
-+        self.assertNotIn(hex(buffer.data_ptr()), payload)
-+        self.assertNotIn("HugeTLB", payload)
-+
-+    def test_overlapping_distinct_storage_wrappers(self):
-+        backing = bytearray(128)
-+        first = torch.frombuffer(backing, dtype=torch.uint8, count=96)
-+        second = torch.frombuffer(backing, dtype=torch.uint8, count=96, offset=32)
-+        self.assertNotEqual(
-+            first.untyped_storage().data_ptr(), second.untyped_storage().data_ptr()
-+        )
-+        report = observer.host_pool_observability(
-+            scheduler(
-+                group(
-+                    c4=DeepSeekV4PagedHostPool(first),
-+                    c128=DeepSeekV4PagedHostPool(second),
-+                )
-+            ),
-+            role="prefill",
-+        )
-+        self.assertEqual(report["unique_backing_bytes"], 128)
-+        self.assertEqual(len(report["allocations"]), 1)
-+        rows = report["backings"]
-+        self.assertEqual(rows[0]["allocation_id"], rows[1]["allocation_id"])
-+        self.assertEqual(sorted(r["allocation_byte_offset"] for r in rows), [0, 32])
-+
-+    def test_missing_data_and_capacity_are_unknown(self):
-+        pool = DeepSeekV4PagedHostPool(None)
-+        pool.logical_size = None
-+        report = observer.host_pool_observability(
-+            scheduler(group(state=pool)), role="decode"
-+        )
-+        entry = report["groups"][0]["entries"][0]
-+        self.assertEqual(report["status"], "incomplete")
-+        self.assertIsNone(report["unique_backing_bytes"])
-+        self.assertIsNone(entry["physical_slot_free"])
-+        self.assertIsNone(entry["unique_backing_bytes"])
-+
-+    def test_logical_anchor_has_no_data_but_metadata_unknown(self):
-+        anchor = type("LogicalHostPool", (DeepSeekV4PagedHostPool,), {})(None)
-+        report = observer.host_pool_observability(
-+            scheduler(group(kv=anchor)), role="prefill"
-+        )
-+        self.assertEqual(report["status"], "complete")
-+        self.assertEqual(report["unique_backing_bytes"], 0)
-+        self.assertIsNone(report["metadata_bytes"])
-+
-+    def test_dcp_does_not_invent_physical_occupancy(self):
-+        pool = DeepSeekV4PagedHostPool(
-+            torch.zeros(16, dtype=torch.uint8), capacity=16, free=24
-+        )
-+        pool.logical_size = 32
-+        pool.dcp_size = 2
-+        report = observer.host_pool_observability(
-+            scheduler(group(kv=pool)), role="prefill"
-+        )
-+        entry = report["groups"][0]["entries"][0]
-+        self.assertEqual(entry["logical_used"], 8)
-+        self.assertIsNone(entry["physical_slot_used"])
-+        self.assertEqual(entry["capacity_status"], "unknown")
-+
-+    def test_busy_lock_is_nonblocking_and_does_not_invent_zero(self):
-+        pool = DeepSeekV4PagedHostPool(torch.zeros(8))
-+        pool.lock = threading.Lock()
-+        with pool.lock:
-+            report = observer.host_pool_observability(
-+                scheduler(group(kv=pool)), role="decode"
-+            )
-+        entry = report["groups"][0]["entries"][0]
-+        self.assertIn("capacity_lock_unavailable", entry["issues"])
-+        self.assertIsNone(entry["physical_slot_used"])
-+
-+    def test_bounded_entries_and_tensors_are_incomplete(self):
-+        buffer = torch.zeros(1)
-+        report = observer.host_pool_observability(
-+            scheduler(
-+                group(kv=DeepSeekV4PagedHostPool([buffer] * (observer.MAX_TENSORS + 1)))
-+            ),
-+            role="decode",
-+        )
-+        self.assertEqual(report["status"], "incomplete")
-+        self.assertEqual(
-+            len(report["groups"][0]["entries"][0]["tensors"]), observer.MAX_TENSORS
-+        )
-+        report = observer.host_pool_observability(
-+            scheduler(
-+                group(
-+                    **{
-+                        str(i): DeepSeekV4PagedHostPool(buffer)
-+                        for i in range(observer.MAX_ENTRIES + 1)
-+                    }
-+                )
-+            ),
-+            role="prefill",
-+        )
-+        self.assertEqual(report["status"], "incomplete")
-+        self.assertEqual(report["groups"][0]["status"], "incomplete")
-+        self.assertIsNone(report["groups"][0]["unique_backing_bytes"])
-+
-+    def test_scheduler_readback_hook_and_fail_closed_error(self):
-+        # Execute the actual scheduler hook without importing GPU worker code.
-+        path = MODULE_PATH.parents[1] / "managers/scheduler.py"
-+        tree = ast.parse(path.read_text())
-+        method = next(
-+            node
-+            for node in ast.walk(tree)
-+            if isinstance(node, ast.FunctionDef) and node.name == "get_internal_state"
-+        )
-+        hook = next(
-+            node
-+            for node in method.body
-+            if isinstance(node, ast.Try)
-+            and "host_pool_observability" in ast.unparse(node)
-+        )
-+        code = compile(ast.Module(body=[hook], type_ignores=[]), str(path), "exec")
-+        state = {}
-+        namespace = dict(
-+            ret=state,
-+            self=scheduler(group(c4=DeepSeekV4PagedHostPool(torch.zeros(8)))),
-+            get_disagg=lambda: SimpleNamespace(disaggregation_mode="prefill"),
-+            host_pool_observability=observer.host_pool_observability,
-+        )
-+        exec(code, namespace)
-+        self.assertEqual(state["host_pool_observability"]["worker"]["role"], "prefill")
-+        self.assertEqual(state["host_pool_observability"]["unique_backing_bytes"], 32)
-+
-+        def unavailable(*args, **kwargs):
-+            raise RuntimeError("private path and address")
-+
-+        namespace["host_pool_observability"] = unavailable
-+        exec(code, namespace)
-+        self.assertEqual(state["host_pool_observability"]["status"], "incomplete")
-+        self.assertIsNone(state["host_pool_observability"]["unique_backing_bytes"])
-+        self.assertNotIn("private", json.dumps(state))
-+
-+    def test_unreviewed_pool_kind_is_incomplete(self):
-+        pool = type("FutureHostPool", (DeepSeekV4PagedHostPool,), {})(torch.zeros(8))
-+        report = observer.host_pool_observability(
-+            scheduler(group(kv=pool)), role="prefill"
-+        )
-+        self.assertEqual(report["status"], "incomplete")
-+        self.assertIsNone(report["unique_backing_bytes"])
-+        self.assertIn(
-+            "unsupported_pool_kind", report["groups"][0]["entries"][0]["issues"]
-+        )
-+
-+    def test_state_uses_actual_declared_swa_snapshot_in_both_roles(self):
-+        for decode in (False, True):
-+            for reverse in (False, True):
-+                with self.subTest(decode=decode, reverse=reverse):
-+                    worker, swa, state = state_worker(decode=decode, reverse=reverse)
-+                    with self.assertRaisesRegex(NotImplementedError, "reuses SWA"):
-+                        state.available_size()
-+                    calls = []
-+
-+                    def changing_free():
-+                        calls.append(True)
-+                        return 24 if len(calls) == 1 else 0
-+
-+                    swa.available_size = changing_free
-+                    report = observer.host_pool_observability(
-+                        worker, role="decode" if decode else "prefill"
-+                    )
-+                    self.assertEqual(report["status"], "complete")
-+                    self.assertEqual(len(calls), 1)
-+                    self.assertEqual(report["unique_backing_bytes"], 48)
-+                    entries = {e["name"]: e for e in report["groups"][0]["entries"]}
-+                    sidecar = entries["deepseek_v4_c4_state"]
-+                    self.assertEqual(sidecar["occupancy_source"], "swa")
-+                    self.assertEqual(
-+                        sidecar["occupancy_semantics"], "shared_transfer_indices"
-+                    )
-+                    self.assertEqual(sidecar["physical_slot_used"], 8)
-+                    self.assertEqual(sidecar["physical_slot_free"], 24)
-+                    self.assertEqual(
-+                        sidecar["physical_slot_free"],
-+                        entries["swa"]["physical_slot_free"],
-+                    )
-+                    self.assertEqual(sidecar["backing_status"], "observed")
-+                    self.assertEqual(swa.free, 24)
-+
-+    def assert_state_unknown(self, worker):
-+        report = observer.host_pool_observability(worker, role="prefill")
-+        state = next(
-+            e
-+            for e in report["groups"][0]["entries"]
-+            if e["name"] == "deepseek_v4_c4_state"
-+        )
-+        self.assertEqual(report["status"], "incomplete")
-+        self.assertIsNone(report["unique_backing_bytes"])
-+        self.assertIsNone(state["logical_free"])
-+        self.assertIsNone(state["physical_slot_used"])
-+        self.assertEqual(state["backing_status"], "observed")
-+        self.assertEqual(state["observed_unique_backing_bytes"], 16)
-+        return state
-+
-+    def test_state_missing_owner_or_declaration_stays_unknown(self):
-+        for mode in (
-+            "missing_owner",
-+            "missing_declaration",
-+            "wrong_owner",
-+            "duplicate_declaration",
-+            "duplicate_owner",
-+        ):
-+            with self.subTest(mode=mode):
-+                worker, swa, state = state_worker()
-+                cache = worker.tree_cache
-+                if mode == "missing_owner":
-+                    cache.host_pool_group.entries = cache.host_pool_group.entries[1:]
-+                elif mode == "missing_declaration":
-+                    cache.sidecar_pool_specs = []
-+                elif mode == "wrong_owner":
-+                    cache.sidecar_pool_specs[0].indices_from_pool = "kv"
-+                elif mode == "duplicate_declaration":
-+                    cache.sidecar_pool_specs *= 2
-+                else:
-+                    cache.host_pool_group.entries.append(
-+                        cache.host_pool_group.entries[0]
-+                    )
-+                self.assertIn(
-+                    "occupancy_owner_unavailable",
-+                    self.assert_state_unknown(worker)["issues"],
-+                )
-+
-+    def test_state_geometry_mismatch_does_not_infer_occupancy(self):
-+        for target, field, value in (
-+            ("state", "size", 16),
-+            ("state", "logical_size", 16),
-+            ("state", "page_size", 8),
-+            ("state", "swa_page_size", 8),
-+            ("state", "num_host_pages", 7),
-+            ("swa", "num_host_pages", 7),
-+            ("swa", "logical_size", 64),
-+            ("swa", "free", 25),
-+        ):
-+            with self.subTest(target=target, field=field):
-+                worker, swa, state = state_worker()
-+                setattr(state if target == "state" else swa, field, value)
-+                self.assertIn(
-+                    "occupancy_owner_geometry_mismatch",
-+                    self.assert_state_unknown(worker)["issues"],
-+                )
-+
-+    def test_state_and_owner_busy_locks_are_nonblocking(self):
-+        for busy in ("state", "swa"):
-+            with self.subTest(busy=busy):
-+                worker, swa, state = state_worker(reverse=True)
-+                pool = state if busy == "state" else swa
-+                pool.lock = threading.Lock()
-+                with pool.lock:
-+                    self.assert_state_unknown(worker)
-+                # Failure never leaves another lock held.
-+                self.assertTrue(swa.lock.acquire(blocking=False))
-+                swa.lock.release()
-+                self.assertTrue(state.lock.acquire(blocking=False))
-+                state.lock.release()
-+
-+    def test_state_owner_snapshot_failure_is_not_free_zero(self):
-+        worker, swa, state = state_worker()
-+
-+        def unavailable():
-+            raise RuntimeError("private detail")
-+
-+        swa.available_size = unavailable
-+        result = self.assert_state_unknown(worker)
-+        self.assertIn("occupancy_owner_unavailable", result["issues"])
-+        self.assertNotIn("private", json.dumps(result))
-+
-+    def test_absent_and_existing_controller_path(self):
-+        self.assertEqual(
-+            observer.host_pool_observability(scheduler(), role="null")["status"],
-+            "not_present",
-+        )
-+        worker = scheduler()
-+        worker.tree_cache.cache_controller = SimpleNamespace(
-+            mem_pool_host=DeepSeekV4PagedHostPool(torch.zeros(2))
-+        )
-+        report = observer.host_pool_observability(worker, role="prefill")
-+        self.assertEqual(report["unique_backing_bytes"], 8)
-+
-+
-+if __name__ == "__main__":
-+    unittest.main()
 diff --git a/test/registered/unit/mem_cache/test_pool_host_allocator_config.py b/test/registered/unit/mem_cache/test_pool_host_allocator_config.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..29ca31b6da3590018e1bc0cc3eb89fd7d7d587b5
