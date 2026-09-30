@@ -1,0 +1,423 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index cb09eb95dee5e723269ab940ebeb5a838f83ffc3..7101141b431c42543f56c9f5e8b76082018282e3 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -1164,8 +1164,8 @@ async def clear_hicache_storage_backend():
+     )
+ 
+ 
+-async def _read_shared_cache_clear_selectors(request: Request) -> dict[str, str]:
+-    max_body_bytes = 512
++async def _read_shared_cache_clear_selectors(request: Request) -> dict:
++    max_body_bytes = 64 * 1024
+     await validate_json_request(request)
+     content_length = request.headers.get("content-length")
+     if content_length is not None:
+@@ -1186,11 +1186,11 @@ async def _read_shared_cache_clear_selectors(request: Request) -> dict[str, str]
+         body.extend(chunk)
+     from sglang.srt.managers.shared_cache_control import (
+         SharedCacheControlError,
+-        parse_clear_selector_body,
++        parse_memory_clear_body,
+     )
+ 
+     try:
+-        value = parse_clear_selector_body(bytes(body), maximum=max_body_bytes)
++        value = parse_memory_clear_body(bytes(body))
+     except SharedCacheControlError as exc:
+         status = 413 if exc.reason == "request_body_too_large" else 422
+         if exc.reason == "invalid_json":
+@@ -1202,7 +1202,7 @@ async def _read_shared_cache_clear_selectors(request: Request) -> dict[str, str]
+ @app.api_route("/shared-cache/memory/clear", methods=["POST"])
+ @auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def clear_shared_cache_memory(request: Request):
+-    """Run the configured one-shot clear for the original D writer store."""
++    """Clear bounded MEMORY keys through the original D writer store."""
+     if not (get_serving().api_key or get_serving().admin_api_key):
+         return ORJSONResponse(
+             {"success": False, "reason": "api_token_required"},
+@@ -1210,9 +1210,7 @@ async def clear_shared_cache_memory(request: Request):
+         )
+     selectors = await _read_shared_cache_clear_selectors(request)
+     result = await _global_state.tokenizer_manager.clear_shared_cache_memory(
+-        manifest_id=selectors["manifest_id"],
+-        manifest_sha256=selectors["manifest_sha256"],
+-        request_id=selectors["request_id"],
++        **selectors,
+     )
+     return ORJSONResponse(
+         {
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index df3b50cd049ba68dc5a701c08fcff12a42423db6..7a79dc87d4ef2dcb2eeb4dcc3b1e129cb11223bb 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -1686,9 +1686,10 @@ class ClearHiCacheReqOutput(BaseReq, kw_only=True):
+ 
+ 
+ class SharedCacheClearMemoryReqInput(BaseReq, kw_only=True):
+-    manifest_id: str
+-    manifest_sha256: str
+-    request_id: str
++    manifest_id: str = ""
++    manifest_sha256: str = ""
++    request_id: str = ""
++    keys: Optional[List[str]] = None
+ 
+ 
+ class SharedCacheClearMemoryReqOutput(BaseReq, kw_only=True):
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 63349552e357b6ce842bd589a1da95f27dbef5f7..58880ef484f2bfadb23315d01932d993a27c7d41 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -278,6 +278,7 @@ from sglang.srt.managers.scheduler_components.weight_updater import (
+ from sglang.srt.managers.scheduler_input_blocker import SchedulerInputBlocker
+ from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+ from sglang.srt.managers.shared_cache_control import (
++    clear_current_memory,
+     SharedCacheControlError,
+     clear_from_configured_artifacts,
+     validate_clear_selectors,
+@@ -4934,6 +4935,31 @@ class Scheduler(
+             return SharedCacheClearMemoryReqOutput(
+                 success=False, reason="prior_clear_result_unknown", unknown=True
+             )
++        if recv_req.keys is not None:
++            try:
++                if (
++                    recv_req.manifest_id
++                    or recv_req.manifest_sha256
++                    or recv_req.request_id
++                ):
++                    raise SharedCacheControlError("invalid_selector_fields")
++                receipt = clear_current_memory(self, recv_req.keys)
++                return SharedCacheClearMemoryReqOutput(
++                    success=receipt["success"],
++                    receipt=receipt,
++                    reason="" if receipt["success"] else "memory_clear_incomplete",
++                )
++            except SharedCacheControlError as exc:
++                if exc.unknown:
++                    self._shared_cache_clear_unknown = True
++                return SharedCacheClearMemoryReqOutput(
++                    success=False, reason=exc.reason, unknown=exc.unknown
++                )
++            except Exception:
++                self._shared_cache_clear_unknown = True
++                return SharedCacheClearMemoryReqOutput(
++                    success=False, reason="clear_result_unknown", unknown=True
++                )
+         try:
+             validate_clear_selectors(
+                 recv_req.manifest_id,
+diff --git a/python/sglang/srt/managers/shared_cache_control.py b/python/sglang/srt/managers/shared_cache_control.py
+index 44733bc9650577785d5c0b7b2e7553010e7d4411..4872d1ec1becc290383ef4f865285eabb7522d51 100644
+--- a/python/sglang/srt/managers/shared_cache_control.py
++++ b/python/sglang/srt/managers/shared_cache_control.py
+@@ -1117,3 +1117,85 @@ def execute_bounded_clear(
+         "owner_drain": owner_drain,
+         "completed_at_unix_ms": now_ms(),
+     }
++
++
++def validate_memory_clear_keys(keys):
++    if (
++        not isinstance(keys, list)
++        or not 1 <= len(keys) <= MAX_KEYS
++        or any(
++            not isinstance(key, str)
++            or not key
++            or len(key.encode()) > 4096
++            or _FORBIDDEN_KEY.search(key)
++            for key in keys
++        )
++        or len(set(keys)) != len(keys)
++    ):
++        raise SharedCacheControlError("invalid_memory_clear_keys")
++
++
++def parse_memory_clear_body(body: bytes):
++    if not isinstance(body, bytes) or len(body) > 64 * 1024:
++        raise SharedCacheControlError("request_body_too_large")
++    try:
++        value = json.loads(body)
++    except (UnicodeDecodeError, json.JSONDecodeError):
++        raise SharedCacheControlError("invalid_json") from None
++    if isinstance(value, dict) and set(value) == {"keys"}:
++        validate_memory_clear_keys(value["keys"])
++        return value
++    # Preserve the old finite selector API and its original 512-byte bound.
++    return parse_clear_selector_body(body)
++
++
++def clear_current_memory(scheduler, keys):
++    """Original writer, current tenant, all MEMORY segments; no diagnostic gate."""
++    validate_memory_clear_keys(keys)
++    validate_single_decode_writer(scheduler.server_args, scheduler.disaggregation_mode)
++    backend = getattr(
++        getattr(
++            getattr(scheduler, "decode_offload_manager", None), "cache_controller", None
++        ),
++        "storage_backend",
++        None,
++    )
++    store = getattr(backend, "store", None)
++    clear = getattr(store, "batch_memory_replica_clear", None)
++    if not callable(clear):
++        raise SharedCacheControlError("native_memory_clear_unavailable")
++    tenant_id = getattr(getattr(backend, "config", None), "tenant_id", None)
++    if not isinstance(tenant_id, str) or not tenant_id:
++        raise SharedCacheControlError("store_tenant_missing")
++    drain = require_stable_drain(scheduler, quiet_ms=_CLEAR_QUIET_MS)
++    result = {}
++
++    def invoke():
++        try:
++            result["keys"] = clear(keys)
++        except Exception:
++            result["unknown"] = True
++
++    worker = threading.Thread(target=invoke, name="shared-memory-clear", daemon=True)
++    worker.start()
++    worker.join(30)
++    if worker.is_alive() or result.get("unknown"):
++        raise SharedCacheControlError("clear_result_unknown", unknown=True)
++    completed = result.get("keys")
++    if (
++        not isinstance(completed, list)
++        or any(not isinstance(k, str) for k in completed)
++        or len(completed) != len(set(completed))
++        or not set(completed).issubset(keys)
++    ):
++        raise SharedCacheControlError("invalid_native_clear_result", unknown=True)
++    if scheduler_drain_snapshot(scheduler) != drain:
++        raise SharedCacheControlError("scheduler_drain_changed", unknown=True)
++    return {
++        "success": set(completed) == set(keys),
++        "completed_keys": completed,
++        "remaining_keys": [key for key in keys if key not in completed],
++        "key_count": len(keys),
++        "tenant_id": tenant_id,
++        "scope": "MEMORY removed; local SSD metadata retained; SSD read not tested",
++    }
+diff --git a/python/sglang/srt/managers/tokenizer_control_mixin.py b/python/sglang/srt/managers/tokenizer_control_mixin.py
+index 36284eb675fe73028e945f7d72af1fe6f973bab5..6b0f21dd9dc03bca459f33ddfdfcbe5b904c441f 100644
+--- a/python/sglang/srt/managers/tokenizer_control_mixin.py
++++ b/python/sglang/srt/managers/tokenizer_control_mixin.py
+@@ -79,6 +79,7 @@ from sglang.srt.managers.io_struct import (
+ )
+ from sglang.srt.managers.load_snapshot import LoadSnapshot
+ from sglang.srt.managers.shared_cache_control import (
++    validate_memory_clear_keys,
+     SharedCacheControlError,
+     validate_clear_selectors,
+     validate_single_decode_writer,
+@@ -328,12 +329,18 @@ class TokenizerControlMixin:
+ 
+     async def clear_shared_cache_memory(
+         self: TokenizerManager,
+-        manifest_id: str,
+-        manifest_sha256: str,
+-        request_id: str,
++        manifest_id: str = "",
++        manifest_sha256: str = "",
++        request_id: str = "",
++        keys=None,
+     ) -> SharedCacheClearMemoryReqOutput:
+         try:
+-            validate_clear_selectors(manifest_id, manifest_sha256, request_id)
++            if keys is not None:
++                if manifest_id or manifest_sha256 or request_id:
++                    raise SharedCacheControlError("invalid_selector_fields")
++                validate_memory_clear_keys(keys)
++            else:
++                validate_clear_selectors(manifest_id, manifest_sha256, request_id)
+             validate_single_decode_writer(
+                 self.server_args, getattr(self, "disaggregation_mode", None)
+             )
+@@ -345,6 +352,7 @@ class TokenizerControlMixin:
+                 manifest_id=manifest_id,
+                 manifest_sha256=manifest_sha256,
+                 request_id=request_id,
++                keys=keys,
+             )
+         )
+         if len(results) != 1:
+diff --git a/test/manual/phala/test_repeat_memory_clear_cpu.py b/test/manual/phala/test_repeat_memory_clear_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..faf246913aa294d88c454627691d84d8785ae464
+--- /dev/null
++++ b/test/manual/phala/test_repeat_memory_clear_cpu.py
+@@ -0,0 +1,173 @@
++"""CPU source tests; native master/SSD behavior requires its own C++ tests."""
++
++import ast
++import importlib.util
++import json
++from pathlib import Path
++from queue import Queue
++from types import SimpleNamespace
++import unittest
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[3]
++PATH = ROOT / "python/sglang/srt/managers/shared_cache_control.py"
++spec = importlib.util.spec_from_file_location("control", PATH)
++m = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(m)
++
++
++def scheduler(completed=None):
++    calls = []
++
++    def clear(keys):
++        calls.append(list(keys))
++        return list(keys) if completed is None else completed
++
++    backend = SimpleNamespace(
++        store=SimpleNamespace(batch_memory_replica_clear=clear),
++        config=SimpleNamespace(tenant_id="tenant-current"),
++    )
++    controller = SimpleNamespace(
++        storage_backend=backend,
++        ack_backup_queue=Queue(),
++        backup_queue=Queue(),
++        ack_prefetch_queue=Queue(),
++    )
++    obj = SimpleNamespace(
++        decode_offload_manager=SimpleNamespace(cache_controller=controller),
++        is_fully_idle=lambda: True,
++        disaggregation_mode="decode",
++        server_args=SimpleNamespace(
++            tp_size=1, dp_size=1, pp_size=1, dcp_size=1, attn_cp_size=1, nnodes=1
++        ),
++    )
++    return obj, calls
++
++
++class Tests(unittest.TestCase):
++    def invoke(self, obj, keys):
++        # Actual drain predicate, zero sleep; deterministic CPU fixture only.
++        with patch.object(m.time, "monotonic", side_effect=[0, 1]):
++            return m.clear_current_memory(obj, keys)
++
++    def test_repeat_original_store_no_artifacts(self):
++        obj, calls = scheduler()
++        with patch.dict(m.os.environ, {}, clear=True):
++            for _ in range(2):
++                result = self.invoke(obj, ["k1", "k2"])
++                self.assertTrue(result["success"])
++                self.assertEqual(result["tenant_id"], "tenant-current")
++        self.assertEqual(calls, [["k1", "k2"], ["k1", "k2"]])
++
++    def test_partial_is_explicit(self):
++        obj, _ = scheduler(["k2"])
++        result = self.invoke(obj, ["k1", "k2"])
++        self.assertFalse(result["success"])
++        self.assertEqual(result["completed_keys"], ["k2"])
++        self.assertEqual(result["remaining_keys"], ["k1"])
++
++    def test_invalid_keys_refuse_before_native(self):
++        obj, calls = scheduler()
++        for keys in ([], ["a", "a"], ["*"], [""], [True], "a", ["a"] * 257):
++            with self.subTest(keys=keys), self.assertRaises(m.SharedCacheControlError):
++                m.clear_current_memory(obj, keys)
++        self.assertEqual(calls, [])
++
++    def test_busy_and_wrong_role_refuse(self):
++        obj, calls = scheduler()
++        obj.is_fully_idle = lambda: False
++        with self.assertRaises(m.SharedCacheControlError):
++            self.invoke(obj, ["k"])
++        obj.is_fully_idle = lambda: True
++        obj.disaggregation_mode = "prefill"
++        with self.assertRaises(m.SharedCacheControlError):
++            self.invoke(obj, ["k"])
++        self.assertEqual(calls, [])
++
++    def test_native_capability_and_tenant_required(self):
++        obj, calls = scheduler()
++        obj.decode_offload_manager.cache_controller.storage_backend.config.tenant_id = (
++            None
++        )
++        with self.assertRaises(m.SharedCacheControlError):
++            self.invoke(obj, ["k"])
++        self.assertEqual(calls, [])
++        obj, _ = scheduler()
++        obj.decode_offload_manager.cache_controller.storage_backend.store = object()
++        with self.assertRaises(m.SharedCacheControlError):
++            self.invoke(obj, ["k"])
++
++    def test_bad_native_result_is_unknown(self):
++        for result in (["other"], ["k", "k"], "k", [1]):
++            obj, _ = scheduler(result)
++            with (
++                self.subTest(result=result),
++                self.assertRaises(m.SharedCacheControlError) as exc,
++            ):
++                self.invoke(obj, ["k"])
++            self.assertTrue(exc.exception.unknown)
++
++    def test_body_legacy_preserved_and_new_strict(self):
++        legacy = {
++            "manifest_id": "old",
++            "manifest_sha256": "a" * 64,
++            "request_id": "old",
++        }
++        self.assertEqual(m.parse_memory_clear_body(json.dumps(legacy).encode()), legacy)
++        self.assertEqual(m.parse_memory_clear_body(b'{"keys":["k"]}'), {"keys": ["k"]})
++        for body in (
++            b'{"keys":["k"],"tenant_id":"other"}',
++            b'{"keys":["k"],"segment":""}',
++            b'{"keys":["k"],"manifest_id":"x"}',
++            b"x" * 65537,
++        ):
++            with self.assertRaises(m.SharedCacheControlError):
++                m.parse_memory_clear_body(body)
++
++    def test_actual_scheduler_handler_partial_and_unknown(self):
++        tree = ast.parse(
++            (ROOT / "python/sglang/srt/managers/scheduler.py").read_text(
++                encoding="utf-8"
++            )
++        )
++        method = next(
++            n
++            for n in ast.walk(tree)
++            if isinstance(n, ast.FunctionDef) and n.name == "clear_shared_cache_memory"
++        )
++        method.decorator_list = []
++        scope = {
++            "SharedCacheClearMemoryReqInput": SimpleNamespace,
++            "SharedCacheClearMemoryReqOutput": SimpleNamespace,
++            "SharedCacheControlError": m.SharedCacheControlError,
++            "clear_current_memory": lambda *args: {
++                "success": False,
++                "completed_keys": ["k1"],
++                "remaining_keys": ["k2"],
++            },
++        }
++        exec(
++            compile(ast.Module(body=[method], type_ignores=[]), "handler", "exec"),
++            scope,
++        )
++        obj = SimpleNamespace()
++        req = SimpleNamespace(
++            keys=["k1", "k2"], manifest_id="", manifest_sha256="", request_id=""
++        )
++        result = scope[method.name](obj, req)
++        self.assertFalse(result.success)
++        self.assertEqual(result.receipt["completed_keys"], ["k1"])
++
++        def unknown(*args):
++            raise m.SharedCacheControlError("unknown", unknown=True)
++
++        scope["clear_current_memory"] = unknown
++        result = scope[method.name](obj, req)
++        self.assertTrue(result.unknown)
++        self.assertTrue(obj._shared_cache_clear_unknown)
++        result = scope[method.name](obj, req)
++        self.assertEqual(result.reason, "prior_clear_result_unknown")
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "4861f033ac5b845782769fcbeddc54ff6ce87e34",
-      "fork_tree": "2554182e627040269b2e6a9e96a99f258e274081",
-      "fork_branch": "codex/r5-cold-pd-router-20260930",
+      "fork_commit": "da4851fb63b52c614f470e6ef6056436bda4e32d",
+      "fork_tree": "862118994e6b8f9fa070838d4f74cfda92acbf9b",
+      "fork_branch": "codex/r5-repeat-memory-clear-20260930",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..4861f033ac5b845782769fcbeddc54ff6ce87e34",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..da4851fb63b52c614f470e6ef6056436bda4e32d",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2699,11 +2699,46 @@
           "source_commit": "4861f033ac5b845782769fcbeddc54ff6ce87e34",
           "source_parent": "ef5fd69265407664e7efad0a3fd2b458c49c7c9a",
           "sha256": "ec58544e7c0c5239bd2da85e0c26d4121ba1520cfbe54ef38a7795b8e3a217cf"
+        },
+        {
+          "id": "0083-feat-repeat-bounded-memory-clear-through-original-decode-writer",
+          "path": "patches/common/0083-feat-repeat-bounded-memory-clear-through-original-decode-writer.patch",
+          "source_commit": "061a82b923235a4310d580c35797bcf23195d552",
+          "source_parent": "4861f033ac5b845782769fcbeddc54ff6ce87e34",
+          "sha256": "2c1af8ff444a2e796ef84b7b23697b5956e8609bb6581a5da6de0b15e27016af"
+        },
+        {
+          "id": "0084-test-cover-http-auth-partial-clear-and-unknown-outcomes",
+          "path": "patches/common/0084-test-cover-http-auth-partial-clear-and-unknown-outcomes.patch",
+          "source_commit": "18383ffbb76a5ad3271670c8ce7f415f87b4215d",
+          "source_parent": "061a82b923235a4310d580c35797bcf23195d552",
+          "sha256": "1642919769b83181205994db21ac228eabf3903e47479fb184b8bf80c0bdc1c0"
+        },
+        {
+          "id": "0085-test-run-repeat-memory-clear-regression-in-source-ci",
+          "path": "patches/common/0085-test-run-repeat-memory-clear-regression-in-source-ci.patch",
+          "source_commit": "c42d0428e32d979cd011b2f7d67b21770e3e22de",
+          "source_parent": "18383ffbb76a5ad3271670c8ce7f415f87b4215d",
+          "sha256": "792d500021bff5d3043c8f7430d7940dcdc738f20aa26834bbd7ec15a64c447b"
+        },
+        {
+          "id": "0086-fix-report-actual-prefill-boundary-without-double-counting-host-hits",
+          "path": "patches/common/0086-fix-report-actual-prefill-boundary-without-double-counting-host-hits.patch",
+          "source_commit": "cc3599aa5c4587c2079c1e45bb2994f32539b3eb",
+          "source_parent": "c42d0428e32d979cd011b2f7d67b21770e3e22de",
+          "sha256": "8912d2cb46e7d98df1140832a1ab43084470b7c4847c80120de40dd907e0bece"
+        },
+        {
+          "id": "0087-allow-fifteen-minute-ordinary-diagnostic-capture",
+          "path": "patches/common/0087-allow-fifteen-minute-ordinary-diagnostic-capture.patch",
+          "source_commit": "da4851fb63b52c614f470e6ef6056436bda4e32d",
+          "source_parent": "cc3599aa5c4587c2079c1e45bb2994f32539b3eb",
+          "sha256": "922289f1db9113c46d74a7d11037a61f6256b2b155249db03cc69fa5830e11e7"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "Shared owner and seed controls; R5 request-scoped cold shared-read bypass with router forwarding and explicit zero cache counters; source qualification",
+      "status": "exact_source_replay_repeat_memory_clear_and_bounded_diagnostics",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

@@ -59,6 +59,14 @@
       {
         "name": "shared-writer-owner-control",
         "path": "test/registered/cpu/test_shared_cache_control.py"
+      },
+      {
+        "name": "repeat-memory-clear",
+        "path": "test/manual/phala/test_repeat_memory_clear_cpu.py"
+      },
+      {
+        "name": "prefill-forward-and-ordinary-capture",
+        "path": "test/manual/phala/test_prefill_forward_diagnostic_cpu.py"
       }
     ],
     "model-fixtures": [

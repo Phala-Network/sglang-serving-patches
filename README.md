@@ -20,10 +20,16 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `4861f033ac5b845782769fcbeddc54ff6ce87e34`, tree
-`2554182e627040269b2e6a9e96a99f258e274081`: 31 protected steps plus 158 successor patches.
-The published router-only runtime source tag still binds `ef5fd69265407664e7efad0a3fd2b458c49c7c9a`;
-the successor changes only the installed-image forwarding test fixture.
+The active selector binds engine `da4851fb63b52c614f470e6ef6056436bda4e32d`, tree
+`862118994e6b8f9fa070838d4f74cfda92acbf9b`: 31 protected steps plus 163 successor patches.
+The successor adds repeatable original-writer MEMORY-only clear while retaining
+readable SSD, correct prefill diagnostic H accounting, and bounded repeated
+ordinary capture with a fifteen-minute maximum. Partial and unknown clear
+outcomes remain explicit; master and SDK must use the matching native source.
+Ordinary SGLang capture starts at module initialization; native summary output
+retains its deadline behavior. The duration ceiling does not guarantee a usable
+window. Final dropped=0 summary and serial case terminal checks remain required;
+continuous sequence numbers alone do not prove capture completeness.
 It preserves the shared serving/model stack and adds trusted internal health
 with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
 batch completion diagnostics. Its server-only HMAC joins the external request,
@@ -58,8 +64,8 @@ historical coverage boundaries remain in the linked maintenance records.
 
 The [independent Mooncake manifest](native/mooncake/manifest.json) pins its public
 v0.3.13 base, complete patch hash and reproduced tree. CI replays that native
-patch independently of the 178-step engine stack. Native source `1df0440` adds
-independent owner-drain and backend capture windows. Its full CUDA wheel and
+patch independently of the 194-step engine stack. Native source `34e730c` adds
+MEMORY-only clear and bounded repeated capture with Unix sample times. Its full CUDA wheel and
 installed native API checks are required before publishing the shared owner image.
 
 ## Protected historical baseline

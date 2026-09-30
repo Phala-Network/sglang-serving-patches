@@ -3,13 +3,12 @@
   "upstream_repository": "https://github.com/kvcache-ai/Mooncake",
   "upstream_tag": "v0.3.13",
   "base_commit": "e5598b0992cc258b06d22f24d875480e8931a28e",
-  "source_commit": "1df0440570f129cdb33e29b4d6e7b3e34e62339d",
-  "source_tree": "5a173010f84bf340995140e3d331bc077fe8d273",
+  "source_commit": "34e730c745a8b235156254cb32db627c5ec5eb69",
+  "source_tree": "0d261146584df5ac6ce2ab7daf185790fcf34675",
   "source_commit_scope": "Local source provenance; reproduce the exact tree using the public upstream base and the deterministic patch.",
-  "patch": "native/mooncake/native-v0.3.13-1df0440.patch",
-  "patch_sha256": "35476b88e9fcdaff93b366a094670c00c8172e07360e815b04219684204e6218",
-  "bundle_sha256": "132921c31345165e50b951da5b4ec6ab43bfeb3d5a4166432e713c13f0389cba",
-  "wheel_version": "0.3.13+phala.shared.1df0440",
-  "scope": "Exact-key snapshot, actual PD batch diagnostics, owner drain and independent one-shot OwnerGlobal/backend capture windows.",
-  "qualification": "Assertions-enabled collector/runtime CPU checks and actual owner-end followed by backend read/promotion records passed. Full CUDA wheel, installed runtime and physical NVLink/shared acceptance remain separate gates."
+  "patch": "native/mooncake/native-v0.3.13-34e730c.patch",
+  "patch_sha256": "fd3cb2ecbb2e955d16a9a2971f85d75222e5cff0134227c7d26bf4873b0fc582",
+  "wheel_version": "0.3.13+phala.shared.34e730c",
+  "scope": "Original-writer repeatable MEMORY-only clear preserving readable SSD; bounded repeated native read diagnostics with Unix sample times.",
+  "qualification": "Linux development all-target build passed for MEMORY-only clear; final incremental target build, assertions-enabled diagnostic CPU fixture, and 10/10 clear tests passed on source_tree. Full image and field acceptance remain separate gates."
 }
