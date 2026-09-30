@@ -20,9 +20,12 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `d70b426a09acd0df5a6032687f3d431ff1df34e2`, tree
-`fc524c942e7c1d45d4bde2bf83bd81ec87b29d98`: 31 protected steps plus 118 successor patches.
-The P6 tail adds PD upstream cancellation ownership and atomic bootstrap status
+The active selector binds engine `a38491c4419923fef6d559b00146ca71edbcb30d`, tree
+`5206ccc359c66844677a847186c5e876f0e26c3c`: 31 protected steps plus 119 successor patches.
+This unpublished candidate adds bounded terminal whitespace to required Qwen-format tool calls
+used by Nemotron, retaining native schemas and call cardinality. Seven native CPU tests
+passed for the implementation; GPU and immutable-image acceptance remain pending.
+The inherited P6 tail adds PD upstream cancellation ownership and atomic bootstrap status
 transitions with cleared-room snapshot regressions.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128
 recovery, shared startup safety, trusted health and parallel

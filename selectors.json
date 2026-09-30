@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
-      "fork_branch": "codex/pd-lifecycle-p6-release",
+      "fork_commit": "a38491c4419923fef6d559b00146ca71edbcb30d",
+      "fork_tree": "5206ccc359c66844677a847186c5e876f0e26c3c",
+      "fork_branch": "codex/nemotron-required-tail-candidate",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d70b426a09acd0df5a6032687f3d431ff1df34e2",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..a38491c4419923fef6d559b00146ca71edbcb30d",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2418,12 +2418,19 @@
           "source_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
           "source_parent": "2196fbccbb504d2570476f43fa2580778bf96b14",
           "sha256": "d39e75c65f012e8c7ce54da57e0c2f55bf82643741fee67dbdaae2f378c2b6e8"
+        },
+        {
+          "id": "0093-required-tool-terminal-whitespace",
+          "path": "patches/models/qwen/0093-required-tool-terminal-whitespace.patch",
+          "source_commit": "a38491c4419923fef6d559b00146ca71edbcb30d",
+          "source_parent": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
+          "sha256": "e5a76186a205e522a9e70e0324705051c49fbc33b25536106364848b7e7f3c59"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "exact_source_replay_pd_lifecycle",
-      "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
+      "status": "exact_source_replay_nemotron_required_tail_candidate",
+      "validation_boundary": "Local candidate only. Native XGrammar CPU regression passed for identical implementation bytes; source replay is not GPU, image or production acceptance.",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
         "commit": "f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155",

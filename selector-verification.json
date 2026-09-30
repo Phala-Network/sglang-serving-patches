@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
-      "fork_branch": "codex/pd-lifecycle-p6-release",
-      "patch_count": 118,
+      "fork_commit": "a38491c4419923fef6d559b00146ca71edbcb30d",
+      "fork_tree": "5206ccc359c66844677a847186c5e876f0e26c3c",
+      "fork_branch": "codex/nemotron-required-tail-candidate",
+      "patch_count": 119,
       "replay_mode": "exact",
-      "status": "exact_source_replay_pd_lifecycle",
-      "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98"
+      "status": "exact_source_replay_nemotron_required_tail_candidate",
+      "validation_boundary": "Local candidate only. Native XGrammar CPU regression passed for identical implementation bytes; source replay is not GPU, image or production acceptance.",
+      "replay_tree": "5206ccc359c66844677a847186c5e876f0e26c3c"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
