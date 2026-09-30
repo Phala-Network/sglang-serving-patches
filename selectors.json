@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
-      "fork_tree": "57d1dcd43bebbdf89c2057e2ada776826d0681d8",
+      "fork_commit": "15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
+      "fork_tree": "16d4e4ba5e8f165d743cc0a07042313590fabfcf",
       "fork_branch": "codex/kimi-schema400-candidate",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2425,6 +2425,13 @@
           "source_commit": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
           "source_parent": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
           "sha256": "b7bd91558d9f697f6570274144e5f8ac7a7cbc5807c4d6ccefa5d1e6043825e5"
+        },
+        {
+          "id": "0094-kimi-installed-fixture-boundary",
+          "path": "patches/common/0094-kimi-installed-fixture-boundary.patch",
+          "source_commit": "15ea03f801a16c7395c6dcb8b6a5f39f32eeeece",
+          "source_parent": "bdd29d4c8d531ae09204da2f5135a96d4e1f84a5",
+          "sha256": "66e51efd4ae3da6c3ea0d19994b7e2a68d6ba5cc7227cd1babf830e5e26d14a4"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
