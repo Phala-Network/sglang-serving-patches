@@ -6,10 +6,13 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Current Candidate
+## Unified P7 source candidate
 
-- Active engine: `6f7fb4713946cb4ef913da89dfb62d71c6e82461`; tree `7d182dafbf142c484dbacee131e2c2f12ea6782b`.
-- Ordered stack: 31 protected plus 115 successor steps (146 total), verified by full replay.
+- Release engine for `v0.5.20-phala-unified-p7`: `b6d1f66162b0dfb9125ac30a45425e44bc4d59ca`; tree `ed1daec7995cc61cb94a1b145a34dc0595aaf3e1`. This merge preserves P6 history while selecting the P5 successor source tree.
+- The active selector retains its generated source commit `62e6e93314633cd6dd5cc24cde8701c0794714a5`, whose complete tree is identical to the release engine. Ordered stack: 31 protected plus 118 successor steps (149 total); no extra patch is needed for integration topology.
+- P7 adds Kimi schema prechecks and shared Nemotron required-tool whitespace handling. New P6 PD lifecycle changes stay isolated pending their owner acceptance; baseline PD capabilities remain.
+- Kimi native 6/6 and Nemotron native 7/7 passed on the source candidate. Muse P5 auto-tool quality differences remain under independent diagnosis; these fixes do not establish their resolution or acceptance of every model.
+- This source candidate prioritizes Kimi and shared successor validation. Final image/GPU acceptance is pending; all non-PD models must ultimately use one accepted image digest.
 - PD decode responses retain prefill device/host/storage hit counts and omit a backend name because the existing handoff does not carry a trusted prefill backend identity. Local and prefill reporting keep their original backend names.
 - The prior cleanup removed bespoke seed/reader/arm/finite/manifest/clear/collector protocols and task-specific host-pool readback. DSV4 hybrid offload, complete components/C128, ordinary transfer, startup safety and cancellation/reclamation remain.
 - Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. Native source stays at the public upstream-equivalent cleanup tree.

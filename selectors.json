@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
-      "fork_branch": "codex/pd-lifecycle-p6-release",
+      "fork_commit": "62e6e93314633cd6dd5cc24cde8701c0794714a5",
+      "fork_tree": "ed1daec7995cc61cb94a1b145a34dc0595aaf3e1",
+      "fork_branch": "codex/unified-nonpd-p7-candidate",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..d70b426a09acd0df5a6032687f3d431ff1df34e2",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..62e6e93314633cd6dd5cc24cde8701c0794714a5",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2399,30 +2399,30 @@
           "sha256": "0d9dddd68d6bec1398df5848847f4bb2d1dd3ffa63b7c27ddf7efb126b7d598f"
         },
         {
-          "id": "0090-pd-router-caller-cancellation",
-          "path": "patches/common/0090-pd-router-caller-cancellation.patch",
-          "source_commit": "c2822bf6484ac32b18b69f7f1ee0f4f5759ba69d",
+          "id": "0090-kimi-parameter-schema-precheck",
+          "path": "patches/common/0090-kimi-parameter-schema-precheck.patch",
+          "source_commit": "19c4a4e155ad4613cf492381a994dd71218496a3",
           "source_parent": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
-          "sha256": "e792d2a449eb2ab9e8c0011af8858bbeae4f6e0a765cf1361e2248ece5005235"
+          "sha256": "90a2d82bf44100845881e8547d38038ac486be05a46a8179ee9789c47ebb91f9"
         },
         {
-          "id": "0091-pd-bootstrap-status-atomic",
-          "path": "patches/common/0091-pd-bootstrap-status-atomic.patch",
-          "source_commit": "2196fbccbb504d2570476f43fa2580778bf96b14",
-          "source_parent": "c2822bf6484ac32b18b69f7f1ee0f4f5759ba69d",
-          "sha256": "dd44f12514dba1397c3561737d483f19cfec13878369fce315f6dca288502e07"
+          "id": "0091-kimi-installed-fixture-boundary",
+          "path": "patches/common/0091-kimi-installed-fixture-boundary.patch",
+          "source_commit": "95035ddfe9ca86e97b6f3eb2f81dfbe80e7b8e51",
+          "source_parent": "19c4a4e155ad4613cf492381a994dd71218496a3",
+          "sha256": "66e51efd4ae3da6c3ea0d19994b7e2a68d6ba5cc7227cd1babf830e5e26d14a4"
         },
         {
-          "id": "0092-pd-status-snapshot-format",
-          "path": "patches/common/0092-pd-status-snapshot-format.patch",
-          "source_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
-          "source_parent": "2196fbccbb504d2570476f43fa2580778bf96b14",
-          "sha256": "d39e75c65f012e8c7ce54da57e0c2f55bf82643741fee67dbdaae2f378c2b6e8"
+          "id": "0092-required-tool-terminal-whitespace",
+          "path": "patches/models/qwen/0092-required-tool-terminal-whitespace.patch",
+          "source_commit": "62e6e93314633cd6dd5cc24cde8701c0794714a5",
+          "source_parent": "95035ddfe9ca86e97b6f3eb2f81dfbe80e7b8e51",
+          "sha256": "e5a76186a205e522a9e70e0324705051c49fbc33b25536106364848b7e7f3c59"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "exact_source_replay_pd_lifecycle",
+      "status": "candidate_p5_successor_kimi_nemotron",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
