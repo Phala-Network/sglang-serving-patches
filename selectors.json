@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
-      "fork_tree": "7d182dafbf142c484dbacee131e2c2f12ea6782b",
-      "fork_branch": "codex/pd-cache-backend-label-20260930",
+      "fork_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
+      "fork_tree": "fc524c942e7c1d45d4bde2bf83bd81ec87b29d98",
+      "fork_branch": "codex/pd-lifecycle-p6-release",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..6f7fb4713946cb4ef913da89dfb62d71c6e82461",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..d70b426a09acd0df5a6032687f3d431ff1df34e2",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2397,11 +2397,32 @@
           "source_commit": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
           "source_parent": "2630e01bd6396776371573e2c3bf0044f71ec5b2",
           "sha256": "0d9dddd68d6bec1398df5848847f4bb2d1dd3ffa63b7c27ddf7efb126b7d598f"
+        },
+        {
+          "id": "0090-pd-router-caller-cancellation",
+          "path": "patches/common/0090-pd-router-caller-cancellation.patch",
+          "source_commit": "c2822bf6484ac32b18b69f7f1ee0f4f5759ba69d",
+          "source_parent": "6f7fb4713946cb4ef913da89dfb62d71c6e82461",
+          "sha256": "e792d2a449eb2ab9e8c0011af8858bbeae4f6e0a765cf1361e2248ece5005235"
+        },
+        {
+          "id": "0091-pd-bootstrap-status-atomic",
+          "path": "patches/common/0091-pd-bootstrap-status-atomic.patch",
+          "source_commit": "2196fbccbb504d2570476f43fa2580778bf96b14",
+          "source_parent": "c2822bf6484ac32b18b69f7f1ee0f4f5759ba69d",
+          "sha256": "dd44f12514dba1397c3561737d483f19cfec13878369fce315f6dca288502e07"
+        },
+        {
+          "id": "0092-pd-status-snapshot-format",
+          "path": "patches/common/0092-pd-status-snapshot-format.patch",
+          "source_commit": "d70b426a09acd0df5a6032687f3d431ff1df34e2",
+          "source_parent": "2196fbccbb504d2570476f43fa2580778bf96b14",
+          "sha256": "d39e75c65f012e8c7ce54da57e0c2f55bf82643741fee67dbdaae2f378c2b6e8"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "exact_source_replay_clean_pd_runtime",
+      "status": "exact_source_replay_pd_lifecycle",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

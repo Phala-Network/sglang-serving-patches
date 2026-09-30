@@ -20,8 +20,10 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `6f7fb4713946cb4ef913da89dfb62d71c6e82461`, tree
-`7d182dafbf142c484dbacee131e2c2f12ea6782b`: 31 protected steps plus 115 successor patches.
+The active selector binds engine `d70b426a09acd0df5a6032687f3d431ff1df34e2`, tree
+`fc524c942e7c1d45d4bde2bf83bd81ec87b29d98`: 31 protected steps plus 118 successor patches.
+The P6 tail adds PD upstream cancellation ownership and atomic bootstrap status
+transitions with cleared-room snapshot regressions.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128
 recovery, shared startup safety, trusted health and parallel
 sampling ownership. Bespoke seed/reader/arm/finite capture, shared clear APIs,
