@@ -20,32 +20,14 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `da4851fb63b52c614f470e6ef6056436bda4e32d`, tree
-`862118994e6b8f9fa070838d4f74cfda92acbf9b`: 31 protected steps plus 163 successor patches.
-The successor adds repeatable original-writer MEMORY-only clear while retaining
-readable SSD, correct prefill diagnostic H accounting, and bounded repeated
-ordinary capture with a fifteen-minute maximum. Partial and unknown clear
-outcomes remain explicit; master and SDK must use the matching native source.
-Ordinary SGLang capture starts at module initialization; native summary output
-retains its deadline behavior. The duration ceiling does not guarantee a usable
-window. Final dropped=0 summary and serial case terminal checks remain required;
-continuous sequence numbers alone do not prove capture completeness.
-It preserves the shared serving/model stack and adds trusted internal health
-with Governor 0.2.10/ABI5, DSV4 decode shared offload, and default-off exact PD
-batch completion diagnostics. Its server-only HMAC joins the external request,
-actual P/D rooms and native selected transport/terminal byte records. The
-independent Mooncake native artifact is required for this diagnostic API.
-The shared owner increment adds original writer seed, bounded clear control,
-owner-drain consumption, strict master-evidence timestamp validation and correct
-storage-query diagnostic batch offsets and identities.
-The successor also adds bounded host-pool/schema accounting, finite independent
-two-operation seed evidence and compatible clear identities. Host state occupancy
-uses a uniquely declared SWA owner snapshot with matching geometry; unknown state
-remains explicit. The source CPU chain covers actual constructor IDs0/1 and sealed
-v2 operation/key IDs0/1. A fixed-path, one-shot reader late arm captures the
-actual queued prefetch context and bounded GET/prefetch/C128 joins after model
-startup; ENOENT retains the opportunity until D publishes the seed. These checks
-do not qualify live storage or capacity.
+The active selector binds engine `6f480c3635afba17d8d1e0ecd4979c2fabba91cd`, tree
+`843b7ea91648ab6939db36d9bc468b4ae1d83cae`: 31 protected steps plus 114 successor patches.
+The current tail consolidates DSV4 hybrid decode offload, complete component/C128
+recovery, shared startup safety, host-pool accounting, trusted health and parallel
+sampling ownership. Bespoke seed/reader/arm/finite capture, shared clear APIs,
+PD batch collectors and the cold_shared_read test protocol have been removed.
+Standard HiCache/D offload, transfer, cancellation/resource cleanup and strict
+component byte-completeness checks remain. Historical tags retain prior patches.
 Governor runtime is pinned in the active selector;
 the protected historical Governor patch bytes remain unchanged.
 
@@ -53,20 +35,15 @@ The gateway preserves explicit `include_reasoning: false`, `true` and omission
 through a pinned vendored `openai-protocol` 1.0.0. The focused CPU harness verifies
 typed request serialization and loopback HTTP forwarding; installed gateway wheel
 and standalone binary acceptance remain separate build gates.
-The native `/generate` request also preserves true `cold_shared_read_bypass` through
-the ordinary router to both P/D workers while omitted and false requests retain
-their default behavior. The final installed Python launcher has its own HTTP gate.
-
 Source replay and CPU tests do not qualify native transport, GPU inference,
 DRAM/SSD cross-instance restoration or production. Those gates use the final
 immutable image and their authorized target owners. Native dependency and
 historical coverage boundaries remain in the linked maintenance records.
 
-The [independent Mooncake manifest](native/mooncake/manifest.json) pins its public
-v0.3.13 base, complete patch hash and reproduced tree. CI replays that native
-patch independently of the 194-step engine stack. Native source `34e730c` adds
-MEMORY-only clear and bounded repeated capture with Unix sample times. Its full CUDA wheel and
-installed native API checks are required before publishing the shared owner image.
+The [independent Mooncake manifest](native/mooncake/manifest.json) pins the public
+v0.3.13 source. The cleanup tree is identical to upstream: no native evidence
+collector, finite snapshot or special MEMORY-clear patch is applied. Native
+build, installed API and final-image checks remain separate gates.
 
 ## Protected historical baseline
 
