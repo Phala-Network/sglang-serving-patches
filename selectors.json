@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "03e11602bb46a936e3a2d41209560490b6d7a1d7",
-      "fork_tree": "a9755d652c5059e8e11f266cc83a46e0cd1f0ae7",
+      "fork_commit": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
+      "fork_tree": "ee511ec975639fbf70c1b20a7c28b1d70da31890",
       "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..03e11602bb46a936e3a2d41209560490b6d7a1d7",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2446,6 +2446,13 @@
           "source_commit": "03e11602bb46a936e3a2d41209560490b6d7a1d7",
           "source_parent": "59a29007273e5408ef30cd1b51eef0f1c434002a",
           "sha256": "32dff156a2d8f2098c966e17e5c8a4eaa1bd0e1a0df1cb20d59e67ba3ea283b0"
+        },
+        {
+          "id": "0097-preserve-llguidance-grammar-copy-state",
+          "path": "patches/common/0097-preserve-llguidance-grammar-copy-state.patch",
+          "source_commit": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
+          "source_parent": "03e11602bb46a936e3a2d41209560490b6d7a1d7",
+          "sha256": "0fee2ba66567d92831f70c6baaa39796d6ad2a5a8d1f14ab8aaa90ef1a79bfd1"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
