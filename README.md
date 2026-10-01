@@ -20,12 +20,13 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `59a29007273e5408ef30cd1b51eef0f1c434002a`, tree
-`962d435672fd29eef7753fac9705626bd3d17f16`: 31 protected steps plus 121 successor patches.
-P8-r1 adds the exact native Kimi response trailer after complete JSON; nine real-tokenizer/native CPU checks passed with zero skips. Final-image and original own-origin acceptance remain separate gates.
-P8 integrates the accepted PD lifecycle delta and the shared XGrammar selected-constraint
-prevalidation repair on P7. Its fixed runtime snapshot passed 29 installed CPU/native
-checks with zero skips; this is development-overlay evidence, not final-image acceptance.
+The active selector binds engine `4ce4ab2192a1e3662d9f4ae389c0dcc67c520226`, tree
+`888877b6e1907d35645c148581a44a5f9a4d90d1`: 31 protected steps plus 128 successor patches.
+P9 selects llguidance by default, preserves Kimi tokenizer/trailer behavior and
+literal or special structural-tag constraints. Its Linux CPU development gate
+passed 85 tests with zero skips, including real Kimi tokenizer tests and strict
+negative cases. Explicit XGrammar remains available. Final-image and model/GPU
+acceptance are separate release gates.
 The maintenance entry point records source identity and validation boundaries.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128
 recovery, shared startup safety, trusted health and parallel

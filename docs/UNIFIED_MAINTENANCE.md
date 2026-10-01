@@ -6,13 +6,13 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Unified P8-r1 source
+## Unified P9 source
 
-- Engine candidate for `v0.5.20-phala-unified-p8-r1`: `59a29007273e5408ef30cd1b51eef0f1c434002a`; tree `962d435672fd29eef7753fac9705626bd3d17f16`. Parent is formal P8 `b77e67717d19fdda928839488bc4f2544f2cbddf`; published P8 identities remain unchanged.
-- Ordered stack: 31 protected plus 121 successor steps (152 total). The final Kimi increment permits only its exact response/message trailer after native JSON completion; it preserves direct EOS, literal string data, strict/schema validation, and non-Kimi/tool grammar behavior.
-- Nine actual Kimi-tokenizer/native CPU tests passed with no skips in a disposable P8 container using the three candidate runtime files. Tests cover incomplete/odd values, exact trailer/early EOS rejection, native/Reasoner rollback, cache copy, dispatch isolation, and parser stripping. Source checks and exact patch replay are separate gates.
-- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; native exports and P8 gateway/PD inputs remain unchanged.
-- Candidate CPU evidence does not qualify the final image, GPU inference, or production. The new immutable image requires installed tests without overlays and all original target acceptance. Kimi P8's 39/40 result remains failed until repaired; no schema or fixture expectation is relaxed.
+- Engine candidate for `v0.5.20-phala-unified-p9`: `4ce4ab2192a1e3662d9f4ae389c0dcc67c520226`; tree `888877b6e1907d35645c148581a44a5f9a4d90d1`. Published P8-r1 remains the rollback baseline.
+- Ordered stack: 31 protected plus 128 successor steps (159 total). llguidance is the default; explicit XGrammar remains supported. Kimi's exact JSON trailer, EOS, rollback/copy and tokenizer bytes are preserved. Structural-tag grammars handle literal, special and composite markers without losing schema constraints.
+- Linux CPU development tests passed 85/85 with zero skips, including nine real Kimi tokenizer cases, batched masks, tokenizer/padded-vocabulary checks, mixed/composite structural markers and strict negative cases. This uses candidate code in a disposable P8-r1 container; it is not final-image evidence.
+- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; llguidance remains 1.8.0 in the pinned image base. Native exports and gateway/PD inputs are unchanged.
+- The final immutable image must pass installed tests without runtime overlays. GPU inference, model HTTP quality and production deployment remain later owner acceptance gates. PIG is a separate sidecar, independently pinned by production Compose.
 
 ## Verify and Prepare
 
