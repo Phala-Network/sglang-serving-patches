@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "62e6e93314633cd6dd5cc24cde8701c0794714a5",
-      "fork_tree": "ed1daec7995cc61cb94a1b145a34dc0595aaf3e1",
-      "fork_branch": "codex/unified-nonpd-p7-candidate",
+      "fork_commit": "b77e67717d19fdda928839488bc4f2544f2cbddf",
+      "fork_tree": "d3e3d986e02f397e42f57ba4104c80f204eec367",
+      "fork_branch": "codex/p8-r1-reviewable-integration-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..62e6e93314633cd6dd5cc24cde8701c0794714a5",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..b77e67717d19fdda928839488bc4f2544f2cbddf",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2418,11 +2418,25 @@
           "source_commit": "62e6e93314633cd6dd5cc24cde8701c0794714a5",
           "source_parent": "95035ddfe9ca86e97b6f3eb2f81dfbe80e7b8e51",
           "sha256": "e5a76186a205e522a9e70e0324705051c49fbc33b25536106364848b7e7f3c59"
+        },
+        {
+          "id": "0093-pd-lifecycle-integration",
+          "path": "patches/common/0093-pd-lifecycle-integration.patch",
+          "source_commit": "de2be387c9e7d7050bbf6064f90ac23edb6c9546",
+          "source_parent": "b6d1f66162b0dfb9125ac30a45425e44bc4d59ca",
+          "sha256": "896f71e28cd4824cf80d6ba8743ab3513a10ccb5e1cfc060819d7980eef260b4"
+        },
+        {
+          "id": "0094-xgrammar-selected-constraint-prevalidation",
+          "path": "patches/common/0094-xgrammar-selected-constraint-prevalidation.patch",
+          "source_commit": "b77e67717d19fdda928839488bc4f2544f2cbddf",
+          "source_parent": "de2be387c9e7d7050bbf6064f90ac23edb6c9546",
+          "sha256": "fb915302719e8bb0945ce786859abb601534fc43a32a148f5a50dca815d6cf72"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "candidate_p5_successor_kimi_nemotron",
+      "status": "unified_p8_source_release_candidate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

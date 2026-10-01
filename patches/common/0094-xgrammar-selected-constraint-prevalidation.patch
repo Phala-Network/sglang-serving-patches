@@ -1,0 +1,1736 @@
+diff --git a/.github/workflows/phala-source-check.yml b/.github/workflows/phala-source-check.yml
+index 5a5eda5c601c53ee8d426c51407a1486703b228c..3808014d5fdd206083a484dc992607616df7fbac 100644
+--- a/.github/workflows/phala-source-check.yml
++++ b/.github/workflows/phala-source-check.yml
+@@ -46,6 +46,7 @@ jobs:
+           python test/manual/phala/test_muse_migration_cpu.py
+           python test/manual/phala/test_xgrammar_adapter_cpu.py
+           python test/manual/phala/test_kimi_schema_precheck_cpu.py
++          python test/manual/phala/test_xgrammar_prevalidation_cpu.py
+           python test/manual/phala/test_nemotron_token_context_cpu.py
+           python test/manual/phala/test_nemotron_termination_cpu.py
+           python test/phala_deepseek_v41/test_cpu_contracts_v0520.py
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 69725f08c95252392157282f6089a218fe2df856..04e8d20891337988256896fe0bdca62056f83d02 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -16,7 +16,7 @@
+ import dataclasses
+ import json
+ import logging
+-from typing import Dict, List, Optional, Tuple, Union
++from typing import List, Optional, Tuple, Union
+ 
+ import torch
+ from xgrammar import (
+@@ -38,6 +38,9 @@ from sglang.srt.constrained.base_grammar_backend import (
+ )
+ from sglang.srt.constrained.utils import is_legacy_structural_tag
+ from sglang.srt.constrained.xgrammar_schema import (
++    normalize_xgrammar_schema_noops,
++    sanitize_xgrammar_structural_format,
++    sanitize_xgrammar_structural_tag_structures,
+     validate_xgrammar_schema,
+     validate_xgrammar_whitespace_limit,
+ )
+@@ -297,42 +300,10 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                 reset_vocab_mask=reset_vocab_mask,
+             )
+ 
+-    @staticmethod
+-    def _sanitize_structural_format(structural_format):
+-        """Normalize/validate only schema-bearing positions, never schema data."""
+-        if not isinstance(structural_format, dict):
+-            return
+-
+-        fmt_type = structural_format.get("type")
+-        if fmt_type in {"json_schema", "qwen_xml_parameter"}:
+-            if structural_format.get("json_schema") is None:
+-                structural_format["json_schema"] = {}
+-            validate_xgrammar_schema(structural_format["json_schema"])
+-            if fmt_type == "json_schema":
+-                validate_xgrammar_whitespace_limit(
+-                    structural_format.get("max_whitespace_cnt")
+-                )
+-
+-        if fmt_type in {"tag", "optional", "plus", "star", "repeat"}:
+-            XGrammarGrammarBackend._sanitize_structural_format(
+-                structural_format.get("content")
+-            )
+-        elif fmt_type in {"sequence", "or"}:
+-            for element in structural_format.get("elements", []):
+-                XGrammarGrammarBackend._sanitize_structural_format(element)
+-        elif fmt_type in {"triggered_tags", "tags_with_separator"}:
+-            for tag in structural_format.get("tags", []):
+-                XGrammarGrammarBackend._sanitize_structural_format(tag)
+-        elif fmt_type in {"dispatch", "token_dispatch"}:
+-            for _, content in structural_format.get("rules", []):
+-                XGrammarGrammarBackend._sanitize_structural_format(content)
+-
+-    @staticmethod
+-    def _sanitize_structural_tag_structures(structural_tag: Dict) -> None:
+-        for structure in structural_tag.get("structures", []):
+-            if structure.get("schema") is None:
+-                structure["schema"] = {}
+-            validate_xgrammar_schema(structure["schema"])
++    _sanitize_structural_format = staticmethod(sanitize_xgrammar_structural_format)
++    _sanitize_structural_tag_structures = staticmethod(
++        sanitize_xgrammar_structural_tag_structures
++    )
+ 
+     def _from_context(
+         self, ctx: CompiledGrammar, key_string: str, grammar_stats: GrammarStats
+@@ -359,6 +330,7 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+             else:
+                 schema = {} if key_string == "$$ANY$$" else json.loads(key_string)
+                 validate_xgrammar_schema(schema)
++                schema = normalize_xgrammar_schema_noops(schema)
+                 ctx = self.grammar_compiler.compile_json_schema(
+                     schema=schema,
+                     any_whitespace=self.any_whitespace,
+diff --git a/python/sglang/srt/constrained/xgrammar_schema.py b/python/sglang/srt/constrained/xgrammar_schema.py
+index 65a7ddf041ce37d88b3beee659f3e826bb32354a..f6477dfb63ae91b5c9f59d30d7055352ecb57646 100644
+--- a/python/sglang/srt/constrained/xgrammar_schema.py
++++ b/python/sglang/srt/constrained/xgrammar_schema.py
+@@ -1,5 +1,12 @@
+ """Fail-closed checks for JSON Schema features XGrammar cannot enforce."""
+ 
++import copy
++import json
++
++
++class UnsupportedXGrammarSchema(ValueError):
++    """A client schema cannot be enforced by the selected decoding grammar."""
++
+ 
+ def validate_xgrammar_whitespace_limit(
+     limit, *, any_whitespace: bool = True, backend: str = "xgrammar"
+@@ -18,65 +25,206 @@ def validate_xgrammar_whitespace_limit(
+ 
+ 
+ def has_xgrammar_unsupported_json_features(schema: dict) -> bool:
+-    """Return whether XGrammar would silently ignore a schema constraint."""
+-
+-    schema_array_keywords = ("allOf", "anyOf", "oneOf", "prefixItems")
+-    schema_keywords = (
+-        "additionalItems",
+-        "additionalProperties",
+-        "else",
+-        "if",
+-        "items",
+-        "not",
+-        "then",
+-        "unevaluatedItems",
+-        "unevaluatedProperties",
+-    )
+-    schema_map_keywords = ("$defs", "definitions", "properties")
+-    unsupported_keywords = (
+-        "contains",
+-        "dependentSchemas",
+-        "maxContains",
+-        "minContains",
+-        "multipleOf",
+-        "patternProperties",
+-        "propertyNames",
+-    )
+-
+-    def check_schema(obj) -> bool:
++    """Check active schema positions against the pinned native feature limits.
++
++    This is not a schema validator or a general simplifier. Follow local refs
++    instead of treating every unused definition as an applied constraint, and
++    ignore only directly inapplicable types and exact keyword no-ops.
++    """
++    seen = set()
++
++    def check_schema(obj, allow_integer_multiple=True) -> bool:
+         if not isinstance(obj, dict):
+             return False
++        # Bare integer support does not establish support for intersections.
++        # The pinned compiler drops constraints in allOf and ref siblings.
++        if any(key in obj for key in ("allOf", "anyOf", "oneOf")):
++            allow_integer_multiple = False
++        if "$ref" in obj and any(
++            key
++            not in {
++                "$ref",
++                "$defs",
++                "definitions",
++                "$schema",
++                "$id",
++                "$comment",
++                "title",
++                "description",
++                "default",
++                "examples",
++            }
++            for key in obj
++        ):
++            allow_integer_multiple = False
++        visit = (id(obj), allow_integer_multiple)
++        if visit in seen:
++            return False
++        seen.add(visit)
+ 
+-        if any(key in obj for key in unsupported_keywords):
+-            return True
+-        # False is the JSON Schema default: it adds no uniqueness constraint.
+-        # Preserve fail-closed handling of true (and malformed non-booleans).
+-        if "uniqueItems" in obj and obj["uniqueItems"] is not False:
+-            return True
+-        # Native XGrammar returns the pattern grammar before applying lengths;
+-        # it does not intersect the constraints, including in patched union1.
+-        if "pattern" in obj and ("minLength" in obj or "maxLength" in obj):
+-            return True
+-
+-        for key in schema_keywords:
+-            if check_schema(obj.get(key)):
++        ref = obj.get("$ref")
++        if ref is not None:
++            if not isinstance(ref, str) or (ref != "#" and not ref.startswith("#/")):
++                # The pinned compiler treats non-local references as AnySpec.
++                return True
++            target = schema
++            try:
++                for part in ref[2:].split("/") if ref != "#" else ():
++                    part = part.replace("~1", "/").replace("~0", "~")
++                    target = (
++                        target[int(part)] if isinstance(target, list) else target[part]
++                    )
++            except (KeyError, IndexError, TypeError, ValueError):
+                 return True
++            if check_schema(target, allow_integer_multiple):
++                return True
++
++        declared = obj.get("type")
++        types = {declared} if isinstance(declared, str) else set(declared or ())
++
++        def applies(*kinds):
++            return not types or bool(types.intersection(kinds))
+ 
+-        for key in schema_array_keywords:
+-            value = obj.get(key)
+-            if isinstance(value, list) and any(check_schema(item) for item in value):
++        if applies("number", "integer") and "multipleOf" in obj:
++            value = obj["multipleOf"]
++            # Pinned XGrammar supports unbounded integer divisors up to 1024.
++            # With one-sided or wide ranges it silently drops the divisor.
++            # multipleOf:1 is an exact no-op for any integer range.
++            if not (
++                allow_integer_multiple
++                and not any(
++                    key in obj
++                    for key in (
++                        "enum",
++                        "const",
++                        "not",
++                        "if",
++                        "then",
++                        "else",
++                        "$dynamicRef",
++                        "$recursiveRef",
++                    )
++                )
++                and declared == "integer"
++                and type(value) in (int, float)
++                and 1 <= value <= 1024
++                and value == int(value)
++                and (
++                    value == 1
++                    or not any(
++                        k in obj
++                        for k in (
++                            "minimum",
++                            "maximum",
++                            "exclusiveMinimum",
++                            "exclusiveMaximum",
++                        )
++                    )
++                )
++            ):
+                 return True
+ 
+-        for key in schema_map_keywords:
+-            value = obj.get(key)
+-            if isinstance(value, dict) and any(
+-                check_schema(item) for item in value.values()
++        if applies("array"):
++            if "uniqueItems" in obj and obj["uniqueItems"] is not False:
++                return True
++            # min/maxContains have no effect without contains; count >= 0
++            # with no upper bound also imposes no restriction.
++            if "contains" in obj and (
++                obj.get("minContains", 1) != 0 or "maxContains" in obj
+             ):
+                 return True
++            for key in ("items", "additionalItems", "unevaluatedItems"):
++                if check_schema(obj.get(key), allow_integer_multiple):
++                    return True
++            if any(
++                check_schema(item, allow_integer_multiple)
++                for item in obj.get("prefixItems", [])
++            ):
++                return True
++
++        if applies("object"):
++            if obj.get("patternProperties") or obj.get("dependentSchemas"):
++                return True
++            if "propertyNames" in obj and obj["propertyNames"] not in ({}, True):
++                return True
++            for item in obj.get("properties", {}).values():
++                if check_schema(item, allow_integer_multiple):
++                    return True
++            for key in ("additionalProperties", "unevaluatedProperties"):
++                if check_schema(obj.get(key), allow_integer_multiple):
++                    return True
+ 
++        if (
++            applies("string")
++            and "pattern" in obj
++            and (obj.get("minLength", 0) != 0 or "maxLength" in obj)
++        ):
++            return True
++
++        for key in ("not", "if", "then", "else"):
++            if check_schema(obj.get(key), allow_integer_multiple):
++                return True
++        for key in ("allOf", "anyOf", "oneOf"):
++            if any(
++                check_schema(item, allow_integer_multiple) for item in obj.get(key, [])
++            ):
++                return True
+         return False
+ 
+-    return check_schema(schema)
++    try:
++        return check_schema(schema)
++    except (TypeError, ValueError, AttributeError, RecursionError):
++        # Direct /generate callers need not pass through the OpenAI validator.
++        return True
++
++
++def normalize_xgrammar_schema_noops(schema):
++    """Copy only to erase exact JSON Schema no-ops mishandled by native code.
++
++    Preserve the original request/prompt schema. Never traverse enum/const data
++    or remove an active assertion. Native strict_mode remains unchanged.
++    """
++    result = copy.deepcopy(schema)
++    seen = set()
++
++    def visit(obj):
++        if not isinstance(obj, dict) or id(obj) in seen:
++            return
++        seen.add(id(obj))
++        if obj.get("propertyNames") is True:
++            del obj["propertyNames"]
++        if "contains" not in obj:
++            obj.pop("minContains", None)
++            obj.pop("maxContains", None)
++        for key in (
++            "items",
++            "additionalItems",
++            "additionalProperties",
++            "unevaluatedItems",
++            "unevaluatedProperties",
++            "not",
++            "if",
++            "then",
++            "else",
++            "contains",
++            "propertyNames",
++        ):
++            visit(obj.get(key))
++        for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
++            for child in obj.get(key, []):
++                visit(child)
++        for key in (
++            "properties",
++            "patternProperties",
++            "dependentSchemas",
++            "$defs",
++            "definitions",
++        ):
++            for child in obj.get(key, {}).values():
++                visit(child)
++
++    visit(result)
++    return result
+ 
+ 
+ def validate_xgrammar_schema(schema) -> None:
+@@ -85,3 +233,69 @@ def validate_xgrammar_schema(schema) -> None:
+             "JSON schema uses features unsupported by xgrammar; "
+             "the constraint would otherwise be silently ignored"
+         )
++
++
++def sanitize_xgrammar_structural_format(structural_format):
++    """Normalize/validate only schema-bearing positions, never schema data."""
++    if not isinstance(structural_format, dict):
++        return
++
++    fmt_type = structural_format.get("type")
++    if fmt_type in {"json_schema", "qwen_xml_parameter"}:
++        if structural_format.get("json_schema") is None:
++            structural_format["json_schema"] = {}
++        validate_xgrammar_schema(structural_format["json_schema"])
++        structural_format["json_schema"] = normalize_xgrammar_schema_noops(
++            structural_format["json_schema"]
++        )
++        if fmt_type == "json_schema":
++            validate_xgrammar_whitespace_limit(
++                structural_format.get("max_whitespace_cnt")
++            )
++
++    if fmt_type in {"tag", "optional", "plus", "star", "repeat"}:
++        sanitize_xgrammar_structural_format(structural_format.get("content"))
++    elif fmt_type in {"sequence", "or"}:
++        for element in structural_format.get("elements", []):
++            sanitize_xgrammar_structural_format(element)
++    elif fmt_type in {"triggered_tags", "tags_with_separator"}:
++        for tag in structural_format.get("tags", []):
++            sanitize_xgrammar_structural_format(tag)
++    elif fmt_type in {"dispatch", "token_dispatch"}:
++        for _, content in structural_format.get("rules", []):
++            sanitize_xgrammar_structural_format(content)
++
++
++def sanitize_xgrammar_structural_tag_structures(structural_tag: dict) -> None:
++    for structure in structural_tag.get("structures", []):
++        if structure.get("schema") is None:
++            structure["schema"] = {}
++        validate_xgrammar_schema(structure["schema"])
++        structure["schema"] = normalize_xgrammar_schema_noops(structure["schema"])
++
++
++def validate_xgrammar_sampling_constraints(sampling_params: dict) -> None:
++    """Check only schemas in the final selected decoding constraint.
++
++    Tool definitions can remain in the prompt without constraining parameters.
++    Inspect the selected grammar after tool choice and output-format precedence,
++    rather than predicting each model detector's behavior from its tool list.
++    """
++    try:
++        if sampling_params.get("json_schema") is not None:
++            schema = sampling_params["json_schema"]
++            validate_xgrammar_schema(
++                json.loads(schema) if isinstance(schema, str) else schema
++            )
++        if sampling_params.get("structural_tag") is not None:
++            tag = sampling_params["structural_tag"]
++            tag = json.loads(tag) if isinstance(tag, str) else tag
++            if tag.get("structures") is not None:
++                sanitize_xgrammar_structural_tag_structures(tag)
++            else:
++                sanitize_xgrammar_structural_format(tag.get("format"))
++    except (RuntimeError, ValueError, TypeError, RecursionError) as exc:
++        # Do not expose schema bodies, native compiler output, or model data.
++        raise UnsupportedXGrammarSchema(
++            "Selected decoding constraint contains a JSON schema unsupported by xgrammar."
++        ) from exc
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 678d0d968db23834c2e16125ab71a34c83a45608..eb85377539a09ec8fe2545d089d1af9b0d295991 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -1225,6 +1225,20 @@ class ChatCompletionRequest(BaseModel):
+ 
+         return values
+ 
++    def uses_json_schema_constraint(
++        self, *, renderer_handles_response_format: bool = False
++    ) -> bool:
++        """Only explicit non-strict schemas rendered into the prompt may opt out."""
++        return bool(
++            self.response_format
++            and self.response_format.type == "json_schema"
++            and (
++                self.response_format.json_schema.strict is not False
++                or not renderer_handles_response_format
++                or self.input_ids is not None
++            )
++        )
++
+     def to_sampling_params(
+         self,
+         stop: List[str],
+@@ -1280,9 +1294,8 @@ class ChatCompletionRequest(BaseModel):
+         if self.response_format and self.response_format.type == "json_schema":
+             # strict=false may only go unconstrained when the renderer forwards
+             # response_format to the model; plain chat templates never see it.
+-            if (
+-                self.response_format.json_schema.strict is not False
+-                or not renderer_handles_response_format
++            if self.uses_json_schema_constraint(
++                renderer_handles_response_format=renderer_handles_response_format
+             ):
+                 sampling_params["json_schema"] = convert_json_schema_to_str(
+                     self.response_format.json_schema.schema_
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index e8115f44a6821f7ee9bc4e87048b7beeeaea4572..91d943515e62c1b2c9a0c2c193fa1ce1c2ae97c2 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -12,6 +12,7 @@ import orjson
+ from fastapi import HTTPException, Request
+ from fastapi.responses import ORJSONResponse, StreamingResponse
+ 
++from sglang.srt.constrained.xgrammar_schema import UnsupportedXGrammarSchema
+ from sglang.srt.entrypoints.openai.encoding_dsv32 import DS32EncodingError
+ from sglang.srt.entrypoints.openai.protocol import ErrorResponse, OpenAIServingRequest
+ from sglang.srt.entrypoints.request_disconnect import await_response_or_disconnect
+@@ -146,6 +147,8 @@ class OpenAIServingBase(ABC):
+             return self.create_error_response(
+                 message=e.detail, err_type=str(e.status_code), status_code=e.status_code
+             )
++        except UnsupportedXGrammarSchema as e:
++            return self.create_error_response(message=str(e))
+         except ValueError as e:
+             return self.create_error_response(
+                 message=str(e),
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 88e06b87caf331993a975f688c3a1ec163a4aa47..88c9ab4dbba7952a3fdacdc8b09fed771d1bee44 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -42,7 +42,7 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
+ from jsonschema import Draft202012Validator, SchemaError
+ 
+ from sglang.srt.constrained.xgrammar_schema import (
+-    has_xgrammar_unsupported_json_features,
++    validate_xgrammar_sampling_constraints,
+ )
+ from sglang.srt.entrypoints.openai import (
+     chat_encoding,
+@@ -1104,12 +1104,15 @@ class OpenAIServingChat(OpenAIServingBase):
+             ):
+                 template_kwargs.setdefault("tool_choice", effective_tool_choice)
+             if request.response_format is not None:
+-                template_kwargs.setdefault(
+-                    "response_format",
+-                    request.response_format.model_dump(
+-                        exclude_unset=True, by_alias=True
+-                    ),
+-                )
++                # The request contract wins over template defaults/overrides.
++                # In non-strict mode the renderer is the only schema consumer.
++                template_kwargs["response_format"] = request.response_format.model_dump(
++                    exclude_unset=True, by_alias=True
++                )
++                if request.response_format.type == "json_schema":
++                    template_kwargs["response_schema"] = (
++                        request.response_format.json_schema.schema_
++                    )
+ 
+             request_tools = (
+                 self._request_tools_for_prompt(request, exclude_unset=True) or None
+@@ -1558,23 +1561,6 @@ class OpenAIServingChat(OpenAIServingBase):
+                 # a 400 instead of crashing into a 500.
+                 normalize_json_schema_types(tool.function.parameters)
+                 Draft202012Validator.check_schema(tool.function.parameters)
+-                # Kimi's non-strict native tags constrain call framing, not
+-                # the parameter JSON Schema. Keep schema capability checks for
+-                # strict tools and server-enforced parameter constraints.
+-                checks_parameter_schema = (
+-                    self.tool_call_parser != "kimi_k3"
+-                    or tool.function.strict
+-                    or envs.SGLANG_TOOL_STRICT_LEVEL.get() >= ToolStrictLevel.PARAMETER
+-                )
+-                if (
+-                    self._grammar_backend == "xgrammar"
+-                    and checks_parameter_schema
+-                    and has_xgrammar_unsupported_json_features(tool.function.parameters)
+-                ):
+-                    return (
+-                        f"Tool {i} function has a 'parameters' schema containing "
+-                        "features unsupported by xgrammar."
+-                    )
+             except SchemaError as e:
+                 return f"Tool {i} function has invalid 'parameters' schema: {str(e)}"
+             except RecursionError:
+@@ -1603,13 +1589,6 @@ class OpenAIServingChat(OpenAIServingBase):
+                 Draft202012Validator.check_schema(schema)
+             except SchemaError as e:
+                 return f"Invalid response_format JSON schema: {str(e)}"
+-            if self._grammar_backend == "xgrammar" and (
+-                has_xgrammar_unsupported_json_features(schema)
+-            ):
+-                return (
+-                    "response_format JSON schema contains features unsupported "
+-                    "by xgrammar."
+-                )
+ 
+         return None
+ 
+@@ -1772,6 +1751,8 @@ class OpenAIServingChat(OpenAIServingBase):
+             tool_call_constraint=processed_messages.tool_call_constraint,
+             renderer_handles_response_format=self.chat_encoding_spec == "kimi_k3",
+         )
++        if self._grammar_backend == "xgrammar":
++            validate_xgrammar_sampling_constraints(sampling_params)
+         from sglang.srt.entrypoints.openai.mode_sampling_defaults import (
+             apply_mode_sampling_defaults,
+         )
+@@ -1917,6 +1898,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         # ignore_eos. Plain length-controlled requests must not acquire it.
+         glm_constraint = (
+             self.tool_call_parser == "glm47"
++            and envs.SGLANG_TOOL_STRICT_LEVEL.get() < ToolStrictLevel.PARAMETER
+             and not any(tool.function.strict for tool in effective_tools)
+             and not (
+                 request.ignore_eos
+diff --git a/python/sglang/srt/function_call/function_call_parser.py b/python/sglang/srt/function_call/function_call_parser.py
+index bb0fe125751a36a6822c710f5c603f2d552914e2..ef1a885d5c322694136a05e8266be25df7698a39 100644
+--- a/python/sglang/srt/function_call/function_call_parser.py
++++ b/python/sglang/srt/function_call/function_call_parser.py
+@@ -134,8 +134,9 @@ class FunctionCallParser:
+             raise ValueError(f"Unsupported tool_call_parser: {tool_call_parser}")
+ 
+         if isinstance(detector, Glm47MoeDetector):
+-            detector.use_full_assistant_constraint = not any(
+-                tool.function.strict for tool in tools
++            detector.use_full_assistant_constraint = (
++                envs.SGLANG_TOOL_STRICT_LEVEL.get() < ToolStrictLevel.PARAMETER
++                and not any(tool.function.strict for tool in tools)
+             )
+         self.detector = detector
+         self.tools = tools
+diff --git a/test/manual/phala/run_xgrammar_prevalidation_installed.py b/test/manual/phala/run_xgrammar_prevalidation_installed.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8af0072e16daff5eff570a0ec30ff01a25947e58
+--- /dev/null
++++ b/test/manual/phala/run_xgrammar_prevalidation_installed.py
+@@ -0,0 +1,168 @@
++"""Fail-closed CPU gate for candidate-overlay and final-image installed modules.
++
++Run with the image Python -I. No source/sys.modules stubs, GPU, model download,
++container management, network access or dependency installation in this runner.
++"""
++
++import argparse
++import hashlib
++import importlib
++import importlib.metadata
++import json
++import os
++import signal
++import sys
++import sysconfig
++import unittest
++from pathlib import Path
++
++MODULES = {
++    "sglang.srt.entrypoints.openai.protocol": "python/sglang/srt/entrypoints/openai/protocol.py",
++    "sglang.srt.entrypoints.openai.serving_chat": "python/sglang/srt/entrypoints/openai/serving_chat.py",
++    "sglang.srt.entrypoints.openai.serving_base": "python/sglang/srt/entrypoints/openai/serving_base.py",
++    "sglang.srt.constrained.xgrammar_schema": "python/sglang/srt/constrained/xgrammar_schema.py",
++    "sglang.srt.constrained.xgrammar_backend": "python/sglang/srt/constrained/xgrammar_backend.py",
++    "sglang.srt.function_call.function_call_parser": "python/sglang/srt/function_call/function_call_parser.py",
++}
++SUITES = {
++    "test_kimi_schema_precheck_cpu": 6,
++    "test_xgrammar_prevalidation_cpu": 16,
++    "test_initial_stream_error_cpu": 7,
++}
++
++
++def sha(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument(
++        "--stage", choices=("candidate-overlay", "final-image"), required=True
++    )
++    parser.add_argument("--manifest", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--image", required=True)
++    parser.add_argument(
++        "--native-sha256",
++        default="778e9ac15a67a2bf731057de0834e71874e490f9fa777a627f0b4527f76ee7c4",
++    )
++    args = parser.parse_args()
++    report = {
++        "stage": args.stage,
++        "image": args.image,
++        "passed": False,
++        "scope": "CPU actual installed modules/native matcher; not GPU or HTTP service acceptance",
++        "modules": {},
++        "suites": {},
++    }
++    try:
++        if not sys.flags.isolated:
++            raise RuntimeError(
++                "Run with python -I; source import paths are not allowed"
++            )
++        if not __debug__:
++            raise RuntimeError("Do not disable assertions for an acceptance gate")
++        os.environ["PHALA_KIMI_INSTALLED"] = "1"
++        os.environ["CUDA_VISIBLE_DEVICES"] = ""
++        signal.alarm(210)
++        expected = {
++            row["path"]: row["sha256"]
++            for row in json.loads(args.manifest.read_text())["files"]
++        }
++        purelib = Path(sysconfig.get_path("purelib")).resolve()
++        # Import before adding the test directory, so a test fixture cannot
++        # replace the serving modules being accepted.
++        installed_paths = []
++        for name, source in MODULES.items():
++            module = importlib.import_module(name)
++            path = Path(module.__file__).resolve()
++            if not path.is_relative_to(purelib):
++                raise RuntimeError(
++                    "Module did not import from installed site-packages: " + name
++                )
++            actual = sha(path)
++            if actual != expected[source]:
++                raise RuntimeError("Installed module hash mismatch: " + name)
++            installed_paths.append(path)
++            report["modules"][name] = {"path": str(path), "sha256": actual}
++        xgr = importlib.import_module("xgrammar")
++        report["xgrammar"] = {
++            "version": importlib.metadata.version("xgrammar"),
++            "path": xgr.__file__,
++        }
++        if report["xgrammar"]["version"] != "0.2.6+phala.union1":
++            raise RuntimeError("Unexpected native XGrammar distribution")
++        libs = set()
++        for line in Path("/proc/self/maps").read_text().splitlines():
++            if "libxgrammar_bindings.so" in line:
++                libs.add(Path(line.split(maxsplit=5)[5]))
++        if len(libs) != 1:
++            raise RuntimeError(
++                "Expected exactly one actually loaded XGrammar native library"
++            )
++        lib = libs.pop()
++        report["xgrammar"]["native_library"] = str(lib)
++        report["xgrammar"]["native_sha256"] = sha(lib)
++        if report["xgrammar"]["native_sha256"] != args.native_sha256:
++            raise RuntimeError("Loaded native library hash mismatch")
++        if args.stage == "final-image":
++            mounts = [
++                Path(line.split()[4].replace("\\040", " ")).resolve()
++                for line in Path("/proc/self/mountinfo").read_text().splitlines()
++            ]
++            for path in [*installed_paths, lib.resolve()]:
++                if any(
++                    mount != Path("/") and path.is_relative_to(mount)
++                    for mount in mounts
++                ):
++                    raise RuntimeError(
++                        "Final-image gate forbids runtime source/library mount overlays: "
++                        + str(path)
++                    )
++            report["runtime_overlays"] = "none under accepted installed paths"
++        else:
++            report["runtime_overlays"] = (
++                "candidate-overlay explicitly allowed; not final-image acceptance"
++            )
++        torch = importlib.import_module("torch")
++        if torch.cuda.is_initialized():
++            raise RuntimeError("CUDA was initialized during CPU imports")
++        test_dir = Path(__file__).resolve().parent
++        for name in [*SUITES, Path(__file__).stem]:
++            source = "test/manual/phala/" + name + ".py"
++            if sha(test_dir / (name + ".py")) != expected[source]:
++                raise RuntimeError("Test input hash mismatch: " + name)
++        sys.path.insert(0, str(test_dir))
++        for name, count in SUITES.items():
++            module = importlib.import_module(name)
++            suite = unittest.defaultTestLoader.loadTestsFromModule(module)
++            if suite.countTestCases() != count:
++                raise RuntimeError("Unexpected test count in " + name)
++            signal.alarm(210)
++            result = unittest.TextTestRunner(verbosity=2).run(suite)
++            report["suites"][name] = {
++                "tests": result.testsRun,
++                "failures": len(result.failures),
++                "errors": len(result.errors),
++                "skipped": len(result.skipped),
++                "passed": result.wasSuccessful() and not result.skipped,
++            }
++            if not result.wasSuccessful() or result.skipped:
++                raise RuntimeError(
++                    "Installed regression failed or skipped cases: " + name
++                )
++        if torch.cuda.is_initialized():
++            raise RuntimeError("CUDA initialized during CPU regression")
++        report["tests"] = sum(row["tests"] for row in report["suites"].values())
++        report["cuda_initialized"] = False
++        report["passed"] = True
++    except Exception as exc:
++        report["error"] = str(exc)
++    finally:
++        args.output.write_text(json.dumps(report, indent=2) + "\n")
++    return 0 if report["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/test/manual/phala/test_initial_stream_error_cpu.py b/test/manual/phala/test_initial_stream_error_cpu.py
+index cc903159fc7bf6521222aa310e092d85f42304f3..648a984071d462d508c3aba7104d267cecc7f0f9 100644
+--- a/test/manual/phala/test_initial_stream_error_cpu.py
++++ b/test/manual/phala/test_initial_stream_error_cpu.py
+@@ -3,6 +3,7 @@
+ import ast
+ import asyncio
+ import json
++import os
+ import unittest
+ from contextlib import AsyncExitStack
+ from pathlib import Path
+@@ -16,6 +17,16 @@ from pydantic import BaseModel
+ 
+ ROOT = Path(__file__).resolve().parents[3]
+ SRT = ROOT / "python/sglang/srt"
++INSTALLED = os.environ.get("PHALA_KIMI_INSTALLED") == "1"
++if INSTALLED:
++    import sglang.srt.entrypoints.openai.serving_base as installed_base
++    from sglang.srt.entrypoints.openai.protocol import ErrorResponse
++    from sglang.srt.entrypoints.request_disconnect import (
++        await_response_or_disconnect,
++        response_disconnect_watched,
++    )
++
++    SRT = Path(installed_base.__file__).resolve().parents[2]
+ 
+ 
+ def execute(path, names, ns, owner=None):
+@@ -42,20 +53,30 @@ class TestInitialStreamError(unittest.IsolatedAsyncioTestCase):
+             Literal=Literal,
+             BaseModel=BaseModel,
+         )
+-        execute(SRT / "entrypoints/openai/protocol.py", {"ErrorResponse"}, self.ns)
+-        execute(
+-            SRT / "entrypoints/request_disconnect.py",
+-            {"response_disconnect_watched", "await_response_or_disconnect"},
+-            self.ns,
+-        )
+-        path = SRT / "entrypoints/openai/serving_base.py"
+-        execute(path, {"GenerationStreamingResponse"}, self.ns)
+-        execute(
+-            path,
+-            {"create_error_response", "_streaming_response_before_headers"},
+-            self.ns,
+-            "OpenAIServingBase",
+-        )
++        if INSTALLED:
++            self.ns.update(
++                ErrorResponse=ErrorResponse,
++                response_disconnect_watched=response_disconnect_watched,
++                await_response_or_disconnect=await_response_or_disconnect,
++                GenerationStreamingResponse=installed_base.GenerationStreamingResponse,
++                create_error_response=installed_base.OpenAIServingBase.create_error_response,
++                _streaming_response_before_headers=installed_base.OpenAIServingBase._streaming_response_before_headers,
++            )
++        else:
++            execute(SRT / "entrypoints/openai/protocol.py", {"ErrorResponse"}, self.ns)
++            execute(
++                SRT / "entrypoints/request_disconnect.py",
++                {"response_disconnect_watched", "await_response_or_disconnect"},
++                self.ns,
++            )
++            path = SRT / "entrypoints/openai/serving_base.py"
++            execute(path, {"GenerationStreamingResponse"}, self.ns)
++            execute(
++                path,
++                {"create_error_response", "_streaming_response_before_headers"},
++                self.ns,
++                "OpenAIServingBase",
++            )
+         self.abort = Mock(return_value=None)
+         self.serving = SimpleNamespace(
+             tokenizer_manager=SimpleNamespace(create_abort_task=self.abort)
+diff --git a/test/manual/phala/test_kimi_schema_precheck_cpu.py b/test/manual/phala/test_kimi_schema_precheck_cpu.py
+index 34f316fe59b1ccd3ab79808986bea20a6e8d7146..e6291a2394f482b1fc8ed77a3acd8910f0d0bef4 100644
+--- a/test/manual/phala/test_kimi_schema_precheck_cpu.py
++++ b/test/manual/phala/test_kimi_schema_precheck_cpu.py
+@@ -149,6 +149,28 @@ else:
+     Serving = namespace["OpenAIServingChat"]
+     serving = NS(**namespace)
+ 
++    protocol_tree = ast.parse(
++        (SRT / "entrypoints/openai/protocol.py").read_text(encoding="utf-8")
++    )
++    request_class = next(
++        n
++        for n in protocol_tree.body
++        if isinstance(n, ast.ClassDef) and n.name == "ChatCompletionRequest"
++    )
++    predicate = next(
++        n
++        for n in request_class.body
++        if getattr(n, "name", None) == "uses_json_schema_constraint"
++    )
++    exec(
++        compile(
++            ast.fix_missing_locations(ast.Module(body=[predicate], type_ignores=[])),
++            "actual_schema_predicate.py",
++            "exec",
++        ),
++        namespace,
++    )
++
+ 
+ def tool(name="loose", strict=False, unique=True):
+     return {
+@@ -189,6 +211,7 @@ def request(tools, choice="auto", stream=False, response_format=None):
+         reasoning_effort=None,
+         max_completion_tokens=None,
+         max_tokens=None,
++        input_ids=None,
+     )
+     result.tools = [NS(function=NS(**t["function"])) for t in body["tools"]]
+     result.messages = [NS(**m) for m in body["messages"]]
+@@ -197,11 +220,17 @@ def request(tools, choice="auto", stream=False, response_format=None):
+     result.response_format = (
+         NS(
+             type="json_schema",
+-            json_schema=NS(schema_=response_format["json_schema"]["schema"]),
++            json_schema=NS(
++                schema_=response_format["json_schema"]["schema"],
++                strict=response_format["json_schema"].get("strict"),
++            ),
+         )
+         if response_format
+         else None
+     )
++    result.uses_json_schema_constraint = lambda **kwargs: namespace[
++        "uses_json_schema_constraint"
++    ](result, **kwargs)
+     return result
+ 
+ 
+@@ -245,9 +274,9 @@ class SchemaPrecheckTests(unittest.TestCase):
+                             error = self.check(
+                                 request([tool(strict=strict)], choice, stream), level
+                             )
+-                            self.assertEqual(bool(error), strict or level >= 2)
+-                            if error:
+-                                self.assertIn("unsupported by xgrammar", error)
++                            # Syntax is checked here; capability is checked only
++                            # after selecting the actual decoding constraint.
++                            self.assertIsNone(error)
+ 
+     def test_mixed_strict_and_named_unselected_validation(self):
+         for choice in (
+@@ -256,19 +285,25 @@ class SchemaPrecheckTests(unittest.TestCase):
+             "required",
+             {"type": "function", "function": {"name": "loose"}},
+         ):
+-            self.assertTrue(
+-                self.check(request([tool(), tool("strict", True)], choice)).startswith(
+-                    "Tool 1 "
+-                )
++            self.assertIsNone(
++                self.check(request([tool(), tool("strict", True)], choice))
+             )
+         self.assertIsNone(self.check(request([tool(), tool("other")], "required")))
+ 
+     def test_schema_validity_and_other_parser_preserved(self):
+         bad = tool()
+         bad["function"]["parameters"]["properties"]["ids"]["uniqueItems"] = 0
+-        self.assertIn("invalid 'parameters' schema", self.check(request([bad])))
++        for choice in (
++            "none",
++            "auto",
++            "required",
++            {"type": "function", "function": {"name": "loose"}},
++        ):
++            self.assertIn(
++                "invalid 'parameters' schema", self.check(request([bad], choice))
++            )
+         self.server.tool_call_parser = "qwen3_coder"
+-        self.assertIn("unsupported by xgrammar", self.check(request([tool()])))
++        self.assertIsNone(self.check(request([tool()])))
+ 
+     def test_response_format_and_exact_false(self):
+         for value in (False, True):
+@@ -281,9 +316,7 @@ class SchemaPrecheckTests(unittest.TestCase):
+                 "type": "json_schema",
+                 "json_schema": {"name": "test", "schema": schema},
+             }
+-            self.assertEqual(
+-                bool(self.check(request([tool()], response_format=fmt))), value
+-            )
++            self.assertIsNone(self.check(request([tool()], response_format=fmt)))
+         for value in (True, 0, None, "false"):
+             self.assertTrue(
+                 guard.has_xgrammar_unsupported_json_features({"uniqueItems": value})
+@@ -296,18 +329,18 @@ class SchemaPrecheckTests(unittest.TestCase):
+                 {"properties": {"uniqueItems": {"type": "boolean"}}}
+             )
+         )
+-        for keyword in (
+-            "contains",
+-            "dependentSchemas",
+-            "maxContains",
+-            "minContains",
+-            "multipleOf",
+-            "patternProperties",
+-            "propertyNames",
++        for schema in (
++            {"contains": {}},
++            {"dependentSchemas": {"x": {"required": ["y"]}}},
++            {"contains": {}, "maxContains": 1},
++            {"contains": {}, "minContains": 1},
++            {"type": "number", "multipleOf": 3},
++            {"patternProperties": {"^x": {"type": "integer"}}},
++            {"propertyNames": {"pattern": "^x"}},
+         ):
+             self.assertTrue(
+                 guard.has_xgrammar_unsupported_json_features(
+-                    {"properties": {"x": {keyword: {}}}}
++                    {"properties": {"x": schema}}
+                 )
+             )
+         self.assertTrue(
+diff --git a/test/manual/phala/test_xgrammar_adapter_cpu.py b/test/manual/phala/test_xgrammar_adapter_cpu.py
+index bb67c8b2587465d76c2aa0e05549f072c684c771..afc994be126a579ad5601ecb2e8618c9d24af37e 100644
+--- a/test/manual/phala/test_xgrammar_adapter_cpu.py
++++ b/test/manual/phala/test_xgrammar_adapter_cpu.py
+@@ -61,6 +61,9 @@ def adapter_namespace(compiler_factory=None):
+         "InvalidGrammarObject": InvalidGrammar,
+         "GrammarCompiler": compiler_factory or Mock(),
+         "validate_xgrammar_schema": schema_module.validate_xgrammar_schema,
++        "normalize_xgrammar_schema_noops": schema_module.normalize_xgrammar_schema_noops,
++        "sanitize_xgrammar_structural_format": schema_module.sanitize_xgrammar_structural_format,
++        "sanitize_xgrammar_structural_tag_structures": schema_module.sanitize_xgrammar_structural_tag_structures,
+         "validate_xgrammar_whitespace_limit": schema_module.validate_xgrammar_whitespace_limit,
+     }
+     source_nodes("constrained/utils.py", {"is_legacy_structural_tag"}, namespace)
+@@ -82,7 +85,7 @@ class SchemaTests(unittest.TestCase):
+             bad,
+             {"items": bad},
+             {"anyOf": [bad]},
+-            {"$defs": {"x": bad}},
++            {"$defs": {"x": bad}, "$ref": "#/$defs/x"},
+             {"properties": {"pattern": bad}},
+             {"additionalProperties": bad},
+         ):
+diff --git a/test/manual/phala/test_xgrammar_prevalidation_cpu.py b/test/manual/phala/test_xgrammar_prevalidation_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b52c7b7bc95c62a3c4b504579e1022701c04da71
+--- /dev/null
++++ b/test/manual/phala/test_xgrammar_prevalidation_cpu.py
+@@ -0,0 +1,720 @@
++"""Selected-grammar regressions; PHALA_KIMI_INSTALLED=1 uses real protocol/parsers.
++
++Default runs exact source methods with CPU fixtures, no serving/CUDA stand-ins
++claimed as installed acceptance. Native mode must import actual installed modules.
++"""
++
++import ast
++import copy
++import inspect
++import json
++import logging
++import unittest
++from types import MethodType
++from types import SimpleNamespace as NS
++from unittest.mock import Mock, patch
++
++import test_kimi_schema_precheck_cpu as pre
++from jsonschema import Draft202012Validator
++
++BAD = {"type": "array", "items": {"type": "integer"}, "uniqueItems": True}
++PATTERN = {"type": "string", "pattern": "^a+$", "maxLength": 2}
++
++if not pre.INSTALLED:
++
++    class CPURequest(NS):
++        _DEFAULT_SAMPLING_PARAMS = dict.fromkeys(
++            ["temperature", "top_p", "top_k", "min_p", "repetition_penalty"], 1
++        )
++
++        def __getattr__(self, name):
++            return None
++
++        def effective_tool_choice(self):
++            return self.tool_choice
++
++    tree = ast.parse(
++        (pre.SRT / "entrypoints/openai/protocol.py").read_text(encoding="utf-8")
++    )
++    cls = next(
++        n
++        for n in tree.body
++        if isinstance(n, ast.ClassDef) and n.name == "ChatCompletionRequest"
++    )
++    methods = [
++        n
++        for n in cls.body
++        if getattr(n, "name", None)
++        in {"uses_json_schema_constraint", "to_sampling_params"}
++    ]
++    scope = {
++        "ToolChoice": pre.ToolChoice,
++        "convert_json_schema_to_str": json.dumps,
++        "logger": logging.getLogger(__name__),
++    }
++    module = ast.Module(
++        body=[
++            ast.ImportFrom(
++                module="__future__", names=[ast.alias(name="annotations")], level=0
++            ),
++            *methods,
++        ],
++        type_ignores=[],
++    )
++    exec(
++        compile(
++            ast.fix_missing_locations(module), "actual_sampling_methods.py", "exec"
++        ),
++        scope,
++    )
++    for method in methods:
++        setattr(CPURequest, method.name, scope[method.name])
++
++
++def request(schema=None, strict=None, *, tools=None, choice="auto", input_ids=None):
++    body = dict(
++        model="fixture",
++        messages=[dict(role="user", content="test")],
++        tools=tools or [],
++        tool_choice=choice,
++    )
++    if schema is not None:
++        body["response_format"] = {
++            "type": "json_schema",
++            "json_schema": {"name": "test", "schema": copy.deepcopy(schema)},
++        }
++        if strict != "omitted":
++            body["response_format"]["json_schema"]["strict"] = strict
++    if input_ids is not None:
++        body["input_ids"] = input_ids
++    if pre.INSTALLED:
++        return pre.ChatCompletionRequest.model_validate(body)
++    fmt = body.pop("response_format", None)
++    return CPURequest(
++        **body,
++        response_format=NS(
++            type="json_schema",
++            json_schema=NS(
++                schema_=schema, strict=None if strict == "omitted" else strict
++            ),
++        )
++        if fmt
++        else None,
++    )
++
++
++def sampling(req, constraint=None, renderer=False):
++    return req.to_sampling_params(
++        stop=[],
++        model_generation_config={},
++        tool_call_constraint=constraint,
++        renderer_handles_response_format=renderer,
++    )
++
++
++def check(params):
++    return pre.guard.validate_xgrammar_sampling_constraints(params)
++
++
++class SelectedGrammarTests(unittest.TestCase):
++    def test_response_strict_renderer_matrix(self):
++        for schema in (BAD, PATTERN):
++            for strict in ("omitted", None, False, True):
++                for renderer in (False, True):
++                    for input_ids in (None, [1, 2]):
++                        with self.subTest(
++                            strict=strict, renderer=renderer, input_ids=input_ids
++                        ):
++                            req = request(schema, strict, input_ids=input_ids)
++                            params = sampling(req, renderer=renderer)
++                            constrained = (
++                                strict is not False
++                                or not renderer
++                                or input_ids is not None
++                            )
++                            self.assertEqual("json_schema" in params, constrained)
++                            if constrained:
++                                with self.assertRaisesRegex(
++                                    ValueError, "unsupported by xgrammar"
++                                ):
++                                    check(params)
++                            else:
++                                check(params)
++
++    def test_actual_tool_constraint_selected_after_precedence(self):
++        for name, value in (
++            ("json_schema", BAD),
++            (
++                "structural_tag",
++                NS(
++                    model_dump=lambda **kwargs: {
++                        "structures": [{"schema": BAD}],
++                        "triggers": ["call"],
++                    }
++                ),
++            ),
++        ):
++            constraint = (name, value)
++            with self.assertRaises(ValueError):
++                check(sampling(request(), constraint))
++            # An auto tool grammar is not selected when response_format owns output.
++            check(sampling(request({"type": "string"}, True), constraint))
++        check(sampling(request(), ("full_assistant_ebnf", 'root ::= "OK"')))
++        check(sampling(request(), None))
++
++    def test_structural_format_schema_positions_only(self):
++        for fmt in ("json_schema", "qwen_xml_parameter"):
++            selected = {
++                "structural_tag": json.dumps(
++                    {
++                        "format": {
++                            "type": "tag",
++                            "content": {"type": fmt, "json_schema": BAD},
++                        }
++                    }
++                )
++            }
++            with self.assertRaises(ValueError):
++                check(selected)
++        check(
++            {
++                "structural_tag": json.dumps(
++                    {
++                        "format": {
++                            "type": "json_schema",
++                            "json_schema": {"const": {"uniqueItems": True}},
++                        }
++                    }
++                )
++            }
++        )
++
++    def test_new_error_is_private_valueerror_before_engine(self):
++        secret = {
++            "type": "array",
++            "uniqueItems": True,
++            "description": "private-value-should-not-leak",
++        }
++        with self.assertRaises(ValueError) as raised:
++            check({"json_schema": json.dumps(secret)})
++        self.assertNotIn("private-value", str(raised.exception))
++        source = (pre.SRT / "entrypoints/openai/serving_chat.py").read_text(
++            encoding="utf-8"
++        )
++        conversion = source[
++            source.index("    def _convert_to_internal_request(") : source.index(
++                "    def _process_messages("
++            )
++        ]
++        self.assertLess(
++            conversion.index("request.to_sampling_params("),
++            conversion.index("validate_xgrammar_sampling_constraints(sampling_params)"),
++        )
++        self.assertLess(
++            conversion.index("validate_xgrammar_sampling_constraints(sampling_params)"),
++            conversion.index("adapted_request ="),
++        )
++
++    def test_kimi_template_request_schema_precedence(self):
++        if pre.INSTALLED:
++            req = request(BAD, False)
++            req.chat_template_kwargs = {
++                "response_format": {"type": "text"},
++                "response_schema": {"type": "string"},
++            }
++            original = copy.deepcopy(req.chat_template_kwargs)
++            tokenizer = NS(apply_chat_template=Mock(return_value=[1]))
++            server = pre.Serving.__new__(pre.Serving)
++            server.chat_encoding_spec = "kimi_k3"
++            server.tokenizer_manager = NS(tokenizer=tokenizer)
++            messages = [{"role": "user", "content": "test"}]
++            self.assertEqual(
++                server._encode_messages(messages, req, pre.serving.ThinkingMode.CHAT),
++                [1],
++            )
++            kwargs = tokenizer.apply_chat_template.call_args.kwargs
++            self.assertEqual(
++                kwargs["response_format"],
++                req.response_format.model_dump(exclude_unset=True, by_alias=True),
++            )
++            self.assertEqual(kwargs["response_schema"], BAD)
++            self.assertEqual(req.chat_template_kwargs, original)
++            # The native schema override is local to the Kimi branch.
++            server.chat_encoding_spec = "dsv4"
++            tokenizer.apply_chat_template.reset_mock()
++            self.assertIsNone(
++                server._encode_messages(messages, req, pre.serving.ThinkingMode.CHAT)
++            )
++            tokenizer.apply_chat_template.assert_not_called()
++            self.assertEqual(req.chat_template_kwargs, original)
++            return
++        source = ast.parse(
++            (pre.SRT / "entrypoints/openai/serving_chat.py").read_text(encoding="utf-8")
++        )
++        # Execute the real kwargs assignment block, not a copied policy.
++        block = next(
++            n
++            for n in ast.walk(source)
++            if isinstance(n, ast.If)
++            and ast.unparse(n.test) == "request.response_format is not None"
++            and any(isinstance(x, ast.Assign) for x in n.body)
++        )
++        fmt = {
++            "type": "json_schema",
++            "json_schema": {"name": "test", "strict": False, "schema": BAD},
++        }
++        req = NS(
++            response_format=NS(
++                type="json_schema",
++                json_schema=NS(schema_=BAD),
++                model_dump=lambda **kwargs: copy.deepcopy(fmt),
++            )
++        )
++        kwargs = {
++            "response_format": {"type": "text"},
++            "response_schema": {"type": "string"},
++        }
++        ns = {"request": req, "template_kwargs": kwargs}
++        exec(
++            compile(
++                ast.fix_missing_locations(ast.Module(body=[block], type_ignores=[])),
++                "actual_template_block.py",
++                "exec",
++            ),
++            ns,
++        )
++        self.assertEqual(kwargs["response_format"], fmt)
++        self.assertEqual(kwargs["response_schema"], BAD)
++
++
++class ErrorEnvelopeTests(unittest.IsolatedAsyncioTestCase):
++    async def test_actual_handle_request_preserves_prevalidation_400(self):
++        tree = ast.parse(
++            (pre.SRT / "entrypoints/openai/serving_base.py").read_text(encoding="utf-8")
++        )
++        cls = next(
++            n
++            for n in tree.body
++            if isinstance(n, ast.ClassDef) and n.name == "OpenAIServingBase"
++        )
++        methods = [
++            n
++            for n in cls.body
++            if getattr(n, "name", None) in {"handle_request", "create_error_response"}
++        ]
++
++        class ErrorPayload(NS):
++            def model_dump(self):
++                return vars(self)
++
++        scope = dict(
++            monotonic_time=lambda: 1,
++            ErrorResponse=ErrorPayload,
++            ORJSONResponse=lambda **kwargs: NS(**kwargs),
++            HTTPException=type("HTTPException", (Exception,), {}),
++            UnsupportedXGrammarSchema=pre.guard.UnsupportedXGrammarSchema,
++        )
++        module = ast.Module(
++            body=[
++                ast.ImportFrom(
++                    module="__future__", names=[ast.alias(name="annotations")], level=0
++                ),
++                *methods,
++            ],
++            type_ignores=[],
++        )
++        exec(
++            compile(
++                ast.fix_missing_locations(module), "actual_error_mapping.py", "exec"
++            ),
++            scope,
++        )
++
++        async def convert(*args):
++            check({"json_schema": json.dumps(BAD)})
++
++        server = NS(
++            _validate_request=lambda req: None,
++            tokenizer_manager=NS(request_logger=NS(log_requests=False)),
++            _convert_to_internal_request_async=convert,
++        )
++        if pre.INSTALLED:
++            base = pre.Serving.__mro__[1]
++            handle = base.handle_request
++            server.create_error_response = MethodType(
++                base.create_error_response, server
++            )
++        else:
++            handle = scope["handle_request"]
++            server.create_error_response = MethodType(
++                scope["create_error_response"], server
++            )
++        for stream in (False, True):
++            response = await handle(server, NS(stream=stream), None)
++            content = json.loads(response.body) if pre.INSTALLED else response.content
++            self.assertEqual(response.status_code, 400)
++            self.assertEqual(content["type"], "BadRequestError")
++            self.assertEqual(content["object"], "error")
++            self.assertEqual(content["code"], 400)
++
++
++class GlmSelectionTests(unittest.TestCase):
++    def test_parameter_level_does_not_select_shallow_ebnf(self):
++        if pre.INSTALLED:
++            for level in (0, 1, 2):
++                for strict in (False, True):
++                    req = request(tools=[pre.tool(strict=strict)])
++                    with patch.object(
++                        pre.serving.envs.SGLANG_TOOL_STRICT_LEVEL,
++                        "get",
++                        return_value=pre.ToolStrictLevel(level),
++                    ):
++                        parser = pre.FunctionCallParser(req.tools, "glm47")
++                    self.assertEqual(
++                        parser.detector.use_full_assistant_constraint,
++                        not strict and level < 2,
++                    )
++            return
++        tree = ast.parse(
++            (pre.SRT / "function_call/function_call_parser.py").read_text(
++                encoding="utf-8"
++            )
++        )
++        cls = next(
++            n
++            for n in tree.body
++            if isinstance(n, ast.ClassDef) and n.name == "FunctionCallParser"
++        )
++        init = next(n for n in cls.body if getattr(n, "name", None) == "__init__")
++
++        class Detector:
++            pass
++
++        scope = dict(
++            inspect=inspect,
++            Glm47MoeDetector=Detector,
++            ToolStrictLevel=pre.ToolStrictLevel,
++        )
++        for level in (0, 1, 2):
++            for strict in (False, True):
++                scope["envs"] = NS(
++                    SGLANG_TOOL_STRICT_LEVEL=NS(get=lambda: pre.ToolStrictLevel(level))
++                )
++                module = ast.Module(
++                    body=[
++                        ast.ImportFrom(
++                            module="__future__",
++                            names=[ast.alias(name="annotations")],
++                            level=0,
++                        ),
++                        init,
++                    ],
++                    type_ignores=[],
++                )
++                exec(
++                    compile(
++                        ast.fix_missing_locations(module),
++                        "actual_glm_parser_init.py",
++                        "exec",
++                    ),
++                    scope,
++                )
++                parser = NS(ToolCallParserEnum={"glm47": Detector})
++                scope["__init__"](parser, [NS(function=NS(strict=strict))], "glm47")
++                self.assertEqual(
++                    parser.detector.use_full_assistant_constraint,
++                    not strict and level < 2,
++                )
++
++
++class SchemaCapabilityTests(unittest.TestCase):
++    def test_noops_and_supported_integer(self):
++        schemas = [
++            {"type": "string", "multipleOf": 2},
++            {"type": "string", "uniqueItems": True},
++            {"type": "integer", "multipleOf": 1, "minimum": 0},
++            {"type": "integer", "multipleOf": 2},
++            {"type": "integer", "multipleOf": 3},
++            {"type": "integer", "multipleOf": 1024},
++            {"type": "object", "dependentSchemas": {}},
++            {"type": "object", "patternProperties": {}},
++            {"type": "object", "propertyNames": {}},
++            {"type": "array", "contains": {}, "minContains": 0},
++            {"type": "array", "minContains": 4},
++            {"type": "string", "pattern": "^a+$", "minLength": 0},
++            {"type": "string", "$defs": {"unused": BAD}},
++            {"type": "string", "properties": {"inapplicable": BAD}},
++        ]
++        for schema in schemas:
++            with self.subTest(schema=schema):
++                Draft202012Validator.check_schema(schema)
++                check({"json_schema": json.dumps(schema)})
++
++    def test_active_gaps_remain_rejected(self):
++        schemas = [
++            BAD,
++            PATTERN,
++            {"allOf": [{"type": "integer", "multipleOf": 2}, {"minimum": 0}]},
++            {
++                "$defs": {"n": {"type": "integer", "multipleOf": 2}},
++                "$ref": "#/$defs/n",
++                "minimum": 0,
++            },
++            {"anyOf": [{"type": "integer", "multipleOf": 2}, {"type": "null"}]},
++            {"type": "number", "multipleOf": 2},
++            {"type": "integer", "multipleOf": 1025},
++            {"type": "integer", "multipleOf": 1.5},
++            {"type": "integer", "multipleOf": 2, "minimum": 0},
++            {"type": "array", "contains": {}},
++            {"type": "array", "contains": {}, "minContains": 0, "maxContains": 2},
++            {"$defs": {"used": BAD}, "$ref": "#/$defs/used"},
++            {
++                "definitions": {"used": PATTERN},
++                "properties": {"x": {"$ref": "#/definitions/used"}},
++            },
++            {"type": ["string", "array"], "uniqueItems": True},
++            {"type": "object", "patternProperties": {"^x": {"type": "integer"}}},
++        ]
++        for schema in schemas:
++            with self.subTest(schema=schema), self.assertRaises(ValueError):
++                check({"json_schema": json.dumps(schema)})
++
++    def test_noop_normalization_preserves_request_and_data(self):
++        original = {
++            "type": "object",
++            "propertyNames": True,
++            "properties": {
++                "array": {"type": "array", "minContains": 1, "maxContains": 2}
++            },
++            "const": {"propertyNames": True, "minContains": 3},
++        }
++        before = copy.deepcopy(original)
++        normalized = pre.guard.normalize_xgrammar_schema_noops(original)
++        self.assertEqual(original, before)
++        self.assertNotIn("propertyNames", normalized)
++        self.assertEqual(normalized["properties"]["array"], {"type": "array"})
++        self.assertEqual(normalized["const"], original["const"])
++        active = {"type": "array", "contains": {}, "minContains": 1, "maxContains": 2}
++        self.assertEqual(pre.guard.normalize_xgrammar_schema_noops(active), active)
++
++    def test_recursive_local_refs_and_data_keywords(self):
++        recursive = {
++            "type": "object",
++            "properties": {"next": {"anyOf": [{"type": "null"}, {"$ref": "#"}]}},
++        }
++        check({"json_schema": json.dumps(recursive)})
++        recursive["properties"]["bad"] = BAD
++        with self.assertRaises(ValueError):
++            check({"json_schema": json.dumps(recursive)})
++        check(
++            {
++                "json_schema": json.dumps(
++                    {"enum": [{"uniqueItems": True, "contains": 3}]}
++                )
++            }
++        )
++
++
++class InstalledParserTests(unittest.TestCase):
++    @unittest.skipUnless(pre.INSTALLED, "requires actual installed protocol/serving")
++    def test_malformed_response_and_strict_wire_types(self):
++        from pydantic import ValidationError
++
++        server = pre.Serving.__new__(pre.Serving)
++        server.chat_encoding_spec = "kimi_k3"
++        server.tool_call_parser = "kimi_k3"
++        server._grammar_backend = "xgrammar"
++        server.template_manager = NS(reasoning_config=None)
++        server._apply_dsv41_reasoning_off = lambda request: None
++        server._validate_media_content = lambda request: None
++        for strict in ("omitted", None, False, True):
++            req = request({"type": "string", "maxLength": -1}, strict)
++            with patch.object(
++                pre.serving, "get_model", return_value=NS(context_length=4096)
++            ):
++                self.assertIn(
++                    "Invalid response_format JSON schema", server._validate_request(req)
++                )
++        for strict in ("false", "true", 0, 1):
++            with self.assertRaises(ValidationError):
++                request({"type": "string"}, strict)
++
++    @unittest.skipUnless(pre.INSTALLED, "requires actual installed parsers")
++    def test_real_auto_tool_is_superseded_by_response_format(self):
++        req = request({"type": "string"}, True, tools=[pre.tool(strict=True)])
++        parser = pre.FunctionCallParser(req.tools, "kimi_k3")
++        constraint = parser.get_structure_constraint(req.tool_choice)
++        self.assertIsNotNone(constraint)
++        params = sampling(req, constraint, renderer=True)
++        self.assertNotIn("structural_tag", params)
++        self.assertEqual(json.loads(params["json_schema"]), {"type": "string"})
++        check(params)
++        req.tool_choice = "required"
++        with self.assertRaisesRegex(ValueError, "cannot be combined"):
++            sampling(
++                req, parser.get_structure_constraint(req.tool_choice), renderer=True
++            )
++
++    @unittest.skipUnless(pre.INSTALLED, "requires actual native backend")
++    def test_real_backend_noop_normalization_and_strict_protection(self):
++        import xgrammar as xgr
++
++        from sglang.srt.constrained.base_grammar_backend import InvalidGrammarObject
++        from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
++
++        info = xgr.TokenizerInfo(
++            [bytes([i]) for i in range(256)] + [b"<eos>"], stop_token_ids=[256]
++        )
++        backend = XGrammarGrammarBackend.__new__(XGrammarGrammarBackend)
++        backend.grammar_compiler = xgr.GrammarCompiler(info, max_threads=1)
++        backend.override_stop_tokens = [256]
++        backend.vocab_size = 257
++        backend.any_whitespace = True
++        backend.max_whitespace_cnt = None
++        for schema in (
++            BAD,
++            PATTERN,
++            {"allOf": [{"type": "integer", "multipleOf": 2}, {"minimum": 0}]},
++            {
++                "$defs": {"n": {"type": "integer", "multipleOf": 2}},
++                "$ref": "#/$defs/n",
++                "minimum": 0,
++            },
++        ):
++            self.assertIsInstance(
++                backend.dispatch_json(json.dumps(schema)), InvalidGrammarObject
++            )
++        fixtures = [
++            ({"type": "integer", "multipleOf": 2}, "2", "3"),
++            (
++                {"type": "object", "propertyNames": True, "additionalProperties": True},
++                '{"x":1}',
++                "[]",
++            ),
++            (
++                {"type": "array", "items": {}, "minContains": 1, "maxContains": 1},
++                "[1,2]",
++                "{}",
++            ),
++        ]
++        for schema, valid, invalid in fixtures:
++            before = copy.deepcopy(schema)
++            for text, expected in ((valid, True), (invalid, False)):
++                grammar = backend.dispatch_json(json.dumps(schema))
++                self.assertNotIsInstance(grammar, InvalidGrammarObject)
++                self.assertEqual(
++                    grammar.matcher.accept_string(text)
++                    and grammar.matcher.accept_token(256),
++                    expected,
++                )
++            self.assertEqual(schema, before)
++        for legacy in (False, True):
++
++            def tag(schema):
++                if legacy:
++                    return {
++                        "structures": [
++                            {"begin": "<call>", "schema": schema, "end": "</call>"}
++                        ],
++                        "triggers": ["<call>"],
++                    }
++                return {
++                    "type": "structural_tag",
++                    "format": {
++                        "type": "tag",
++                        "begin": "<call>",
++                        "content": {"type": "json_schema", "json_schema": schema},
++                        "end": "</call>",
++                    },
++                }
++
++            self.assertIsInstance(
++                backend.dispatch_structural_tag(json.dumps(tag(BAD))),
++                InvalidGrammarObject,
++            )
++            schema = {
++                "type": "object",
++                "propertyNames": True,
++                "additionalProperties": True,
++            }
++            grammar = backend.dispatch_structural_tag(json.dumps(tag(schema)))
++            self.assertNotIsInstance(grammar, InvalidGrammarObject)
++            self.assertTrue(
++                grammar.matcher.accept_string('<call>{"x":1}</call>')
++                and grammar.matcher.accept_token(256)
++            )
++
++    @unittest.skipUnless(pre.INSTALLED, "requires actual installed native tags")
++    def test_kimi_named_excludes_unselected_strict_schema(self):
++        loose = pre.tool(name="selected", unique=False)
++        strict = pre.tool(name="unselected", strict=True)
++        req = request(
++            tools=[loose, strict],
++            choice={"type": "function", "function": {"name": "selected"}},
++        )
++        with patch.object(
++            pre.serving.envs.SGLANG_TOOL_STRICT_LEVEL,
++            "get",
++            return_value=pre.ToolStrictLevel(0),
++        ):
++            parser = pre.FunctionCallParser(req.tools, "kimi_k3")
++            constraint = parser.get_structure_constraint(req.tool_choice)
++        self.assertIsNotNone(constraint)
++        check(sampling(req, constraint))
++
++    @unittest.skipUnless(
++        pre.INSTALLED, "requires actual installed protocol/parsers/native tags"
++    )
++    def test_cross_model_selected_tool_schemas(self):
++        for parser_name in ("kimi_k3", "glm47", "qwen3_coder", "llama3"):
++            for level in (0, 1, 2):
++                for strict in (False, True):
++                    for choice in (
++                        "none",
++                        "auto",
++                        "required",
++                        {"type": "function", "function": {"name": "loose"}},
++                    ):
++                        for schema in (BAD, PATTERN):
++                            with self.subTest(
++                                parser=parser_name,
++                                level=level,
++                                strict=strict,
++                                choice=choice,
++                                schema=schema,
++                            ):
++                                t = pre.tool(strict=strict)
++                                t["function"]["parameters"] = {
++                                    "type": "object",
++                                    "properties": {"value": schema},
++                                    "required": ["value"],
++                                }
++                                req = request(tools=[t], choice=choice)
++                                with patch.object(
++                                    pre.serving.envs.SGLANG_TOOL_STRICT_LEVEL,
++                                    "get",
++                                    return_value=pre.ToolStrictLevel(level),
++                                ):
++                                    parser = pre.FunctionCallParser(
++                                        req.tools, parser_name
++                                    )
++                                    constraint = parser.get_structure_constraint(
++                                        req.tool_choice
++                                    )
++                                params = sampling(req, constraint)
++                                if choice == "none":
++                                    check(params)
++                                elif strict or level >= 2:
++                                    # Required/named fallback or strict native tags must
++                                    # carry active parameters to the shared validator.
++                                    self.assertIsNotNone(constraint)
++                                    with self.assertRaises(ValueError):
++                                        check(params)
++                                elif parser_name in ("kimi_k3", "glm47"):
++                                    check(params)
++                                # Other non-strict parsers may intentionally enforce
++                                # fallback JSON parameters: validate actual selection.
++
++
++if __name__ == "__main__":
++    unittest.main()

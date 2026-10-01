@@ -20,12 +20,12 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `62e6e93314633cd6dd5cc24cde8701c0794714a5`, tree
-`ed1daec7995cc61cb94a1b145a34dc0595aaf3e1`: 31 protected steps plus 118 successor patches.
-This candidate follows P5 with Kimi schema prechecks and shared required-tool
-whitespace handling. P6 PD lifecycle changes remain isolated from this release tree.
-The maintenance entry point records the P7 release commit and its exact-tree
-equivalence to the generated source; image/GPU and Muse quality gates remain open.
+The active selector binds engine `b77e67717d19fdda928839488bc4f2544f2cbddf`, tree
+`d3e3d986e02f397e42f57ba4104c80f204eec367`: 31 protected steps plus 120 successor patches.
+P8 integrates the accepted PD lifecycle delta and the shared XGrammar selected-constraint
+prevalidation repair on P7. Its fixed runtime snapshot passed 29 installed CPU/native
+checks with zero skips; this is development-overlay evidence, not final-image acceptance.
+The maintenance entry point records source identity and validation boundaries.
 The current tail consolidates DSV4 hybrid decode offload, complete component/C128
 recovery, shared startup safety, trusted health and parallel
 sampling ownership. Bespoke seed/reader/arm/finite capture, shared clear APIs,

@@ -6,18 +6,15 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Unified P7 source candidate
+## Unified P8 source
 
-- Release engine for `v0.5.20-phala-unified-p7`: `b6d1f66162b0dfb9125ac30a45425e44bc4d59ca`; tree `ed1daec7995cc61cb94a1b145a34dc0595aaf3e1`. This merge preserves P6 history while selecting the P5 successor source tree.
-- The active selector retains its generated source commit `62e6e93314633cd6dd5cc24cde8701c0794714a5`, whose complete tree is identical to the release engine. Ordered stack: 31 protected plus 118 successor steps (149 total); no extra patch is needed for integration topology.
-- P7 adds Kimi schema prechecks and shared Nemotron required-tool whitespace handling. New P6 PD lifecycle changes stay isolated pending their owner acceptance; baseline PD capabilities remain.
-- Kimi native 6/6 and Nemotron native 7/7 passed on the source candidate. Muse P5 auto-tool quality differences remain under independent diagnosis; these fixes do not establish their resolution or acceptance of every model.
-- This source candidate prioritizes Kimi and shared successor validation. Final image/GPU acceptance is pending; all non-PD models must ultimately use one accepted image digest.
-- PD decode responses retain prefill device/host/storage hit counts and omit a backend name because the existing handoff does not carry a trusted prefill backend identity. Local and prefill reporting keep their original backend names.
-- The prior cleanup removed bespoke seed/reader/arm/finite/manifest/clear/collector protocols and task-specific host-pool readback. DSV4 hybrid offload, complete components/C128, ordinary transfer, startup safety and cancellation/reclamation remain.
-- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. Native source stays at the public upstream-equivalent cleanup tree.
-- Gateway `include_reasoning` forwarding and ordinary authentication are retained. The shared KV native wheel requires the matching installed `sgl_kernel.kvcacheio` wrapper.
-- Source replay and CPU checks are source evidence; installed-image checks, GPU transport/restoration and target acceptance remain separate. Earlier immutable tags are unchanged.
+- Engine for `v0.5.20-phala-unified-p8`: `b77e67717d19fdda928839488bc4f2544f2cbddf`; tree `d3e3d986e02f397e42f57ba4104c80f204eec367`. It descends from P7 through accepted PD integration `de2be387c9e7d7050bbf6064f90ac23edb6c9546`.
+- Ordered stack: 31 protected plus 120 successor steps (151 total). The existing P7 generated endpoint and formal merge have identical trees; the final two exports add PD lifecycle and fixed r1 schema behavior without replaying P6 wholesale.
+- PD connection/bootstrap cleanup and gateway cancellation behavior use the accepted source delta. Gateway tree remains `3123e15634025bc5b8bffc957753f05e83ae0ea1` from the PD parent; the final image requires its matching router wheel/binary.
+- XGrammar checks the final selected decoding schema once at HTTP conversion, preserves strict defaults, rejects unsupported integer composition, and normalizes only exact native-mishandled no-ops on a compilation copy. Prompt schemas and native strict mode remain unchanged.
+- Fixed r1 six-module hashes and five test/harness files are identical to the 29/29, zero-skip installed CPU/native development-overlay snapshot. The final P8 image still requires installed validation without source overlays.
+- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; native dependency exports are unchanged.
+- Source replay and CPU checks do not qualify GPU transport, model quality, rollout or production. Final-image and per-target acceptance belong to their existing owners. Earlier immutable tags remain unchanged.
 
 ## Verify and Prepare
 

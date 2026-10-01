@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "62e6e93314633cd6dd5cc24cde8701c0794714a5",
-      "fork_tree": "ed1daec7995cc61cb94a1b145a34dc0595aaf3e1",
-      "fork_branch": "codex/unified-nonpd-p7-candidate",
-      "patch_count": 118,
+      "fork_commit": "b77e67717d19fdda928839488bc4f2544f2cbddf",
+      "fork_tree": "d3e3d986e02f397e42f57ba4104c80f204eec367",
+      "fork_branch": "codex/p8-r1-reviewable-integration-20261001",
+      "patch_count": 120,
       "replay_mode": "exact",
-      "status": "candidate_p5_successor_kimi_nemotron",
+      "status": "unified_p8_source_release_candidate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "ed1daec7995cc61cb94a1b145a34dc0595aaf3e1"
+      "replay_tree": "d3e3d986e02f397e42f57ba4104c80f204eec367"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
