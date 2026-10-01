@@ -1,0 +1,152 @@
+diff --git a/python/sglang/srt/constrained/llguidance_backend.py b/python/sglang/srt/constrained/llguidance_backend.py
+index d506f06f2f2b042204b88a35fbd41f26cc202dd7..f6cc931d49f155ede84afb9f36fe4f84dd51da4e 100644
+--- a/python/sglang/srt/constrained/llguidance_backend.py
++++ b/python/sglang/srt/constrained/llguidance_backend.py
+@@ -13,6 +13,7 @@
+ # ==============================================================================
+ """Constrained decoding with llguidance backend."""
+ 
++import copy
+ import json
+ import logging
+ from functools import cache, cached_property
+@@ -45,6 +46,65 @@ logger = logging.getLogger(__name__)
+ _LLGUIDANCE_LOG_LEVEL = get_int_env_var("LLGUIDANCE_LOG_LEVEL", 1)
+ 
+ 
++def _normalize_llguidance_schema_noops(schema):
++    """Remove JSON Schema assertions that are exact no-ops.
++
++    LLGuidance reports several valid, inapplicable JSON Schema keywords as
++    unsupported.  JSON Schema requires these keywords to be ignored in the
++    corresponding positions, so dropping only those no-ops preserves the
++    client's semantics while keeping effective unsupported constraints strict.
++    The request object is copied and never mutated; enum/const values are data,
++    not nested schemas, and are deliberately not traversed.
++    """
++    result = copy.deepcopy(schema)
++    seen = set()
++
++    def visit(obj):
++        if not isinstance(obj, dict) or id(obj) in seen:
++            return
++        seen.add(id(obj))
++
++        if obj.get("propertyNames") is True or obj.get("propertyNames") == {}:
++            obj.pop("propertyNames", None)
++        if obj.get("uniqueItems") is False:
++            obj.pop("uniqueItems", None)
++        else:
++            declared = obj.get("type")
++            if isinstance(declared, str):
++                types = {declared}
++            elif isinstance(declared, list):
++                types = {item for item in declared if isinstance(item, str)}
++            else:
++                types = set()
++            if "uniqueItems" in obj and types and "array" not in types:
++                obj.pop("uniqueItems", None)
++
++        # minContains/maxContains have no effect without contains, regardless
++        # of their numeric values.  With contains present they remain strict.
++        if "contains" not in obj:
++            obj.pop("minContains", None)
++            obj.pop("maxContains", None)
++
++        for key in (
++            "items", "additionalItems", "additionalProperties",
++            "unevaluatedItems", "unevaluatedProperties", "not", "if",
++            "then", "else", "contains", "propertyNames",
++        ):
++            visit(obj.get(key))
++        for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
++            for child in obj.get(key, []):
++                visit(child)
++        for key in (
++            "properties", "patternProperties", "dependentSchemas",
++            "$defs", "definitions",
++        ):
++            for child in obj.get(key, {}).values():
++                visit(child)
++
++    visit(result)
++    return result
++
++
+ class GrammarDraftRow(NamedTuple):
+     """Grammar, destination block, and tokens for a draft-chain mask fill."""
+ 
+@@ -471,8 +531,9 @@ class GuidanceBackend(BaseGrammarBackend):
+ 
+     def dispatch_json(self, key_string: str) -> BaseGrammarObject:
+         try:
++            schema = _normalize_llguidance_schema_noops(json.loads(key_string))
+             serialized_grammar = LLMatcher.grammar_from_json_schema(
+-                key_string,
++                json.dumps(schema, separators=(",", ":")),
+                 defaults={
+                     "whitespace_flexible": self.any_whitespace,
+                     "whitespace_pattern": self.whitespace_pattern,
+diff --git a/test/registered/unit/constrained/test_llguidance_response_suffix.py b/test/registered/unit/constrained/test_llguidance_response_suffix.py
+index 9bc3e0d0c2d25549da60eb6b8e1e0e47efdbf356..07939fecc03c435f94ff016f47cc6b43c8e41aed 100644
+--- a/test/registered/unit/constrained/test_llguidance_response_suffix.py
++++ b/test/registered/unit/constrained/test_llguidance_response_suffix.py
+@@ -14,6 +14,7 @@ from sglang.srt.constrained.llguidance_backend import (
+     GuidanceBackend,
+     GuidanceGrammar,
+     _create_llguidance_tokenizer,
++    _normalize_llguidance_schema_noops,
+ )
+ from sglang.test.ci.ci_register import register_cpu_ci
+ 
+@@ -122,6 +123,50 @@ class TestTiktokenLLGuidanceConversion(unittest.TestCase):
+         for token in range(258, 264):
+             self.assertFalse((int(mask[0, token // 32]) >> (token % 32)) & 1)
+ 
++    def test_json_schema_noops_are_preserved_without_weakening_constraints(self):
++        backend = GuidanceBackend(self.tokenizer, n_vocab=258, eos_token_ids=[256])
++        schemas = [
++            {
++                "type": "object",
++                "properties": {"n": {"type": "integer"}},
++                "required": ["n"],
++                "additionalProperties": False,
++                "propertyNames": True,
++            },
++            {
++                "type": "object",
++                "properties": {"n": {"type": "integer"}},
++                "required": ["n"],
++                "additionalProperties": False,
++                "uniqueItems": True,
++            },
++            {
++                "type": "array",
++                "items": {"type": "integer"},
++                "minContains": 1,
++                "maxContains": 2,
++                "uniqueItems": False,
++            },
++        ]
++        for schema in schemas:
++            normalized = _normalize_llguidance_schema_noops(schema)
++            self.assertIsInstance(
++                backend.dispatch_json(json.dumps(schema)), GuidanceGrammar
++            )
++            self.assertNotEqual(normalized, schema)
++
++        # An effective array uniqueness constraint remains strict and is not
++        # silently erased merely because the no-op cases above are accepted.
++        effective = {
++            "type": "array",
++            "items": {"type": "integer"},
++            "uniqueItems": True,
++        }
++        self.assertIn("uniqueItems", _normalize_llguidance_schema_noops(effective))
++        self.assertNotIsInstance(
++            backend.dispatch_json(json.dumps(effective)), GuidanceGrammar
++        )
++
+ 
+ class TestLLGuidanceStructuralTags(unittest.TestCase):
+     def test_fast_tokenizer_mixed_literal_and_special_triggers(self):

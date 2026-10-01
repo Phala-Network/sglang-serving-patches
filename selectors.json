@@ -2,7 +2,7 @@
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
   "active_selector": "unified-v0520-governor-r6",
-  "as_of": "2026-09-30",
+  "as_of": "2026-10-02",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
-      "fork_tree": "888877b6e1907d35645c148581a44a5f9a4d90d1",
-      "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
+      "fork_commit": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
+      "fork_tree": "7a09c7b841287e373413e2449f6065353e377b9f",
+      "fork_branch": "codex/llguidance-schema-p10-20261002",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..757ebc8e0211648a9f7a785472dd2683b0bbb533",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2488,12 +2488,26 @@
           "source_commit": "4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
           "source_parent": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
           "sha256": "f2eefb243856e594e4cd345add7ac533e9f977d01b0e834f5ffe5e4edab1b5b2"
+        },
+        {
+          "id": "0103-llguidance-schema-noops",
+          "path": "patches/common/0103-llguidance-schema-noops.patch",
+          "source_commit": "56239e2b884ba3760d910386f2ecc21e0ab9979c",
+          "source_parent": "4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
+          "sha256": "0bf85ff068578e07b8ecdec9af15bbed292ef1717fd84a9a204e5d804e220198"
+        },
+        {
+          "id": "0104-llguidance-schema-reference-semantics",
+          "path": "patches/common/0104-llguidance-schema-reference-semantics.patch",
+          "source_commit": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
+          "source_parent": "56239e2b884ba3760d910386f2ecc21e0ab9979c",
+          "sha256": "2cd153f28ee164b8779e75b95b8d23add62fd80faca2171e3893670cea4513ed"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "llguidance backend migration candidate; final-image and model qualification pending",
-      "validation_boundary": "Exact source replay and isolated CPU backend smoke only; full runtime import, image, GPU and production acceptance pending",
+      "status": "P10 semantics-preserving llguidance schema no-op compatibility",
+      "validation_boundary": "Exact source replay and 105 Linux native CPU tests passed; final-image and model/GPU acceptance separate",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
         "commit": "f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155",

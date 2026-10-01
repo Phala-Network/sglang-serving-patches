@@ -20,11 +20,12 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `4ce4ab2192a1e3662d9f4ae389c0dcc67c520226`, tree
-`888877b6e1907d35645c148581a44a5f9a4d90d1`: 31 protected steps plus 128 successor patches.
-P9 selects llguidance by default, preserves Kimi tokenizer/trailer behavior and
+The active selector binds engine `757ebc8e0211648a9f7a785472dd2683b0bbb533`, tree
+`7a09c7b841287e373413e2449f6065353e377b9f`: 31 protected steps plus 130 successor patches.
+P10 preserves default-modern JSON Schema no-ops and reference targets. Explicit
+legacy/unknown dialects remain native without new normalization. P9 selected llguidance by default, preserves Kimi tokenizer/trailer behavior and
 literal or special structural-tag constraints. Its Linux CPU development gate
-passed 85 tests with zero skips, including real Kimi tokenizer tests and strict
+passed 105 tests with zero skips, including real Kimi tokenizer tests and strict
 negative cases. Explicit XGrammar remains available. Final-image and model/GPU
 acceptance are separate release gates.
 The maintenance entry point records source identity and validation boundaries.

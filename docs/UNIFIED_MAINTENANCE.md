@@ -6,13 +6,15 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Unified P9 source
+## Unified P10 source
 
-- Engine candidate for `v0.5.20-phala-unified-p9`: `4ce4ab2192a1e3662d9f4ae389c0dcc67c520226`; tree `888877b6e1907d35645c148581a44a5f9a4d90d1`. Published P8-r1 remains the rollback baseline.
-- Ordered stack: 31 protected plus 128 successor steps (159 total). llguidance is the default; explicit XGrammar remains supported. Kimi's exact JSON trailer, EOS, rollback/copy and tokenizer bytes are preserved. Structural-tag grammars handle literal, special and composite markers without losing schema constraints.
-- Linux CPU development tests passed 85/85 with zero skips, including nine real Kimi tokenizer cases, batched masks, tokenizer/padded-vocabulary checks, mixed/composite structural markers and strict negative cases. This uses candidate code in a disposable P8-r1 container; it is not final-image evidence.
+- Engine candidate for `v0.5.20-phala-unified-p10`: `757ebc8e0211648a9f7a785472dd2683b0bbb533`; tree `7a09c7b841287e373413e2449f6065353e377b9f`. Published P8-r1 remains the rollback baseline.
+- Ordered stack: 31 protected plus 130 successor steps (161 total). llguidance is the default; explicit XGrammar remains supported. Kimi's exact JSON trailer, EOS, rollback/copy and tokenizer bytes are preserved. Structural-tag grammars handle literal, special and composite markers without losing schema constraints.
+- Linux CPU development tests passed 105/105 with zero skips, including nine real Kimi tokenizer cases, batched masks, tokenizer/padded-vocabulary checks, mixed/composite structural markers and strict negative cases. This uses candidate code in a disposable P9 container; it is not final-image evidence.
 - Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; llguidance remains 1.8.0 in the pinned image base. Native exports and gateway/PD inputs are unchanged.
 - The final immutable image must pass installed tests without runtime overlays. GPU inference, model HTTP quality and production deployment remain later owner acceptance gates. PIG is a separate sidecar, independently pinned by production Compose.
+
+Default or explicit modern schemas preserve no-op propertyNames, inapplicable/false uniqueItems, and contains limits without contains. Reference resolution happens before removing no-ops, respecting resource IDs and pointer escaping. Effective array uniqueness remains rejected. Explicit legacy or unknown dialects anywhere in schema positions are passed unchanged to native llguidance; no new legacy-dialect compatibility is claimed.
 
 ## Verify and Prepare
 
