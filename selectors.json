@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "816b1fabaa4a6c953aacaa37b8291dc1814f3847",
-      "fork_tree": "29eccaf4c9eaeb2128134ef05939ccdb60b5b604",
+      "fork_commit": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
+      "fork_tree": "82b5d948c7f2b263d075630d81a9c30d0f6494fc",
       "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..816b1fabaa4a6c953aacaa37b8291dc1814f3847",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2460,6 +2460,27 @@
           "source_commit": "816b1fabaa4a6c953aacaa37b8291dc1814f3847",
           "source_parent": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
           "sha256": "30e36f9b3b49cf882a884537c87a3f1afad543f91377916507b508e4207ad93b"
+        },
+        {
+          "id": "0099-fix-llguidance-cpu-registration-and-rollback-expectation",
+          "path": "patches/common/0099-fix-llguidance-cpu-registration-and-rollback-expectation.patch",
+          "source_commit": "a86c686487104f365cbbfc0cff358a3a9e37edcb",
+          "source_parent": "816b1fabaa4a6c953aacaa37b8291dc1814f3847",
+          "sha256": "9f2bdc3785eeccdf2d9daaf45dd859fc5014064500e3fda73dc22aa22fdc60d3"
+        },
+        {
+          "id": "0100-llguidance-literal-tokenizer-and-structural-tag-constraints",
+          "path": "patches/common/0100-llguidance-literal-tokenizer-and-structural-tag-constraints.patch",
+          "source_commit": "0791fa1d8246d802526fbf8563b91515b1cb575d",
+          "source_parent": "a86c686487104f365cbbfc0cff358a3a9e37edcb",
+          "sha256": "ab5651415aa20ac7ac91241df330bae98892bf020b7f5013fa5b373700578131"
+        },
+        {
+          "id": "0101-llguidance-cpu-import-order",
+          "path": "patches/common/0101-llguidance-cpu-import-order.patch",
+          "source_commit": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
+          "source_parent": "0791fa1d8246d802526fbf8563b91515b1cb575d",
+          "sha256": "947c23d10695b5bf13ffd28603b18c810312c5a4dd03f3322bd99c1804216472"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",

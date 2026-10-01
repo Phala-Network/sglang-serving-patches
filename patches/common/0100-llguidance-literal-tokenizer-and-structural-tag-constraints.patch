@@ -1,0 +1,560 @@
+diff --git a/python/sglang/srt/constrained/llguidance_backend.py b/python/sglang/srt/constrained/llguidance_backend.py
+index 580c135e554c9aaee563bb4ffab4aac5e1a2a011..d506f06f2f2b042204b88a35fbd41f26cc202dd7 100644
+--- a/python/sglang/srt/constrained/llguidance_backend.py
++++ b/python/sglang/srt/constrained/llguidance_backend.py
+@@ -15,7 +15,7 @@
+ 
+ import json
+ import logging
+-from functools import cache
++from functools import cache, cached_property
+ from typing import Iterable, List, NamedTuple, Optional, Tuple, Union
+ 
+ import torch
+@@ -97,6 +97,26 @@ def _normalize_eos_token_ids(
+     return list(eos_token_ids)
+ 
+ 
++class _LiteralTokenBytes:
++    """Expose literal protocol-marker bytes, retaining EOS control semantics."""
++
++    def __init__(self, tokens, encode, eos_token_ids):
++        self.tokens = tokens
++        self.encode = encode
++        self.eos_token_id = (
++            eos_token_ids if isinstance(eos_token_ids, int) else eos_token_ids[0]
++        )
++        self.bos_token_id = None
++        self.special_token_ids = (
++            [eos_token_ids] if isinstance(eos_token_ids, int) else eos_token_ids
++        )
++
++    def __call__(self, text):
++        if isinstance(text, bytes):
++            text = text.decode("utf-8")
++        return self.encode(text)
++
++
+ def _create_llguidance_tokenizer(
+     tokenizer,
+     n_vocab: Optional[int],
+@@ -110,6 +130,32 @@ def _create_llguidance_tokenizer(
+                 n_vocab=n_vocab,
+                 eos_token=(tokenizer.eos_token_id if eos_token is None else eos_token),
+             )
++    # Kimi exposes its native tiktoken Encoding through a slow HF wrapper.
++    # Preserve the exact merge ranks, special-token IDs and regex; converting
++    # through a generic HF fast tokenizer can change its tokenization.
++    from tiktoken import Encoding
++
++    encoding = getattr(tokenizer, "model", None)
++    if isinstance(encoding, Encoding):
++        from llguidance import TokenizerWrapper
++
++        effective_eos = tokenizer.eos_token_id if eos_token is None else eos_token
++        tokens = [b""] * max(encoding.n_vocab, n_vocab or 0)
++        for token_bytes, token_id in encoding._mergeable_ranks.items():
++            tokens[token_id] = token_bytes
++        for token_text, token_id in encoding._special_tokens.items():
++            tokens[token_id] = token_text.encode("utf-8")
++        return LLTokenizer(
++            TokenizerWrapper(
++                _LiteralTokenBytes(
++                    tokens,
++                    lambda text: encoding.encode(text, allowed_special="all"),
++                    effective_eos,
++                )
++            ),
++            n_vocab=n_vocab,
++            eos_token=effective_eos,
++        )
+     return from_tokenizer(tokenizer, n_vocab, eos_token=eos_token)
+ 
+ 
+@@ -405,10 +451,16 @@ class GuidanceBackend(BaseGrammarBackend):
+         )
+         return register_vocab_mask_buffer(name, vocab_mask, max_rows)
+ 
+-    def _from_serialized(self, serialized_grammar) -> BaseGrammarObject:
++    def _from_serialized(
++        self, serialized_grammar, *, llguidance_tokenizer=None
++    ) -> BaseGrammarObject:
+         try:
+             return GuidanceGrammar(
+-                llguidance_tokenizer=self.llguidance_tokenizer,
++                llguidance_tokenizer=(
++                    self.llguidance_tokenizer
++                    if llguidance_tokenizer is None
++                    else llguidance_tokenizer
++                ),
+                 serialized_grammar=serialized_grammar,
+             )
+         except Exception as e:
+@@ -443,6 +495,43 @@ class GuidanceBackend(BaseGrammarBackend):
+             logger.error("Hit invalid ebnf: key_string=<redacted>, e=<redacted>")
+             return InvalidGrammarObject(str(e))
+ 
++    @cached_property
++    def _structural_tokenizer(self):
++        if not isinstance(self.tokenizer, PreTrainedTokenizerFast):
++            return self.llguidance_tokenizer
++        # Structural markers may combine added special tokens with ordinary
++        # text. Compile their exact decoded text with the same IDs instead of
++        # assuming every <...> trigger is a single native special token.
++        # EOS retains its control semantics; JSON/regex use the original trie.
++        from llguidance import TokenizerWrapper
++
++        native = self.llguidance_tokenizer
++        tokens = []
++        for token_id in range(native.vocab_size):
++            if token_id >= len(self.tokenizer):
++                tokens.append(b"")
++            elif native.is_special_token(token_id):
++                tokens.append(
++                    self.tokenizer.decode(
++                        [token_id],
++                        skip_special_tokens=False,
++                        clean_up_tokenization_spaces=False,
++                    ).encode("utf-8")
++                )
++            else:
++                # Native bytes preserve incomplete UTF-8 token fragments.
++                tokens.append(native.decode_bytes([token_id]))
++        return LLTokenizer(
++            TokenizerWrapper(
++                _LiteralTokenBytes(
++                    tokens,
++                    lambda text: self.tokenizer.encode(text, add_special_tokens=False),
++                    native.eos_tokens,
++                )
++            ),
++            eos_token=native.eos_tokens,
++        )
++
+     def dispatch_structural_tag(self, key_string: str) -> BaseGrammarObject:
+         try:
+             structural_tag = json.loads(key_string)
+@@ -466,8 +555,10 @@ class GuidanceBackend(BaseGrammarBackend):
+                 )
+                 for structure in structural_tag["structures"]
+             ]
+-            g = StructTag.to_grammar(tags)
+-            return self._from_serialized(g)
++            g = StructTag.to_grammar(tags, assume_special=False)
++            return self._from_serialized(
++                g, llguidance_tokenizer=self._structural_tokenizer
++            )
+         except Exception as e:
+             logger.error(
+                 "Hit invalid structural_tag: key_string=<redacted>, e=<redacted>"
+diff --git a/test/manual/phala/test_kimi_llguidance_installed_cpu.py b/test/manual/phala/test_kimi_llguidance_installed_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..620064927a76f0f4eef3565d2ad679381e16b4b3
+--- /dev/null
++++ b/test/manual/phala/test_kimi_llguidance_installed_cpu.py
+@@ -0,0 +1,248 @@
++"""Focused CPU test against installed llguidance and the real Kimi tokenizer.
++
++KIMI_TOKENIZER_PATH points to the immutable tokenizer/config fixture; no model
++weights, network, CUDA initialization, or serving-process mutation is needed.
++"""
++
++import json
++import os
++import unittest
++from pathlib import Path
++
++import torch
++from llguidance.torch import allocate_token_bitmask
++
++from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarBackend
++from sglang.srt.constrained.llguidance_backend import (
++    GuidanceBackend,
++    GuidanceResponseSuffixGrammar,
++)
++
++ROLLBACK_HISTORY_TEST_TOKENS = 200
++from sglang.srt.parser.reasoning_parser import KimiK3Detector, ReasoningParser
++from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
++
++
++class KimiResponseSuffixTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        path = Path(os.environ["KIMI_TOKENIZER_PATH"])
++        cls.tokenizer = get_tokenizer(str(path), trust_remote_code=True)
++        config = json.loads((path / "config.json").read_text())
++        cls.backend = GuidanceBackend(
++            cls.tokenizer,
++            n_vocab=len(cls.tokenizer),
++            eos_token_ids=[config["eos_token_id"]],
++        )
++        cls.suffix = cls.tokenizer.encode(
++            KimiK3Detector.grammar_response_suffix, add_special_tokens=False
++        )
++        cls.reasoner = ReasonerGrammarBackend(
++            cls.backend,
++            ReasoningParser(model_type="kimi_k3", tokenizer=cls.tokenizer),
++            cls.tokenizer,
++        )
++
++    def grammar(self, schema=None):
++        return self.backend.dispatch_json(
++            json.dumps(schema or {"type": "integer", "multipleOf": 2})
++        ).with_response_suffix(self.suffix)
++
++    def accept(self, grammar, text):
++        for token in self.tokenizer.encode(text, add_special_tokens=False):
++            grammar.accept_token(token)
++
++    def mask(self, grammar):
++        mask = allocate_token_bitmask(1, self.backend.llguidance_tokenizer.vocab_size)
++        grammar.fill_vocab_mask(mask, 0)
++        return mask
++
++    def allowed(self, mask, token):
++        return bool((int(mask[0, token // 32]) >> (token % 32)) & 1)
++
++    def test_valid_completion_allows_exact_suffix_and_direct_eos(self):
++        for schema in ({"type": "integer"}, {"type": "integer", "multipleOf": 2}):
++            for text in ("2", "22", "222"):
++                with self.subTest(schema=schema, text=text):
++                    grammar = self.grammar(schema)
++                    self.accept(grammar, text)
++                    mask = self.mask(grammar)
++                    self.assertTrue(self.allowed(mask, self.suffix[0]))
++                    self.assertTrue(self.allowed(mask, self.suffix[-1]))
++                    for i, token in enumerate(self.suffix):
++                        self.assertTrue(self.allowed(self.mask(grammar), token))
++                        grammar.accept_token(token)
++                        self.assertEqual(
++                            grammar.is_terminated(), i == len(self.suffix) - 1
++                        )
++                    direct = self.grammar(schema)
++                    self.accept(direct, text)
++                    direct.accept_token(self.suffix[-1])
++                    self.assertTrue(direct.is_terminated())
++
++    def test_incomplete_or_odd_json_cannot_escape(self):
++        for schema, text in (
++            ({"type": "integer", "multipleOf": 2}, ""),
++            ({"type": "integer", "multipleOf": 2}, "3"),
++            (
++                {
++                    "type": "object",
++                    "properties": {"x": {"type": "integer"}},
++                    "required": ["x"],
++                },
++                '{"x":',
++            ),
++        ):
++            with self.subTest(text=text):
++                grammar = self.grammar(schema)
++                self.accept(grammar, text)
++                self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++                with self.assertRaises(ValueError):
++                    grammar.accept_token(self.suffix[0])
++                self.assertEqual(grammar.suffix_position, 0)
++                self.assertFalse(grammar.is_terminated())
++        literal = self.grammar({"type": "string"})
++        self.accept(literal, '"unfinished')
++        # Kimi's close marker is also valid literal JSON string data. It must
++        # stay inside native grammar, not start a protocol trailer or abort.
++        literal.accept_token(self.suffix[0])
++        self.assertEqual(literal.suffix_position, 0)
++        self.assertFalse(literal.is_terminated())
++        self.accept(literal, '"')
++        for token in self.suffix:
++            literal.accept_token(token)
++        self.assertTrue(literal.is_terminated())
++
++    def test_trailer_rejects_wrong_token_and_early_eos(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        for bad in (self.suffix[-1], self.tokenizer.encode("2")[0]):
++            self.assertFalse(self.allowed(self.mask(grammar), bad))
++            with self.assertRaises(ValueError):
++                grammar.accept_token(bad)
++            self.assertEqual(grammar.suffix_position, 1)
++        for token in self.suffix[1:]:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_speculative_rollback_crosses_trailer_and_json(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        grammar.rollback(3)
++        self.assertEqual(grammar.suffix_position, len(self.suffix) - 3)
++        self.assertFalse(grammar.is_terminated())
++        for token in self.suffix[-3:]:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++        grammar.rollback(len(self.suffix) + 1)
++        self.assertEqual(grammar.suffix_position, 0)
++        self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_copy_preserves_state_and_jump_forward_is_disabled(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        clone = grammar.copy()  # llguidance deep-copies current matcher state.
++        self.assertIsInstance(clone, GuidanceResponseSuffixGrammar)
++        self.assertEqual(clone.suffix_position, 1)
++        self.assertTrue(torch.equal(self.mask(clone), self.mask(grammar)))
++        for token in self.suffix[1:]:
++            clone.accept_token(token)
++        self.assertTrue(clone.is_terminated())
++        self.assertFalse(grammar.is_terminated())
++        self.assertEqual(grammar.suffix_position, 1)
++        self.assertIsNone(grammar.try_jump_forward(self.tokenizer))
++        self.assertIsNone(clone.try_jump_forward(self.tokenizer))
++
++    def test_suffix_entry_preserves_full_native_rollback_history(self):
++        grammar = self.grammar()
++        digit = self.tokenizer.encode("2", add_special_tokens=False)[0]
++        for _ in range(ROLLBACK_HISTORY_TEST_TOKENS):
++            grammar.accept_token(digit)
++        grammar.accept_token(self.suffix[0])
++        # Keep the adapter's historical 200-token boundary covered, without
++        # assuming the current native library still has a finite history limit.
++        grammar.rollback(ROLLBACK_HISTORY_TEST_TOKENS + 1)
++        self.assertEqual(grammar.suffix_position, 0)
++        self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++
++    def test_reasoner_rollback_crosses_think_json_and_trailer(self):
++        grammar = self.reasoner._init_value_dispatch(
++            ("json", '{"type":"integer","multipleOf":2}'), True
++        )
++        marker = self.tokenizer.encode(
++            "<|close|>think<|sep|><|open|>response<|sep|>",
++            add_special_tokens=False,
++        )
++        grammar.set_request_think_end_ids(marker)
++        self.accept(grammar, "thought")
++        for token in marker:
++            grammar.accept_token(token)
++        self.assertTrue(grammar._is_generation())
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        grammar.rollback(3)  # trailer opener, JSON digit, final think marker
++        self.assertFalse(grammar._is_generation())
++        self.assertEqual(grammar.grammar.suffix_position, 0)
++        grammar.accept_token(marker[-1])
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_only_kimi_json_dispatch_gets_wrapper(self):
++        wrapped = self.reasoner._init_value_dispatch(
++            ("json", '{"type":"integer"}'), False
++        )
++        self.assertIsInstance(wrapped.grammar, GuidanceResponseSuffixGrammar)
++        regex = self.reasoner._init_value_dispatch(("regex", "[0-9]+"), False)
++        self.assertNotIsInstance(regex.grammar, GuidanceResponseSuffixGrammar)
++        structural = self.reasoner._init_value_dispatch(
++            (
++                "structural_tag",
++                json.dumps(
++                    {
++                        "type": "structural_tag",
++                        "triggers": ["<call>"],
++                        "structures": [
++                            {
++                                "begin": "<call>",
++                                "end": "</call>",
++                                "schema": {"type": "integer"},
++                            }
++                        ],
++                    }
++                ),
++            ),
++            False,
++        )
++        self.assertNotIsInstance(structural.grammar, GuidanceResponseSuffixGrammar)
++        other = ReasonerGrammarBackend(
++            self.backend,
++            ReasoningParser(model_type="qwen3", tokenizer=self.tokenizer),
++            self.tokenizer,
++        )._init_value_dispatch(("json", '{"type":"integer"}'), False)
++        self.assertNotIsInstance(other.grammar, GuidanceResponseSuffixGrammar)
++        plain = self.backend.dispatch_json('{"type":"integer"}')
++        self.assertNotIsInstance(plain, GuidanceResponseSuffixGrammar)
++        self.accept(plain, "2")
++        self.assertFalse(self.allowed(self.mask(plain), self.suffix[0]))
++
++    def test_response_parser_removes_the_exact_trailer(self):
++        detector = KimiK3Detector(stream_reasoning=False, force_reasoning=False)
++        # The scheduler excludes matched EOS from decoded response text.
++        trailer = self.tokenizer.decode(self.suffix[:-1])
++        result = detector.detect_and_parse("2" + trailer)
++        self.assertEqual(result.normal_text, "2")
++        self.assertFalse(torch.cuda.is_initialized())
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/test/registered/unit/constrained/test_base_grammar_backend.py b/test/registered/unit/constrained/test_base_grammar_backend.py
+index 5fe364dccbcb016786310352b3f46a39f52c1818..93d7f615a62e375259e2e4d923f74e523023751a 100644
+--- a/test/registered/unit/constrained/test_base_grammar_backend.py
++++ b/test/registered/unit/constrained/test_base_grammar_backend.py
+@@ -450,8 +450,12 @@ class TestLlguidanceStructuralTagTriggerPairing(unittest.TestCase):
+ 
+         from sglang.srt.constrained.llguidance_backend import GuidanceBackend
+ 
++        from llguidance import LLTokenizer
++
+         backend = object.__new__(GuidanceBackend)
+-        backend._from_serialized = lambda serialized: serialized
++        backend.llguidance_tokenizer = LLTokenizer("byte")
++        backend.tokenizer = None
++        backend._from_serialized = lambda serialized, **kwargs: serialized
+         begins = [
+             '<|message_model|>alpha<|content_invoke_tool_json|>{"name":"alpha","args":',
+             '<|message_model|>beta<|content_invoke_tool_json|>{"name":"beta","args":',
+diff --git a/test/registered/unit/constrained/test_llguidance_response_suffix.py b/test/registered/unit/constrained/test_llguidance_response_suffix.py
+index 1c4339e8e2ac6a3606bcd2c4292d8e0101d790ed..63ba756c8f9315b7c3ca247cbda66f7024e0a12b 100644
+--- a/test/registered/unit/constrained/test_llguidance_response_suffix.py
++++ b/test/registered/unit/constrained/test_llguidance_response_suffix.py
+@@ -1,13 +1,21 @@
+ """CPU correctness checks for the llguidance Kimi response trailer adapter."""
+ 
++import json
+ import unittest
++from types import SimpleNamespace
++
++import tiktoken
+ 
+ import torch
+ from llguidance import LLMatcher, LLTokenizer
+ from llguidance.torch import allocate_token_bitmask
+ 
+ from sglang.srt.constrained.base_grammar_backend import GrammarRow
+-from sglang.srt.constrained.llguidance_backend import GuidanceGrammar
++from sglang.srt.constrained.llguidance_backend import (
++    GuidanceBackend,
++    GuidanceGrammar,
++    _create_llguidance_tokenizer,
++)
+ from sglang.test.ci.ci_register import register_cpu_ci
+ 
+ 
+@@ -86,5 +94,91 @@ class TestLLGuidanceResponseSuffix(unittest.TestCase):
+         self.assertTrue(torch.equal(serial, batched))
+ 
+ 
++class TestTiktokenLLGuidanceConversion(unittest.TestCase):
++    def setUp(self):
++        self.encoding = tiktoken.Encoding(
++            name="llguidance-cpu-fixture",
++            pat_str=r"(?s:.)",
++            mergeable_ranks={bytes([i]): i for i in range(256)},
++            special_tokens={"<eos>": 256, "<other_eos>": 257},
++        )
++        self.tokenizer = SimpleNamespace(model=self.encoding, eos_token_id=256)
++
++    def test_native_encoding_preserves_utf8_and_default_eos(self):
++        tokenizer = _create_llguidance_tokenizer(self.tokenizer, 258, None)
++        for text in ("plain", "caf\u00e9", "\u4f60\u597d", '{"x":2}'):
++            ids = self.encoding.encode(text)
++            self.assertEqual(tokenizer.tokenize_str(text), ids)
++            self.assertEqual(tokenizer.decode_bytes(ids), text.encode("utf-8"))
++        self.assertEqual(tokenizer.eos_tokens, [256])
++
++    def test_explicit_eos_and_padded_vocabulary_are_preserved(self):
++        tokenizer = _create_llguidance_tokenizer(self.tokenizer, 264, [256, 257])
++        self.assertEqual(tokenizer.vocab_size, 264)
++        self.assertEqual(set(tokenizer.eos_tokens), {256, 257})
++        grammar = GuidanceGrammar(
++            tokenizer, LLMatcher.grammar_from_json_schema('{"type":"integer"}')
++        )
++        mask = allocate_token_bitmask(1, tokenizer.vocab_size)
++        grammar.fill_vocab_mask(mask, 0)
++        for token in range(258, 264):
++            self.assertFalse((int(mask[0, token // 32]) >> (token % 32)) & 1)
++
++
++class TestLLGuidanceStructuralTags(unittest.TestCase):
++    def test_fast_tokenizer_mixed_literal_and_special_triggers(self):
++        from tokenizers import Tokenizer, decoders, models, pre_tokenizers
++        from transformers import PreTrainedTokenizerFast
++
++        tokenizer_impl = Tokenizer(
++            models.BPE(
++                vocab={c: i for i, c in enumerate(pre_tokenizers.ByteLevel.alphabet())},
++                merges=[],
++            )
++        )
++        tokenizer_impl.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
++        tokenizer_impl.decoder = decoders.ByteLevel()
++        tokenizer_impl.add_special_tokens(["<eos>", "<call>"])
++        tokenizer = PreTrainedTokenizerFast(
++            tokenizer_object=tokenizer_impl, eos_token="<eos>"
++        )
++        backend = GuidanceBackend(tokenizer, n_vocab=len(tokenizer))
++        for triggers in (("<call>", "<other>"), ("<call>alpha", "<call>beta")):
++            grammar_spec = {
++                "type": "structural_tag",
++                "triggers": list(triggers),
++                "structures": [
++                    {"begin": tag, "end": "</end>", "schema": {"type": "integer"}}
++                    for tag in triggers
++                ],
++            }
++            grammar = backend.dispatch_structural_tag(json.dumps(grammar_spec))
++            self.assertIsInstance(grammar, GuidanceGrammar)
++            for tag in triggers:
++                constrained = backend.dispatch_structural_tag(json.dumps(grammar_spec))
++                for token in tokenizer.encode(tag, add_special_tokens=False):
++                    constrained.accept_token(token)
++                mask = allocate_token_bitmask(1, len(tokenizer))
++                constrained.fill_vocab_mask(mask, 0)
++                for bad_token in (
++                    tokenizer.encode("x", add_special_tokens=False)[0],
++                    tokenizer.encode("</end>", add_special_tokens=False)[0],
++                    tokenizer.eos_token_id,
++                ):
++                    self.assertFalse(
++                        (int(mask[0, bad_token // 32]) >> (bad_token % 32)) & 1,
++                        (triggers, tag, bad_token),
++                    )
++                text = tag + "2</end>"
++                for token in tokenizer.encode(text, add_special_tokens=False):
++                    mask = allocate_token_bitmask(1, len(tokenizer))
++                    grammar.fill_vocab_mask(mask, 0)
++                    self.assertTrue(
++                        (int(mask[0, token // 32]) >> (token % 32)) & 1,
++                        (triggers, text, token),
++                    )
++                    grammar.accept_token(token)
++
++
+ if __name__ == "__main__":
+     unittest.main(verbosity=2)
+diff --git a/test/registered/unit/constrained/test_reasoner_grammar_backend.py b/test/registered/unit/constrained/test_reasoner_grammar_backend.py
+index 23720333e126bf1baf96731e5e2af5680fb98efc..f32058a8815b601be13bcfcc2d45791845f463cc 100644
+--- a/test/registered/unit/constrained/test_reasoner_grammar_backend.py
++++ b/test/registered/unit/constrained/test_reasoner_grammar_backend.py
+@@ -243,6 +243,15 @@ class TestReasonerGrammarBackend(unittest.TestCase):
+         tokenizer = _DummyTokenizer(
+             {
+                 THINK_CLOSE: think_end_ids,
++                KimiK3ReasoningDetector.grammar_response_suffix: [
++                    2,
++                    10,
++                    3,
++                    2,
++                    11,
++                    3,
++                    12,
++                ],
+                 "response": [10],
+                 "message": [11],
+                 "<|end_of_msg|>": [12],
