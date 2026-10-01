@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
-      "fork_tree": "82b5d948c7f2b263d075630d81a9c30d0f6494fc",
+      "fork_commit": "4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
+      "fork_tree": "888877b6e1907d35645c148581a44a5f9a4d90d1",
       "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2481,6 +2481,13 @@
           "source_commit": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
           "source_parent": "0791fa1d8246d802526fbf8563b91515b1cb575d",
           "sha256": "947c23d10695b5bf13ffd28603b18c810312c5a4dd03f3322bd99c1804216472"
+        },
+        {
+          "id": "0102-llguidance-default-whitespace-source-fixture",
+          "path": "patches/common/0102-llguidance-default-whitespace-source-fixture.patch",
+          "source_commit": "4ce4ab2192a1e3662d9f4ae389c0dcc67c520226",
+          "source_parent": "4556f195c7b3d6d95dc21d054f63a8f015e5e9d2",
+          "sha256": "f2eefb243856e594e4cd345add7ac533e9f977d01b0e834f5ffe5e4edab1b5b2"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
