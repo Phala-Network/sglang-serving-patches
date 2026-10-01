@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
-      "fork_tree": "ee511ec975639fbf70c1b20a7c28b1d70da31890",
+      "fork_commit": "816b1fabaa4a6c953aacaa37b8291dc1814f3847",
+      "fork_tree": "29eccaf4c9eaeb2128134ef05939ccdb60b5b604",
       "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..816b1fabaa4a6c953aacaa37b8291dc1814f3847",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2453,6 +2453,13 @@
           "source_commit": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
           "source_parent": "03e11602bb46a936e3a2d41209560490b6d7a1d7",
           "sha256": "0fee2ba66567d92831f70c6baaa39796d6ad2a5a8d1f14ab8aaa90ef1a79bfd1"
+        },
+        {
+          "id": "0098-llguidance-response-suffix-cpu-regression",
+          "path": "patches/common/0098-llguidance-response-suffix-cpu-regression.patch",
+          "source_commit": "816b1fabaa4a6c953aacaa37b8291dc1814f3847",
+          "source_parent": "8c9676bdfbcb52d60dc98025e503f14b6eb605f0",
+          "sha256": "30e36f9b3b49cf882a884537c87a3f1afad543f91377916507b508e4207ad93b"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
