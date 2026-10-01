@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "b77e67717d19fdda928839488bc4f2544f2cbddf",
-      "fork_tree": "d3e3d986e02f397e42f57ba4104c80f204eec367",
-      "fork_branch": "codex/p8-r1-reviewable-integration-20261001",
+      "fork_commit": "59a29007273e5408ef30cd1b51eef0f1c434002a",
+      "fork_tree": "962d435672fd29eef7753fac9705626bd3d17f16",
+      "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..b77e67717d19fdda928839488bc4f2544f2cbddf",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..59a29007273e5408ef30cd1b51eef0f1c434002a",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2432,11 +2432,18 @@
           "source_commit": "b77e67717d19fdda928839488bc4f2544f2cbddf",
           "source_parent": "de2be387c9e7d7050bbf6064f90ac23edb6c9546",
           "sha256": "fb915302719e8bb0945ce786859abb601534fc43a32a148f5a50dca815d6cf72"
+        },
+        {
+          "id": "0095-kimi-json-response-trailer",
+          "path": "patches/models/kimi/0095-kimi-json-response-trailer.patch",
+          "source_commit": "59a29007273e5408ef30cd1b51eef0f1c434002a",
+          "source_parent": "b77e67717d19fdda928839488bc4f2544f2cbddf",
+          "sha256": "68e5f9c4ebae4aeee144bf9f7742b83e75b937776ca0cb0bdd893609e27d8f5c"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "unified_p8_source_release_candidate",
+      "status": "unified_p8_r1_kimi_trailer_source_candidate",
       "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",

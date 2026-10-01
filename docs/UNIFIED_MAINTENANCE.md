@@ -6,15 +6,13 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Unified P8 source
+## Unified P8-r1 source
 
-- Engine for `v0.5.20-phala-unified-p8`: `b77e67717d19fdda928839488bc4f2544f2cbddf`; tree `d3e3d986e02f397e42f57ba4104c80f204eec367`. It descends from P7 through accepted PD integration `de2be387c9e7d7050bbf6064f90ac23edb6c9546`.
-- Ordered stack: 31 protected plus 120 successor steps (151 total). The existing P7 generated endpoint and formal merge have identical trees; the final two exports add PD lifecycle and fixed r1 schema behavior without replaying P6 wholesale.
-- PD connection/bootstrap cleanup and gateway cancellation behavior use the accepted source delta. Gateway tree remains `3123e15634025bc5b8bffc957753f05e83ae0ea1` from the PD parent; the final image requires its matching router wheel/binary.
-- XGrammar checks the final selected decoding schema once at HTTP conversion, preserves strict defaults, rejects unsupported integer composition, and normalizes only exact native-mishandled no-ops on a compilation copy. Prompt schemas and native strict mode remain unchanged.
-- Fixed r1 six-module hashes and five test/harness files are identical to the 29/29, zero-skip installed CPU/native development-overlay snapshot. The final P8 image still requires installed validation without source overlays.
-- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; native dependency exports are unchanged.
-- Source replay and CPU checks do not qualify GPU transport, model quality, rollout or production. Final-image and per-target acceptance belong to their existing owners. Earlier immutable tags remain unchanged.
+- Engine candidate for `v0.5.20-phala-unified-p8-r1`: `59a29007273e5408ef30cd1b51eef0f1c434002a`; tree `962d435672fd29eef7753fac9705626bd3d17f16`. Parent is formal P8 `b77e67717d19fdda928839488bc4f2544f2cbddf`; published P8 identities remain unchanged.
+- Ordered stack: 31 protected plus 121 successor steps (152 total). The final Kimi increment permits only its exact response/message trailer after native JSON completion; it preserves direct EOS, literal string data, strict/schema validation, and non-Kimi/tool grammar behavior.
+- Nine actual Kimi-tokenizer/native CPU tests passed with no skips in a disposable P8 container using the three candidate runtime files. Tests cover incomplete/odd values, exact trailer/early EOS rejection, native/Reasoner rollback, cache copy, dispatch isolation, and parser stripping. Source checks and exact patch replay are separate gates.
+- Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; native exports and P8 gateway/PD inputs remain unchanged.
+- Candidate CPU evidence does not qualify the final image, GPU inference, or production. The new immutable image requires installed tests without overlays and all original target acceptance. Kimi P8's 39/40 result remains failed until repaired; no schema or fixture expectation is relaxed.
 
 ## Verify and Prepare
 

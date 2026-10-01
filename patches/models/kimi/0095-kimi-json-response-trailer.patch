@@ -1,0 +1,382 @@
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index 96a5887015423c310fbfc6587dc8335f32c3431d..c4a28bf1d2a3a6573fec0afdac5534cd69692023 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -433,6 +433,11 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+                 f"could not be encoded by the tokenizer."
+             )
+         self.think_end_ids = think_end_ids
++        self.response_suffix_ids = self._encode_optional_marker(
++            tokenizer,
++            getattr(reasoning_parser.detector, "grammar_response_suffix", None),
++            "grammar_response_suffix",
++        )
+         self.channel_header_end_ids = self._encode_optional_marker(
+             tokenizer,
+             getattr(reasoning_parser.detector, "grammar_channel_header_end", None),
+@@ -535,4 +540,8 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+             return ret
+         if key[0] == "full_assistant_ebnf":
+             return ret
++        if key[0] == "json" and self.response_suffix_ids:
++            wrap_suffix = getattr(ret, "with_response_suffix", None)
++            if wrap_suffix is not None:
++                ret = wrap_suffix(self.response_suffix_ids)
+         return self._make_grammar_object(ret, reasoning)
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 04e8d20891337988256896fe0bdca62056f83d02..5fecb193287340455afa1eb118108d70335dca88 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -204,6 +204,90 @@ class XGrammarGrammar(BaseGrammarObject):
+     def __repr__(self):
+         return f"XGrammarGrammar({self.key_string=}, {self.accepted_tokens=}, {self.current_token=})"
+ 
++    def with_response_suffix(self, suffix_ids):
++        return XGrammarResponseSuffixGrammar(
++            self.matcher,
++            self.vocab_size,
++            self.ctx,
++            self.override_stop_tokens,
++            self.key_string,
++            self.grammar_stats,
++            suffix_ids=suffix_ids,
++        )
++
++
++class XGrammarResponseSuffixGrammar(XGrammarGrammar):
++    """Allow an exact native response trailer only after a complete JSON value.
++
++    Its final token is the model EOS. The native matcher must accept that EOS
++    before the trailer can begin, and receives it only when the trailer ends.
++    """
++
++    def __init__(self, *args, suffix_ids, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.suffix_ids = tuple(suffix_ids)
++        if len(self.suffix_ids) < 2:
++            raise ValueError("response suffix must contain a trailer and EOS")
++        self.suffix_position = 0
++
++    def accept_token(self, token):
++        if self.suffix_position or token == self.suffix_ids[0]:
++            if self.suffix_position >= len(self.suffix_ids):
++                raise ValueError("response suffix already complete")
++            if token != self.suffix_ids[self.suffix_position]:
++                raise ValueError("invalid response suffix token")
++            if self.suffix_position == 0:
++                # Inspect native completion without mutating rollback history.
++                mask = _allocate_token_bitmask(self.vocab_size, 1)
++                self.matcher.fill_next_token_bitmask(mask, 0)
++                eos = self.suffix_ids[-1]
++                if not (int(mask[0, eos // 32]) >> (eos % 32)) & 1:
++                    # The same token can be literal data inside a JSON string.
++                    # Preserve native validation without entering trailer state.
++                    super().accept_token(token)
++                    return
++            if self.suffix_position == len(self.suffix_ids) - 1:
++                super().accept_token(token)
++            else:
++                # accepted_tokens tracks only tokens fed to the native matcher;
++                # suffix_position owns the protocol trailer for rollback.
++                self.current_token = token
++            self.suffix_position += 1
++            return
++        super().accept_token(token)
++
++    def fill_vocab_mask(self, vocab_mask, idx):
++        def allow(token):
++            bit = token % 32
++            vocab_mask[idx, token // 32] |= -(1 << 31) if bit == 31 else 1 << bit
++
++        if self.suffix_position:
++            vocab_mask[idx].zero_()
++            if self.suffix_position < len(self.suffix_ids):
++                token = self.suffix_ids[self.suffix_position]
++                allow(token)
++            return
++        super().fill_vocab_mask(vocab_mask, idx)
++        eos = self.suffix_ids[-1]
++        if (int(vocab_mask[idx, eos // 32]) >> (eos % 32)) & 1:
++            token = self.suffix_ids[0]
++            allow(token)
++
++    def rollback(self, k):
++        trailer_steps = min(k, self.suffix_position)
++        if trailer_steps and self.suffix_position == len(self.suffix_ids):
++            super().rollback(1)  # Only the final EOS entered the native matcher.
++        self.suffix_position -= trailer_steps
++        if k > trailer_steps:
++            super().rollback(k - trailer_steps)
++
++    def copy(self):
++        return super().copy().with_response_suffix(self.suffix_ids)
++
++    def try_jump_forward(self, tokenizer):
++        # Trailer tokens are owned by this wrapper, not the native matcher.
++        return None
++
+ 
+ class TokenizerNotSupportedError(Exception):
+     """Raised when tokenizer is not supported by XGrammar backend."""
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index 746758250cf38a04e5566103509874790ccc4721..9f0558229b7d18b9b8b9d7a16151753e8d07643a 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -590,6 +590,8 @@ class KimiK3Detector(BaseReasoningFormatDetector):
+     (see :meth:`_skipped_think_channel`).
+     """
+ 
++    grammar_response_suffix = RESPONSE_CLOSE + MESSAGE_CLOSE + "<|end_of_msg|>"
++
+     def __init__(
+         self,
+         stream_reasoning: bool = True,
+diff --git a/test/manual/phala/test_kimi_response_suffix_native.py b/test/manual/phala/test_kimi_response_suffix_native.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..370d66b14345a659f4fecf9a2df3d2597e3fa126
+--- /dev/null
++++ b/test/manual/phala/test_kimi_response_suffix_native.py
+@@ -0,0 +1,243 @@
++"""Focused CPU test against installed XGrammar and the real Kimi tokenizer.
++
++KIMI_TOKENIZER_PATH points to the immutable tokenizer/config fixture; no model
++weights, network, CUDA initialization, or serving-process mutation is needed.
++"""
++
++import json
++import os
++import unittest
++from pathlib import Path
++
++import torch
++import xgrammar as xg
++
++from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarBackend
++from sglang.srt.constrained.xgrammar_backend import (
++    MAX_ROLLBACK_TOKENS,
++    XGrammarGrammarBackend,
++    XGrammarResponseSuffixGrammar,
++)
++from sglang.srt.parser.reasoning_parser import KimiK3Detector, ReasoningParser
++from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
++
++
++class KimiResponseSuffixTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        path = Path(os.environ["KIMI_TOKENIZER_PATH"])
++        cls.tokenizer = get_tokenizer(str(path), trust_remote_code=True)
++        config = json.loads((path / "config.json").read_text())
++        cls.backend = XGrammarGrammarBackend(
++            cls.tokenizer, cls.tokenizer.vocab_size, [config["eos_token_id"]]
++        )
++        cls.suffix = cls.tokenizer.encode(
++            KimiK3Detector.grammar_response_suffix, add_special_tokens=False
++        )
++        cls.reasoner = ReasonerGrammarBackend(
++            cls.backend,
++            ReasoningParser(model_type="kimi_k3", tokenizer=cls.tokenizer),
++            cls.tokenizer,
++        )
++
++    def grammar(self, schema=None):
++        return self.backend.dispatch_json(
++            json.dumps(schema or {"type": "integer", "multipleOf": 2})
++        ).with_response_suffix(self.suffix)
++
++    def accept(self, grammar, text):
++        for token in self.tokenizer.encode(text, add_special_tokens=False):
++            grammar.accept_token(token)
++
++    def mask(self, grammar):
++        mask = xg.allocate_token_bitmask(1, self.backend.vocab_size)
++        grammar.fill_vocab_mask(mask, 0)
++        return mask
++
++    def allowed(self, mask, token):
++        return bool((int(mask[0, token // 32]) >> (token % 32)) & 1)
++
++    def test_valid_completion_allows_exact_suffix_and_direct_eos(self):
++        for schema in ({"type": "integer"}, {"type": "integer", "multipleOf": 2}):
++            for text in ("2", "22", "222"):
++                with self.subTest(schema=schema, text=text):
++                    grammar = self.grammar(schema)
++                    self.accept(grammar, text)
++                    mask = self.mask(grammar)
++                    self.assertTrue(self.allowed(mask, self.suffix[0]))
++                    self.assertTrue(self.allowed(mask, self.suffix[-1]))
++                    for i, token in enumerate(self.suffix):
++                        self.assertTrue(self.allowed(self.mask(grammar), token))
++                        grammar.accept_token(token)
++                        self.assertEqual(
++                            grammar.is_terminated(), i == len(self.suffix) - 1
++                        )
++                    direct = self.grammar(schema)
++                    self.accept(direct, text)
++                    direct.accept_token(self.suffix[-1])
++                    self.assertTrue(direct.is_terminated())
++
++    def test_incomplete_or_odd_json_cannot_escape(self):
++        for schema, text in (
++            ({"type": "integer", "multipleOf": 2}, ""),
++            ({"type": "integer", "multipleOf": 2}, "3"),
++            (
++                {
++                    "type": "object",
++                    "properties": {"x": {"type": "integer"}},
++                    "required": ["x"],
++                },
++                '{"x":',
++            ),
++        ):
++            with self.subTest(text=text):
++                grammar = self.grammar(schema)
++                self.accept(grammar, text)
++                self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++                with self.assertRaises(ValueError):
++                    grammar.accept_token(self.suffix[0])
++                self.assertEqual(grammar.suffix_position, 0)
++                self.assertFalse(grammar.is_terminated())
++        literal = self.grammar({"type": "string"})
++        self.accept(literal, '"unfinished')
++        # Kimi's close marker is also valid literal JSON string data. It must
++        # stay inside native grammar, not start a protocol trailer or abort.
++        literal.accept_token(self.suffix[0])
++        self.assertEqual(literal.suffix_position, 0)
++        self.assertFalse(literal.is_terminated())
++        self.accept(literal, '"')
++        for token in self.suffix:
++            literal.accept_token(token)
++        self.assertTrue(literal.is_terminated())
++
++    def test_trailer_rejects_wrong_token_and_early_eos(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        for bad in (self.suffix[-1], self.tokenizer.encode("2")[0]):
++            self.assertFalse(self.allowed(self.mask(grammar), bad))
++            with self.assertRaises(ValueError):
++                grammar.accept_token(bad)
++            self.assertEqual(grammar.suffix_position, 1)
++        for token in self.suffix[1:]:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_speculative_rollback_crosses_trailer_and_json(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        grammar.rollback(3)
++        self.assertEqual(grammar.suffix_position, len(self.suffix) - 3)
++        self.assertFalse(grammar.is_terminated())
++        for token in self.suffix[-3:]:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++        grammar.rollback(len(self.suffix) + 1)
++        self.assertEqual(grammar.suffix_position, 0)
++        self.assertEqual(grammar.accepted_tokens, [])
++        self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_cache_copy_is_fresh_and_jump_forward_is_disabled(self):
++        grammar = self.grammar()
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        clone = grammar.copy()  # XGrammar's cache-copy contract starts fresh.
++        self.assertIsInstance(clone, XGrammarResponseSuffixGrammar)
++        self.assertEqual(clone.suffix_position, 0)
++        self.assertFalse(self.allowed(self.mask(clone), self.suffix[0]))
++        self.assertEqual(grammar.suffix_position, 1)
++        self.assertIsNone(grammar.try_jump_forward(self.tokenizer))
++        self.assertIsNone(clone.try_jump_forward(self.tokenizer))
++
++    def test_suffix_entry_preserves_full_native_rollback_history(self):
++        grammar = self.grammar()
++        digit = self.tokenizer.encode("2", add_special_tokens=False)[0]
++        for _ in range(MAX_ROLLBACK_TOKENS):
++            grammar.accept_token(digit)
++        grammar.accept_token(self.suffix[0])
++        # Keep the adapter's historical 200-token boundary covered, without
++        # assuming the current native library still has a finite history limit.
++        grammar.rollback(MAX_ROLLBACK_TOKENS + 1)
++        self.assertEqual(grammar.accepted_tokens, [])
++        self.assertEqual(grammar.suffix_position, 0)
++        self.assertFalse(self.allowed(self.mask(grammar), self.suffix[0]))
++
++    def test_reasoner_rollback_crosses_think_json_and_trailer(self):
++        grammar = self.reasoner._init_value_dispatch(
++            ("json", '{"type":"integer","multipleOf":2}'), True
++        )
++        marker = self.tokenizer.encode(
++            "<|close|>think<|sep|><|open|>response<|sep|>",
++            add_special_tokens=False,
++        )
++        grammar.set_request_think_end_ids(marker)
++        self.accept(grammar, "thought")
++        for token in marker:
++            grammar.accept_token(token)
++        self.assertTrue(grammar._is_generation())
++        self.accept(grammar, "2")
++        grammar.accept_token(self.suffix[0])
++        grammar.rollback(3)  # trailer opener, JSON digit, final think marker
++        self.assertFalse(grammar._is_generation())
++        self.assertEqual(grammar.grammar.suffix_position, 0)
++        grammar.accept_token(marker[-1])
++        self.accept(grammar, "2")
++        for token in self.suffix:
++            grammar.accept_token(token)
++        self.assertTrue(grammar.is_terminated())
++
++    def test_only_kimi_json_dispatch_gets_wrapper(self):
++        wrapped = self.reasoner._init_value_dispatch(
++            ("json", '{"type":"integer"}'), False
++        )
++        self.assertIsInstance(wrapped.grammar, XGrammarResponseSuffixGrammar)
++        regex = self.reasoner._init_value_dispatch(("regex", "[0-9]+"), False)
++        self.assertNotIsInstance(regex.grammar, XGrammarResponseSuffixGrammar)
++        structural = self.reasoner._init_value_dispatch(
++            (
++                "structural_tag",
++                json.dumps(
++                    {
++                        "type": "structural_tag",
++                        "triggers": ["<call>"],
++                        "structures": [
++                            {
++                                "begin": "<call>",
++                                "end": "</call>",
++                                "schema": {"type": "integer"},
++                            }
++                        ],
++                    }
++                ),
++            ),
++            False,
++        )
++        self.assertNotIsInstance(structural.grammar, XGrammarResponseSuffixGrammar)
++        other = ReasonerGrammarBackend(
++            self.backend,
++            ReasoningParser(model_type="qwen3", tokenizer=self.tokenizer),
++            self.tokenizer,
++        )._init_value_dispatch(("json", '{"type":"integer"}'), False)
++        self.assertNotIsInstance(other.grammar, XGrammarResponseSuffixGrammar)
++        plain = self.backend.dispatch_json('{"type":"integer"}')
++        self.assertNotIsInstance(plain, XGrammarResponseSuffixGrammar)
++        self.accept(plain, "2")
++        self.assertFalse(self.allowed(self.mask(plain), self.suffix[0]))
++
++    def test_response_parser_removes_the_exact_trailer(self):
++        detector = KimiK3Detector(stream_reasoning=False, force_reasoning=False)
++        # The scheduler excludes matched EOS from decoded response text.
++        trailer = self.tokenizer.decode(self.suffix[:-1])
++        result = detector.detect_and_parse("2" + trailer)
++        self.assertEqual(result.normal_text, "2")
++        self.assertFalse(torch.cuda.is_initialized())
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)

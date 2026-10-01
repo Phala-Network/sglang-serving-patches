@@ -20,8 +20,9 @@ pinned versions of these projects.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `b77e67717d19fdda928839488bc4f2544f2cbddf`, tree
-`d3e3d986e02f397e42f57ba4104c80f204eec367`: 31 protected steps plus 120 successor patches.
+The active selector binds engine `59a29007273e5408ef30cd1b51eef0f1c434002a`, tree
+`962d435672fd29eef7753fac9705626bd3d17f16`: 31 protected steps plus 121 successor patches.
+P8-r1 adds the exact native Kimi response trailer after complete JSON; nine real-tokenizer/native CPU checks passed with zero skips. Final-image and original own-origin acceptance remain separate gates.
 P8 integrates the accepted PD lifecycle delta and the shared XGrammar selected-constraint
 prevalidation repair on P7. Its fixed runtime snapshot passed 29 installed CPU/native
 checks with zero skips; this is development-overlay evidence, not final-image acceptance.
