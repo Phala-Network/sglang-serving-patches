@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
-      "fork_tree": "7a09c7b841287e373413e2449f6065353e377b9f",
-      "fork_branch": "codex/llguidance-schema-p10-20261002",
+      "fork_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+      "fork_tree": "027b8478bd37052c8206b61b49a907a9082ec724",
+      "fork_branch": "codex/llguidance-strict-p11-20261002",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..757ebc8e0211648a9f7a785472dd2683b0bbb533",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2502,12 +2502,19 @@
           "source_commit": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
           "source_parent": "56239e2b884ba3760d910386f2ecc21e0ab9979c",
           "sha256": "2cd153f28ee164b8779e75b95b8d23add62fd80faca2171e3893670cea4513ed"
+        },
+        {
+          "id": "0105-llguidance-strict-reasoning-token-filter",
+          "path": "patches/common/0105-llguidance-strict-reasoning-token-filter.patch",
+          "source_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+          "source_parent": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
+          "sha256": "a35802053dea2b6b73de9ac92d94c973ac0ff91c1f034e7fd2a6c534d9f94efd"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "P10 semantics-preserving llguidance schema no-op compatibility",
-      "validation_boundary": "Exact source replay and 105 Linux native CPU tests passed; final-image and model/GPU acceptance separate",
+      "status": "P11 llguidance strict-thinking token filter compatibility",
+      "validation_boundary": "Complete source replay and 117 native CPU tests including real GLM tokenizer/factory; final-image, GPU startup and model/HTTP acceptance separate",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
         "commit": "f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155",

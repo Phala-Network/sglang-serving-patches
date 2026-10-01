@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
-      "fork_tree": "7a09c7b841287e373413e2449f6065353e377b9f",
-      "fork_branch": "codex/llguidance-schema-p10-20261002",
-      "patch_count": 130,
+      "fork_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+      "fork_tree": "027b8478bd37052c8206b61b49a907a9082ec724",
+      "fork_branch": "codex/llguidance-strict-p11-20261002",
+      "patch_count": 131,
       "replay_mode": "exact",
-      "status": "P10 semantics-preserving llguidance schema no-op compatibility",
-      "validation_boundary": "Exact source replay and 105 Linux native CPU tests passed; final-image and model/GPU acceptance separate",
-      "replay_tree": "7a09c7b841287e373413e2449f6065353e377b9f"
+      "status": "P11 llguidance strict-thinking token filter compatibility",
+      "validation_boundary": "Complete source replay and 117 native CPU tests including real GLM tokenizer/factory; final-image, GPU startup and model/HTTP acceptance separate",
+      "replay_tree": "027b8478bd37052c8206b61b49a907a9082ec724"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
