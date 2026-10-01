@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "59a29007273e5408ef30cd1b51eef0f1c434002a",
-      "fork_tree": "962d435672fd29eef7753fac9705626bd3d17f16",
+      "fork_commit": "03e11602bb46a936e3a2d41209560490b6d7a1d7",
+      "fork_tree": "a9755d652c5059e8e11f266cc83a46e0cd1f0ae7",
       "fork_branch": "codex/p8-r1-kimi-json-suffix-20261001",
-      "patch_count": 121,
+      "patch_count": 122,
       "replay_mode": "exact",
-      "status": "unified_p8_r1_kimi_trailer_source_candidate",
-      "validation_boundary": "Exact source replay and applicable source checks only; no image build or GPU/production acceptance",
-      "replay_tree": "962d435672fd29eef7753fac9705626bd3d17f16"
+      "status": "llguidance backend migration candidate; final-image and model qualification pending",
+      "validation_boundary": "Exact source replay and isolated CPU backend smoke only; full runtime import, image, GPU and production acceptance pending",
+      "replay_tree": "a9755d652c5059e8e11f266cc83a46e0cd1f0ae7"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",
