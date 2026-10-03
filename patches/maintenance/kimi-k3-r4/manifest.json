@@ -1,0 +1,26 @@
+{
+  "schema": "phala.sglang.maintenance-release.v1",
+  "scope": "restore exact historical r4 SRT source identity then add two upstream capture interfaces; not the active unified stack",
+  "engine_base": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
+  "engine_commit": "d27a7ade7b855629315ab740da8052febd287a17",
+  "engine_tree": "c5c5eaa0b074360c94694ccf0d00f447c5f5f04e",
+  "base_image": "ghcr.io/phala-network/sglang:logfix-kimi-k3-v0520-r4-privacy-astra-20260923-framework-r4@sha256:c85af3e165afa7676c4ae6096da8a8c50a7a375aeaedb70ba9ce11b46b771f56",
+  "upstream_backport": "00bcc25f6c857dc7cfb9e624ee38269d4c3735f6",
+  "patches": [
+    {
+      "path": "0001-restore-installed-r4-privacy-source.patch",
+      "parent": "a479d6ce0f7fdbefcafc4fac93af3737fc5df7f7",
+      "commit": "12dfa38ffb96e684aa5fd7d9629fc202bb3ee6f3",
+      "sha256": "48f17e7a730903e029a23ea6b28d4f540c01196a8ae53529654cb49b6004c467"
+    },
+    {
+      "path": "0002-kimi-dflash-capture.patch",
+      "parent": "12dfa38ffb96e684aa5fd7d9629fc202bb3ee6f3",
+      "commit": "d27a7ade7b855629315ab740da8052febd287a17",
+      "sha256": "74b463c8c6390d92ca3c9382021ab4a85615502dd447193ac702edaec723f944"
+    }
+  ],
+  "native_components": "all inherited unchanged from immutable base; external PIG0.12.31 unchanged",
+  "source_identity_limit": "historical SRT overlays restored from exact image; non-SRT files retain recorded a479 tree; existing binary runtime is bound by base digest",
+  "source_tests": "six focused CPU tests passed; final image and GPU gates pending"
+}
