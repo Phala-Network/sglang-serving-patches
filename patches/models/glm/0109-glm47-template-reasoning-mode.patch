@@ -1,0 +1,98 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 9332190790103258c38b3d87c4e5013b4ba89659..3d7ce33c549761a477dbfa09d6e7bce6a1e523cd 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1904,16 +1904,22 @@ class OpenAIServingChat(OpenAIServingBase):
+             and not any(tool.function.strict for tool in effective_tools)
+         )
+         if glm_constraint:
+-            enable_thinking = (request.chat_template_kwargs or {}).get(
+-                "enable_thinking"
+-            )
++            if self.reasoning_parser:
++                # Templates such as GLM-5.3 open <think> regardless of
++                # enable_thinking, so follow the template-aware value.
++                glm_thinking_mode = thinking_mode
++            else:
++                enable_thinking = (request.chat_template_kwargs or {}).get(
++                    "enable_thinking"
++                )
++                glm_thinking_mode = (
++                    True if enable_thinking is None else bool(enable_thinking)
++                )
+             parser = FunctionCallParser(effective_tools, self.tool_call_parser)
+             tool_call_constraint = parser.get_structure_constraint(
+                 effective_tool_choice,
+                 parallel_tool_calls=request.parallel_tool_calls,
+-                thinking_mode=True
+-                if enable_thinking is None
+-                else bool(enable_thinking),
++                thinking_mode=glm_thinking_mode,
+             )
+ 
+         # Apply chat template and its stop strings
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 7dafcbed926a82287d04bcef2711f5f42821681a..bed2a1d8775c5b7c81f5a3cf1ace33a6d8913915 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -1810,6 +1810,60 @@ class ServingChatTestCase(unittest.TestCase):
+             second_tools, [tool.function.model_dump() for tool in req.tools]
+         )
+ 
++    def _glm47_constraint_thinking_mode(self, reasoning_config):
++        self.template_manager.chat_template_name = None
++        self.template_manager.jinja_template_content_format = "string"
++        self.template_manager.reasoning_config = reasoning_config
++        self.tm.tokenizer.apply_chat_template.return_value = [1, 2, 3]
++        self.tm.server_args.reasoning_parser = "glm45"
++        self.tm.server_args.tool_call_parser = "glm47"
++        self.chat.reasoning_parser = "glm45"
++        self.chat.tool_call_parser = "glm47"
++
++        req = ChatCompletionRequest(
++            model="x",
++            messages=[{"role": "user", "content": "What is 2+2?"}],
++            tools=[
++                {
++                    "type": "function",
++                    "function": {
++                        "name": "add",
++                        "parameters": {
++                            "type": "object",
++                            "properties": {"a": {"type": "integer"}},
++                        },
++                    },
++                }
++            ],
++            tool_choice="auto",
++            chat_template_kwargs={"enable_thinking": False},
++        )
++
++        with patch(
++            "sglang.srt.entrypoints.openai.serving_chat.FunctionCallParser"
++        ) as parser_cls:
++            parser = parser_cls.return_value
++            parser.get_structure_constraint.return_value = ("ebnf", "grammar")
++
++            self.chat._process_messages(req, is_multimodal=False)
++
++            parser.get_structure_constraint.assert_called_once()
++            return parser.get_structure_constraint.call_args.kwargs["thinking_mode"]
++
++    def test_glm47_constraint_follows_always_thinking_template(self):
++        """A template that always opens <think> ignores enable_thinking=False,
++        so the grammar must still allow the model to close the think block."""
++        thinking_mode = self._glm47_constraint_thinking_mode(
++            ReasoningToggleConfig(special_case="always")
++        )
++        self.assertTrue(thinking_mode)
++
++    def test_glm47_constraint_honors_toggle_template_disable(self):
++        thinking_mode = self._glm47_constraint_thinking_mode(
++            ReasoningToggleConfig(toggle_param="enable_thinking", default_enabled=True)
++        )
++        self.assertFalse(thinking_mode)
++
+     def test_glm47_constraint_is_scoped_to_active_tools(self):
+         """A request with tool use disabled must not get a GLM47 tool grammar.
+ 

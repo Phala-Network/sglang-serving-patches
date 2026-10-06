@@ -1,0 +1,25 @@
+{
+  "frozen_export": {
+    "passed": true,
+    "patches": 31,
+    "serving_patches": 30,
+    "governor_hook_steps": 1,
+    "verified_intermediate_trees": 31,
+    "engine_commit": "4281309187007db579a2195f40adfd4baa538528",
+    "engine_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
+    "manifest_sha256": "9463030c766a94cfb44db3e7ad72a1d13b4cc017a11b1e860360099fc5fe1523",
+    "mode": "check"
+  },
+  "selector_export": {
+    "passed": true,
+    "selectors": 16,
+    "exact_replays": 6,
+    "expected_failures": 1,
+    "generated_patches": 131,
+    "verification_sha256": "1cd7376ec374dc4c4b736f5af68e11efecf48c1514cb65484e315dbedb3cc91e",
+    "mode": "check"
+  },
+  "patch_repo_tests": {
+    "passed": 34
+  }
+}
