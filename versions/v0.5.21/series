@@ -1,0 +1,5 @@
+patches/common/0001-request-lifecycle.patch
+patches/common/0002-hybrid-storage.patch
+patches/models/kimi/0003-tokenizer.patch
+patches/models/kimi/0004-prefill-graphs.patch
+patches/common/0005-fp8-prefix.patch

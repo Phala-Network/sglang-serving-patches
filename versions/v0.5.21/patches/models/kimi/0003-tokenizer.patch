@@ -1,0 +1,423 @@
+diff --git a/python/sglang/srt/utils/patch_tokenizer.py b/python/sglang/srt/utils/patch_tokenizer.py
+index 3da8c2e644cb1adcb7255bdb036cd3fdbdf13b8b..16bb297afd72af7d9297d0c1cb25b05b2a1fa053 100644
+--- a/python/sglang/srt/utils/patch_tokenizer.py
++++ b/python/sglang/srt/utils/patch_tokenizer.py
+@@ -1,4 +1,6 @@
+ import logging
++import re
++from typing import List
+ 
+ from sglang.srt.environ import envs
+ 
+@@ -13,12 +15,18 @@ def patch_tokenizer(tokenizer):
+         logger.info(
+             f"Applying special tokens cache patch for Kimi tokenizer: {type(tokenizer)}"
+         )
+-        return _SpecialTokensCachePatcher.patch(tokenizer)
++        _SpecialTokensCachePatcher.patch(tokenizer)
++        if _EncodePieceFastPathPatcher.applies_to(tokenizer):
++            logger.info(
++                f"Applying encode-piece fast path patch for Kimi tokenizer: {type(tokenizer)}"
++            )
++            _EncodePieceFastPathPatcher.patch(tokenizer)
+ 
+     return tokenizer
+ 
+ 
+ def unpatch_tokenizer(tokenizer):
++    _EncodePieceFastPathPatcher.unpatch(tokenizer)
+     return _SpecialTokensCachePatcher.unpatch(tokenizer)
+ 
+ 
+@@ -117,6 +125,115 @@ class _SpecialTokensCachePatcher:
+         return tokenizer
+ 
+ 
++class _EncodePieceFastPathPatcher:
++    """Short-circuit ``TikTokenTokenizer._encode_text_piece`` for the two segment
++    shapes that dominate Kimi-K3 chat encoding.
++
++    ``encoding_k3.build_chat_segments`` renders a conversation into tens of
++    thousands of tiny segments -- one per control token or tag name, and four
++    text segments per tool-call attribute (`` key``, ``="``, value, ``"``) --
++    and ``_encode_text_piece`` is called once per segment.  Every call first
++    runs a pure-Python per-character splitter over the segment (control
++    segments included); it yields the input unchanged below
++    ``MAX_NO_WHITESPACES_CHARS`` but still costs O(len) Python per call.  Then:
++
++    * control segments call ``tiktoken.Encoding.encode(allowed_special="all")``,
++      which passes the cached 256-entry special-token set through the
++      Python/Rust boundary on every call -- a fixed ~15-30us per call that
++      dominates for tiny segments -- for what is a dictionary lookup;
++    * text segments call ``encode(disallowed_special=())``, which for text
++      with no special-token literal is exactly ``encode_ordinary``.
++
++    The patched method keeps the original as the fallback, so token ids are
++    unchanged: a special-token literal inside a text segment, a control segment
++    that is not exactly one special token, and long text all take the original
++    path.
++
++    Only the Kimi-K3 tokenizer has ``_encode_text_piece``; the K2 family
++    inlines the same loop into ``encode``, so ``applies_to`` must be checked
++    before ``patch``.
++    """
++
++    _PATCHED_FLAG = "_sglang_encode_piece_patched"
++    # Mirrors MAX_NO_WHITESPACES_CHARS in tokenization_kimi.py: below this length
++    # the original splitter yields the input unchanged, so skipping it is exact.
++    _MAX_UNSPLIT_TEXT_CHARS = 25_000
++
++    @classmethod
++    def applies_to(cls, tokenizer) -> bool:
++        return callable(getattr(type(tokenizer), "_encode_text_piece", None))
++
++    @classmethod
++    def patch(cls, tokenizer):
++        tokenizer_cls = type(tokenizer)
++
++        if getattr(tokenizer_cls, cls._PATCHED_FLAG, False):
++            return tokenizer
++        if not cls.applies_to(tokenizer):
++            logger.info(
++                f"Skipping encode-piece fast path: {tokenizer_cls.__name__} has no _encode_text_piece"
++            )
++            return tokenizer
++
++        original_encode_text_piece = tokenizer_cls._encode_text_piece
++        max_unsplit_text_chars = cls._MAX_UNSPLIT_TEXT_CHARS
++
++        def patched_encode_text_piece(
++            self, text: str, allow_special_tokens: bool = True
++        ) -> List[int]:
++            if allow_special_tokens:
++                special_id = self.special_tokens.get(text)
++                if special_id is not None:
++                    return [special_id]
++                return original_encode_text_piece(self, text, allow_special_tokens)
++            if len(text) <= max_unsplit_text_chars and not _special_literal_regex(
++                self
++            ).search(text):
++                # disallowed_special=() encodes special literals as plain text,
++                # so with none present encode() == encode_ordinary().  Go through
++                # the public method, not _core_bpe, to keep tiktoken's
++                # UnicodeEncodeError fix-up for lone surrogates in the text.
++                return self.model.encode_ordinary(text)
++            return original_encode_text_piece(self, text, allow_special_tokens)
++
++        tokenizer_cls._original_encode_text_piece = original_encode_text_piece
++        tokenizer_cls._encode_text_piece = patched_encode_text_piece
++        setattr(tokenizer_cls, cls._PATCHED_FLAG, True)
++        return tokenizer
++
++    @classmethod
++    def unpatch(cls, tokenizer):
++        tokenizer_cls = type(tokenizer)
++
++        if not getattr(tokenizer_cls, cls._PATCHED_FLAG, False):
++            return tokenizer
++
++        tokenizer_cls._encode_text_piece = tokenizer_cls._original_encode_text_piece
++        del tokenizer_cls._original_encode_text_piece
++        delattr(tokenizer_cls, cls._PATCHED_FLAG)
++        if hasattr(tokenizer, _SPECIAL_LITERAL_REGEX_ATTR):
++            delattr(tokenizer, _SPECIAL_LITERAL_REGEX_ATTR)
++
++        logger.info(f"Unpatched encode-piece fast path for {tokenizer_cls.__name__}")
++        return tokenizer
++
++
++_SPECIAL_LITERAL_REGEX_ATTR = "_sglang_special_literal_regex"
++
++
++def _special_literal_regex(tokenizer):
++    regex = getattr(tokenizer, _SPECIAL_LITERAL_REGEX_ATTR, None)
++    if regex is None:
++        regex = re.compile(
++            "|".join(
++                re.escape(token)
++                for token in sorted(tokenizer.special_tokens, key=len, reverse=True)
++            )
++        )
++        setattr(tokenizer, _SPECIAL_LITERAL_REGEX_ATTR, regex)
++    return regex
++
++
+ def _make_cached_property(cache_attr, original_fn):
+     @property
+     def cached_prop(self):
+diff --git a/test/registered/unit/utils/test_patch_tokenizer.py b/test/registered/unit/utils/test_patch_tokenizer.py
+index f5e912d5a7a34529590dc52e044abdbfb9ae0ba8..2e951f27cee8b12158cc5e9039cec6ca3b411f1d 100644
+--- a/test/registered/unit/utils/test_patch_tokenizer.py
++++ b/test/registered/unit/utils/test_patch_tokenizer.py
+@@ -1,15 +1,21 @@
++import json
++import os
+ import random
+ import unittest
+ from contextlib import contextmanager
+ 
+ from transformers import AutoTokenizer
+ 
++from sglang.srt.environ import envs
+ from sglang.srt.utils.patch_tokenizer import (
++    _EncodePieceFastPathPatcher,
+     _SpecialTokensCachePatcher,
+     decode_without_hf_kwargs,
++    patch_tokenizer,
+     unpatch_tokenizer,
+ )
+ from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
+ 
+ register_cpu_ci(est_time=30, suite="base-a-test-cpu", nightly=True)
+ register_cpu_ci(est_time=16, suite="stage-b-test-cpu-intel")
+@@ -166,6 +172,168 @@ class TestPatchTokenizerUnitTest(unittest.TestCase):
+         self.assertEqual(tokenizer.decode_calls, [[1, 2], [1, 99, 2]])
+ 
+ 
++class TestEncodePieceFastPathPatcher(CustomTestCase):
++    """The fast path must be a pure shortcut: every segment shape it handles
++    (or declines) has to encode to the same ids as the original method."""
++
++    def test_encode_piece_matches_original_on_every_segment_shape(self):
++        tokenizer = _load_k3_tokenizer()
++        specials = list(tokenizer.special_tokens)
++        rng = random.Random(0)
++        random_texts = [
++            _random_text_from_tokens(tokenizer, num_tokens=n, rng=rng)
++            for n in (1, 7, 100, 1000)
++        ]
++        segments = [
++            # exactly one special token -> table lookup
++            *[(tok, True) for tok in specials],
++            # special token with a suffix / two specials -> original path
++            *[(tok + "x", True) for tok in specials[:8]],
++            (specials[0] + specials[1], True),
++            # plain text -> encode_ordinary
++            *[(text, False) for text in random_texts],
++            ("", False),
++            ("", True),
++            (" " * 40, False),
++            # special literal inside plain text -> original path
++            *[(f"user wrote {tok} literally", False) for tok in specials[:8]],
++            # lone surrogate (json.loads('"\\ud83d"') in a tool result) ->
++            # tiktoken's UnicodeEncodeError fix-up must still apply
++            ("tool output \ud83d broken", False),
++            ("tool output \ud83d broken", True),
++            # longer than MAX_NO_WHITESPACES_CHARS -> original splitter path
++            ("b" * 30_000 + " tail", False),
++            ("b" * 30_000 + " tail", True),
++        ]
++        # Exercise both sides of the exact splitter shortcut boundary. Include
++        # whitespace runs as well as the no-whitespace limit the guard mirrors.
++        for size in (24_999, 25_000, 25_001):
++            for text in ("a" * size, " " * size, "\n" * size):
++                segments.extend((text, allow) for allow in (False, True))
++        for text in (
++            "中文工具结果 café e\u0301 👩\u200d💻 العربية",
++            "\ud800",
++            "\udfff",
++            "paired \ud83d\ude00 and lone \ud83d",
++            "\x00\t\r\n\\\"",
++            *[f"{tok}prefix{tok}" for tok in specials[:8]],
++        ):
++            segments.extend((text, allow) for allow in (False, True))
++        original = type(tokenizer)._encode_text_piece
++        _EncodePieceFastPathPatcher.patch(tokenizer)
++        try:
++            for text, allow_special in segments:
++                self.assertEqual(
++                    original(tokenizer, text, allow_special),
++                    tokenizer._encode_text_piece(text, allow_special),
++                    (text[:40], allow_special),
++                )
++        finally:
++            _EncodePieceFastPathPatcher.unpatch(tokenizer)
++
++    def test_chat_template_ids_unchanged_for_tool_call_conversation(self):
++        # Kimi-K3's encoding_k3 renders one segment per control token or tag
++        # name and four text segments per tool-call attribute; this is the
++        # shape the fast path exists for.
++        tokenizer = _load_k3_tokenizer()
++        tools = [
++            {
++                "type": "function",
++                "function": {
++                    "name": "Bash",
++                    "parameters": {
++                        "type": "object",
++                        "properties": {"command": {"type": "string"}},
++                    },
++                },
++            }
++        ]
++        messages = [
++            {"role": "system", "content": "You are a coding agent."},
++            {"role": "user", "content": "deploy it"},
++        ]
++        for i in range(300):
++            messages.append(
++                {
++                    "role": "assistant",
++                    "content": None,
++                    "tool_calls": [
++                        {
++                            "id": f"call_{i}",
++                            "type": "function",
++                            "function": {
++                                "name": "Bash",
++                                "arguments": json.dumps(
++                                    {"command": f'printf "中文 café 👩‍💻"; ls /tmp/{i}'},
++                                    ensure_ascii=False,
++                                ),
++                            },
++                        }
++                    ],
++                }
++            )
++            messages.append(
++                {
++                    "role": "tool",
++                    "tool_call_id": f"call_{i}",
++                    "content": (
++                        f"total 0\n<|im_end|> literal in tool output {i}\n"
++                        "中文 café e\u0301 👩\u200d💻 lone surrogate \ud83d\n"
++                        + " ".join(tokenizer.special_tokens)
++                    ),
++                }
++            )
++        kwargs = dict(tools=tools, tokenize=True, add_generation_prompt=True)
++        expected = tokenizer.apply_chat_template(messages, **kwargs)
++
++        _EncodePieceFastPathPatcher.patch(tokenizer)
++        try:
++            self.assertEqual(
++                expected, tokenizer.apply_chat_template(messages, **kwargs)
++            )
++        finally:
++            _EncodePieceFastPathPatcher.unpatch(tokenizer)
++
++    def test_unpatch_restores_encode_piece(self):
++        tokenizer = _load_k3_tokenizer()
++        cls = type(tokenizer)
++        original = cls._encode_text_piece
++
++        _EncodePieceFastPathPatcher.patch(tokenizer)
++        self.assertIsNot(cls._encode_text_piece, original)
++        _EncodePieceFastPathPatcher.patch(tokenizer)  # idempotent
++        _EncodePieceFastPathPatcher.unpatch(tokenizer)
++
++        self.assertIs(cls._encode_text_piece, original)
++        self.assertFalse(hasattr(cls, "_original_encode_text_piece"))
++        self.assertFalse(hasattr(tokenizer, "_sglang_special_literal_regex"))
++
++    def test_k2_tokenizer_without_encode_text_piece_is_skipped(self):
++        # The K2 family shares the TikTokenTokenizer class/module name but
++        # inlines the segment loop into encode(); patch_tokenizer must still
++        # apply the special-tokens cache and skip the encode-piece fast path.
++        tokenizer = _load_tokenizer()
++        cls = type(tokenizer)
++        self.assertFalse(hasattr(cls, "_encode_text_piece"))
++        self.assertFalse(_EncodePieceFastPathPatcher.applies_to(tokenizer))
++
++        expected = tokenizer.encode("hello <|im_end|> world")
++        with envs.SGLANG_PATCH_TOKENIZER.override(True):
++            patched = patch_tokenizer(tokenizer)
++        try:
++            self.assertIs(patched, tokenizer)
++            self.assertTrue(getattr(cls, "_sglang_special_tokens_patched", False))
++            self.assertFalse(getattr(cls, "_sglang_encode_piece_patched", False))
++            self.assertEqual(patched.encode("hello <|im_end|> world"), expected)
++        finally:
++            unpatch_tokenizer(tokenizer)
++
++
++def _random_text_from_tokens(tokenizer, num_tokens, rng):
++    token_ids = [rng.randint(0, tokenizer.vocab_size - 1) for _ in range(num_tokens)]
++    return tokenizer.decode(token_ids)
++
++
+ def _get_class_attr_ids(cls):
+     return {
+         n: id(v.fget if isinstance(v, property) else v) for n, v in vars(cls).items()
+@@ -179,6 +347,80 @@ def _load_tokenizer():
+     )
+ 
+ 
++def _load_k3_tokenizer():
++    # Only Kimi-K3's tokenization_kimi.py has _encode_text_piece / encoding_k3.
++    local_path = os.environ.get("SGLANG_TEST_K3_TOKENIZER_PATH")
++    return AutoTokenizer.from_pretrained(
++        local_path or "moonshotai/Kimi-K3",
++        revision="f831ab66814297da540d832a5235f8e904f29d06",
++        trust_remote_code=True,
++        local_files_only=bool(local_path),
++    )
++
++
++class TestEncodePieceFastPathBoundaries(unittest.TestCase):
++    """Dependency-free branch guards; real tiktoken equivalence lives above."""
++
++    def test_shortcut_and_fallback_branches_preserve_ids(self):
++        class Model:
++            def encode_ordinary(self, text):
++                # Mirrors the public tiktoken surrogate fix-up boundary, not BPE.
++                normalized = text.encode("utf-16", "surrogatepass").decode(
++                    "utf-16", "replace"
++                )
++                return list(normalized.encode("utf-8"))
++
++        class Tokenizer:
++            special_tokens = {"<|im_end|>": 0, "[.*]": 257}
++
++            def __init__(self):
++                self.model = Model()
++                self.fallback_calls = []
++
++            def _encode_text_piece(self, text, allow_special_tokens=True):
++                self.fallback_calls.append((text, allow_special_tokens))
++                if allow_special_tokens and text in self.special_tokens:
++                    return [self.special_tokens[text]]
++                return self.model.encode_ordinary(text)
++
++        tokenizer = Tokenizer()
++        original = Tokenizer._encode_text_piece
++        cases = [
++            ("<|im_end|>", True, False),  # zero-valued special ID is valid
++            ("[.*]", True, False),
++            ("x[.*]y", False, True),  # regex literals must be escaped
++            ("ordinary [xx] text", False, False),
++            ("<|im_end|><|im_end|>", True, True),
++            ("prefix<|im_end|>suffix", False, True),
++            ("", False, False),
++            ("", True, True),
++            ("中文 👩\u200d💻 \ud800", False, False),
++        ]
++        cases += [
++            ("a" * size, False, size > 25_000)
++            for size in (24_999, 25_000, 25_001)
++        ]
++        _EncodePieceFastPathPatcher.patch(tokenizer)
++        try:
++            for text, allow, fallback in cases:
++                expected = original(tokenizer, text, allow)
++                tokenizer.fallback_calls.clear()
++                self.assertEqual(expected, tokenizer._encode_text_piece(text, allow))
++                self.assertEqual(bool(tokenizer.fallback_calls), fallback)
++        finally:
++            _EncodePieceFastPathPatcher.unpatch(tokenizer)
++        self.assertIs(Tokenizer._encode_text_piece, original)
++
++    def test_k2_shape_is_untouched(self):
++        class WithoutEncodePiece:
++            pass
++
++        tokenizer = WithoutEncodePiece()
++        self.assertFalse(_EncodePieceFastPathPatcher.applies_to(tokenizer))
++        self.assertIs(_EncodePieceFastPathPatcher.patch(tokenizer), tokenizer)
++        self.assertFalse(hasattr(WithoutEncodePiece, "_sglang_encode_piece_patched"))
++
++
+ @contextmanager
+ def _patched_tokenizer():
+     tokenizer = _load_tokenizer()

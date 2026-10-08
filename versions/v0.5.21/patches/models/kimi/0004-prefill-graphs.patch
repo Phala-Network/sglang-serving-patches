@@ -1,0 +1,494 @@
+diff --git a/python/sglang/srt/arg_groups/cuda_graph_hook.py b/python/sglang/srt/arg_groups/cuda_graph_hook.py
+index 1aeee2839b6087e3d772c1f7da9a3b733a447713..75c82ff9f5270f9acd30d224d57dc45334b2f676 100644
+--- a/python/sglang/srt/arg_groups/cuda_graph_hook.py
++++ b/python/sglang/srt/arg_groups/cuda_graph_hook.py
+@@ -103,6 +103,14 @@ def parse_cuda_graph_config(server_args: Any):
+         for key, value in phase_config.items():
+             _set(phase, key, value)
+ 
++    max_seq_len = config.prefill.max_seq_len
++    if max_seq_len is not None and (
++        isinstance(max_seq_len, bool)
++        or not isinstance(max_seq_len, int)
++        or max_seq_len <= 0
++    ):
++        raise ValueError("cuda_graph_max_seq_len_prefill must be a positive integer")
++
+     declare_resolution(
+         server_args,
+         "_parse_cuda_graph_config",
+diff --git a/python/sglang/srt/managers/scheduler_components/dp_attn.py b/python/sglang/srt/managers/scheduler_components/dp_attn.py
+index ea64aea930bf8b99709a6d2b9e3c666580cbf63a..e82997045248e492ab1d6a10a071ec5bb604db9e 100644
+--- a/python/sglang/srt/managers/scheduler_components/dp_attn.py
++++ b/python/sglang/srt/managers/scheduler_components/dp_attn.py
+@@ -400,11 +400,17 @@ def _local_prefill_cuda_graph_vote(
+         lora_ineligible=prefill_graph_runner.enable_lora,
+         is_mixed=mode == ForwardMode.MIXED,
+         batch_max_context_len=(
+-            int(local_batch.seq_lens_cpu.max().item())
+-            if prefill_graph_runner.max_context_size is not None
+-            and local_batch.seq_lens_cpu is not None
+-            and local_batch.seq_lens_cpu.numel() > 0
+-            else None
++            prefill_graph_runner._batch_max_seq_len_cpu(
++                local_batch.seq_lens_cpu, local_batch.batch_size()
++            )
++            if getattr(prefill_graph_runner, "max_seq_len_prefill", None) is not None
++            else (
++                int(local_batch.seq_lens_cpu.max().item())
++                if prefill_graph_runner.max_context_size is not None
++                and local_batch.seq_lens_cpu is not None
++                and local_batch.seq_lens_cpu.numel() > 0
++                else None
++            )
+         ),
+     )
+ 
+diff --git a/python/sglang/srt/model_executor/cuda_graph_config.py b/python/sglang/srt/model_executor/cuda_graph_config.py
+index 760659ede26a14bc679ebeede8f3f6961d9fca77..af7d498ca796affb4a764988801050acb082a41d 100644
+--- a/python/sglang/srt/model_executor/cuda_graph_config.py
++++ b/python/sglang/srt/model_executor/cuda_graph_config.py
+@@ -114,8 +114,8 @@ class PhaseConfig:
+     # chunk variants and chooses the smallest one covering a batch. None uses
+     # the scheduler's aggregate chunked_prefill_size token budget.
+     full_prefill_prefix_chunk_tokens: Optional[int] = None
+-    # Prefill only: a batch whose longest sequence exceeds this replays eagerly, and
+-    # backends that capture context-wide work size it. None defers to token buckets.
++    # Prefill replay eligibility only: total per-request prefix + new tokens.
++    # This does not size captured metadata; max_context_size owns that separately.
+     max_seq_len: Optional[int] = None
+ 
+ 
+diff --git a/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py b/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
+index 1b506b826c7e1837bb2e60e6faef582c129e3b69..e435000c8a7ff67d39fd270ca482ff7017a120e2 100644
+--- a/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
++++ b/python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py
+@@ -91,7 +91,12 @@ from sglang.srt.model_executor.forward_batch_info import (
+     enable_num_token_non_padded,
+     prefill_graph_tolerates_sum_len,
+ )
+-from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
++from sglang.srt.model_executor.forward_context import (
++    ForwardContext,
++    forward_context,
++    get_req_to_token_pool,
++    get_token_to_kv_pool,
++)
+ from sglang.srt.model_executor.runner.base_cuda_graph_runner import (
+     BaseCudaGraphRunner,
+     freeze_gc,
+@@ -328,6 +333,7 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+         # --- runner bounds --------------------------------------------
+         self.max_num_tokens = max(self.capture_num_tokens)
+         self.max_bs = model_runner.req_to_token_pool.size
++        self.max_seq_len_prefill = prefill_config.max_seq_len
+         self.max_context_size = prefill_config.max_context_size
+         self._validate_max_context_capacity(
+             max_context_size=self.max_context_size,
+@@ -931,6 +937,25 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+         )
+         self.max_context_size = None
+ 
++    @staticmethod
++    def _batch_max_seq_len_cpu(seq_lens_cpu, batch_size: int) -> Optional[int]:
++        """Eligibility-only cap: fail closed without a complete host mirror.
++
++        Do not synchronize GPU lengths just to choose graph replay vs eager.
++        Keep this independent from context-shaped capture metadata sizing.
++        """
++        if seq_lens_cpu is None:
++            return None
++        device = getattr(seq_lens_cpu, "device", None)
++        if device is not None and device.type != "cpu":
++            return None
++        if len(seq_lens_cpu) < batch_size:
++            return None
++        values = seq_lens_cpu[:batch_size]
++        if hasattr(values, "tolist"):
++            values = values.tolist()
++        return max((int(value) for value in values), default=0)
++
+     @staticmethod
+     def _batch_max_context_len(forward_batch: ForwardBatch) -> Optional[int]:
+         seq_lens_cpu = forward_batch.seq_lens_cpu
+@@ -1136,6 +1161,33 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+             capture_batch, in_capture=False
+         )
+ 
++    def _plan_dcp_metadata(self, forward_batch: ForwardBatch):
++        """DCP prefill metadata (gather buffer and KV indices), planned per batch
++        as the eager runner does before every extend; None without DCP."""
++        model = self.model_runner.model
++        if (
++            get_parallel().attn_dcp_size <= 1
++            or not hasattr(model, "prepare_context_parallel_metadata_for_dcp")
++            or forward_batch.extend_prefix_lens is None
++        ):
++            return None
++        with forward_context(
++            ForwardContext(attn_backend=self.model_runner.attn_backend)
++        ):
++            return model.prepare_context_parallel_metadata_for_dcp(
++                forward_batch.seq_lens,
++                forward_batch.extend_prefix_lens,
++                forward_batch.extend_prefix_lens_cpu,
++                forward_batch.extend_seq_lens,
++                forward_batch.req_pool_indices,
++                get_req_to_token_pool().req_to_token,
++                forward_batch.seq_lens_sum,
++                get_token_to_kv_pool().get_kv_buffer_shape()[0],
++                self.model_runner.kv_cache_dtype,
++                self.model_runner.device,
++                create_chunked_prefix_cache_kv_indices,
++            )
++
+     def _init_forward_metadata_for_capture(
+         self, forward_batch: ForwardBatch, shape_key: ShapeKey
+     ) -> None:
+@@ -1273,6 +1325,11 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+             return False
+         if return_logprob and not self._uses_eager_prefill_tail():
+             return False
++        max_seq_len = getattr(self, "max_seq_len_prefill", None)
++        if max_seq_len is not None and (
++            batch_max_context_len is None or batch_max_context_len > max_seq_len
++        ):
++            return False
+         if self.max_context_size is not None:
+             if (
+                 batch_max_context_len is None
+@@ -1305,11 +1362,16 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+             return False
+ 
+         # Non-DP local check (sole decision for tp-only).
+-        batch_max_context_len = (
+-            self._batch_max_context_len(forward_batch)
+-            if self.max_context_size is not None
+-            else None
+-        )
++        if getattr(self, "max_seq_len_prefill", None) is not None:
++            batch_max_context_len = self._batch_max_seq_len_cpu(
++                forward_batch.seq_lens_cpu, forward_batch.batch_size
++            )
++        else:
++            batch_max_context_len = (
++                self._batch_max_context_len(forward_batch)
++                if self.max_context_size is not None
++                else None
++            )
+         if not self.can_replay_locally(
+             batch_size=forward_batch.batch_size,
+             num_tokens=len(forward_batch.input_ids),
+@@ -1530,6 +1592,7 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+                 )
+             forward_batch = self.model_runner.prepare_dummy_forward_batch(forward_batch)
+             self.tbo_plugin.capture_one_batch_size(forward_batch, num_tokens=num_tokens)
++        forward_batch.attn_dcp_metadata = self._plan_dcp_metadata(forward_batch)
+         return forward_batch, self.model_runner.attn_backend
+ 
+     def capture(self) -> None:
+@@ -1932,6 +1995,14 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
+             )
+             metadata_forward_batch = static_forward_batch
+ 
++        dcp_metadata = self._plan_dcp_metadata(forward_batch)
++        if dcp_metadata is not None:
++            forward_batch.attn_dcp_metadata = dcp_metadata
++            static_forward_batch.attn_dcp_metadata = dcp_metadata
++        # Eager breaks that run a whole attention module (Kimi-K3's MLA) need
++        # the unpadded batch the attention metadata is planned on.
++        static_forward_batch.live_forward_batch = forward_batch
++
+         shape_key = self._shape_key(static_num_tokens, forward_batch)
+         self._prepare_forward_metadata_for_replay(
+             metadata_forward_batch, static_forward_batch, shape_key
+diff --git a/python/sglang/srt/models/kimi_k3.py b/python/sglang/srt/models/kimi_k3.py
+index b04ac8b40cac8758244c36f3ff0cfc304b3bfbbb..b74445bf5d6b9c5d364543312178668dbeefcc45 100644
+--- a/python/sglang/srt/models/kimi_k3.py
++++ b/python/sglang/srt/models/kimi_k3.py
+@@ -11,6 +11,7 @@ import os
+ import re
+ from array import array
+ from collections.abc import Iterable
++from contextlib import contextmanager
+ from functools import cached_property
+ from types import SimpleNamespace
+ from typing import TYPE_CHECKING, List, Optional, Tuple
+@@ -88,10 +89,24 @@ from sglang.srt.managers.schedule_batch import (
+     MultimodalInputs,
+ )
+ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
++from sglang.srt.model_executor.forward_context import get_attn_backend
+ from sglang.srt.model_executor.runner import get_is_capture_mode
++from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
++    context as _bcg_context,
++)
++from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
++    eager_on_graph,
++)
+ from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph.context import (
+     is_in_breakable_cuda_graph,
+ )
++from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
++    context_manager as _tc_piecewise_context,
++)
++from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph import (
++    get_tc_piecewise_forward_context,
++)
++from sglang.srt.model_executor.runner_utils import capture_mode as _capture_mode
+ from sglang.srt.model_loader.weight_utils import (
+     default_weight_loader,
+     maybe_remap_kv_scale_name,
+@@ -140,6 +155,36 @@ _is_npu = is_npu()
+ _aiter_k3_opt = get_bool_env_var("SGLANG_AITER_K3_OPT")
+ 
+ 
++@contextmanager
++def _as_eager_prefill():
++    """Run the enclosed code exactly as the eager prefill does.
++
++    Inside a prefill breakable-graph break the graph flags, capture mode and
++    the tc_piecewise forward context are still set; they make MLA pin absorbed
++    attention, RadixAttention route through split ops and K3 take graph-only
++    paths, none of which a break that runs a whole attention module needs.
++    """
++    saved = (
++        _bcg_context._in_breakable_cuda_graph,
++        _tc_piecewise_context._in_tc_piecewise_cuda_graph,
++        _tc_piecewise_context._tc_piecewise_forward_context,
++        _capture_mode.is_capture_mode,
++    )
++    _bcg_context._in_breakable_cuda_graph = False
++    _tc_piecewise_context._in_tc_piecewise_cuda_graph = False
++    _tc_piecewise_context._tc_piecewise_forward_context = None
++    _capture_mode.is_capture_mode = False
++    try:
++        yield
++    finally:
++        (
++            _bcg_context._in_breakable_cuda_graph,
++            _tc_piecewise_context._in_tc_piecewise_cuda_graph,
++            _tc_piecewise_context._tc_piecewise_forward_context,
++            _capture_mode.is_capture_mode,
++        ) = saved
++
++
+ def _cdiv(a: int, b: int) -> int:
+     return (a + b - 1) // b
+ 
+@@ -2452,6 +2497,13 @@ class KimiK3DecoderLayer(nn.Module):
+         # caller-owned storage; the layer's own AR call-site must agree
+         self.all_reduce_fusion = self.self_attn.all_reduce_fusion
+ 
++        # Under prefill CUDA graphs an MLA layer's whole attention runs as one
++        # eager break, as vLLM splits its piecewise graphs at the MLA op: MHA
++        # over a cached prefix has per-batch shapes, and captured MLA would
++        # pin the absorbed path instead.
++        self._mla_eager_under_prefill_graph = not config.is_kda_layer(layer_idx)
++        self._breakable_mla_self_attn = eager_on_graph(True)(self._mla_self_attn_eager)
++
+         # MLP / MoE
+         if self._is_moe_layer:
+             self.mlp = KimiK3MoE(
+@@ -2574,6 +2626,24 @@ class KimiK3DecoderLayer(nn.Module):
+         if forward_batch.forward_mode.is_idle():
+             return hidden_states
+ 
++        # Only the prefill breakable runner installs the tc_piecewise context;
++        # decode graphs set the breakable flag alone and run attention inline.
++        if (
++            self._mla_eager_under_prefill_graph
++            and is_in_breakable_cuda_graph()
++            and get_tc_piecewise_forward_context() is not None
++        ):
++            # The fused all-reduce pulls its input from the persistent symmetric
++            # o_proj buffer, which the eager o_proj fills from its start.
++            if self.all_reduce_fusion:
++                out = _k3_symm_o_proj_out(self.self_attn.o_proj, hidden_states)
++            else:
++                out = hidden_states.new_empty(
++                    (hidden_states.shape[0], self.hidden_size)
++                )
++            self._breakable_mla_self_attn(hidden_states, out)
++            return out
++
+         # mlp-sync pads extend batches to a multiple of attn_tp_size, but the
+         # attention metadata covers only the real tokens: flashinfer ragged
+         # prefill rejects the row mismatch, and silent paths would write the
+@@ -2606,6 +2676,42 @@ class KimiK3DecoderLayer(nn.Module):
+             hidden_states, positions, forward_batch, zero_allocator
+         )
+ 
++    def _mla_self_attn_eager(
++        self, hidden_states: torch.Tensor, out: torch.Tensor
++    ) -> None:
++        """Eager break: the MLA attention on the real tokens of the live batch,
++        written into the padded output buffer. The break replays with its
++        capture-time arguments, so the batch comes from the forward context;
++        the runner hands over the unpadded batch the attention metadata was
++        planned on (absent at capture, where the dummy batch is unpadded)."""
++        static_batch = get_tc_piecewise_forward_context().forward_batch
++        live_batch = getattr(static_batch, "live_forward_batch", None)
++        forward_batch = static_batch if live_batch is None else live_batch
++        num_tokens = forward_batch.positions.shape[0]
++        with _as_eager_prefill():
++            # The runner plans attention metadata under the graph flag, where
++            # TRT-LLM-style MLA backends plan their absorbed/FlashInfer
++            # fallback; plan the eager MHA prefill once per batch instead.
++            if not getattr(forward_batch, "k3_eager_mla_planned", False):
++                backend = get_attn_backend()
++                backend = getattr(backend, "full_attn_backend", backend)
++                backend.init_forward_metadata(forward_batch)
++                forward_batch.k3_eager_mla_planned = True
++            attn_out = self._run_self_attn_inner(
++                hidden_states[:num_tokens],
++                forward_batch.positions,
++                forward_batch,
++                # The model's allocator is a capture-time object here; its
++                # bump pointer would run past the buffer over replays.
++                BumpAllocator(
++                    buffer_size=2, dtype=torch.float32, device=hidden_states.device
++                ),
++            )
++        if attn_out.data_ptr() != out.data_ptr():
++            out[:num_tokens].copy_(attn_out)
++        if out.shape[0] != num_tokens:
++            out[num_tokens:].zero_()
++
+     def _run_self_attn_inner(
+         self,
+         hidden_states: torch.Tensor,
+diff --git a/test/registered/unit/model_executor/test_prefill_gate_ast.py b/test/registered/unit/model_executor/test_prefill_gate_ast.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3293ec3706a84d2f13fd12d8e801a229ea4918f0
+--- /dev/null
++++ b/test/registered/unit/model_executor/test_prefill_gate_ast.py
+@@ -0,0 +1,128 @@
++"""Dependency-free regression of extracted production methods, not GPU replay.
++
++Run directly with Python. Real tensor/CUDA integration remains a separate gate.
++"""
++
++import ast
++import unittest
++from pathlib import Path
++from types import SimpleNamespace as NS
++
++
++ROOT = Path(__file__).resolve().parents[4]
++RUNNER = ROOT / "python/sglang/srt/model_executor/runner/prefill_cuda_graph_runner.py"
++HOOK = ROOT / "python/sglang/srt/arg_groups/cuda_graph_hook.py"
++
++
++def extract(path, name, namespace):
++    tree = ast.parse(path.read_text(encoding="utf-8"))
++    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
++    node.decorator_list = []
++    module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), node], type_ignores=[])
++    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
++    return namespace[name]
++
++
++class PrefillGateTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.host_max = staticmethod(extract(RUNNER, "_batch_max_seq_len_cpu", {}))
++        cls.eligible = staticmethod(extract(RUNNER, "can_replay_locally", {
++            "Backend": NS(BREAKABLE="breakable"), "is_cuda": lambda: True,
++            "_MAX_PREFILL_CUDA_GRAPH_PADDING_FACTOR": 4,
++        }))
++
++    def vote(self, cap, maximum, metadata_cap=None):
++        runner = NS(_is_full_backend=False, prefill_backend_name="breakable",
++                    has_mha_companion_layers=False, capture_hidden_mode=0,
++                    _has_uncapturable_chunked_prefix=lambda _: False,
++                    max_seq_len_prefill=cap, max_context_size=metadata_cap)
++        return self.eligible(runner, batch_size=8, num_tokens=None,
++                             input_embeds=None, replace_embeds=None, prefix_lens=None,
++                             is_target_verify=False, capture_hidden_mode=None,
++                             return_logprob=False, batch_max_context_len=maximum)
++
++    def test_c8_per_request_boundaries(self):
++        for length, expected in [(65535, True), (65536, True), (65537, False)]:
++            with self.subTest(length=length):
++                self.assertEqual(self.vote(65536, self.host_max([length] * 8, 8)), expected)
++
++    def test_missing_short_non_cpu_fail_closed(self):
++        class GpuLengths:
++            device = NS(type="cuda")
++            def __len__(self):
++                raise AssertionError("GPU data must not be inspected")
++        for mirror in [None, [1] * 7, GpuLengths()]:
++            self.assertFalse(self.vote(65536, self.host_max(mirror, 8)))
++        self.assertEqual(self.host_max([], 0), 0)
++        self.assertEqual(self.host_max([10] * 8 + [999999], 8), 10)
++
++    def test_host_tensor_protocol(self):
++        class HostLengths(list):
++            device = NS(type="cpu")
++            def __getitem__(self, item):
++                value = super().__getitem__(item)
++                return HostLengths(value) if isinstance(item, slice) else value
++            def tolist(self):
++                return list(self)
++        self.assertEqual(self.host_max(HostLengths([1, 65536]), 2), 65536)
++
++    def test_independent_metadata_cap_and_unset(self):
++        self.assertTrue(self.vote(None, None))
++        self.assertTrue(self.vote(None, 999999))
++        self.assertFalse(self.vote(65536, 60000, metadata_cap=32768))
++        self.assertTrue(self.vote(65536, 60000, metadata_cap=None))
++
++    def test_dcp1_planner_is_noop(self):
++        def forbidden(*args, **kwargs):
++            raise AssertionError("DCP1 must not prepare metadata or access pools")
++        method = extract(RUNNER, "_plan_dcp_metadata", {
++            "get_parallel": lambda: NS(attn_dcp_size=1),
++            "get_req_to_token_pool": forbidden, "get_token_to_kv_pool": forbidden,
++            "forward_context": forbidden,
++        })
++        runner = NS(model_runner=NS(model=NS(prepare_context_parallel_metadata_for_dcp=forbidden)))
++        self.assertIsNone(method(runner, NS(batch_size=8)))
++
++    def test_live_batch_assignment_preserved(self):
++        tree = ast.parse(RUNNER.read_text(encoding="utf-8"))
++        matches = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
++                   and isinstance(n.value, ast.Name) and n.value.id == "forward_batch"
++                   and any(isinstance(t, ast.Attribute) and t.attr == "live_forward_batch" for t in n.targets)]
++        self.assertTrue(matches, "PR42265 replay binding must remain present")
++
++    def test_config_precedence_and_validation(self):
++        class Config:
++            def __init__(self):
++                self.prefill = NS(max_seq_len=None)
++                self.decode = NS()
++        def declare(args, source, **kwargs):
++            args.__dict__.update(kwargs)
++        parse = extract(HOOK, "parse_cuda_graph_config", {
++            "resolving_view": lambda args: args, "CudaGraphConfig": Config,
++            "default_cuda_graph_config": Config, "declare_resolution": declare,
++            "Phase": NS(DECODE="decode", PREFILL="prefill"), "Backend": NS(DISABLED="disabled"),
++        })
++        def args(value, explicit=None):
++            fields = dict.fromkeys([
++                "disable_cuda_graph", "disable_prefill_cuda_graph", "disable_decode_cuda_graph",
++                "cuda_graph_backend_decode", "cuda_graph_backend_prefill", "cuda_graph_max_bs_decode",
++                "cuda_graph_max_bs_prefill", "cuda_graph_bs_decode", "cuda_graph_bs_prefill",
++                "cuda_graph_tc_compiler", "cuda_graph_prefill_max_context"], None)
++            return NS(**fields, cuda_graph_config=explicit, cuda_graph_max_seq_len_prefill=value)
++        for value in [None, 1, 65536]:
++            config = args(value)
++            parse(config)
++            self.assertEqual(config.cuda_graph_config.prefill.max_seq_len, value)
++        for value in [0, -1, True, 1.5, "65536"]:
++            with self.subTest(value=value), self.assertRaises(ValueError):
++                parse(args(value))
++            with self.subTest(json_value=value), self.assertRaises(ValueError):
++                parse(args(65536, {"prefill": {"max_seq_len": value}}))
++        config = args(0, {"prefill": {"max_seq_len": 65536}})
++        parse(config)
++        self.assertEqual(config.cuda_graph_config.prefill.max_seq_len, 65536)
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1,0 +1,45 @@
+{
+  "base": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+  "engine_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
+  "reproduced_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
+  "patches": [
+    {
+      "path": "patches/common/0001-request-lifecycle.patch",
+      "commit": "da3f3d730257db2d2e012f989db937689f039170",
+      "parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "sha256": "d84e6b9696b38479bd4cbcb65b018a22c6a2caf084587490000d57ac411a4c47",
+      "purpose": "Fix stream, request-owner and health-probe cleanup"
+    },
+    {
+      "path": "patches/common/0002-hybrid-storage.patch",
+      "commit": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "parent": "da3f3d730257db2d2e012f989db937689f039170",
+      "sha256": "757a5bbbfd92508027d93c985db8b3de05f5f2881be1592cc58607795d43039c",
+      "purpose": "Preserve common hybrid restore endpoints and batch Mooncake operations"
+    },
+    {
+      "path": "patches/models/kimi/0003-tokenizer.patch",
+      "commit": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "parent": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "sha256": "6e82b587c3dddb9329f681ae008ee34b6ade39a2c72986c5a1904b28e1849825",
+      "purpose": "Backport Kimi tokenizer fast path with ID equivalence regressions"
+    },
+    {
+      "path": "patches/models/kimi/0004-prefill-graphs.patch",
+      "commit": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "parent": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "sha256": "3f1201a1e209ee72f3bbc2f51a8033695590aa7a07fd6b911ee730668522a76d",
+      "purpose": "Gate prefill replay by sequence length and allow eager Kimi MLA"
+    },
+    {
+      "path": "patches/common/0005-fp8-prefix.patch",
+      "commit": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "parent": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "sha256": "782cb4ff7125535ec7bf926a3314ffcb36f2a0728b15f4dbc430ed0fb5be4781",
+      "purpose": "Backport fused FP8 prefix commits with rounding-preserving fallbacks"
+    }
+  ],
+  "embedded_governor": "not selected; external PIG v0.12.31",
+  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer40"
+}

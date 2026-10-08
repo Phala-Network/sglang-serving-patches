@@ -16,6 +16,12 @@ SGLang hooks needed to integrate those components. TAIL retains its transport an
 attestation responsibilities. Deployment configuration composes independently
 pinned versions of these projects.
 
+## Version compatibility maintenance
+
+[Official 0.5.21 maintenance](versions/v0.5.21/README.md) records the ordered
+source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
+integration below remains intact.
+
 ## Current unified source
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
