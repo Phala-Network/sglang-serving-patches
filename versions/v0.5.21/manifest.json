@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
-  "engine_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
-  "reproduced_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
+  "engine_commit": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+  "engine_tree": "ad6292d842a447fbab23b031e7b119b918bf9de5",
+  "reproduced_tree": "ad6292d842a447fbab23b031e7b119b918bf9de5",
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -38,8 +38,15 @@
       "parent": "2a58df4018af8f1df56700db8c01e1b417543cc6",
       "sha256": "782cb4ff7125535ec7bf926a3314ffcb36f2a0728b15f4dbc430ed0fb5be4781",
       "purpose": "Backport fused FP8 prefix commits with rounding-preserving fallbacks"
+    },
+    {
+      "path": "patches/common/0006-mamba-checkpoint-pressure.patch",
+      "commit": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+      "parent": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "sha256": "45435ffd8250d95ae8e4c1d52b106e2ddc6e50a8d88890cb3238f1300b2df56c",
+      "purpose": "Decline optional unfinished Mamba checkpoints under protected-slot pressure"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer40"
+  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer; optional checkpoint pressure repair"
 }
