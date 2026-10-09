@@ -2,7 +2,7 @@
   "schema": "phala.sglang.patch-selector.v2",
   "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
   "active_selector": "unified-v0520-governor-r6",
-  "as_of": "2026-10-02",
+  "as_of": "2026-10-06",
   "complete_engine_reference": {
     "repository": "https://github.com/Phala-Network/sglang",
     "commit": "4281309187007db579a2195f40adfd4baa538528",
@@ -1623,11 +1623,11 @@
       "topology": [
         "model-and-topology-guarded"
       ],
-      "fork_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
-      "fork_tree": "027b8478bd37052c8206b61b49a907a9082ec724",
-      "fork_branch": "codex/llguidance-strict-p11-20261002",
+      "fork_commit": "460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
+      "fork_tree": "d093000351737a9e49348f1cb8036c37de0e7433",
+      "fork_branch": "fix/glm47-parser-correctness",
       "source_parent": "4281309187007db579a2195f40adfd4baa538528",
-      "source_range": "4281309187007db579a2195f40adfd4baa538528..ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+      "source_range": "4281309187007db579a2195f40adfd4baa538528..460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
       "replay_mode": "exact",
       "patches": [
         {
@@ -2509,12 +2509,44 @@
           "source_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
           "source_parent": "757ebc8e0211648a9f7a785472dd2683b0bbb533",
           "sha256": "a35802053dea2b6b73de9ac92d94c973ac0ff91c1f034e7fd2a6c534d9f94efd"
+        },
+        {
+          "id": "0106-glm47-stream-chunk-regressions",
+          "path": "patches/models/glm/0106-glm47-stream-chunk-regressions.patch",
+          "source_commit": "2a2c83ea24fa1422b35d33225fc46af45b9f1b1f",
+          "source_parent": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+          "sha256": "ad06714543a37df4dc8c9522965d711daf5016eaffa3778a7932b79658e94575",
+          "upstream_pr": "https://github.com/sgl-project/sglang/pull/41493"
+        },
+        {
+          "id": "0107-glm47-required-call-prefix",
+          "path": "patches/models/glm/0107-glm47-required-call-prefix.patch",
+          "source_commit": "b367fa21a1442c686636659cfa4d67d4c4de8122",
+          "source_parent": "2a2c83ea24fa1422b35d33225fc46af45b9f1b1f",
+          "sha256": "20c0415cc899e7e6f5349dd0238f5239c18be4ddd00bfe96387e5013faac8794",
+          "upstream_pr": "https://github.com/sgl-project/sglang/pull/42458"
+        },
+        {
+          "id": "0108-glm47-active-tool-grammar",
+          "path": "patches/models/glm/0108-glm47-active-tool-grammar.patch",
+          "source_commit": "640921b55b0cc13d1b4bf6e1cdc20180905985c0",
+          "source_parent": "b367fa21a1442c686636659cfa4d67d4c4de8122",
+          "sha256": "d33623327420db8d55e8566033aa0d138351308865b52292dd7db1e24e88b3a2",
+          "upstream_pr": "https://github.com/sgl-project/sglang/pull/41233"
+        },
+        {
+          "id": "0109-glm47-template-reasoning-mode",
+          "path": "patches/models/glm/0109-glm47-template-reasoning-mode.patch",
+          "source_commit": "460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
+          "source_parent": "640921b55b0cc13d1b4bf6e1cdc20180905985c0",
+          "sha256": "97aeea78d1c00a3b35f438683830191b21d3cd8b331d2293bb5fa8f36a5438d4",
+          "upstream_pr": "https://github.com/sgl-project/sglang/pull/42761"
         }
       ],
       "native_source_assembly": "5ed4a88cea integrates unchanged dsv41-0001 through dsv41-0010 source deltas; replay reuses their original exported bytes. Adapted chat encoding follows in 407ab50cf5.",
       "pending_dsv41_closure": [],
-      "status": "P11 llguidance strict-thinking token filter compatibility",
-      "validation_boundary": "Complete source replay and 117 native CPU tests including real GLM tokenizer/factory; final-image, GPU startup and model/HTTP acceptance separate",
+      "status": "GLM47 active-tool and template-aware grammar correctness on the shared P11 stack",
+      "validation_boundary": "Exact complete-source replay; maintained-source CPU parser/chat tests and separate deployed v0.5.21 GLM Flash GPU evidence. No final-image or cross-model qualification of this v0.5.20 tree.",
       "governor_runtime": {
         "repository": "https://github.com/Phala-Network/phala-inference-governor",
         "commit": "f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155",

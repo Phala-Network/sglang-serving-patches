@@ -8,9 +8,9 @@ consumer; historical files under a model directory with no selected ID remain
 pending source material.
 
 The active complete-source selector is `unified-v0520-governor-r6`: engine
-`6f7fb4713946cb4ef913da89dfb62d71c6e82461`, tree
-`7d182dafbf142c484dbacee131e2c2f12ea6782b`.
-It cleanly replays the protected 31-step engine428 baseline and 115 successor
+`460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108`, tree
+`d093000351737a9e49348f1cb8036c37de0e7433`.
+It cleanly replays the protected 31-step engine428 baseline and 135 successor
 patches. Common fixes occur once with model-specific guards.
 
 Older Kimi/Muse selectors are historical partial-source checkpoints.
