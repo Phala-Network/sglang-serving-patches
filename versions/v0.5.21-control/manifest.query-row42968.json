@@ -1,0 +1,28 @@
+{
+  "base": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+  "engine_commit": "3c3f74d385c1b5e5dcbc1fe1a9a365f6dcc7af2a",
+  "engine_tree": "ef8aed03673d2e9921a57b534fa42152d1c5adb5",
+  "series": "series.query-row42968",
+  "patches": [
+    {
+      "path": "patches/common/0001-frozen-control.patch",
+      "parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "sha256": "55074b0972ea63c9277d479d33b5fb2dfb7544d4de080d62e3453210d39935dc"
+    },
+    {
+      "path": "patches/models/deepseek/0006-query-row42968-optin.patch",
+      "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "commit": "3c3f74d385c1b5e5dcbc1fe1a9a365f6dcc7af2a",
+      "sha256": "9c1eb818424cf40e150df1457ba3b26661455f65df0c7cec705abda67bf22243"
+    }
+  ],
+  "packaging_metadata": {
+    "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+    "path": "phala/",
+    "tree": "b272834100140f28c9ba9e430a97afe112f71d3c",
+    "handling": "Preserve from frozen control; not duplicated in patch exports."
+  },
+  "scope": "Independent opt-in query-row TP sharding on frozen control; real TP2 GPU unqualified."
+}
