@@ -1,0 +1,648 @@
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 787234e08..ae65cae9c 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -1563,6 +1563,8 @@ class Envs:
+     SGLANG_OPT_USE_FLASHINFER_MHC = EnvBool(False)
+     SGLANG_OPT_FUSE_MHC_POST_PRE = EnvBool(True)
+     SGLANG_OPT_USE_TILELANG_INDEXER = EnvBool(False)
++    # Shard eager low-ratio indexer query rows across attention TP.
++    SGLANG_OPT_DSV4_INDEXER_TP_SHARD = EnvBool(False)
+     SGLANG_OPT_DSV4_NONPAGED_INDEXER = EnvBool(True)
+     # Per-rank local query rows (after DP-attention sharding when enabled),
+     # not request ISL.
+diff --git a/python/sglang/srt/layers/attention/deepseek_v4_backend.py b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+index ce8d92613..20c6f4b90 100644
+--- a/python/sglang/srt/layers/attention/deepseek_v4_backend.py
++++ b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
+@@ -82,6 +82,7 @@ from sglang.srt.layers.attention.dsv4.v41_indexer import (
+     CapturedPrefillInputs,
+     DecodeInputs,
+     PrefillInputs,
++    RowShard,
+     Selection,
+     has_dense_fp4_indexer,
+     is_sm100_or_newer,
+@@ -912,6 +913,7 @@ def _tail_rows(
+ # Rows per logits chunk for the ratio-1/2 indexer inside the prefill CUDA graph;
+ # its width is the graph's max_seq_len, and longer contexts replay eagerly.
+ _PREFILL_GRAPH_INDEXER_ROW_CHUNK = 2048
++_INDEXER_TP_SHARD_MIN_ROWS = 512
+ 
+ 
+ def _prefill_graph_max_seq_len() -> Optional[int]:
+@@ -3184,6 +3186,12 @@ class DeepseekV4AttnBackend(
+         rows_per_request,
+     ) -> PrefillInputs:
+         tail = self.forward_metadata.late_layer_tail
++        # CP already partitions the query rows; never add a TP gather there.
++        row_shard = (
++            self._indexer_row_shard(layer, num_rows=x.shape[0])
++            if rows_per_request is None
++            else None
++        )
+         if rows_per_request is not None:
+             rows_per_request_device = torch.tensor(
+                 rows_per_request, dtype=torch.int32, device=x.device
+@@ -3208,6 +3216,22 @@ class DeepseekV4AttnBackend(
+             seq_lens_cpu=_as_int_list(forward_batch.seq_lens_cpu),
+             rows_per_request=rows_per_request,
+             rows_per_request_device=rows_per_request_device,
++            row_shard=row_shard,
++        )
++
++    def _indexer_row_shard(self, layer, *, num_rows: int) -> Optional[RowShard]:
++        parallel = get_parallel()
++        if (
++            not envs.SGLANG_OPT_DSV4_INDEXER_TP_SHARD.get()
++            or parallel.attn_tp_size == 1
++            or num_rows < _INDEXER_TP_SHARD_MIN_ROWS
++        ):
++            return None
++        return RowShard(
++            group=parallel.attn_tp_group,
++            rank=parallel.attn_tp_rank,
++            world=parallel.attn_tp_size,
++            row_align=128 // layer.indexer.n_heads,
+         )
+ 
+     def _publish_candidate_metadata(self, published: Optional[CandidateMetadata]):
+diff --git a/python/sglang/srt/layers/attention/dsv4/v41_indexer/__init__.py b/python/sglang/srt/layers/attention/dsv4/v41_indexer/__init__.py
+index 60f6fc690..ad43d6251 100644
+--- a/python/sglang/srt/layers/attention/dsv4/v41_indexer/__init__.py
++++ b/python/sglang/srt/layers/attention/dsv4/v41_indexer/__init__.py
+@@ -17,6 +17,7 @@ from .types import (
+     DecodeInputs,
+     PrefillCandidates,
+     PrefillInputs,
++    RowShard,
+     Selection,
+ )
+ 
+@@ -31,6 +32,7 @@ __all__ = [
+     "FullTopKIndexer",
+     "PrefillCandidates",
+     "PrefillInputs",
++    "RowShard",
+     "Selection",
+     "has_dense_fp4_indexer",
+     "is_sm100_or_newer",
+diff --git a/python/sglang/srt/layers/attention/dsv4/v41_indexer/full_topk.py b/python/sglang/srt/layers/attention/dsv4/v41_indexer/full_topk.py
+index db9dadfcd..a4fddc4d0 100644
+--- a/python/sglang/srt/layers/attention/dsv4/v41_indexer/full_topk.py
++++ b/python/sglang/srt/layers/attention/dsv4/v41_indexer/full_topk.py
+@@ -21,6 +21,7 @@ from .scoring import (
+     get_index_k_cache,
+     prefill_requests,
+     quantize_index_q,
++    sharded_dense_prefill_topk,
+     write_decode,
+     write_prefill,
+ )
+@@ -72,7 +73,12 @@ class FullTopKIndexer:
+         kv = self.token_to_kv_pool.get_low_ratio_index_k_fp4(
+             inputs.layer_id, data.k_slots
+         )
+-        selected = dense_prefill_topk(data, kv, topk=inputs.indexer.index_topk)
++        if inputs.row_shard is None:
++            selected = dense_prefill_topk(data, kv, topk=inputs.indexer.index_topk)
++        else:
++            selected = sharded_dense_prefill_topk(
++                data, kv, topk=inputs.indexer.index_topk, shard=inputs.row_shard
++            )
+         data.write_selection(selected=selected, out=out)
+ 
+     def _torch_prefill(self, inputs: PrefillInputs, out: Selection) -> None:
+diff --git a/python/sglang/srt/layers/attention/dsv4/v41_indexer/scoring.py b/python/sglang/srt/layers/attention/dsv4/v41_indexer/scoring.py
+index 1cd46108f..50b85dfbb 100644
+--- a/python/sglang/srt/layers/attention/dsv4/v41_indexer/scoring.py
++++ b/python/sglang/srt/layers/attention/dsv4/v41_indexer/scoring.py
+@@ -15,6 +15,7 @@ from sglang.kernels.ops.attention.dsv4.index_logits import flat_index_logits_til
+ from .types import (
+     DecodeInputs,
+     PrefillInputs,
++    RowShard,
+     Selection,
+ )
+ 
+@@ -194,13 +195,16 @@ def score_tiles(
+     kv: Tuple[torch.Tensor, torch.Tensor],
+     *,
+     width_align: int,
++    rows: Optional[slice] = None,
+ ) -> Generator[Tuple[slice, torch.Tensor], None, None]:
++    """Score a row range; yielded tile slices are relative to that range."""
++    rows = slice(0, data.num_rows) if rows is None else rows
+     yield from flat_index_logits_tiles(
+-        q=(data.q_fp4, data.q_sf),
++        q=(data.q_fp4[rows], data.q_sf[rows]),
+         kv=kv,
+-        weights=data.weights,
+-        starts=data.request_starts,
+-        lengths=data.compress_lens,
++        weights=data.weights[rows],
++        starts=data.request_starts[rows],
++        lengths=data.compress_lens[rows],
+         context_lengths=data.lens_per_request,
+         budget_bytes=_DEEP_GEMM_SCORE_BUDGET_BYTES,
+         width_align=width_align,
+@@ -212,23 +216,43 @@ def dense_prefill_topk(
+     kv: Tuple[torch.Tensor, torch.Tensor],
+     *,
+     topk: int,
++    rows: Optional[slice] = None,
+ ) -> torch.Tensor:
+-    """Flattened-K columns, ``-1`` padded, unordered."""
++    """Flattened-K columns for the selected rows, -1 padded and unordered."""
+     from sglang.kernels.ops.attention.dsv4 import topk_transform_ragged_v2
+ 
+-    selected = data.empty_selection(topk)
+-    for tile, logits in score_tiles(data, kv, width_align=4):
++    rows = slice(0, data.num_rows) if rows is None else rows
++    lens = data.compress_lens[rows]
++    starts = data.request_starts[rows]
++    selected = starts.new_full((rows.stop - rows.start, topk), -1, dtype=torch.int32)
++    for tile, logits in score_tiles(data, kv, width_align=4, rows=rows):
+         topk_transform_ragged_v2(
+             logits,
+-            data.compress_lens[tile],
+-            out_offsets=data.request_starts[tile],
++            lens[tile],
++            out_offsets=starts[tile],
+             out_indices=selected[tile],
+         )
+-        # Free this tile's logits before the generator scores the next one.
+         del logits
+     return selected
+ 
+ 
++def sharded_dense_prefill_topk(
++    data: DeepGEMMPrefillData,
++    kv: Tuple[torch.Tensor, torch.Tensor],
++    *,
++    topk: int,
++    shard: RowShard,
++) -> torch.Tensor:
++    rows = shard.local_rows(data.num_rows)
++    local = data.request_starts.new_full(
++        (shard.rows_per_rank(data.num_rows), topk), -1, dtype=torch.int32
++    )
++    local[: rows.stop - rows.start].copy_(
++        dense_prefill_topk(data, kv, topk=topk, rows=rows)
++    )
++    return shard.gather(local, data.num_rows)
++
++
+ # ---------- torch ----------
+ 
+ 
+@@ -346,9 +370,9 @@ def decode_scores(
+     req, pos = inputs.req_rows, inputs.positions
+     out.reset()
+     bs = req.shape[0]
+-    assert pos.shape[0] == bs, (
+-        f"decode expects one token per request, {pos.shape=} {bs=}"
+-    )
++    assert (
++        pos.shape[0] == bs
++    ), f"decode expects one token per request, {pos.shape=} {bs=}"
+     if bs == 0:
+         return None
+     lens = (pos + 1) // ratio
+diff --git a/python/sglang/srt/layers/attention/dsv4/v41_indexer/sparse_table.py b/python/sglang/srt/layers/attention/dsv4/v41_indexer/sparse_table.py
+index c01d76f7b..d6e941fc9 100644
+--- a/python/sglang/srt/layers/attention/dsv4/v41_indexer/sparse_table.py
++++ b/python/sglang/srt/layers/attention/dsv4/v41_indexer/sparse_table.py
+@@ -43,6 +43,7 @@ from .types import (
+     CandidateMetadata,
+     DecodeInputs,
+     PrefillInputs,
++    RowShard,
+     Selection,
+     get_tail_row_indices,
+ )
+@@ -141,6 +142,7 @@ class SparseTableBackend:
+             index_page_size=index_page_size,
+             topk_blocks=self.topk_blocks,
+             out_positions=selected,
++            row_shard=inputs.row_shard,
+         )
+         data.write_selection(selected=selected, out=out)
+         return table
+@@ -372,30 +374,26 @@ def _build_prefill_table(
+     )
+ 
+ 
+-# TODO(dark): support fusion of publish + topk of publish layer
+-def publish_prefill_table(
++def select_prefill_rows(
+     *,
+     data: DeepGEMMPrefillData,
+     kv: Tuple[torch.Tensor, torch.Tensor],
+-    index_page_table: torch.Tensor,
+-    index_page_size: int,
+-    topk_blocks: int,
++    rows: slice,
++    nblocks: torch.Tensor,
+     out_positions: torch.Tensor,
+-) -> _SparsePrefillTable:
+-    """The source's own top-k into ``out_positions`` and the chunk's table, from one
+-    pass over its dense scores; ``index_page_table`` is at ``index_page_size`` slots."""
+-    rows = data.num_rows
+-    device = data.q_fp4.device
+-    nblocks, valid_lens = candidate_row_lens(data.compress_lens, topk_blocks)
+-    blocks = torch.empty(rows, topk_blocks, dtype=torch.int32, device=device)
+-    zero_offsets = torch.zeros(rows, dtype=torch.int32, device=device)
++    out_blocks: torch.Tensor,
++) -> None:
++    """Keep control's flattened-K positions while scoring only local rows."""
++    lens_all = data.compress_lens[rows]
++    starts = data.request_starts[rows]
++    zero_offsets = torch.zeros_like(lens_all)
+     # the block keys read the score rows through 32-byte vectors
+-    for tile, logits in score_tiles(data, kv, width_align=8):
+-        lens = data.compress_lens[tile]
++    for tile, logits in score_tiles(data, kv, width_align=8, rows=rows):
++        lens = lens_all[tile]
+         topk_transform_ragged_v2(
+             logits,
+             lens,
+-            out_offsets=data.request_starts[tile],
++            out_offsets=starts[tile],
+             out_indices=out_positions[tile],
+         )
+         # keys past a row's block count stay unset; the top-k reads a row
+@@ -409,8 +407,53 @@ def publish_prefill_table(
+             keys,
+             nblocks[tile],
+             out_offsets=zero_offsets[: logits.shape[0]],
+-            out_indices=blocks[tile],
++            out_indices=out_blocks[tile],
++        )
++
++
++# TODO(dark): support fusion of publish + topk of publish layer
++def publish_prefill_table(
++    *,
++    data: DeepGEMMPrefillData,
++    kv: Tuple[torch.Tensor, torch.Tensor],
++    index_page_table: torch.Tensor,
++    index_page_size: int,
++    topk_blocks: int,
++    out_positions: torch.Tensor,
++    row_shard: Optional[RowShard] = None,
++) -> _SparsePrefillTable:
++    """The source's own top-k into ``out_positions`` and the chunk's table, from one
++    pass over its dense scores; ``index_page_table`` is at ``index_page_size`` slots."""
++    rows = data.num_rows
++    device = data.q_fp4.device
++    nblocks, valid_lens = candidate_row_lens(data.compress_lens, topk_blocks)
++    if row_shard is None:
++        blocks = torch.empty(rows, topk_blocks, dtype=torch.int32, device=device)
++        select_prefill_rows(
++            data=data,
++            kv=kv,
++            rows=slice(0, rows),
++            nblocks=nblocks,
++            out_positions=out_positions,
++            out_blocks=blocks,
++        )
++    else:
++        local = row_shard.local_rows(rows)
++        per = row_shard.rows_per_rank(rows)
++        positions = out_positions.new_full((per, out_positions.shape[1]), -1)
++        local_blocks = torch.full(
++            (per, topk_blocks), -1, dtype=torch.int32, device=device
++        )
++        select_prefill_rows(
++            data=data,
++            kv=kv,
++            rows=local,
++            nblocks=nblocks[local],
++            out_positions=positions,
++            out_blocks=local_blocks,
+         )
++        out_positions.copy_(row_shard.gather(positions, rows))
++        blocks = row_shard.gather(local_blocks, rows).contiguous()
+     request_ids = torch.repeat_interleave(
+         torch.arange(len(data.rows_per_request), dtype=torch.int32, device=device),
+         torch.tensor(data.rows_per_request, dtype=torch.int64, device=device),
+diff --git a/python/sglang/srt/layers/attention/dsv4/v41_indexer/types.py b/python/sglang/srt/layers/attention/dsv4/v41_indexer/types.py
+index 8dee611dc..f9a82e3d9 100644
+--- a/python/sglang/srt/layers/attention/dsv4/v41_indexer/types.py
++++ b/python/sglang/srt/layers/attention/dsv4/v41_indexer/types.py
+@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, List, Optional, Protocol, TypeVar
+ import msgspec
+ import torch
+ 
++from sglang.srt.utils.common import ceil_align, ceil_div
++
+ if TYPE_CHECKING:
++    from sglang.srt.distributed.parallel_state import GroupCoordinator
+     from sglang.srt.layers.attention.dsv4.dsv41_sparse import DeepseekV41Indexer
+     from sglang.srt.layers.attention.dsv4.metadata import PagedIndexerMetadata
+ 
+@@ -44,6 +47,38 @@ class Selection(msgspec.Struct, frozen=True):
+             self.raw_indices.fill_(-1)
+ 
+ 
++class RowShard(msgspec.Struct, frozen=True, kw_only=True):
++    """This rank's share of a prefill chunk's query rows across a group whose
++    ranks all hold the same rows.
++
++    The indexer is replicated, so every rank of the attention-TP group would
++    score every row identically. Each rank scores a contiguous share instead and
++    the selections are all-gathered. A dense score depends only on its own query
++    row, so the gathered selection is bitwise the replicated one."""
++
++    group: GroupCoordinator
++    rank: int
++    world: int
++    # The score kernel groups 128 // heads consecutive rows into one MMA tile;
++    # aligned shares keep every tile's row set the same as unsharded.
++    row_align: int
++
++    def rows_per_rank(self, num_rows: int) -> int:
++        return ceil_align(ceil_div(num_rows, self.world), self.row_align)
++
++    def local_rows(self, num_rows: int) -> slice:
++        per = self.rows_per_rank(num_rows)
++        start = min(self.rank * per, num_rows)
++        return slice(start, min(start + per, num_rows))
++
++    def gather(self, local: torch.Tensor, num_rows: int) -> torch.Tensor:
++        """``[num_rows, ...]`` from every rank's ``[rows_per_rank, ...]`` share;
++        the last share's padding rows fall past ``num_rows`` and are dropped."""
++        gathered = local.new_empty((self.world * local.shape[0], *local.shape[1:]))
++        self.group.all_gather_into_tensor(gathered, local.contiguous())
++        return gathered[:num_rows]
++
++
+ class PrefillInputs(msgspec.Struct, frozen=True, kw_only=True):
+     """An eager extend: the backend projects the queries and gathers the index K."""
+ 
+@@ -67,6 +102,7 @@ class PrefillInputs(msgspec.Struct, frozen=True, kw_only=True):
+     seq_lens_cpu: Optional[List[int]]
+     rows_per_request: Optional[List[int]]
+     rows_per_request_device: Optional[torch.Tensor]
++    row_shard: Optional[RowShard] = None
+ 
+ 
+ class DecodeInputs(msgspec.Struct, frozen=True, kw_only=True):
+diff --git a/test/registered/unit/managers/test_dsv41_row_shard_cpu.py b/test/registered/unit/managers/test_dsv41_row_shard_cpu.py
+new file mode 100644
+index 000000000..5d7cad9b8
+--- /dev/null
++++ b/test/registered/unit/managers/test_dsv41_row_shard_cpu.py
+@@ -0,0 +1,251 @@
++"""Source-level partition/adapter checks; no kernels or real collective tested."""
++
++import ast
++import unittest
++from pathlib import Path
++from types import SimpleNamespace as NS
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[4]
++INDEXER = ROOT / "python/sglang/srt/layers/attention/dsv4/v41_indexer"
++
++
++def load(nodes, ns):
++    module = ast.Module(
++        body=[
++            ast.ImportFrom(
++                module="__future__", names=[ast.alias(name="annotations")], level=0
++            )
++        ]
++        + nodes,
++        type_ignores=[],
++    )
++    exec(compile(ast.fix_missing_locations(module), "<actual-source>", "exec"), ns)
++
++
++class Tensor:
++    def __init__(self, data):
++        self.data = np.asarray(data)
++
++    @property
++    def shape(self):
++        return self.data.shape
++
++    def new_empty(self, shape):
++        return Tensor(np.empty(shape, dtype=self.data.dtype))
++
++    def contiguous(self):
++        return self
++
++    def __getitem__(self, key):
++        return Tensor(self.data[key])
++
++
++ns = {}
++common = ast.parse(
++    (ROOT / "python/sglang/srt/utils/common.py").read_text(encoding="utf-8")
++)
++load(
++    [
++        n
++        for n in common.body
++        if isinstance(n, ast.FunctionDef) and n.name in {"ceil_align", "ceil_div"}
++    ],
++    ns,
++)
++tree = ast.parse((INDEXER / "types.py").read_text(encoding="utf-8"))
++row = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RowShard")
++# Keep exact methods; replace msgspec's field-only constructor for CPU isolation.
++row.bases = []
++row.keywords = []
++load([row], ns)
++Row = ns["RowShard"]
++
++
++def shard(**kwargs):
++    obj = Row()
++    obj.__dict__.update(kwargs)
++    return obj
++
++
++tree = ast.parse(
++    (ROOT / "python/sglang/srt/layers/attention/deepseek_v4_backend.py").read_text(
++        encoding="utf-8"
++    )
++)
++backend = next(
++    n
++    for n in tree.body
++    if isinstance(n, ast.ClassDef) and n.name == "DeepseekV4AttnBackend"
++)
++methods = [
++    n
++    for n in backend.body
++    if isinstance(n, ast.FunctionDef)
++    and n.name in {"_indexer_row_shard", "_make_low_ratio_prefill_indexer_inputs"}
++]
++gate_ns = dict(
++    RowShard=shard,
++    _INDEXER_TP_SHARD_MIN_ROWS=512,
++    PrefillInputs=lambda **kwargs: NS(**kwargs),
++    _as_int_list=list,
++    torch=NS(int32="int32", tensor=lambda value, **kwargs: value),
++)
++load(
++    [
++        ast.ClassDef(
++            name="Backend", bases=[], keywords=[], body=methods, decorator_list=[]
++        )
++    ],
++    gate_ns,
++)
++
++
++class TestRowShardCPU(unittest.TestCase):
++    def test_partitions_and_gather(self):
++        cases = 0
++        for world in [1, 2, 4]:
++            for heads in [1, 2, 8, 16, 32, 64, 128]:
++                for rows in [0, 1, 7, 511, 512, 513, 8191, 8192, 8193]:
++                    with self.subTest(world=world, heads=heads, rows=rows):
++                        shards = [
++                            shard(rank=r, world=world, row_align=128 // heads)
++                            for r in range(world)
++                        ]
++                        parts = [s.local_rows(rows) for s in shards]
++                        self.assertEqual(
++                            [i for p in parts for i in range(p.start, p.stop)],
++                            list(range(rows)),
++                        )
++                        per = shards[0].rows_per_rank(rows)
++                        self.assertEqual(per % (128 // heads), 0)
++                        contributions = []
++                        for part in parts:
++                            local = np.full((per, 2), -999, dtype=np.int32)
++                            local[: part.stop - part.start] = np.arange(
++                                part.start, part.stop
++                            )[:, None]
++                            contributions.append(local)
++                        full = np.concatenate(contributions)
++                        for rank, s in enumerate(shards):
++
++                            def gather(output, local):
++                                self.assertEqual(output.shape, (world * per, 2))
++                                np.testing.assert_array_equal(
++                                    local.data, contributions[rank]
++                                )
++                                output.data[:] = full
++
++                            s.group = NS(all_gather_into_tensor=gather)
++                            out = s.gather(Tensor(contributions[rank]), rows)
++                            np.testing.assert_array_equal(
++                                out.data, np.repeat(np.arange(rows)[:, None], 2, axis=1)
++                            )
++                        cases += 1
++        self.assertEqual(cases, 189)
++
++    def test_gate_and_cp(self):
++        obj = gate_ns["Backend"]()
++        obj.forward_metadata = NS(
++            late_layer_tail=None, core_metadata=NS(page_table=None)
++        )
++        layer = NS(indexer=NS(n_heads=8), layer_id=1, compress_ratio=1, freqs_cis=None)
++        for enabled in [False, True]:
++            gate_ns["envs"] = NS(
++                SGLANG_OPT_DSV4_INDEXER_TP_SHARD=NS(get=lambda: enabled)
++            )
++            for world in [1, 2]:
++                gate_ns["get_parallel"] = lambda: NS(
++                    attn_tp_size=world, attn_tp_rank=0, attn_tp_group="attention-tp"
++                )
++                for rows in [511, 512, 513, 8192]:
++                    for cp in [False, True]:
++                        batch = NS(
++                            extend_seq_lens_cpu=[rows],
++                            extend_seq_lens=[rows],
++                            req_pool_indices=[0],
++                            seq_lens_cpu=[rows],
++                        )
++                        inputs = obj._make_low_ratio_prefill_indexer_inputs(
++                            layer,
++                            NS(shape=(rows,), device=None),
++                            None,
++                            None,
++                            None,
++                            batch,
++                            [rows] if cp else None,
++                        )
++                        self.assertEqual(
++                            inputs.row_shard is not None,
++                            enabled and world > 1 and rows >= 512 and not cp,
++                        )
++                        if inputs.row_shard is not None:
++                            self.assertEqual(inputs.row_shard.group, "attention-tp")
++                            self.assertEqual(inputs.row_shard.row_align, 16)
++
++    def test_score_slices_preserve_request_offsets(self):
++        source = ast.parse((INDEXER / "scoring.py").read_text(encoding="utf-8"))
++        func = next(
++            n
++            for n in source.body
++            if isinstance(n, ast.FunctionDef) and n.name == "score_tiles"
++        )
++        seen = []
++
++        def kernel(**kwargs):
++            seen.append(kwargs)
++            yield slice(0, len(kwargs["starts"])), None
++
++        score_ns = dict(
++            flat_index_logits_tiles=kernel, _DEEP_GEMM_SCORE_BUDGET_BYTES=2 << 30
++        )
++        load([func], score_ns)
++        data = NS(
++            num_rows=7,
++            q_fp4=np.arange(7),
++            q_sf=np.arange(7) + 10,
++            weights=np.arange(7) + 20,
++            request_starts=np.array([0, 0, 0, 100, 100, 100, 100]),
++            compress_lens=np.arange(7) + 1,
++            lens_per_request=[3, 4],
++        )
++        for rows in [slice(2, 5), slice(7, 7), None]:
++            list(
++                score_ns["score_tiles"](data, ("k", "scale"), width_align=4, rows=rows)
++            )
++            actual = seen[-1]
++            sl = slice(0, 7) if rows is None else rows
++            for key, attr in [
++                ("starts", "request_starts"),
++                ("lengths", "compress_lens"),
++                ("weights", "weights"),
++            ]:
++                np.testing.assert_array_equal(actual[key], getattr(data, attr)[sl])
++            np.testing.assert_array_equal(actual["q"][0], data.q_fp4[sl])
++            np.testing.assert_array_equal(actual["q"][1], data.q_sf[sl])
++            self.assertEqual(actual["context_lengths"], [3, 4])
++        # Both producers must preserve control's flattened-K offset convention.
++        for name, path in [
++            ("dense_prefill_topk", INDEXER / "scoring.py"),
++            ("select_prefill_rows", INDEXER / "sparse_table.py"),
++        ]:
++            tree = ast.parse(path.read_text(encoding="utf-8"))
++            fn = next(
++                n
++                for n in tree.body
++                if isinstance(n, ast.FunctionDef) and n.name == name
++            )
++            calls = [
++                n
++                for n in ast.walk(fn)
++                if isinstance(n, ast.Call)
++                and isinstance(n.func, ast.Name)
++                and n.func.id == "topk_transform_ragged_v2"
++            ]
++            offsets = next(k.value for k in calls[0].keywords if k.arg == "out_offsets")
++            self.assertEqual(ast.unparse(offsets), "starts[tile]")
++
++
++if __name__ == "__main__":
++    unittest.main()
