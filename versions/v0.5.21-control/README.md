@@ -48,3 +48,7 @@ Independent reasoning usage correction: `series.reasoning-usage` and
 `manifest.reasoning-usage.json` preserve frozen control and count only newly
 retained tokens after finish resolution. Source CPU tests cover 13 cases;
 this is accounting repair, not a performance result.
+
+Independent FP8 direct-read #43498: `series.direct-read43498` and
+`manifest.direct-read43498.json`; complete shared-memory guard and eager
+long-prefix routing on control. No GPU/native fallback qualification yet.

@@ -1,0 +1,2 @@
+patches/common/0001-frozen-control.patch
+patches/models/deepseek/0005-fp8-direct-read43498.patch
