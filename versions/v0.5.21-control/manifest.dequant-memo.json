@@ -1,0 +1,28 @@
+{
+  "base": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+  "engine_commit": "06fd87ff10e911dc8fc27296fb2b5fc5212eb529",
+  "engine_tree": "1f837224a36c59c307a9f126b58f70533bf2da74",
+  "series": "series.dequant-memo",
+  "patches": [
+    {
+      "path": "patches/common/0001-frozen-control.patch",
+      "parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "sha256": "55074b0972ea63c9277d479d33b5fb2dfb7544d4de080d62e3453210d39935dc"
+    },
+    {
+      "path": "patches/models/deepseek/0003-dequant-memo-safe.patch",
+      "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "commit": "06fd87ff10e911dc8fc27296fb2b5fc5212eb529",
+      "sha256": "6cbdcf68174b079e0ba1ea72c4f9f918368317b8ff328f1d246ebe85e3ff6598"
+    }
+  ],
+  "packaging_metadata": {
+    "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+    "path": "phala/",
+    "tree": "b272834100140f28c9ba9e430a97afe112f71d3c",
+    "handling": "Preserve from frozen control; not duplicated in patch exports."
+  },
+  "scope": "Independent safe dequant memo candidate on fixed control; excludes DSPARK42987 and Kimi/shared stacks; GPU unqualified."
+}
