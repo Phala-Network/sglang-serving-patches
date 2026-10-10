@@ -43,3 +43,8 @@ Final image qualification must use the immutable built image without source moun
 ## Independent dequant memo candidate
 
 `series.dequant-memo` / `manifest.dequant-memo.json` reuse the same original control export and add only the safe two-file dequant memo change. This is an alternative experiment on the same fixed baseline, not a combination with DSPARK. Engine `06fd87ff10e911dc8fc27296fb2b5fc5212eb529` is local-only; GPU/model/performance acceptance is pending. Actual temporary-index replay reproduces its complete tree. The existing DSPARK series is unchanged.
+
+Independent reasoning usage correction: `series.reasoning-usage` and
+`manifest.reasoning-usage.json` preserve frozen control and count only newly
+retained tokens after finish resolution. Source CPU tests cover 13 cases;
+this is accounting repair, not a performance result.
