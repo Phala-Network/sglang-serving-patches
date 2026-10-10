@@ -1,0 +1,28 @@
+{
+  "base": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+  "engine_commit": "4e814984a08e29c1dc19da00c3560909532c000f",
+  "engine_tree": "949f04387b9ddac9b35c0417b24fb34d0bc6aedb",
+  "series": "series.reasoning-usage",
+  "patches": [
+    {
+      "path": "patches/common/0001-frozen-control.patch",
+      "parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "sha256": "55074b0972ea63c9277d479d33b5fb2dfb7544d4de080d62e3453210d39935dc"
+    },
+    {
+      "path": "patches/common/0004-reasoning-retained-token-usage.patch",
+      "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "commit": "4e814984a08e29c1dc19da00c3560909532c000f",
+      "sha256": "2bca465dec2821e4d3547fabab5c382ebe08cc076df05c73aa2f04f2b857b0e9"
+    }
+  ],
+  "packaging_metadata": {
+    "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+    "path": "phala/",
+    "tree": "b272834100140f28c9ba9e430a97afe112f71d3c",
+    "handling": "Preserve from frozen control; not duplicated in patch exports."
+  },
+  "scope": "Independent retained-token reasoning usage correction on frozen control. No DSPARK/dequant optimization; GPU and live HTTP unqualified."
+}
