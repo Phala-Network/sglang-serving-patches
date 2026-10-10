@@ -1,5 +1,5 @@
 diff --git a/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py b/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py
-index 224504aa8..c3ac5367b 100644
+index 224504aa861d1c3754f08b8758205eea7357b401..c3ac5367b349d9318b3dc3f673beb2ebe715bb28 100644
 --- a/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py
 +++ b/python/sglang/kernels/ops/attention/dsv4/flashmla_sched_meta.py
 @@ -13,6 +13,14 @@ if TYPE_CHECKING:
@@ -30,7 +30,7 @@ index 224504aa8..c3ac5367b 100644
      Args:
          tile_scheduler_metadata: ``[num_sm_parts, 8]`` int32, written.
 diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
-index 787234e08..0a9def9a6 100644
+index 787234e08ec412a501b79a6e7ca9e2a5b0a5df7f..0a9def9a6163d4f80cd940233b7fd31e3d1daa9d 100644
 --- a/python/sglang/srt/environ.py
 +++ b/python/sglang/srt/environ.py
 @@ -1576,6 +1576,9 @@ class Envs:
@@ -44,7 +44,7 @@ index 787234e08..0a9def9a6 100644
      # cache, GEMM, and distributed
      SGLANG_OPT_FP8_WO_A_GEMM = EnvBool(True)
 diff --git a/python/sglang/srt/layers/attention/deepseek_v4_backend.py b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
-index ce8d92613..7ee2661ca 100644
+index ce8d926134ecf2478ac459cec4b119bd71015db4..1805bce16625275519ae356daf771b03b127485f 100644
 --- a/python/sglang/srt/layers/attention/deepseek_v4_backend.py
 +++ b/python/sglang/srt/layers/attention/deepseek_v4_backend.py
 @@ -228,10 +228,13 @@ def _maybe_precompute_flashmla_sched_meta(
@@ -70,7 +70,7 @@ index ce8d92613..7ee2661ca 100644
      @property
      def core_metadata(self) -> DSV4AttnMetadata:
          return self.core_attn_metadata
-@@ -1059,6 +1064,38 @@ class _GraphBucket(enum.Enum):
+@@ -1059,6 +1064,63 @@ class _GraphBucket(enum.Enum):
          raise NotImplementedError(f"unsupported {forward_mode=}")
  
  
@@ -93,11 +93,36 @@ index ce8d92613..7ee2661ca 100644
 +    return _SM100_DIRECT_PREFIX_PER_ROW
 +
 +
++def _prefill_direct_layout_supported(token_to_kv_pool: DeepSeekV4TokenToKVPool) -> bool:
++    # The current FlashMLA shim cannot disambiguate V41 from V32_NO_ROPE.
++    # Limit the new prefill heuristic to actual V4 buffers, including every
++    # compressed pool this stage may read. Preserve the legacy OPT=False route.
++    if (
++        token_to_kv_pool.get_swa_key_layout() is not KVLayout.V4
++        or token_to_kv_pool.get_swa_key_bytes_per_token() != KVLayout.V4.bytes_per_token
++    ):
++        return False
++    for layer_id, item in enumerate(token_to_kv_pool.layer_mapping):
++        if item is not None and item[2] is not None:
++            if (
++                token_to_kv_pool.get_extra_key_layout(layer_id) is not KVLayout.V4
++                or token_to_kv_pool.get_extra_key_bytes_per_token(layer_id)
++                != KVLayout.V4.bytes_per_token
++            ):
++                return False
++    return True
++
++
 +def _prefill_reads_fp8_direct(
-+    forward_batch: ForwardBatch, *, in_prefill_graph: bool
++    forward_batch: ForwardBatch,
++    *,
++    in_prefill_graph: bool,
++    layout_supported: bool,
 +) -> bool:
 +    if not envs.SGLANG_OPT_FLASHMLA_SPARSE_PREFILL.get():
 +        return True
++    if not layout_supported:
++        return False
 +    per_row = _direct_prefix_per_row(in_prefill_graph=in_prefill_graph)
 +    prefix = forward_batch.extend_prefix_lens_cpu
 +    if per_row <= 0 or prefix is None:
@@ -109,7 +134,18 @@ index ce8d92613..7ee2661ca 100644
  class DeepseekV4AttnBackend(
      AttentionBackend, C4IndexerBackendMixin, CompressorBackendMixin
  ):
-@@ -2329,6 +2366,10 @@ class DeepseekV4AttnBackend(
+@@ -1112,6 +1174,10 @@ class DeepseekV4AttnBackend(
+ 
+         self.req_to_token_pool = model_runner.req_to_token_pool
+         self.token_to_kv_pool: DeepSeekV4TokenToKVPool = model_runner.token_to_kv_pool
++        # Pool layouts and layer mapping are fixed at pool construction.
++        self._prefill_direct_layout_supported = _prefill_direct_layout_supported(
++            self.token_to_kv_pool
++        )
+         # The C4 state ring is addressed per SWA page, so a page holds whole windows.
+         assert self.token_to_kv_pool.swa_page_size % SWA_WINDOW == 0
+         self.hisparse_coordinator = model_runner.hisparse_coordinator
+@@ -2329,6 +2395,10 @@ class DeepseekV4AttnBackend(
              and forward_batch.forward_mode.is_extend_without_speculative()
              else None
          )
@@ -120,7 +156,7 @@ index ce8d92613..7ee2661ca 100644
  
          if self.token_to_kv_pool.request_window is not None:
              self.token_to_kv_pool.request_window.activate(
-@@ -2362,7 +2403,7 @@ class DeepseekV4AttnBackend(
+@@ -2362,7 +2432,7 @@ class DeepseekV4AttnBackend(
              and metadata.late_layer_tail is None
              and (
                  num_qo_tokens > _LARGE_INDEXER_QUERY_THRESHOLD
@@ -129,27 +165,31 @@ index ce8d92613..7ee2661ca 100644
              )
          )
          if use_sparse_prefill:
-@@ -2535,6 +2576,9 @@ class DeepseekV4AttnBackend(
+@@ -2535,6 +2605,11 @@ class DeepseekV4AttnBackend(
                  use_prefill_cuda_graph=use_prefill_cuda_graph,
                  forward_batch=forward_batch,
              )
 +            metadata.sparse_prefill_direct = _prefill_reads_fp8_direct(
-+                forward_batch, in_prefill_graph=use_prefill_cuda_graph
++                forward_batch,
++                in_prefill_graph=use_prefill_cuda_graph,
++                layout_supported=self._prefill_direct_layout_supported,
 +            )
          else:
              raise NotImplementedError(f"unsupported mode {forward_batch.forward_mode=}")
  
-@@ -2605,6 +2649,9 @@ class DeepseekV4AttnBackend(
+@@ -2605,6 +2680,11 @@ class DeepseekV4AttnBackend(
          )
          assert isinstance(capture_metadata, DSV4Metadata)
          capture_metadata.refresh_for_breakable_cuda_graph_replay_(static_metadata)
 +        capture_metadata.sparse_prefill_direct = _prefill_reads_fp8_direct(
-+            forward_batch, in_prefill_graph=True
++            forward_batch,
++            in_prefill_graph=True,
++            layout_supported=self._prefill_direct_layout_supported,
 +        )
          self.forward_metadata = capture_metadata
  
      def init_cuda_graph_state(self, max_bs: int, max_num_tokens: int) -> None:
-@@ -3386,7 +3433,7 @@ class DeepseekV4AttnBackend(
+@@ -3386,7 +3466,7 @@ class DeepseekV4AttnBackend(
                  and token_to_kv_pool.request_window is None
                  and (
                      q.shape[0] > _LARGE_INDEXER_QUERY_THRESHOLD

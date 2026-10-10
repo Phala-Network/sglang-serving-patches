@@ -55,3 +55,5 @@ long-prefix routing on control. No GPU/native fallback qualification yet.
 
 Independent opt-in query-row42968: `series.query-row42968` and
 `manifest.query-row42968.json`; default disabled, actual TP2 GPU unqualified.
+
+Direct-read V4 containment revision: `manifest.direct-read43498.json` now pins source `fd47c775bcecc67a5f476399530b64f3a3fe0652`. New heuristics require actual main and extra V4/584-byte pools, computed once at backend initialization. V41 retains the original BF16 prefill choice with OPT enabled; its forced-native ABI remains unsupported. Prior v1 GPU failures are retained, and no native V41 pass or new GPU acceptance is claimed.

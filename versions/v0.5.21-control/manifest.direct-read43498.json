@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
   "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
-  "engine_commit": "a471412a4cea350956a451633651cd802def6484",
-  "engine_tree": "7f7db817b834678762113d55e7da625972ab9fdb",
+  "engine_commit": "fd47c775bcecc67a5f476399530b64f3a3fe0652",
+  "engine_tree": "38b36836715a8873b0a24b81f1b3c3b1fa693e27",
   "series": "series.direct-read43498",
   "patches": [
     {
@@ -14,8 +14,8 @@
     {
       "path": "patches/models/deepseek/0005-fp8-direct-read43498.patch",
       "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
-      "commit": "a471412a4cea350956a451633651cd802def6484",
-      "sha256": "7000837561494056f4dbeb86a16a27fc7c2e5aab9bc4a14b84d5bb186a11af37"
+      "commit": "fd47c775bcecc67a5f476399530b64f3a3fe0652",
+      "sha256": "bb9032b4ae7e392750b0e91821f4a5d478ea7516f6eb452dfde532c4f3d79d86"
     }
   ],
   "packaging_metadata": {
@@ -24,5 +24,5 @@
     "tree": "b272834100140f28c9ba9e430a97afe112f71d3c",
     "handling": "Preserve from frozen control; not duplicated in patch exports."
   },
-  "scope": "Independent long-prefix FP8 direct-read with complete scheduling shared-memory guard; GPU unqualified."
+  "scope": "Independent V4-only long-prefix direct-read heuristic; legacy OPT=False unchanged. V41 native ABI unsupported; GPU qualification pending."
 }
