@@ -1,0 +1,2 @@
+patches/common/0001-frozen-control.patch
+patches/models/deepseek/0002-dspark-auto-folded-sampling.patch

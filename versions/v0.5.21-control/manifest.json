@@ -1,0 +1,32 @@
+{
+  "base": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+  "engine_commit": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
+  "engine_tree": "4eb1e445b25069c020c296af2fd095e821f48de5",
+  "runtime_tree_without_phala": "6418fea31d5a54e9b4064a1dafc89384bc9f3ec0",
+  "control_runtime_tree_without_phala": "fdb9abc0cdc1f0f551ae0f8e0e62690b7aaaeb38",
+  "packaging_metadata": {
+    "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+    "path": "phala/",
+    "tree": "b272834100140f28c9ba9e430a97afe112f71d3c",
+    "handling": "Preserve from frozen control; not duplicated in patch exports."
+  },
+  "patches": [
+    {
+      "path": "patches/common/0001-frozen-control.patch",
+      "parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "sha256": "55074b0972ea63c9277d479d33b5fb2dfb7544d4de080d62e3453210d39935dc"
+    },
+    {
+      "path": "patches/models/deepseek/0002-dspark-auto-folded-sampling.patch",
+      "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "commit": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
+      "sha256": "b9db043b685833a404a333cce77af59435b750c2755c8bb38e14d2f4d30757bc"
+    }
+  ],
+  "upstream_pr": "https://github.com/sgl-project/sglang/pull/42987",
+  "upstream_merge": "46c2585faa4fcb6fa8febf4d2d4534a7cf33da79",
+  "embedded_governor": "not selected; existing external PIG unchanged",
+  "scope": "Fixed v0.5.21 Phala control compatibility variant; no Kimi or shared v0.5.20 changes."
+}

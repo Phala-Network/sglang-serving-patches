@@ -22,6 +22,10 @@ pinned versions of these projects.
 source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
 integration below remains intact.
 
+The [frozen 0.5.21 control maintenance candidate](versions/v0.5.21-control/README.md)
+preserves its existing control baseline and records the isolated DSPARK backport.
+It does not select the Kimi stack or replace shared integration.
+
 ## Current unified source
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
