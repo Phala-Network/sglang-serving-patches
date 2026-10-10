@@ -39,3 +39,7 @@ and 63 synthetic TP2 graph replays passed. Real-model branch/protocol/resource
 qualification and performance comparison are separate gates and are not claimed
 by source replay. No diagnostic instrumentation is present in this candidate.
 Final image qualification must use the immutable built image without source mounts.
+
+## Independent dequant memo candidate
+
+`series.dequant-memo` / `manifest.dequant-memo.json` reuse the same original control export and add only the safe two-file dequant memo change. This is an alternative experiment on the same fixed baseline, not a combination with DSPARK. Engine `06fd87ff10e911dc8fc27296fb2b5fc5212eb529` is local-only; GPU/model/performance acceptance is pending. Actual temporary-index replay reproduces its complete tree. The existing DSPARK series is unchanged.
