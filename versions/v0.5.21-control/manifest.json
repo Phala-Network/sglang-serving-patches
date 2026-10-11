@@ -1,9 +1,9 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
   "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
-  "engine_commit": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
-  "engine_tree": "4eb1e445b25069c020c296af2fd095e821f48de5",
-  "runtime_tree_without_phala": "6418fea31d5a54e9b4064a1dafc89384bc9f3ec0",
+  "engine_commit": "3a693c66f5578879b8b859ed3fc193fe6638d057",
+  "engine_tree": "2e160b4ed8e5991f03a7405af850b8c0c7ca8498",
+  "runtime_tree_without_phala": "55b3c4d2b732edbddc65016c0ff5275707031b2e",
   "control_runtime_tree_without_phala": "fdb9abc0cdc1f0f551ae0f8e0e62690b7aaaeb38",
   "packaging_metadata": {
     "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
@@ -19,6 +19,12 @@
       "sha256": "55074b0972ea63c9277d479d33b5fb2dfb7544d4de080d62e3453210d39935dc"
     },
     {
+      "path": "patches/common/0004-reasoning-retained-token-usage.patch",
+      "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
+      "commit": "4e814984a08e29c1dc19da00c3560909532c000f",
+      "sha256": "2bca465dec2821e4d3547fabab5c382ebe08cc076df05c73aa2f04f2b857b0e9"
+    },
+    {
       "path": "patches/models/deepseek/0002-dspark-auto-folded-sampling.patch",
       "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
       "commit": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
@@ -28,5 +34,11 @@
   "upstream_pr": "https://github.com/sgl-project/sglang/pull/42987",
   "upstream_merge": "46c2585faa4fcb6fa8febf4d2d4534a7cf33da79",
   "embedded_governor": "not selected; existing external PIG unchanged",
-  "scope": "Fixed v0.5.21 Phala control compatibility variant; no Kimi or shared v0.5.20 changes."
+  "scope": "Selected frozen 0.5.21 maintenance composition: retained-token usage correctness and DSPARK AUTO folded sampling. No dequant/direct/query; external PIG unchanged. Final image/runtime acceptance remains separate.",
+  "series": "series",
+  "source_components": {
+    "control": "012ed3d59501626b9c990f0404f052e31a263e91",
+    "usage": "4e814984a08e29c1dc19da00c3560909532c000f",
+    "dspark": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f"
+  }
 }
