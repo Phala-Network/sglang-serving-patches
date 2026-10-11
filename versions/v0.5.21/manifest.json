@@ -63,5 +63,5 @@
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
   "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer; checkpoint pressure and complete live-state admission",
-  "release_status": "candidate_not_published"
+  "release_status": "source_validated; final-image and production acceptance tracked separately"
 }

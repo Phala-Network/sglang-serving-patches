@@ -30,11 +30,12 @@ The phala-v0.5.21-2 maintenance fix declines an optional unfinished Mamba checkp
 
 The phala-v0.5.21-3 repair adapts open upstream PR39787 (head `4acf667dc2a3ce412eb4a8bf47e81b780aa2f230`) for complete initial Mamba admission. The scheduler counts missing working and ping-pong slots for all selected requests; temporary pressure leaves requests queued. Allocation reserves the whole missing batch before mutating request rows and releases it if row allocation fails. It preserves the phala-2 optional-checkpoint fallback, configured ratio and native Mooncake HA. Builder201 reproduced the original ping-pong assertion and passed 101 targeted CPU tests plus 39 subtests without skips. No new collective or global reservation manager was added; final-image and TP8 service acceptance remain separate.
 
-The next maintenance candidate reserves the selected batch's outstanding Mamba
+The phala-v0.5.21-4 maintenance repair reserves the selected batch's outstanding Mamba
 main/ping-pong slots while cache-mode HiCache restores FULL/auxiliary pools.
 Insufficient space defers admission; returning capacity allows a normal retry.
 The configured concurrency, context, memory ratio and extra-buffer strategy are
-unchanged. This source candidate is not yet published or GPU/TP8 accepted.
+unchanged. Source CPU validation is complete; GPU/TP8, final-image and production
+acceptance are separate release gates, not claims made by this source manifest.
 The exact eight-patch replay reproduces the manifest engine tree. Patch 0008
 includes one portable CPU regression (production method bodies; tree/transport
 fixtures), with original-failure, whole-batch, rollback, retry and ablation checks:
