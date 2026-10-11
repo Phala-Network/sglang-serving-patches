@@ -5,3 +5,4 @@ patches/models/kimi/0004-prefill-graphs.patch
 patches/common/0005-fp8-prefix.patch
 patches/common/0006-mamba-checkpoint-pressure.patch
 patches/common/0007-mamba-live-admission.patch
+patches/common/0008-mamba-load-back-reservation.patch

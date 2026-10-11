@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
-  "engine_tree": "e3bafd61cc07e37a1bef569f57dcee64b1d31b19",
-  "reproduced_tree": "e3bafd61cc07e37a1bef569f57dcee64b1d31b19",
+  "engine_commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+  "engine_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
+  "reproduced_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -52,8 +52,16 @@
       "parent": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
       "sha256": "587a24998323d9a45d913cb7d358fe7490a91f25ecc133c5cb102ceba99fd1be",
       "purpose": "Admit complete live Mamba state and allocate initial slots atomically"
+    },
+    {
+      "path": "patches/common/0008-mamba-load-back-reservation.patch",
+      "commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "parent": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
+      "sha256": "f54d82ee220b1c741bc935409ab8cefc7c4da5347d8e5ff22ccd9fe6816621ab",
+      "purpose": "Reserve complete batch Mamba demand during cache-mode host restoration; defer safely and retain executable CPU regression"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer; checkpoint pressure and complete live-state admission"
+  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer; checkpoint pressure and complete live-state admission",
+  "release_status": "candidate_not_published"
 }
