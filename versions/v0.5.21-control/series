@@ -1,3 +1,4 @@
 patches/common/0001-frozen-control.patch
 patches/common/0004-reasoning-retained-token-usage.patch
 patches/models/deepseek/0002-dspark-auto-folded-sampling.patch
+patches/common/0005-prefetch-io-failure-lifecycle.patch

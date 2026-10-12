@@ -1,9 +1,9 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
   "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
-  "engine_commit": "3a693c66f5578879b8b859ed3fc193fe6638d057",
-  "engine_tree": "2e160b4ed8e5991f03a7405af850b8c0c7ca8498",
-  "runtime_tree_without_phala": "55b3c4d2b732edbddc65016c0ff5275707031b2e",
+  "engine_commit": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
+  "engine_tree": "4062bc6aa660b844e8d297b1469fbfe04fe927bb",
+  "runtime_tree_without_phala": "ed2392ab5f05295751feeabf9594e897403c6ddc",
   "control_runtime_tree_without_phala": "fdb9abc0cdc1f0f551ae0f8e0e62690b7aaaeb38",
   "packaging_metadata": {
     "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
@@ -29,16 +29,23 @@
       "parent": "012ed3d59501626b9c990f0404f052e31a263e91",
       "commit": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
       "sha256": "b9db043b685833a404a333cce77af59435b750c2755c8bb38e14d2f4d30757bc"
+    },
+    {
+      "path": "patches/common/0005-prefetch-io-failure-lifecycle.patch",
+      "parent": "3a693c66f5578879b8b859ed3fc193fe6638d057",
+      "commit": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
+      "sha256": "2c48222762f9ca436dcebdac0727993db56ea9b536baa6e32af84637cb549022"
     }
   ],
   "upstream_pr": "https://github.com/sgl-project/sglang/pull/42987",
   "upstream_merge": "46c2585faa4fcb6fa8febf4d2d4534a7cf33da79",
   "embedded_governor": "not selected; existing external PIG unchanged",
-  "scope": "Selected frozen 0.5.21 maintenance composition: retained-token usage correctness and DSPARK AUTO folded sampling. No dequant/direct/query; external PIG unchanged. Final image/runtime acceptance remains separate.",
+  "scope": "Frozen 0.5.21 maintenance: retained-token reasoning usage, DSPARK AUTO folded sampling, and prefetch I/O failure containment with stale-operation identity guards. External PIG unchanged. No universal recovery promise for layout-lease invariant failures; GPU acceptance recorded separately.",
   "series": "series",
   "source_components": {
     "control": "012ed3d59501626b9c990f0404f052e31a263e91",
     "usage": "4e814984a08e29c1dc19da00c3560909532c000f",
-    "dspark": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f"
+    "dspark": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
+    "prefetch_io_repair": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c"
   }
 }
