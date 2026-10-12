@@ -1,0 +1,44 @@
+{
+  "schema": "phala.sglang.source-qualification.v1",
+  "engine_commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
+  "engine_tree": "88f64d00bc235d277890c76918401d82bb86e032",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+  "ordered_patch_count": 44,
+  "source_replay": "Passed: all intermediate trees and final tree match exactly.",
+  "cpu": {
+    "status": "passed",
+    "files": 47,
+    "junit_entries": 1442,
+    "passed_entries": 1440,
+    "skipped_entries": 2,
+    "failed_entries": 0,
+    "entries_include_subtests": true,
+    "skip_reason": "Two io_struct tests require CUDA",
+    "execution": "Official v0.5.21 image with real dependencies and no GPU; source namespace loads matching official Rust shared objects. No simulator. Final 16 files explicitly preimport real sgl_kernel.",
+    "reuse": "31 unchanged files reuse initial 1800fd source results. 16 affected or cache-restored files rerun at 44784573. Final changes affect only serving tool output, Qwen XML schemas, related fixtures and formatting."
+  },
+  "privacy": {
+    "files": 318,
+    "nonlog_ast_equivalence": true,
+    "exact_reviewed_migration": true
+  },
+  "negative_control": {
+    "actual_prepatch_scheduler_commit": "540584349ab0e0c95a21ec8a17a47f79bd993a33",
+    "tests": 4,
+    "expected_failures": 4,
+    "limitation": "Pytest wrote four expected failures and JUnit XML; the outer 90-second process deadline expired during exit. This is not claimed as a positive pass."
+  },
+  "pending_gates": [
+    "Full candidate wheel installed native, CLI and image validation",
+    "Six FP8 pool CUDA cases on the final image",
+    "Qwen service and model acceptance"
+  ],
+  "governor": "Not installed; disabled",
+  "publication": "Not published by this source qualification",
+  "evidence_sha256": {
+    "tests/cpu-final-summary.json": "5ab80feba1a9887414519dece846499a9da71a9f6af2f9f010460bf2f9348da3",
+    "replay-versionline-r2.json": "51582ea2e0dd36d8e1b485070aadb8c83224164e9cc6d34df8fa256dfa93fce0",
+    "privacy-versionline-verification.json": "ed92165ebe817aca3412895c1832bf04fda529ae0c9ee6830a70440b59fb286b"
+  }
+}

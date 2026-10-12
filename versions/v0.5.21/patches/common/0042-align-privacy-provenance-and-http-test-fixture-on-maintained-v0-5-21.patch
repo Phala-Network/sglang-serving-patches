@@ -1,0 +1,26 @@
+diff --git a/scripts/phala/srt_log_privacy_policy.json b/scripts/phala/srt_log_privacy_policy.json
+index d12c718785d94a7add36188c5b81a4dd0bc46073..fddc7630af0a1313c7ca4ab02b11da71e9377752 100644
+--- a/scripts/phala/srt_log_privacy_policy.json
++++ b/scripts/phala/srt_log_privacy_policy.json
+@@ -1,7 +1,7 @@
+ {
+   "schema": "phala.srt-log-privacy-source-policy.v1",
+-  "reviewed_source": "50ef850a9",
+-  "migration_baseline": "50ef850a9",
++  "reviewed_source": "92e543896436461c6dd9fae05b87867cf9087ae8",
++  "migration_baseline": "92e543896436461c6dd9fae05b87867cf9087ae8",
+   "approved_import_removals": {},
+   "scope": "Reviewed diagnostic evaluations only; unknown removals block migration. CLI business output remains unchanged.",
+   "business_print_files": [
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index b76634581b86a31a215716c2c71254461daea484..1ae0c837640800c0866ab160102f2312a5f7bfc4 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -292,6 +292,7 @@ class TestEngineResponseWait(unittest.IsolatedAsyncioTestCase):
+ 
+     async def test_http_timeout_still_checks_disconnection(self):
+         request = Mock()
++        request.state.sglang_response_disconnect_watched = False
+         request.is_disconnected = AsyncMock(return_value=True)
+         self.tm.abort_request = Mock()
+         stream = self.tm._wait_one_response(self.state.obj, request)

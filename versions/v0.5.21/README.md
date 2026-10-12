@@ -5,12 +5,12 @@ This ordered stack tracks the official 0.5.21 base, separately from the shared
 The exact base, engine commit/tree, patch parents and SHA256 values are in
 [manifest.json](manifest.json); apply [series](series) in order.
 
-Eight source-derived logical patches contain common request cleanup, hybrid
+The original eight source-derived logical patches contain common request cleanup, hybrid
 storage correctness/batching, Kimi tokenizer and prefill graph changes, and FP8
 prefix commits. Kimi fast-path origins are upstream PR39196, PR39696, PR40785
 and PR42265. Source replay produced the exact complete engine tree.
 
-Qualified development scope: B300 CUDA13, TP8/PP1/DCP1 Kimi-K3/DFlash,
+Prior eight-patch qualified development scope: B300 CUDA13, TP8/PP1/DCP1 Kimi-K3/DFlash,
 C8/extra_buffer, FP8 KV/FP32 Mamba. CPU regressions and pinned real tokenizer
 checks pass. B300 FP8 pool/kernel tests pass; native page_first registered
 MHA/MLA transfers and 8 FP32 Mamba transfer cases pass. Two optional native
@@ -36,7 +36,7 @@ Insufficient space defers admission; returning capacity allows a normal retry.
 The configured concurrency, context, memory ratio and extra-buffer strategy are
 unchanged. Source CPU validation is complete; GPU/TP8, final-image and production
 acceptance are separate release gates, not claims made by this source manifest.
-The exact eight-patch replay reproduces the manifest engine tree. Patch 0008
+The prior eight-patch replay reproduced its recorded engine tree. Patch 0008
 includes one portable CPU regression (production method bodies; tree/transport
 fixtures), with original-failure, whole-batch, rollback, retry and ablation checks:
 
@@ -50,3 +50,37 @@ paired red/green control. Full-tree GPU transfers, TP consensus, model outputs,
 and final-image/service acceptance remain separate gates. Related upstream
 PRs 33773, 36415, 30986 and 36770 address adjacent paths; this candidate retains
 the published complete-live-admission and prepared-slot rollback behavior.
+
+
+## Shared maintenance candidate (2026-10-12)
+
+This candidate extends the existing v0.5.21 maintenance ancestry at
+`e9a40ece22f8539d434ccc138336019ddbf2e06c` with common serving, request isolation,
+privacy and Qwen-family API/parser changes. The original eight patches remain
+first in the ordered stack; lifecycle and Mamba fixes are not duplicated.
+The source identity and ordered intermediate trees are in [stack.json](stack.json).
+Run the shared verifier with `--stack-root versions/v0.5.21`.
+
+The v0.5.20 shared main and its active selector remain unchanged. Official
+v0.5.21 reorganized/deleted legacy cache classes and changed native interfaces;
+the v0.5.20 Governor-r6 and custom native integration cannot be relabeled as
+v0.5.21 without a separate compatibility port. Reusing this existing unified
+version maintenance line is the explicit release-from-main exception. It is
+not a new Qwen-only stack, a fake ancestry merge, or qualification of all
+v0.5.20 features on v0.5.21.
+
+No embedded Governor or old custom XGrammar/KV wheel is selected. Official
+v0.5.21 dependencies and native build contract apply. External PIG remains a
+separate deployment component. [regressions.json](regressions.json) includes
+47 affected CPU files plus the CUDA-only FP8 pool suite, including the retained hybrid-storage, Kimi tokenizer,
+prefill gate and FP8 pool paths. Current candidate CPU acceptance and 44-patch exact replay passed; see
+[qualification.json](qualification.json). The 47 CPU files contain 1,440 passed
+JUnit entries (including subtests) and 2 CUDA-only skips. Final full-wheel
+native imports and Qwen GPU/service acceptance require their own evidence;
+the prior Kimi GPU results above do not qualify this new candidate.
+
+Abort targeting accepts an exact request ID or decimal-index child ID.
+Caller IDs that independently reuse that parent/child naming convention remain
+ambiguous; this change does not introduce a complete ownership registry.
+
+Patch 0008 is normalized from its original mail-patch wrapper to the same full-index deterministic diff format as the remaining stack; its source commit and resulting tree are unchanged.

@@ -1,0 +1,69 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index c5dbbb5cdc07fbc1ca5ea8e9836290957a5a3916..01f5847b2a5c46eecdc6f24705f00092d935c753 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -2693,15 +2693,18 @@ class OpenAIServingChat(OpenAIServingBase):
+             tool_calls = None
+             effective_tools = self._effective_tools(request)
+             if self._tool_call_parsing_active(request):
++                allowed_names = self._allowed_tool_names(request)
++                # Recognize declared historical tools before enforcing the output
++                # subset; filtering parser definitions would silently drop them.
++                output_tools = request.tools if allowed_names is not None else effective_tools
+                 history_tool_calls_cnt = self._get_history_tool_calls_cnt(request)
+                 tool_calls, text, finish_reason = self._process_tool_calls(
+                     text,
+-                    effective_tools,
++                    output_tools,
+                     finish_reason,
+                     self._effective_tool_choice(request),
+                     history_tool_calls_cnt,
+                 )
+-                allowed_names = self._allowed_tool_names(request)
+                 if allowed_names is not None and any(
+                     call.function.name not in allowed_names for call in tool_calls or []
+                 ):
+@@ -3325,7 +3328,11 @@ class OpenAIServingChat(OpenAIServingBase):
+         With flush=True (the terminal delta), the parser also drains text it
+         held back waiting for a marker that can no longer arrive.
+         """
+-        effective_tools = self._effective_tools(request)
++        effective_tools = (
++            request.tools
++            if self._allowed_tool_names(request) is not None
++            else self._effective_tools(request)
++        )
+         if index not in parser_dict:
+             effective_tool_choice = self._effective_tool_choice(request)
+             is_required = effective_tool_choice == "required" or isinstance(
+diff --git a/test/registered/unit/constrained/test_grammar_manager.py b/test/registered/unit/constrained/test_grammar_manager.py
+index 5e88ee548be9335fbb9d44cbf4aea38e7af002e5..3d4826903b05d43982694001664e7f06401f5750 100644
+--- a/test/registered/unit/constrained/test_grammar_manager.py
++++ b/test/registered/unit/constrained/test_grammar_manager.py
+@@ -455,12 +455,15 @@ class TestAbortRequests(unittest.TestCase):
+         abort_req.rid = ""
+         mgr.abort_requests(abort_req)  # Should not raise
+ 
+-    def test_abort_prefix_match(self):
+-        """rid.startswith means prefix matching, not exact matching."""
++    def test_abort_decimal_child_preserves_unrelated_prefix(self):
++        """Only a decimal-index child belongs to the named parent."""
+         mgr = self._make_mgr_with_queue()
+-        req = _make_req(rid="req-123-suffix")
++        req = _make_req(rid="req-123_0")
+         req.grammar = MagicMock(spec=Future)
+         mgr.grammar_queue.append(req)
++        unrelated = _make_req(rid="req-123-suffix")
++        unrelated.grammar = MagicMock(spec=Future)
++        mgr.grammar_queue.append(unrelated)
+ 
+         abort_req = MagicMock()
+         abort_req.abort_all = False
+@@ -468,6 +471,7 @@ class TestAbortRequests(unittest.TestCase):
+ 
+         mgr.abort_requests(abort_req)
+         req.set_finish_with_abort.assert_called_once()
++        unrelated.set_finish_with_abort.assert_not_called()
+ 
+ 
+ class TestGetReadyGrammarRequests(unittest.TestCase):

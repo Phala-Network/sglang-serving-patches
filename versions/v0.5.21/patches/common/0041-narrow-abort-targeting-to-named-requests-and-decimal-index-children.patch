@@ -1,0 +1,323 @@
+diff --git a/python/sglang/srt/constrained/grammar_manager.py b/python/sglang/srt/constrained/grammar_manager.py
+index 8b66fce6f606727aed69f97e01bec08c536ea9bb..3d74b73888133726504949978fc0942000cfa707 100644
+--- a/python/sglang/srt/constrained/grammar_manager.py
++++ b/python/sglang/srt/constrained/grammar_manager.py
+@@ -14,6 +14,7 @@ from sglang.srt.constrained.base_grammar_backend import (
+ from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarObject
+ from sglang.srt.distributed.communication_tags import P2PTag
+ from sglang.srt.environ import envs
++from sglang.srt.managers.io_struct import matches_abort_rid
+ from sglang.srt.runtime_context import get_parallel, get_serving
+ from sglang.srt.sampling.sampling_params import (
+     get_request_reasoning_end_token_ids,
+@@ -112,7 +113,7 @@ class GrammarManager:
+ 
+     def abort_requests(self, recv_req: AbortReq):
+         for req in self.grammar_queue:
+-            if recv_req.abort_all or req.rid.startswith(recv_req.rid):
++            if recv_req.abort_all or matches_abort_rid(req.rid, recv_req.rid):
+                 logger.debug('Abort grammar queue request. req.rid=<redacted>')
+                 if isinstance(req.grammar, futures.Future) and req.grammar:
+                     req.grammar.cancel()
+diff --git a/python/sglang/srt/disaggregation/encoder/receiver.py b/python/sglang/srt/disaggregation/encoder/receiver.py
+index 9e233ad2669858c966fc6d2bf88a364290b82681..44735ce48af384a89410b369232b974daccc81b2 100644
+--- a/python/sglang/srt/disaggregation/encoder/receiver.py
++++ b/python/sglang/srt/disaggregation/encoder/receiver.py
+@@ -31,6 +31,7 @@ from sglang.srt.distributed.parallel_state import (
+ )
+ from sglang.srt.environ import envs
+ from sglang.srt.managers.io_struct import (
++    matches_abort_rid,
+     EncoderDispatchErrorReq,
+     GenerateReqInput,
+     TokenizedGenerateReqInput,
+@@ -1991,7 +1992,7 @@ class MMReceiverBase(ABC):
+         existing FAIL channel. AbortReq is broadcast, so every TP rank does
+         this and the status all-reduce stays consistent."""
+         for waiting_req in self.waiting_list:
+-            if not (recv_req.abort_all or waiting_req.rid.startswith(recv_req.rid)):
++            if not (recv_req.abort_all or matches_abort_rid(waiting_req.rid, recv_req.rid)):
+                 continue
+             if waiting_req.status in (
+                 WaitingMMRequestStatus.PENDING,
+diff --git a/python/sglang/srt/dllm/mixin/scheduler.py b/python/sglang/srt/dllm/mixin/scheduler.py
+index 7de817bb321db9c306ab5f3b7c0a19f1ae0891c9..01049a407e2182b68dbea7edaa50b804a137da42 100644
+--- a/python/sglang/srt/dllm/mixin/scheduler.py
++++ b/python/sglang/srt/dllm/mixin/scheduler.py
+@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, List, Optional, Set, Union
+ 
+ from sglang.srt.dllm.config import DllmConfig
+ from sglang.srt.dllm.mixin.req import DllmReqPhase
++from sglang.srt.managers.io_struct import matches_abort_rid
+ from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
+ from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+ from sglang.srt.mem_cache.common import release_kv_cache
+@@ -488,7 +489,7 @@ class DllmManager:
+             queue = getattr(self, queue_name)
+             kept_queue = []
+             for req in queue:
+-                if abort_all or req.rid.startswith(rid):
++                if abort_all or matches_abort_rid(req.rid, rid):
+                     req_id = id(req)
+                     if req_id not in seen:
+                         aborted_reqs.append(req)
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 45024e693cfb01d2524217df9feb48295b802b36..bd663d79f05cb68b8a24b26dbf94d56f8091eedd 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -83,6 +83,25 @@ else:
+ logger = logging.getLogger(__name__)
+ 
+ 
++def matches_abort_rid(req_rid: str, abort_rid: str) -> bool:
++    """Match an explicit RID or its normalized decimal-index children.
++
++    Adapted from upstream PR43476 (2494e57d545007e3733a3d2e66556a558700b060).
++    The historical parent-child naming convention is retained; this does not
++    establish ownership for arbitrary client IDs that collide with that scheme.
++    Empty targets and nonnumeric suffixes never expand an abort's scope.
++    """
++    if not abort_rid:
++        return False
++    if req_rid == abort_rid:
++        return True
++    prefix = abort_rid + "_"
++    if not req_rid.startswith(prefix):
++        return False
++    suffix = req_rid[len(prefix):]
++    return bool(suffix) and suffix.isascii() and suffix.isdecimal()
++
++
+ class BaseReq(msgspec.Struct, tag=True, kw_only=True, array_like=True):
+     """Base for single-request IPC payloads."""
+ 
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 67f22efb18fd50903d219c8ed877f9db6d3ad864..f02615abec8ac0c55283f19b23820e319a44eadc 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -129,6 +129,7 @@ from sglang.srt.lora.lora_overlap_loader import LoRAOverlapLoader
+ from sglang.srt.managers.disagg_service import maybe_create_ascend_config_store
+ from sglang.srt.managers.hisparse_coordinator import HiSparseCoordinator
+ from sglang.srt.managers.io_struct import (
++    matches_abort_rid,
+     AbortReq,
+     ActiveRanksOutput,
+     AddExternalCorpusReqInput,
+@@ -5495,7 +5496,7 @@ class Scheduler(
+ 
+     def abort_request(self, recv_req: AbortReq):
+         if (chunked_req := self.chunked_req) is not None:
+-            if recv_req.abort_all or chunked_req.rid.startswith(recv_req.rid):
++            if recv_req.abort_all or matches_abort_rid(chunked_req.rid, recv_req.rid):
+                 self._pending_chunked_abort_req = chunked_req
+ 
+         # todo hisparse, release resources for abort requests in hisparse coordinator
+@@ -5506,7 +5507,7 @@ class Scheduler(
+         # Delete requests in the waiting queue
+         to_del = []
+         for i, req in enumerate(self.waiting_queue):
+-            if recv_req.abort_all or req.rid.startswith(recv_req.rid):
++            if recv_req.abort_all or matches_abort_rid(req.rid, recv_req.rid):
+                 to_del.append(i)
+ 
+         # Sort in reverse order to avoid index issues when deleting
+@@ -5563,7 +5564,7 @@ class Scheduler(
+         if self.disaggregation_mode == DisaggregationMode.PREFILL:
+             # Abort requests that have not yet been bootstrapped
+             for req in self.disagg_prefill_bootstrap_queue.queue:
+-                if recv_req.abort_all or req.rid.startswith(recv_req.rid):
++                if recv_req.abort_all or matches_abort_rid(req.rid, recv_req.rid):
+                     logger.debug('Abort bootstrap queue request. req.rid=<redacted>')
+                     self._release_aborted_request(req)
+ 
+@@ -5574,7 +5575,7 @@ class Scheduler(
+ 
+             # Abort in-flight requests
+             for req in self.disagg_prefill_inflight_queue:
+-                if recv_req.abort_all or req.rid.startswith(recv_req.rid):
++                if recv_req.abort_all or matches_abort_rid(req.rid, recv_req.rid):
+                     logger.debug('Abort inflight queue request. req.rid=<redacted>')
+                     if hasattr(req.disagg_kv_sender, "abort"):
+                         req.disagg_kv_sender.abort()
+@@ -5582,7 +5583,7 @@ class Scheduler(
+         elif self.disaggregation_mode == DisaggregationMode.DECODE:
+             # Abort requests that have not yet finished preallocation
+             for decode_req in self.disagg_decode_prealloc_queue.queue:
+-                if recv_req.abort_all or decode_req.req.rid.startswith(recv_req.rid):
++                if recv_req.abort_all or matches_abort_rid(decode_req.req.rid, recv_req.rid):
+                     logger.debug('Abort prealloc queue request. decode_req.req.rid=<redacted>')
+                     decode_req.kv_receiver.abort()
+                     if get_parallel().pp_size > 1:
+@@ -5590,7 +5591,7 @@ class Scheduler(
+ 
+             # Abort requests waiting for kvcache to release tree cache
+             for decode_req in self.disagg_decode_transfer_queue.queue:
+-                if recv_req.abort_all or decode_req.req.rid.startswith(recv_req.rid):
++                if recv_req.abort_all or matches_abort_rid(decode_req.req.rid, recv_req.rid):
+                     logger.debug('Abort transfer queue request. decode_req.req.rid=<redacted>')
+                     if decode_req.host_staged:
+                         # Keep the host destination alive until prefill stops writing.
+@@ -5605,7 +5606,7 @@ class Scheduler(
+             if self.disagg_decode_prealloc_queue.retracted_queue:
+                 remaining_retracted = []
+                 for decode_req in self.disagg_decode_prealloc_queue.retracted_queue:
+-                    if recv_req.abort_all or decode_req.rid.startswith(recv_req.rid):
++                    if recv_req.abort_all or matches_abort_rid(decode_req.rid, recv_req.rid):
+                         discard_kv_cache_backup(
+                             decode_req,
+                             self.tree_cache,
+@@ -5621,7 +5622,7 @@ class Scheduler(
+         # Delete requests in the running batch
+         for req in self.collect_inflight_reqs():
+             if not req.finished() and (
+-                recv_req.abort_all or req.rid.startswith(recv_req.rid)
++                recv_req.abort_all or matches_abort_rid(req.rid, recv_req.rid)
+             ):
+                 # Abort method 3: set `to_finish`
+                 # The request will still run one decode forward pass.
+diff --git a/test/registered/unit/managers/test_abort_rid_targeting.py b/test/registered/unit/managers/test_abort_rid_targeting.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..57a1402edef2d6509da922b08d09f8aea0cf200a
+--- /dev/null
++++ b/test/registered/unit/managers/test_abort_rid_targeting.py
+@@ -0,0 +1,140 @@
++"""An AbortReq must only abort the request it names.
++
++``POST /abort_request {"rid": "job-1"}`` used to also abort ``job-10``,
++``job-11``, ... because every scheduler queue matched abort targets with a bare
++``req.rid.startswith(abort_rid)``. Caller-supplied rids are an ordinary way to
++name requests (sequential ids, per-tenant prefixes), so the abort has to match
++exactly -- plus the ``f"{rid}_{i}"`` sub-request ids the engine derives from a
++parent rid for batch requests and parallel sampling.
++"""
++
++import unittest
++from collections import deque
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import (
++    CustomTestCase,
++    enter_scope,
++    maybe_stub_sgl_kernel,
++    published_topology,
++)
++
++maybe_stub_sgl_kernel()
++
++from sglang.srt.managers.io_struct import AbortReq, matches_abort_rid  # noqa: E402
++from sglang.srt.managers.scheduler import Scheduler  # noqa: E402
++
++register_cpu_ci(est_time=9, suite="base-a-test-cpu")
++
++
++class _FakeReq:
++    """Minimal stand-in for Req: only the fields the abort paths touch."""
++
++    def __init__(self, rid: str):
++        self.rid = rid
++        # Mirrors Req.kv; the abort paths read only these two predicates.
++        self.kv = SimpleNamespace(holds_kv=True, holds_mamba=False)
++        self.to_finish = None
++        self._finished = False
++        self.finished_reason = None
++        self.cache_request_handle = None
++        self.weight_version_events = []
++        self.output_ids = []
++        self.multimodal_inputs = None
++        self.session = None
++
++    def finished(self):
++        return self._finished
++
++
++def _make_scheduler(*, waiting_reqs=(), running_reqs=()) -> Scheduler:
++    sched = Scheduler.__new__(Scheduler)
++    sched.enable_continuous_input_polling = False
++    sched.result_queue = deque()
++    sched.chunked_req = None
++    sched._pending_chunked_abort_req = None
++    sched.waiting_queue = list(waiting_reqs)
++    sched.dllm_config = None
++    sched.grammar_manager = Mock()
++    sched.disaggregation_mode = None
++    sched.enable_hicache_storage = False
++    sched.mm_receiver = None
++    sched.running_batch = SimpleNamespace(reqs=list(running_reqs))
++    sched.last_batch = None
++    sched.ipc_channels = Mock()
++    sched.beam_coordinator = Mock()
++    sched._release_aborted_request = Mock()
++    return sched
++
++
++class TestAbortRidMatching(CustomTestCase):
++    def setUp(self):
++        enter_scope(self, published_topology())
++
++    def test_matches_exact_rid_and_derived_children_only(self):
++        self.assertTrue(matches_abort_rid("job-1", "job-1"))
++        # Batch requests / parallel sampling expand "job" to "job_0", "job_1".
++        self.assertTrue(matches_abort_rid("job_0", "job"))
++        self.assertFalse(matches_abort_rid("job-10", "job-1"))
++        self.assertFalse(matches_abort_rid("job-1x", "job-1"))
++        self.assertFalse(matches_abort_rid("job", "job_0"))
++
++    def test_empty_and_nonindex_suffixes_are_not_targets(self):
++        for request_rid, abort_rid in [
++            ("", ""), ("_0", ""), ("job_", "job"),
++            ("job_1x", "job"), ("job_1_2", "job"), ("job_١", "job"),
++        ]:
++            with self.subTest(request_rid=request_rid, abort_rid=abort_rid):
++                self.assertFalse(matches_abort_rid(request_rid, abort_rid))
++
++    def test_batch_child_abort_does_not_abort_numeric_prefix_sibling(self):
++        target, sibling = _FakeReq("job_1"), _FakeReq("job_10")
++        sched = _make_scheduler(running_reqs=[target, sibling])
++        sched.abort_request(AbortReq(rid="job_1"))
++        self.assertIsNotNone(target.to_finish)
++        self.assertIsNone(sibling.to_finish)
++
++    def test_abort_all_still_targets_every_running_request(self):
++        reqs = [_FakeReq("job-1"), _FakeReq("job-10"), _FakeReq("other")]
++        sched = _make_scheduler(running_reqs=reqs)
++        sched.abort_request(AbortReq(abort_all=True))
++        self.assertTrue(all(req.to_finish is not None for req in reqs))
++
++    def test_empty_and_unknown_abort_are_noops(self):
++        for rid in ("", "ghost"):
++            reqs = [_FakeReq("job"), _FakeReq("_0")]
++            sched = _make_scheduler(running_reqs=reqs)
++            sched.abort_request(AbortReq(rid=rid))
++            self.assertTrue(all(req.to_finish is None for req in reqs))
++
++    def test_running_sibling_with_shared_prefix_survives(self):
++        target, sibling = _FakeReq("job-1"), _FakeReq("job-10")
++        sched = _make_scheduler(running_reqs=[target, sibling])
++
++        sched.abort_request(AbortReq(rid="job-1"))
++
++        self.assertIsNotNone(target.to_finish)
++        self.assertIsNone(sibling.to_finish, "unrelated request was aborted")
++
++    def test_running_children_are_aborted_by_parent_rid(self):
++        reqs = [_FakeReq(f"job_{i}") for i in range(3)]
++        sched = _make_scheduler(running_reqs=reqs)
++
++        sched.abort_request(AbortReq(rid="job"))
++
++        for req in reqs:
++            self.assertIsNotNone(req.to_finish, req.rid)
++
++    def test_waiting_sibling_with_shared_prefix_survives(self):
++        target, sibling = _FakeReq("job-1"), _FakeReq("job-10")
++        sched = _make_scheduler(waiting_reqs=[target, sibling])
++
++        sched.abort_request(AbortReq(rid="job-1"))
++
++        self.assertEqual(["job-10"], [req.rid for req in sched.waiting_queue])
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)

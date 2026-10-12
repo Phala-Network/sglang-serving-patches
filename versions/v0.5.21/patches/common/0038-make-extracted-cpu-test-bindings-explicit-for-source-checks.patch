@@ -1,0 +1,30 @@
+diff --git a/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py b/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
+index 04427b5804d2ebebf64ebe6ac36b202342a7436a..5e71da9512bc7dbcd9e106551f3e27d109f2be5b 100644
+--- a/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
++++ b/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
+@@ -17,6 +17,16 @@ import torch
+ SOURCE_ROOT = Path(__file__).resolve().parents[4] / "python/sglang/srt"
+ BASELINE_ROOT = None
+ VARIANT_ROOTS = {}
++
++# These production definitions are installed into globals by load_source().
++HybridReqToTokenPool: type
++MambaSlotAllocator: type
++UnifiedRadixCache: type
++MambaComponent: type
++HybridCacheController: type
++PrefillAdder: type
++Scheduler: type
++alloc_req_slots: object
+ g = globals()
+ logger = logging.getLogger(__name__)
+ contextmanager = contextlib.contextmanager
+diff --git a/test/registered/unit/test_watchdog_fail_hard.py b/test/registered/unit/test_watchdog_fail_hard.py
+index 4c4e4ab9d96e748920e26026e232007b29b1dbb2..693251deed02b557a6ede639da1d780b5726b5f4 100644
+--- a/test/registered/unit/test_watchdog_fail_hard.py
++++ b/test/registered/unit/test_watchdog_fail_hard.py
+@@ -87,4 +87,3 @@ class TestWatchdogFailHard(CustomTestCase):
+         raw.parent_process.wait.assert_not_called()
+         raw.parent_process.kill.assert_not_called()
+         dump_info.assert_called_once_with()
+-

@@ -1,0 +1,202 @@
+{
+  "schema": "phala.sglang.unified-regressions.v1",
+  "qualification": "Real CPU dependencies, source loading with matching official native extensions; not final wheel or GPU acceptance",
+  "suites": {
+    "cpu": [
+      {
+        "name": "test_framework_log_privacy_cpu",
+        "path": "test/manual/phala/test_framework_log_privacy_cpu.py"
+      },
+      {
+        "name": "test_health_task_cleanup_cpu",
+        "path": "test/manual/phala/test_health_task_cleanup_cpu.py"
+      },
+      {
+        "name": "test_initial_stream_error_cpu",
+        "path": "test/manual/phala/test_initial_stream_error_cpu.py"
+      },
+      {
+        "name": "test_srt_log_transform",
+        "path": "test/manual/phala/test_srt_log_transform.py"
+      },
+      {
+        "name": "test_srt_parser_privacy_gate",
+        "path": "test/manual/phala/test_srt_parser_privacy_gate.py"
+      },
+      {
+        "name": "test_srt_privacy_contract_cpu",
+        "path": "test/manual/phala/test_srt_privacy_contract_cpu.py"
+      },
+      {
+        "name": "test_glm53_idle_dp_gauge",
+        "path": "test/manual/test_glm53_idle_dp_gauge.py"
+      },
+      {
+        "name": "test_glm53_reasoning_usage",
+        "path": "test/manual/test_glm53_reasoning_usage.py"
+      },
+      {
+        "name": "test_grammar_manager",
+        "path": "test/registered/unit/constrained/test_grammar_manager.py"
+      },
+      {
+        "name": "test_llguidance_batched_mask",
+        "path": "test/registered/unit/constrained/test_llguidance_batched_mask.py"
+      },
+      {
+        "name": "test_reasoner_grammar_backend",
+        "path": "test/registered/unit/constrained/test_reasoner_grammar_backend.py"
+      },
+      {
+        "name": "test_allowed_tools_output",
+        "path": "test/registered/unit/entrypoints/openai/test_allowed_tools_output.py"
+      },
+      {
+        "name": "test_protocol",
+        "path": "test/registered/unit/entrypoints/openai/test_protocol.py"
+      },
+      {
+        "name": "test_serving_chat",
+        "path": "test/registered/unit/entrypoints/openai/test_serving_chat.py"
+      },
+      {
+        "name": "test_serving_chat_stream_close",
+        "path": "test/registered/unit/entrypoints/openai/test_serving_chat_stream_close.py"
+      },
+      {
+        "name": "test_health_task_cleanup",
+        "path": "test/registered/unit/entrypoints/test_health_task_cleanup.py"
+      },
+      {
+        "name": "test_allowed_tools_choice",
+        "path": "test/registered/unit/function_call/test_allowed_tools_choice.py"
+      },
+      {
+        "name": "test_named_tool_reference_scope",
+        "path": "test/registered/unit/function_call/test_named_tool_reference_scope.py"
+      },
+      {
+        "name": "test_normalize_json_schema_types",
+        "path": "test/registered/unit/function_call/test_normalize_json_schema_types.py"
+      },
+      {
+        "name": "test_qwen3_coder_parallel_structural_tag",
+        "path": "test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py"
+      },
+      {
+        "name": "test_qwen3_coder_schema_coercion",
+        "path": "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py"
+      },
+      {
+        "name": "test_qwen_complete_call_cpu",
+        "path": "test/registered/unit/function_call/test_qwen_complete_call_cpu.py"
+      },
+      {
+        "name": "test_qwen_xml_empty_required_schema",
+        "path": "test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py"
+      },
+      {
+        "name": "test_schema_reference_isolation",
+        "path": "test/registered/unit/function_call/test_schema_reference_isolation.py"
+      },
+      {
+        "name": "test_abort_rid_targeting",
+        "path": "test/registered/unit/managers/test_abort_rid_targeting.py"
+      },
+      {
+        "name": "test_control_reply_correlation",
+        "path": "test/registered/unit/managers/test_control_reply_correlation.py"
+      },
+      {
+        "name": "test_io_struct",
+        "path": "test/registered/unit/managers/test_io_struct.py"
+      },
+      {
+        "name": "test_mamba_spec_track_boundary_cpu",
+        "path": "test/registered/unit/managers/test_mamba_spec_track_boundary_cpu.py"
+      },
+      {
+        "name": "test_parallel_sampling_owner_lifecycle",
+        "path": "test/registered/unit/managers/test_parallel_sampling_owner_lifecycle.py"
+      },
+      {
+        "name": "test_tokenizer_manager_pre_mm_length",
+        "path": "test/registered/unit/managers/test_tokenizer_manager_pre_mm_length.py"
+      },
+      {
+        "name": "test_tokenizer_manager_rid_cleanup",
+        "path": "test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py"
+      },
+      {
+        "name": "test_mamba_checkpoint_pressure",
+        "path": "test/registered/unit/mem_cache/test_mamba_checkpoint_pressure.py"
+      },
+      {
+        "name": "test_mamba_live_admission",
+        "path": "test/registered/unit/mem_cache/test_mamba_live_admission.py"
+      },
+      {
+        "name": "test_mamba_load_back_admission_cpu",
+        "path": "test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py"
+      },
+      {
+        "name": "test_streaming_session_unit",
+        "path": "test/registered/unit/mem_cache/test_streaming_session_unit.py"
+      },
+      {
+        "name": "test_base_processor_bad_input",
+        "path": "test/registered/unit/multimodal/test_base_processor_bad_input.py"
+      },
+      {
+        "name": "test_identity_grammar_mask",
+        "path": "test/registered/unit/sampling/test_identity_grammar_mask.py"
+      },
+      {
+        "name": "test_openai_usage_processor",
+        "path": "test/registered/unit/test_openai_usage_processor.py"
+      },
+      {
+        "name": "test_request_disconnect_cleanup",
+        "path": "test/registered/unit/test_request_disconnect_cleanup.py"
+      },
+      {
+        "name": "test_watchdog_fail_hard",
+        "path": "test/registered/unit/test_watchdog_fail_hard.py"
+      },
+      {
+        "name": "test_token_env_auth",
+        "path": "test/registered/unit/utils/test_token_env_auth.py"
+      },
+      {
+        "name": "test_watchdog_diagnostics_and_reap",
+        "path": "test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py"
+      },
+      {
+        "name": "test_hicache_file_prefix",
+        "path": "test/registered/unit/mem_cache/test_hicache_file_prefix.py"
+      },
+      {
+        "name": "test_hicache_prefix_sync",
+        "path": "test/registered/unit/mem_cache/test_hicache_prefix_sync.py"
+      },
+      {
+        "name": "test_mooncake_group_semantics",
+        "path": "test/registered/unit/mem_cache/test_mooncake_group_semantics.py"
+      },
+      {
+        "name": "test_patch_tokenizer",
+        "path": "test/registered/unit/utils/test_patch_tokenizer.py"
+      },
+      {
+        "name": "test_prefill_gate_ast",
+        "path": "test/registered/unit/model_executor/test_prefill_gate_ast.py"
+      }
+    ],
+    "gpu-fp8-pool": [
+      {
+        "name": "prefix_valid_fp8_pool",
+        "path": "test/registered/unit/mem_cache/test_prefix_valid_fp8_pool.py"
+      }
+    ]
+  }
+}

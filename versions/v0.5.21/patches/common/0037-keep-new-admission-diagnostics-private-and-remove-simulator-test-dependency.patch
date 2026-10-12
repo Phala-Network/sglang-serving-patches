@@ -1,0 +1,36 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index a1e3d2a67e6f8bea50c5af93f5d3785d443602da..67f22efb18fd50903d219c8ed877f9db6d3ad864 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -3844,12 +3844,7 @@ class Scheduler(
+         if available_slots >= needed_slots:
+             return True
+ 
+-        logger.debug(
+-            "Mamba admission deferred for rid=%s: needed_slots=%d available_slots=%d",
+-            req.rid,
+-            needed_slots,
+-            available_slots,
+-        )
++        logger.debug('Mamba admission deferred for rid=<redacted>: needed_slots=<redacted> available_slots=<redacted>')
+         return False
+ 
+     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
+diff --git a/scripts/phala/parser_privacy_gate.py b/scripts/phala/parser_privacy_gate.py
+index 8e14885bb9811a014e648bdc42685eb167edf642..f6f66997388c1bcbc5281e08a34fd1a9ca1b80c6 100644
+--- a/scripts/phala/parser_privacy_gate.py
++++ b/scripts/phala/parser_privacy_gate.py
+@@ -37,11 +37,8 @@ def main():
+     args = parser.parse_args()
+     if args.report.exists():
+         parser.error("Report exists")
+-    from sglang_simulator.simulation.sglang.hook_bootstrap import (
+-        install_simulator_hooks,
+-    )
+-
+-    install_simulator_hooks()
++    # Exercise the installed/source engine dependencies directly. Simulator
++    # hooks are not an input to the official v0.5.21 runtime candidate.
+     from sglang.srt.entrypoints.openai.protocol import Tool
+     from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
+     from sglang.srt.function_call import mimo_detector as mimo

@@ -1,0 +1,126 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 8909f0eed2b1084e362edec218ebfd559ccf366a..fdaf45da902ff7fdce762c8f331dc1df096f202d 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -883,6 +883,12 @@ async def server_info():
+ 
+     server_args = _global_state.tokenizer_manager.server_args
+ 
++    # A multi-worker router may not own a local request table. Report that
++    # observation as unavailable, rather than inventing a drained zero.
++    request_state_summary = getattr(
++        _global_state.tokenizer_manager, "request_state_summary", None
++    )
++
+     return msgspec_to_builtins(
+         {
+             **server_args.resolved_dict(),
+@@ -890,6 +896,9 @@ async def server_info():
+             **_global_state.scheduler_info,
+             "startup_time": _global_state.tokenizer_manager.startup_time,
+             "internal_states": internal_states,
++            "tokenizer_request_states": (
++                request_state_summary() if callable(request_state_summary) else None
++            ),
+             "version": __version__,
+             "frontend": "python",
+             # Structured KV-event publisher descriptor for KV-aware routers.
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 87fb203cdb0433c5968ee91fdf8f900175ead2c1..b0d35c12a1af8192b68d09b9247805c25f87c7a3 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -3681,6 +3681,23 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 time_stats.init_trace_ctx(rid, bootstrap_room, external_trace_header)
+             time_stats.set_created_time(created_time)
+ 
++    def request_state_summary(self) -> Dict[str, int]:
++        """Read existing local ownership without exposing RIDs or request data.
++
++        Dispatched/undelivered partition total; finished and abort_pending are
++        overlapping diagnostics. No counters or second request registry.
++        """
++        states = tuple(self.rid_to_state.values())
++        dispatched = sum(state.dispatched for state in states)
++        return {
++            "total": len(states),
++            "undelivered": len(states) - dispatched,
++            "dispatched": dispatched,
++            "abort_pending": sum(state.abort_sent for state in states),
++            "finished": sum(state.finished for state in states),
++            "encoder_dispatch_pending": len(self.encoder_dispatch_ready),
++        }
++
+     def _release_req_states_on_failure(self, rids: Iterable[str]):
+         """Release rid_to_state entries created for a failed handler.
+ 
+diff --git a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+index e6cd8fedd3dda1e46a9f10268b8a96b0dc234955..da4a51f48a06da16eb930e2d37d3edf6f6b25ed6 100644
+--- a/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
++++ b/test/registered/unit/managers/test_tokenizer_manager_rid_cleanup.py
+@@ -545,6 +545,58 @@ class TestResubmitAfterCompletion(CustomTestCase):
+         self.assertIn(rid, tm.rid_to_state)
+ 
+ 
++class TestRequestStateSummary(CustomTestCase):
++    def test_server_info_exposes_local_counts_or_explicit_unavailable(self):
++        from types import SimpleNamespace
++        from sglang.srt.entrypoints import http_server
++
++        tm = _make_tokenizer_manager(self)
++        tm.get_internal_state = AsyncMock(return_value=[])
++        tm.server_args.resolved_dict.return_value = {}
++        tm.server_args.launch_command = ["test"]
++        tm.startup_time = 0.0
++        tm.rid_to_state["private-request-id"] = _make_req_state("private-request-id")
++        state = SimpleNamespace(tokenizer_manager=tm, scheduler_info={})
++        with patch.object(http_server, "_global_state", state), patch.object(
++            http_server, "describe_kv_events_publisher", return_value=None
++        ):
++            result = asyncio.run(http_server.server_info())
++            self.assertEqual(result["tokenizer_request_states"]["total"], 1)
++            self.assertNotIn("private-request-id", str(result))
++            state.tokenizer_manager = SimpleNamespace(
++                get_internal_state=AsyncMock(return_value=[]),
++                server_args=tm.server_args, startup_time=0.0,
++            )
++            result = asyncio.run(http_server.server_info())
++            self.assertIsNone(result["tokenizer_request_states"])
++
++    def test_summary_tracks_actual_failure_and_abort_cleanup(self):
++        tm = _make_tokenizer_manager(self)
++        tm._dispatch_to_scheduler = Mock()
++        waiting = _make_req_state("waiting-private-rid")
++        running = _make_req_state("running-private-rid")
++        running.dispatched = True
++        tm.rid_to_state = {waiting.obj.rid: waiting, running.obj.rid: running}
++        ready = asyncio.Event()
++        tm.encoder_dispatch_ready[waiting.obj.rid] = ready
++        before = tm.request_state_summary()
++        self.assertEqual(before, {
++            "total": 2, "undelivered": 1, "dispatched": 1,
++            "abort_pending": 0, "finished": 0, "encoder_dispatch_pending": 1,
++        })
++        self.assertIs(tm.rid_to_state[running.obj.rid], running)
++        self.assertFalse(ready.is_set())
++        tm._release_req_states_on_failure([waiting.obj.rid, running.obj.rid])
++        self.assertTrue(ready.is_set())
++        self.assertEqual(tm.request_state_summary(), {
++            "total": 1, "undelivered": 0, "dispatched": 1,
++            "abort_pending": 1, "finished": 0, "encoder_dispatch_pending": 0,
++        })
++        tm._handle_abort_req(_make_abort_req(running.obj.rid))
++        self.assertTrue(all(value == 0 for value in tm.request_state_summary().values()))
++        self.assertEqual(before["total"], 2, "snapshot must not be a live mutable view")
++
++
+ class _DummyAsyncCM:
+     """Reusable no-op async context manager (stands in for an RW lock)."""
+ 
+@@ -581,6 +633,7 @@ def _make_generate_obj(rid, is_single):
+     obj.received_time = 0.0
+     obj.external_trace_header = None
+     obj.bootstrap_room = None
++    obj.min_thinking_tokens = None
+     obj.max_thinking_tokens = None
+     obj.normalize_batch_and_arguments = Mock()
+     if not is_single:

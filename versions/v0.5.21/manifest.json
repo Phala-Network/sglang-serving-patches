@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
-  "engine_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
-  "reproduced_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
+  "engine_commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
+  "engine_tree": "88f64d00bc235d277890c76918401d82bb86e032",
+  "reproduced_tree": "88f64d00bc235d277890c76918401d82bb86e032",
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -44,24 +44,276 @@
       "commit": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
       "parent": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
       "sha256": "45435ffd8250d95ae8e4c1d52b106e2ddc6e50a8d88890cb3238f1300b2df56c",
-      "purpose": "Decline optional unfinished Mamba checkpoints under protected-slot pressure"
+      "purpose": "Keep running Mamba requests alive when optional checkpoints cannot allocate"
     },
     {
       "path": "patches/common/0007-mamba-live-admission.patch",
       "commit": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
       "parent": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
       "sha256": "587a24998323d9a45d913cb7d358fe7490a91f25ecc133c5cb102ceba99fd1be",
-      "purpose": "Admit complete live Mamba state and allocate initial slots atomically"
+      "purpose": "fix: backpressure and atomically allocate initial Mamba states"
     },
     {
       "path": "patches/common/0008-mamba-load-back-reservation.patch",
       "commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
       "parent": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
-      "sha256": "f54d82ee220b1c741bc935409ab8cefc7c4da5347d8e5ff22ccd9fe6816621ab",
-      "purpose": "Reserve complete batch Mamba demand during cache-mode host restoration; defer safely and retain executable CPU regression"
+      "sha256": "1545d7a4906e317f13ce0baa1e0633317fb33452e6802ec8c796956f75eaab12",
+      "purpose": "fix: reserve batch Mamba states across HiCache load-back"
+    },
+    {
+      "path": "patches/common/0009-correlate-internal-state-control-replies-and-clean-cancellation-state.patch",
+      "commit": "f06027022f8d9081459228e1df0da591266f45aa",
+      "parent": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "sha256": "f083fa008064ad8ca4909a090eefab296af6feb065bfb8083f178053cd2e56c2",
+      "purpose": "Correlate internal-state control replies and clean cancellation state"
+    },
+    {
+      "path": "patches/common/0010-close-disconnected-generators-and-release-undispatched-or-aborted-mm-ownership.patch",
+      "commit": "2710e271871d42801dc56400751f6310abad2b2b",
+      "parent": "f06027022f8d9081459228e1df0da591266f45aa",
+      "sha256": "63b9a1865dc011b55efd0bf7091db9ea0c3899f17ae79445d92dbd8053f8591f",
+      "purpose": "Close disconnected generators and release undispatched or aborted MM ownership"
+    },
+    {
+      "path": "patches/common/0011-skip-identity-grammar-masks-while-preserving-grammar-state-bookkeeping.patch",
+      "commit": "6027a3117491f3992932508296456002cd1f2c1a",
+      "parent": "2710e271871d42801dc56400751f6310abad2b2b",
+      "sha256": "662ccb9dd1b436d69cf35ec3c6164c4c18870fc69a185cc3a11cd0740c1df696",
+      "purpose": "Skip identity grammar masks while preserving grammar state bookkeeping"
+    },
+    {
+      "path": "patches/common/0012-report-native-request-ownership-and-first-admission-queue-timing.patch",
+      "commit": "2c030383e20b94423f2d89065c7934c13d6de364",
+      "parent": "6027a3117491f3992932508296456002cd1f2c1a",
+      "sha256": "a72c309f0fa78a52041f3ef24a6f4f32fc75594805117ab048e5ca1365c8c1e5",
+      "purpose": "Report native request ownership and first-admission queue timing"
+    },
+    {
+      "path": "patches/common/0013-register-only-logical-parents-before-parallel-sampling-expansion.patch",
+      "commit": "662fd6677ca1f0ec9535d997c1261970e5bf948a",
+      "parent": "2c030383e20b94423f2d89065c7934c13d6de364",
+      "sha256": "48b45bf916dc7fbaf561c94660fcf2ba60f4e8a83f05f97f1d0cc0b922acadac",
+      "purpose": "Register only logical parents before parallel-sampling expansion"
+    },
+    {
+      "path": "patches/common/0014-resolve-opt-in-environment-credentials-and-redact-diagnostic-copies.patch",
+      "commit": "4567f975d3d207f999466e078ed69052d7198f39",
+      "parent": "662fd6677ca1f0ec9535d997c1261970e5bf948a",
+      "sha256": "0a7ca9c9c1ecf5d98860e4cd1b294a78af5d20addb84a74be41e571aaed581c6",
+      "purpose": "Resolve opt-in environment credentials and redact diagnostic copies"
+    },
+    {
+      "path": "patches/common/0015-normalize-nullable-optional-json-schema-keywords.patch",
+      "commit": "9cea17813b25404d9e9380201c278f8b2eed4cf6",
+      "parent": "4567f975d3d207f999466e078ed69052d7198f39",
+      "sha256": "207f5af70f0ca3d4b5c480695f33ace7ca2a644579331cc100286a6e23673c67",
+      "purpose": "Normalize nullable optional JSON Schema keywords"
+    },
+    {
+      "path": "patches/common/0016-provide-schema-valid-tool-argument-lookup-and-conservative-coercion.patch",
+      "commit": "9e36fa2ee7e9dc2e00e93825133bd749393e1db5",
+      "parent": "9cea17813b25404d9e9380201c278f8b2eed4cf6",
+      "sha256": "4f6d0a35a74f9f6a1baec041f5f7c20cae7b19759c5d7af58e8c83cedc4f0cae",
+      "purpose": "Provide schema-valid tool-argument lookup and conservative coercion"
+    },
+    {
+      "path": "patches/common/0017-validate-and-enforce-allowed-tool-subsets-throughout-chat-serving.patch",
+      "commit": "45006bc54bf0a3bd0cde948b1ce426fc46ec8b53",
+      "parent": "9e36fa2ee7e9dc2e00e93825133bd749393e1db5",
+      "sha256": "c18ab33919eae87a5db97e23bb1f4bd537cc9277b9053ce86d435bba5ef4a4ba",
+      "purpose": "Validate and enforce allowed-tool subsets throughout chat serving"
+    },
+    {
+      "path": "patches/common/0018-preserve-reasoning-visibility-controls-and-enforce-request-thinking-bounds.patch",
+      "commit": "dbdb5349cdcc51c0ec6105ee20d6f9c94c088b04",
+      "parent": "45006bc54bf0a3bd0cde948b1ce426fc46ec8b53",
+      "sha256": "b9a34ee201d9c3e2a9390049f1fd1ae1c63f9e50431b9b98b5c7e844f69784b5",
+      "purpose": "Preserve reasoning visibility controls and enforce request thinking bounds"
+    },
+    {
+      "path": "patches/common/0019-drop-streaming-tool-deltas-that-precede-a-valid-function-name.patch",
+      "commit": "8abc3e27bef1cb724cea9d4a5a7ebb055d0bc348",
+      "parent": "dbdb5349cdcc51c0ec6105ee20d6f9c94c088b04",
+      "sha256": "903affd50ef0ecfc9c079b33664819cd9ecb3379303ed4ad4ae8fe5c6c3720d8",
+      "purpose": "Drop streaming tool deltas that precede a valid function name"
+    },
+    {
+      "path": "patches/common/0020-reject-excessive-text-budgets-before-decoding-media.patch",
+      "commit": "129b1fafae7876e1eb8abf7a3995394d529d7432",
+      "parent": "8abc3e27bef1cb724cea9d4a5a7ebb055d0bc348",
+      "sha256": "68ea395bda8c4517755411ffb9ac66f5305a01a2e27012fe586588064e973d95",
+      "purpose": "Reject excessive text budgets before decoding media"
+    },
+    {
+      "path": "patches/common/0021-keep-malformed-image-decode-errors-request-local-while-preserving-os-faults.patch",
+      "commit": "b3ca0627050c966578474f2c48c37b5da0c99f45",
+      "parent": "129b1fafae7876e1eb8abf7a3995394d529d7432",
+      "sha256": "4ff2bf100e132e14888ea72e6b9cc58215ee529c2baedbc2bed9c038fa869222",
+      "purpose": "Keep malformed image decode errors request-local while preserving OS faults"
+    },
+    {
+      "path": "patches/common/0022-bound-watchdog-diagnostics-and-recover-independently-of-diagnostic-success.patch",
+      "commit": "b20581719b7af276cf111c63a3524509bde6666a",
+      "parent": "b3ca0627050c966578474f2c48c37b5da0c99f45",
+      "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
+      "purpose": "Bound watchdog diagnostics and recover independently of diagnostic success"
+    },
+    {
+      "path": "patches/common/0023-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch",
+      "commit": "9f5fa335ff1863706c72a31f9f6bda859d8a7681",
+      "parent": "b20581719b7af276cf111c63a3524509bde6666a",
+      "sha256": "3756334488818ab9ee1e90376b46600f2a573365c59b793a74768d65dd38f74a",
+      "purpose": "Adapt Qwen3.5-family templates, effort bounds and tool history"
+    },
+    {
+      "path": "patches/common/0024-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch",
+      "commit": "e320b07daf2fd97c5f20a756a2a4b79da59c3f60",
+      "parent": "9f5fa335ff1863706c72a31f9f6bda859d8a7681",
+      "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
+      "purpose": "Align Qwen3 Coder argument coercion and structural-tag repetition"
+    },
+    {
+      "path": "patches/common/0025-prevent-network-retrieval-during-tool-argument-schema-coercion.patch",
+      "commit": "6e675ced27bb361d455c4ee088ce5255cb297d4f",
+      "parent": "e320b07daf2fd97c5f20a756a2a4b79da59c3f60",
+      "sha256": "4f50a4df36aa2f7c0e83ef42eba1c8d4c745e9fd0018b01b125a934e5c0ff286",
+      "purpose": "Prevent network retrieval during tool argument schema coercion"
+    },
+    {
+      "path": "patches/common/0026-enforce-explicit-allowed-tools-subsets-at-response-emission.patch",
+      "commit": "6136280bb6ee1075174a027a01eb518f365dbeb5",
+      "parent": "6e675ced27bb361d455c4ee088ce5255cb297d4f",
+      "sha256": "3fb09d12c76b7f76fe6676722e60a092c57386ab8c3ef7f6b834b726fed38b85",
+      "purpose": "Enforce explicit allowed-tools subsets at response emission"
+    },
+    {
+      "path": "patches/common/0027-cap-reported-reasoning-tokens-at-the-completed-output-length.patch",
+      "commit": "0ee2ae9a3169e547e33f7005a8567b05de4453bf",
+      "parent": "6136280bb6ee1075174a027a01eb518f365dbeb5",
+      "sha256": "a06cf2dfbae9d252dffecc13ca17827da27f6f91e0fcfb061487c5b7d973e511",
+      "purpose": "Cap reported reasoning tokens at the completed output length"
+    },
+    {
+      "path": "patches/common/0028-refresh-an-idle-local-running-gauge-without-resetting-token-counters.patch",
+      "commit": "728db6ef3ecb8424a53c341a4d3328e544b1f092",
+      "parent": "0ee2ae9a3169e547e33f7005a8567b05de4453bf",
+      "sha256": "2bcf2b14af5534c2f208f0c9f72c5cac207201009056fa1c2080ce6eb4102417",
+      "purpose": "Refresh an idle local running gauge without resetting token counters"
+    },
+    {
+      "path": "patches/common/0029-fix-integrate-common-framework-privacy-and-health-probe-cleanup.patch",
+      "commit": "92e543896436461c6dd9fae05b87867cf9087ae8",
+      "parent": "728db6ef3ecb8424a53c341a4d3328e544b1f092",
+      "sha256": "94523853fede0f1f8fd73c282c64d45769799a4817d65865f34c3b92d29b28f8",
+      "purpose": "fix: integrate common framework privacy and health probe cleanup"
+    },
+    {
+      "path": "patches/common/0030-adapt-reviewed-srt-diagnostic-privacy-migration-to-official-v0-5-21.patch",
+      "commit": "c31fac05857676c848c9e8745cd58b6181ff62d4",
+      "parent": "92e543896436461c6dd9fae05b87867cf9087ae8",
+      "sha256": "f400da4119d970437249e938b1c220a2f86f25878651f1aa02f1bcba8712e125",
+      "purpose": "Adapt reviewed SRT diagnostic privacy migration to official v0.5.21"
+    },
+    {
+      "path": "patches/common/0031-fix-publish-qwen-tool-calls-only-after-complete-block-closure.patch",
+      "commit": "c9b227b7c338b77ce25e91f64d595a22967d1a3f",
+      "parent": "c31fac05857676c848c9e8745cd58b6181ff62d4",
+      "sha256": "8fd246c95b2c2c818174e64466b56d27c55eb8d453b28b7623654b5e01c71ec4",
+      "purpose": "fix: publish Qwen tool calls only after complete block closure"
+    },
+    {
+      "path": "patches/common/0032-fix-qwen-required-tool-grammar-with-pinned-xgrammar.patch",
+      "commit": "eba0e09efaa162015f9c2f80021e7fa71821fb0b",
+      "parent": "c9b227b7c338b77ce25e91f64d595a22967d1a3f",
+      "sha256": "f1122c4557b03dca7004b831cbd5d2d27995c7b02ff57143d89d3f90b2ec735b",
+      "purpose": "Fix Qwen required tool grammar with pinned XGrammar"
+    },
+    {
+      "path": "patches/common/0033-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+      "commit": "e8c0969c1b8926e2cc0a01a74d8c5602a6450e21",
+      "parent": "eba0e09efaa162015f9c2f80021e7fa71821fb0b",
+      "sha256": "8a15d3db4bfc72550689a0997a3dbabd8477d7e43233c4ba0bf9c20f808f17d5",
+      "purpose": "Expose reasoning usage through typed standard completion details"
+    },
+    {
+      "path": "patches/common/0034-fix-preserve-named-tool-local-schema-reference-roots.patch",
+      "commit": "7c8b1edfebdc2124cd8e33f66a8465509dc1e717",
+      "parent": "e8c0969c1b8926e2cc0a01a74d8c5602a6450e21",
+      "sha256": "be873d5cc1f58990205bccb7c064cb5bea09a5b89b9617db8289d06fbc03ae67",
+      "purpose": "fix: preserve named-tool local schema reference roots"
+    },
+    {
+      "path": "patches/common/0035-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+      "commit": "b0e986a6395cd4a55375a7d5710ce3d2f6e225cd",
+      "parent": "7c8b1edfebdc2124cd8e33f66a8465509dc1e717",
+      "sha256": "dfc30ccf0c3416557e454f6c24d3cb7952989cb82bb1bad63bcda3f2708618c1",
+      "purpose": "Restore llguidance reasoning callbacks and guarded pinned host masks"
+    },
+    {
+      "path": "patches/common/0036-backport-upstream-43029-committed-length-mamba-checkpoint-boundary.patch",
+      "commit": "ade709a9cf2010d092a4891088c6a1fd34ee463e",
+      "parent": "b0e986a6395cd4a55375a7d5710ce3d2f6e225cd",
+      "sha256": "aceb27c29cacc3e52a25d839152140d839ac6a97cc2fdf44e8b50be900645c32",
+      "purpose": "Backport upstream 43029 committed-length Mamba checkpoint boundary"
+    },
+    {
+      "path": "patches/common/0037-keep-new-admission-diagnostics-private-and-remove-simulator-test-dependency.patch",
+      "commit": "c1b0bd3725da4d8c7d8984c4f66102bdd55971b3",
+      "parent": "ade709a9cf2010d092a4891088c6a1fd34ee463e",
+      "sha256": "b6ef3f83068a298551f0a16ad4e850b7cd914d0a19f79ac4ae49c312e96e892a",
+      "purpose": "Keep new admission diagnostics private and remove simulator test dependency"
+    },
+    {
+      "path": "patches/common/0038-make-extracted-cpu-test-bindings-explicit-for-source-checks.patch",
+      "commit": "78a947d381e0b8828d09b7786bc9d6f8c196575e",
+      "parent": "c1b0bd3725da4d8c7d8984c4f66102bdd55971b3",
+      "sha256": "946a84a731469858ab90db103d876064277173670389836d7ba876ea877885df",
+      "purpose": "Make extracted CPU test bindings explicit for source checks"
+    },
+    {
+      "path": "patches/common/0039-preserve-initial-sse-error-http-status-before-headers.patch",
+      "commit": "43d4cc55ead23cc6ffe5a16f2a720f2ff2f3d4ba",
+      "parent": "78a947d381e0b8828d09b7786bc9d6f8c196575e",
+      "sha256": "e670541ad3e8990a0b388186e19b7d19ee27da771ad1c2dd021f279d243dc016",
+      "purpose": "Preserve initial SSE error HTTP status before headers"
+    },
+    {
+      "path": "patches/common/0040-bind-handler-failure-cleanup-to-atomically-registered-request-states.patch",
+      "commit": "540584349ab0e0c95a21ec8a17a47f79bd993a33",
+      "parent": "43d4cc55ead23cc6ffe5a16f2a720f2ff2f3d4ba",
+      "sha256": "8fcaadce0df95132519632acd1e834cd4aae8d9fdbddea142d09c235eca215b2",
+      "purpose": "Bind handler failure cleanup to atomically registered request states"
+    },
+    {
+      "path": "patches/common/0041-narrow-abort-targeting-to-named-requests-and-decimal-index-children.patch",
+      "commit": "3e4071bb6fe2a970255d1b187410abc1d0d00261",
+      "parent": "540584349ab0e0c95a21ec8a17a47f79bd993a33",
+      "sha256": "05886db18b8fb1493e703976863eba4d4151bfe8c978e9f1255e7e8bfa9d7159",
+      "purpose": "Narrow abort targeting to named requests and decimal-index children"
+    },
+    {
+      "path": "patches/common/0042-align-privacy-provenance-and-http-test-fixture-on-maintained-v0-5-21.patch",
+      "commit": "1800fd59001164e77b709384e550529ba8636974",
+      "parent": "3e4071bb6fe2a970255d1b187410abc1d0d00261",
+      "sha256": "c9400050251124424f93f441357c11b01e7d5a71c767c9006279e87d669f1b6e",
+      "purpose": "Align privacy provenance and HTTP test fixture on maintained v0.5.21"
+    },
+    {
+      "path": "patches/common/0043-recognize-declared-tool-calls-before-enforcing-allowed-output-subsets.patch",
+      "commit": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
+      "parent": "1800fd59001164e77b709384e550529ba8636974",
+      "sha256": "c55dcef320171a421905e1643426bcc892e3ed51d9eca61d0a0184ab8f6e4b03",
+      "purpose": "Recognize declared tool calls before enforcing allowed output subsets"
+    },
+    {
+      "path": "patches/common/0044-preserve-qwen-xml-required-and-empty-schemas-with-official-xgrammar.patch",
+      "commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
+      "parent": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
+      "sha256": "f88d3548fb5e5fd81568f8c3664bbd071affcfd7ec44c30c71e78144e440829f",
+      "purpose": "Preserve Qwen XML required and empty schemas with official XGrammar"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "B300 CUDA13 TP8 PP1 DCP1 Kimi-K3 DFlash C8 extra_buffer; checkpoint pressure and complete live-state admission",
-  "release_status": "source_validated; final-image and production acceptance tracked separately"
+  "scope": "Shared v0.5.21 maintenance with retained common/Kimi fixes and common/Qwen additions; no new non-Qwen GPU qualification",
+  "release_status": "Source replay and 47 CPU files accepted; final wheel, image, GPU and service gates remain separate."
 }

@@ -1,18 +1,5 @@
-From e9a40ece22f8539d434ccc138336019ddbf2e06c Mon Sep 17 00:00:00 2001
-From: Codex <codex@openai.com>
-Date: Sun, 11 Oct 2026 12:34:47 +0000
-Subject: [PATCH] fix: reserve batch Mamba states across HiCache load-back
-
----
- python/sglang/srt/managers/schedule_policy.py |  12 +
- .../sglang/srt/mem_cache/base_prefix_cache.py |   2 +
- .../srt/mem_cache/unified_radix_cache.py      |  31 +-
- .../test_mamba_load_back_admission_cpu.py     | 568 ++++++++++++++++++
- 4 files changed, 612 insertions(+), 1 deletion(-)
- create mode 100644 test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
-
 diff --git a/python/sglang/srt/managers/schedule_policy.py b/python/sglang/srt/managers/schedule_policy.py
-index 2a1f420..6848367 100644
+index 2a1f420c022a2f986873dc33b15e76e7f09c30a6..6848367a2d8c93d7837cc7bf54e57002d09b96cf 100644
 --- a/python/sglang/srt/managers/schedule_policy.py
 +++ b/python/sglang/srt/managers/schedule_policy.py
 @@ -1405,6 +1405,18 @@ class PrefillAdder:
@@ -35,7 +22,7 @@ index 2a1f420..6848367 100644
                  )
                  if loaded is None:
 diff --git a/python/sglang/srt/mem_cache/base_prefix_cache.py b/python/sglang/srt/mem_cache/base_prefix_cache.py
-index b195f4f..96c4aed 100644
+index b195f4fe0dfa349a21f9610c530049804350a283..96c4aeda7194c9468aedd5e6cb705e249f326eac 100644
 --- a/python/sglang/srt/mem_cache/base_prefix_cache.py
 +++ b/python/sglang/srt/mem_cache/base_prefix_cache.py
 @@ -251,6 +251,8 @@ class InitLoadBackParams:
@@ -48,7 +35,7 @@ index b195f4f..96c4aed 100644
  
  class MatchResult(NamedTuple):
 diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
-index 95cd03e..f436f9a 100644
+index 95cd03e7e45ea1a56d3c65d7df0f582889fc82b1..f436f9a06cd20c0fc023e7e19c2d5da13a0c8abe 100644
 --- a/python/sglang/srt/mem_cache/unified_radix_cache.py
 +++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
 @@ -1732,6 +1732,7 @@ class UnifiedRadixCache(BasePrefixCache):
@@ -120,7 +107,7 @@ index 95cd03e..f436f9a 100644
              self.tree_core.empty_match_result.device_indices,
 diff --git a/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py b/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
 new file mode 100644
-index 0000000..04427b5
+index 0000000000000000000000000000000000000000..04427b5804d2ebebf64ebe6ac36b202342a7436a
 --- /dev/null
 +++ b/test/registered/unit/mem_cache/test_mamba_load_back_admission_cpu.py
 @@ -0,0 +1,568 @@

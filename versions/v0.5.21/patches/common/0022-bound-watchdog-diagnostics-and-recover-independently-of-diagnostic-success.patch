@@ -1,0 +1,306 @@
+diff --git a/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py b/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
+index ea31a8166800482f83757cb50ec86a0333f51622..51474434272335480bac3755657ba3ab19d7a5bb 100644
+--- a/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
++++ b/python/sglang/srt/utils/cudacore_pyspy_dump_utils.py
+@@ -28,6 +28,8 @@ import psutil
+ 
+ logger = logging.getLogger(__name__)
+ 
++PYSPY_DUMP_TIMEOUT_SECONDS = 10
++
+ 
+ def _resolve_cuda_coredump_pipe_path(proc: psutil.Process) -> Path:
+     pipe_template = os.environ.get("CUDA_COREDUMP_PIPE")
+@@ -82,10 +84,24 @@ def pyspy_dump_schedulers(scheduler_only=False):
+             try:
+                 cmd = f"py-spy dump {native_flag} --pid {pid}".strip()
+                 result = subprocess.run(
+-                    cmd, shell=True, capture_output=True, text=True, check=True
++                    cmd,
++                    shell=True,
++                    capture_output=True,
++                    text=True,
++                    check=True,
++                    timeout=PYSPY_DUMP_TIMEOUT_SECONDS,
+                 )
+                 logger.error(f"Pyspy dump for PID {pid} ({cmd}):\n{result.stdout}")
+                 break
++            except subprocess.TimeoutExpired:
++                logger.error(
++                    "Pyspy timed out after %ss for PID %s (%s).",
++                    PYSPY_DUMP_TIMEOUT_SECONDS,
++                    pid,
++                    cmd,
++                )
++                if attempt == 1:
++                    logger.error(f"All pyspy dump attempts failed for PID {pid}.")
+             except subprocess.CalledProcessError as e:
+                 logger.error(f"Pyspy failed ({cmd}). Error: {e.stderr}")
+                 if attempt == 1:
+diff --git a/python/sglang/srt/utils/watchdog.py b/python/sglang/srt/utils/watchdog.py
+index 70df32b5d04ba6b8b3fa70883a634c4feb25fec9..8c20c5fd09ae8976a07ef42ce10272233ae3e6d1 100644
+--- a/python/sglang/srt/utils/watchdog.py
++++ b/python/sglang/srt/utils/watchdog.py
+@@ -16,6 +16,8 @@ from sglang.srt.utils.cudacore_pyspy_dump_utils import pyspy_dump_schedulers
+ 
+ logger = logging.getLogger(__name__)
+ 
++HARD_WATCHDOG_GRACE_SECONDS = 5.0
++
+ 
+ class Watchdog:
+     @staticmethod
+@@ -146,21 +148,79 @@ class WatchdogRaw:
+                     watchdog_last_time = current
+             time.sleep(self.watchdog_timeout / 2)
+ 
+-        if self.dump_info is not None and (info_msg := self.dump_info()):
+-            logger.error(f"{self.debug_name} debug info:\n{info_msg}")
++        self._handle_timeout()
++
++    def _run_diagnostics(self):
++        """Run best-effort diagnostics for a non-fatal soft watchdog timeout."""
++        if self.dump_info is not None:
++            try:
++                info_msg = self.dump_info()
++            except Exception as e:
++                logger.error(
++                    f"{self.debug_name} failed to dump watchdog debug info: {e}",
++                    exc_info=True,
++                )
++            else:
++                if info_msg:
++                    logger.error(f"{self.debug_name} debug info:\n{info_msg}")
++
++        try:
++            pyspy_dump_schedulers()
++        except Exception as e:
++            logger.error(
++                f"{self.debug_name} failed to dump scheduler stacks: {e}",
++                exc_info=True,
++            )
+ 
+-        pyspy_dump_schedulers()
++    def _handle_timeout(self):
++        """Handle a detected timeout without letting diagnostics block recovery."""
+         logger.error(
+             f"{self.debug_name} watchdog timeout "
+             f"({self.watchdog_timeout=}, {self.soft=})"
+         )
+-        print(file=sys.stderr, flush=True)
+-        print(file=sys.stdout, flush=True)
++        sys.stderr.flush()
++        sys.stdout.flush()
+ 
+-        if not self.soft:
+-            # Wait for some time so that the parent process can print the error.
+-            time.sleep(5)
++        if self.soft:
++            self._run_diagnostics()
++            return
++
++        try:
+             self.parent_process.send_signal(signal.SIGQUIT)
++        except psutil.NoSuchProcess:
++            return
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed to send SIGQUIT to parent: {e}",
++                exc_info=True,
++            )
++
++        try:
++            self.parent_process.wait(timeout=HARD_WATCHDOG_GRACE_SECONDS)
++            return
++        except psutil.NoSuchProcess:
++            return
++        except psutil.TimeoutExpired:
++            logger.error(
++                f"{self.debug_name} parent did not exit within "
++                f"{HARD_WATCHDOG_GRACE_SECONDS}s after SIGQUIT; sending SIGKILL"
++            )
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed while waiting for parent exit: {e}; "
++                "sending SIGKILL",
++                exc_info=True,
++            )
++
++        try:
++            self.parent_process.kill()
++        except psutil.NoSuchProcess:
++            pass
++        except psutil.Error as e:
++            logger.error(
++                f"{self.debug_name} failed to send SIGKILL to parent: {e}",
++                exc_info=True,
++            )
+ 
+ 
+ class SubprocessWatchdog:
+diff --git a/test/registered/unit/test_watchdog_fail_hard.py b/test/registered/unit/test_watchdog_fail_hard.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c4e4ab9d96e748920e26026e232007b29b1dbb2
+--- /dev/null
++++ b/test/registered/unit/test_watchdog_fail_hard.py
+@@ -0,0 +1,90 @@
++"""Deterministic tests for termination-first hard watchdog behavior."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import signal
++from unittest.mock import MagicMock, patch
++
++import psutil
++
++from sglang.srt.utils import watchdog as watchdog_module
++from sglang.srt.utils.watchdog import WatchdogRaw
++from sglang.test.test_utils import CustomTestCase
++
++
++class TestWatchdogFailHard(CustomTestCase):
++    @staticmethod
++    def _raw(*, soft=False, dump_info=None):
++        # Bypass __init__: production __init__ starts the daemon thread before a
++        # deterministic test can install its clock and process mocks.
++        raw = WatchdogRaw.__new__(WatchdogRaw)
++        raw.debug_name = "Scheduler"
++        raw.get_counter = MagicMock(return_value=0)
++        raw.is_active = MagicMock(return_value=True)
++        raw.watchdog_timeout = 1.0
++        raw.soft = soft
++        raw.dump_info = dump_info
++        raw.parent_process = MagicMock()
++        raw.parent_process.wait.return_value = None
++        return raw
++
++    @staticmethod
++    def _run_once(raw, *, pyspy_side_effect=None):
++        # First timestamp seeds watchdog_last_time; the second crosses timeout.
++        with patch.object(
++            watchdog_module.time, "perf_counter", side_effect=[0.0, 2.0]
++        ), patch.object(watchdog_module.time, "sleep"), patch.object(
++            watchdog_module,
++            "pyspy_dump_schedulers",
++            side_effect=pyspy_side_effect,
++        ):
++            raw._watchdog_once()
++
++    def test_hard_timeout_signals_before_and_skips_diagnostics(self):
++        dump_info = MagicMock(side_effect=AssertionError("must not run"))
++        raw = self._raw(dump_info=dump_info)
++
++        with patch.object(watchdog_module, "pyspy_dump_schedulers") as pyspy:
++            raw._handle_timeout()
++
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.wait.assert_called_once_with(
++            timeout=watchdog_module.HARD_WATCHDOG_GRACE_SECONDS
++        )
++        raw.parent_process.kill.assert_not_called()
++        dump_info.assert_not_called()
++        pyspy.assert_not_called()
++
++    def test_parent_still_alive_after_grace_receives_sigkill(self):
++        raw = self._raw(dump_info=MagicMock(return_value="state"))
++        raw.parent_process.wait.side_effect = psutil.TimeoutExpired(
++            watchdog_module.HARD_WATCHDOG_GRACE_SECONDS,
++            pid=123,
++        )
++
++        self._run_once(raw)
++
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.kill.assert_called_once_with()
++
++    def test_parent_gone_after_sigquit_does_not_receive_sigkill(self):
++        raw = self._raw()
++        raw.parent_process.wait.side_effect = psutil.NoSuchProcess(pid=123)
++
++        self._run_once(raw)
++
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.kill.assert_not_called()
++
++    def test_soft_watchdog_never_signals_on_diagnostic_failure(self):
++        dump_info = MagicMock(side_effect=RuntimeError("diagnostic failed"))
++        raw = self._raw(soft=True, dump_info=dump_info)
++        self._run_once(raw, pyspy_side_effect=RuntimeError("pyspy failed"))
++
++        raw.parent_process.send_signal.assert_not_called()
++        raw.parent_process.wait.assert_not_called()
++        raw.parent_process.kill.assert_not_called()
++        dump_info.assert_called_once_with()
++
+diff --git a/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py b/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eb70714d0c2a1ed8cc2b591c039db1ed8460d32
+--- /dev/null
++++ b/test/registered/unit/utils/test_watchdog_diagnostics_and_reap.py
+@@ -0,0 +1,64 @@
++"""Focused tests for bounded watchdog diagnostics and process reaping."""
++
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++import inspect
++import subprocess
++import unittest
++from unittest.mock import MagicMock, patch
++
++from sglang.srt.utils import common
++from sglang.srt.utils import cudacore_pyspy_dump_utils as dump_utils
++from sglang.test.test_utils import CustomTestCase
++
++
++class TestPyspyTimeout(CustomTestCase):
++    def test_each_pyspy_attempt_has_a_bounded_timeout(self):
++        process = MagicMock(pid=123)
++        timeout = subprocess.TimeoutExpired("py-spy", 10)
++
++        with patch.object(dump_utils.psutil, "Process", return_value=process), patch.object(
++            dump_utils.subprocess,
++            "run",
++            side_effect=timeout,
++        ) as run:
++            dump_utils.pyspy_dump_schedulers()
++
++        self.assertEqual(run.call_count, 2)
++        for call in run.call_args_list:
++            self.assertEqual(
++                call.kwargs["timeout"], dump_utils.PYSPY_DUMP_TIMEOUT_SECONDS
++            )
++
++
++class TestKillProcessTreeReap(CustomTestCase):
++    def test_default_waits_for_reap(self):
++        default = inspect.signature(common.kill_process_tree).parameters[
++            "wait_timeout"
++        ].default
++        self.assertEqual(default, 60)
++
++        parent = MagicMock()
++        child = MagicMock(pid=456)
++        parent.children.return_value = [child]
++
++        with patch.object(common.psutil, "Process", return_value=parent), patch.object(
++            common, "_wait_for_reap_or_raise"
++        ) as wait:
++            common.kill_process_tree(123, include_parent=False)
++
++        child.kill.assert_called_once_with()
++        wait.assert_called_once_with([child], 60)
++
++    def test_target_disappearing_during_child_walk_is_ignored(self):
++        parent = MagicMock()
++        parent.children.side_effect = common.psutil.NoSuchProcess(pid=123)
++
++        with patch.object(common.psutil, "Process", return_value=parent):
++            common.kill_process_tree(123)
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
