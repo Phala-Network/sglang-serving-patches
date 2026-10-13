@@ -42,3 +42,5 @@ patches/common/0041-narrow-abort-targeting-to-named-requests-and-decimal-index-c
 patches/common/0042-align-privacy-provenance-and-http-test-fixture-on-maintained-v0-5-21.patch
 patches/common/0043-recognize-declared-tool-calls-before-enforcing-allowed-output-subsets.patch
 patches/common/0044-preserve-qwen-xml-required-and-empty-schemas-with-official-xgrammar.patch
+patches/models/qwen/0045-request-static-yarn-and-safe-rejection.patch
+patches/build/0046-source-bound-yarn-runtime-packaging.patch

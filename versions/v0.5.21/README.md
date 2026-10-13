@@ -1,5 +1,15 @@
 # SGLang 0.5.21 compatibility maintenance
 
+The `phala-v0.5.21-6` source candidate adds request-static 1x/2x/4x YaRN and
+safe retirement of rejected requests. It uses the same official dependencies,
+native extensions and complete maintenance ancestry as phala-5. The tested
+53f implementation is unchanged apart from CRLF-to-LF source normalization;
+the engine-owned build recipe verifies installed bytes and wheel RECORD.
+The 46-entry [series](series) includes this source and build packaging.
+This continues the existing version line because shared v0.5.20 main requires
+the incompatible private XGrammar/native/Governor combination. Source replay,
+final image and production qualification remain distinct.
+
 This ordered stack tracks the official 0.5.21 base, separately from the shared
 0.5.20 integration. It does not replace or claim to reproduce the 0.5.20 stack.
 The exact base, engine commit/tree, patch parents and SHA256 values are in

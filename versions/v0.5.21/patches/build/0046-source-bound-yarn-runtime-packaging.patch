@@ -1,0 +1,169 @@
+diff --git a/docker/phala/README.request-static-yarn.md b/docker/phala/README.request-static-yarn.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..847a575783455ed14b9ac29556e5c446d8e4558b
+--- /dev/null
++++ b/docker/phala/README.request-static-yarn.md
+@@ -0,0 +1,58 @@
++# Request-static YaRN runtime
++
++This release extends the existing official-v0.5.21 compatibility maintenance
++line with request-fixed 1x/2x/4x YaRN for the Qwen3.5-family multimodal path.
++The ordinary Qwen3.8-27B-FP8 model was qualified with FP8 E4M3 KV, FA3, EAGLE
++and server context 1,048,576. It retains the complete phala-v0.5.21-5 runtime,
++its native extensions and official dependencies; no embedded Governor is added.
++
++The engine's shared main uses the v0.5.20 custom XGrammar/native/Governor
++combination. Its private XGrammar 0.2.6+phala.union1 differs from this line's
++official 0.2.7. Combining those unported interfaces would change the tested
++runtime. This release therefore continues the established v0.5.21 maintenance
++line rather than replacing main or claiming unrelated model qualification.
++
++Use an explicit output budget when short requests should select 1x. Automatic
++admission chooses the smallest profile covering the expanded input plus the
++original output budget. The global context limit separately reserves the four
++qualified EAGLE internal slots. `custom_params.yarn_factor` accepts 1, 2 or 4;
++chat requests place it at the top level, native `/generate` inside
++`sampling_params`. Profiles stay fixed for the request and isolate KV/SSM
++cache identities. Illegal or insufficient profiles return HTTP 400 and retire
++without entering model execution. Sessions, LMCache and PD modes are rejected
++when request-static YaRN is enabled.
++
++Set `text_config.rope_parameters.request_static_factors` to `[1, 2, 4]` through
++`--json-model-override-args`, with `rope_type: yarn`, `factor: 4.0`,
++`original_max_position_embeddings: 262144` and the model's existing mRoPE
++parameters retained. Server context 1,048,576 allows input plus declared
++output up to 1,048,572 with the qualified four EAGLE internal slots; pure input
++has its separate guard. Retain `SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1`.
++The release notes contain the exact qualified override and launch parameters.
++
++`request-static-yarn.Dockerfile` builds from the immutable phala-v0.5.21-5 base.
++Prepare a minimal context containing the 11 changed runtime modules, focused
++tests, root LICENSE, the recipe/installer and `source-manifest.json` with
++`engine_commit`, `tested_candidate_identity`, and `runtime_sha256`. Read every
++input from the exact engine Git commit. The installer verifies actual installed
++hashes, module resolution and updates the wheel RECORD during build; no runtime
++installation or source mount is used. Base distribution/native versions stay
++unchanged and OCI revision identifies the complete new engine source.
++
++Build on the authorized builder:
++
++```sh
++docker build --network none \
++  --build-arg ENGINE_COMMIT=FULL_ENGINE_COMMIT \
++  --build-arg PATCHES_COMMIT=FULL_PATCHES_COMMIT \
++  --build-arg RELEASE_VERSION=IMMUTABLE_RELEASE_TAG \
++  -t ghcr.io/phala-network/sglang:IMMUTABLE_RELEASE_TAG \
++  -f docker/phala/request-static-yarn.Dockerfile .
++```
++
++Qualify the actual image with direct `hf --help`, `hf download --help`,
++`sglang serve --help`, installed source/dependency equivalence and focused
++policy/admission regressions. Source tests, image publication and service
++acceptance are separate. GPQA 166/198 belongs to context 1,000,000; the
++1,048,576 addendum passed its five scoped runtime checks. TAU was not executed
++because independent simulator credentials were unavailable.
+diff --git a/docker/phala/install_request_static_yarn.py b/docker/phala/install_request_static_yarn.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8958c31311f7b04ec224bf0549d37987f3731b0e
+--- /dev/null
++++ b/docker/phala/install_request_static_yarn.py
+@@ -0,0 +1,76 @@
++"""Install a source-bound runtime delta while retaining verified native dependencies."""
++
++import base64
++import csv
++import hashlib
++import importlib
++import importlib.metadata
++import io
++import json
++from pathlib import Path
++import shutil
++
++import sglang
++
++
++def digest(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++root = Path(__file__).resolve().parents[2]
++manifest = json.loads((root / "source-manifest.json").read_text(encoding="utf8"))
++installed = Path(sglang.__file__).resolve().parent
++source_root = root / "python/sglang"
++if installed == source_root.resolve():
++    raise RuntimeError("sglang resolves to build source rather than installed package")
++if len(manifest["engine_commit"]) != 40:
++    raise RuntimeError("A complete engine source commit is required")
++
++copied = {}
++for name, expected in manifest["runtime_sha256"].items():
++    relative = Path(name).relative_to("python/sglang")
++    source, target = source_root / relative, installed / relative
++    if digest(source) != expected:
++        raise RuntimeError(f"Source hash mismatch: {name}")
++    target.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copyfile(source, target)
++    if digest(target) != expected:
++        raise RuntimeError(f"Installed hash mismatch: {target}")
++    copied[f"sglang/{relative.as_posix()}"] = target
++if len(copied) != 11:
++    raise RuntimeError("The qualified runtime delta must contain exactly 11 modules")
++
++# Keep wheel metadata truthful after the immutable build-time source delta.
++distribution = importlib.metadata.distribution("sglang")
++record = next(
++    distribution.locate_file(file)
++    for file in distribution.files
++    if file.name == "RECORD" and ".dist-info" in str(file)
++)
++rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf8"))))
++existing = {row[0]: row for row in rows}
++for name, target in copied.items():
++    encoded = base64.urlsafe_b64encode(hashlib.sha256(target.read_bytes()).digest())
++    row = [name, "sha256=" + encoded.decode().rstrip("="), str(target.stat().st_size)]
++    if name in existing:
++        existing[name][:] = row
++    else:
++        rows.append(row)
++with record.open("w", encoding="utf8", newline="") as stream:
++    csv.writer(stream, lineterminator="\n").writerows(rows)
++
++importlib.invalidate_caches()
++module = importlib.import_module("sglang.srt.configs.request_static_yarn")
++if Path(module.__file__).resolve() != (installed / "srt/configs/request_static_yarn.py").resolve():
++    raise RuntimeError("YaRN module resolves outside the installed package")
++receipt = {
++    "engine_commit": manifest["engine_commit"],
++    "tested_candidate_identity": manifest["tested_candidate_identity"],
++    "installed_sglang": str(installed),
++    "runtime_module_count": len(copied),
++    "runtime_sha256": manifest["runtime_sha256"],
++    "wheel_record_updated": True,
++    "native_dependencies": "unchanged from immutable phala-v0.5.21-5 base",
++}
++(root / "installed-source.json").write_text(json.dumps(receipt, indent=2) + "\n")
++print(json.dumps(receipt, sort_keys=True), flush=True)
+diff --git a/docker/phala/request-static-yarn.Dockerfile b/docker/phala/request-static-yarn.Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef3597252b873fa04836f63c72c269dbc4eca858
+--- /dev/null
++++ b/docker/phala/request-static-yarn.Dockerfile
+@@ -0,0 +1,17 @@
++ARG BASE_IMAGE=ghcr.io/phala-network/sglang:phala-v0.5.21-5@sha256:26ccb804414ee61251af7c51d02da39185b11fd625933809d345dcb082e800a3
++FROM ${BASE_IMAGE}
++
++ARG ENGINE_COMMIT
++ARG PATCHES_COMMIT
++ARG RELEASE_VERSION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_COMMIT}" \
++      org.opencontainers.image.version="${RELEASE_VERSION}" \
++      org.phala.serving-patches.revision="${PATCHES_COMMIT}"
++
++# Context contains only source from ENGINE_COMMIT, its focused tests, LICENSE,
++# this installer and a generated source-manifest.json. Installation is build-only.
++COPY . /opt/phala-request-yarn/
++RUN python /opt/phala-request-yarn/docker/phala/install_request_static_yarn.py
++
++ENTRYPOINT ["sglang", "serve"]

@@ -1,0 +1,1598 @@
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index c1cc4f6a7690216aa79ab0545c9683a407fa3f1a..a321ccc701cc6e5efaf228508986247bcaa024dd 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -508,6 +508,11 @@ class ModelConfig:
+         rope_scaling = getattr(self.hf_text_config, "rope_parameters", None) or getattr(
+             self.hf_text_config, "rope_scaling", {}
+         )
++        from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++
++        self.request_static_yarn_config = RequestStaticYarnConfig.from_hf_config(
++            self.hf_text_config
++        )
+         # Text-only serving comes from either the checkpoint's own declaration
+         # or the --language-model-only flag; every capability flag below
+         # (is_multimodal, is_*_understandable_model) must see both sources,
+@@ -557,6 +562,13 @@ class ModelConfig:
+             else:
+                 enable_multimodal = True
+ 
++        if self.request_static_yarn_config is not None:
++            # Check the source wrapper before embedded MTP rewrites its arch.
++            self.request_static_yarn_config.validate_model_support(
++                self.hf_config.architectures,
++                enable_multimodal and not self.is_lm_only,
++            )
++
+         # Config draft model
+         self._config_draft_model()
+ 
+diff --git a/python/sglang/srt/configs/request_static_yarn.py b/python/sglang/srt/configs/request_static_yarn.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab9c3f161bb3a23ef1a04e32787b3d06e950ce8f
+--- /dev/null
++++ b/python/sglang/srt/configs/request_static_yarn.py
+@@ -0,0 +1,163 @@
++# SPDX-License-Identifier: Apache-2.0
++# Request-static table selection adapted from vLLM PR #53964, head
++# 7ba5fd5e671e210b9e3d3f423ff2e1bf48314f45 (Apache-2.0).
++
++"""Admission policy for immutable per-request mRoPE YaRN profiles."""
++
++from dataclasses import dataclass
++import hashlib
++import json
++import math
++from typing import Any
++
++
++@dataclass(frozen=True)
++class YarnProfile:
++    factor: float
++    offset: int
++    profile_id: str
++    budget: int
++
++
++@dataclass(frozen=True)
++class RequestStaticYarnConfig:
++    factors: tuple[float, ...]
++    original_max_position: int
++    profiles: tuple[tuple[float, int, str], ...]
++
++    @classmethod
++    def from_hf_config(cls, hf_text_config: Any):
++        rope = getattr(hf_text_config, "rope_parameters", None) or getattr(
++            hf_text_config, "rope_scaling", None
++        )
++        factors = rope.get("request_static_factors") if isinstance(rope, dict) else None
++        if factors is None:
++            return None
++        normalized = tuple(float(factor) for factor in factors)
++        if (
++            not normalized
++            or any(not math.isfinite(f) or f < 1 for f in normalized)
++            or normalized != tuple(sorted(set(normalized)))
++        ):
++            raise ValueError(
++                "request_static_factors must be finite, sorted, unique and >= 1"
++            )
++        if (
++            rope.get("rope_type", rope.get("type")) != "yarn"
++            or "mrope_section" not in rope
++        ):
++            raise ValueError("Request-static YaRN requires yarn mRoPE")
++        if float(rope.get("factor", 1)) != normalized[-1]:
++            raise ValueError(
++                "Largest request-static factor must equal configured YaRN factor"
++            )
++        original = rope.get("original_max_position_embeddings")
++        if not isinstance(original, int) or isinstance(original, bool) or original <= 0:
++            raise ValueError(
++                "Request-static YaRN requires a positive original context length"
++            )
++        profiles = []
++        offset = 0
++        for factor in normalized:
++            rows = 4 * original * factor
++            if not rows.is_integer():
++                raise ValueError("Request-static YaRN must have integral table sizes")
++            params = {k: v for k, v in rope.items() if k != "request_static_factors"}
++            params["factor"] = factor
++            identity = {
++                "rope": params,
++                "head_dim": getattr(hf_text_config, "head_dim", None),
++                "rope_theta": params.get(
++                    "rope_theta", getattr(hf_text_config, "rope_theta", None)
++                ),
++                "partial_rotary_factor": params.get(
++                    "partial_rotary_factor",
++                    getattr(hf_text_config, "partial_rotary_factor", None),
++                ),
++                "layout": "sglang-mrope-request-static-v1",
++            }
++            digest = hashlib.sha256(
++                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
++            ).hexdigest()
++            profiles.append((factor, offset, "yarn:" + digest))
++            offset += int(rows)
++        return cls(normalized, original, tuple(profiles))
++
++    def validate_model_support(self, architectures, is_multimodal: bool):
++        # These wrappers and their embedded MTP consume mrope_positions. Bare
++        # CausalLM forwards do not, and prefill graphs allocate that input only
++        # in multimodal mode. Reject unsupported combinations at model load.
++        if not architectures or architectures[0] not in (
++            "Qwen3_5ForConditionalGeneration",
++            "Qwen3_5MoeForConditionalGeneration",
++        ):
++            raise ValueError(
++                "Request-static YaRN requires a Qwen3.5/3.8 ConditionalGeneration wrapper"
++            )
++        if not is_multimodal:
++            raise ValueError(
++                "Request-static YaRN requires multimodal mode; language-model-only "
++                "and disabled multimodal mode are unsupported"
++            )
++
++    def select(self, budget: int, explicit_factor=None) -> YarnProfile:
++        if not isinstance(budget, int) or budget < 0:
++            raise ValueError("Request-static YaRN requires a nonnegative token budget")
++        if explicit_factor is not None:
++            if isinstance(explicit_factor, bool) or not isinstance(
++                explicit_factor, (int, float)
++            ):
++                raise ValueError(
++                    "custom_params.yarn_factor must be a configured numeric factor"
++                )
++            if explicit_factor not in self.factors:
++                raise ValueError(
++                    "custom_params.yarn_factor must be a configured factor"
++                )
++        for factor, offset, profile_id in self.profiles:
++            if explicit_factor is not None and factor != explicit_factor:
++                continue
++            if budget <= self.original_max_position * factor:
++                return YarnProfile(factor, offset, profile_id, budget)
++        raise ValueError(
++            "Prompt plus output budget exceeds the selected YaRN profile capacity"
++        )
++
++
++def admit_request_static_yarn(req, config, context_length: int):
++    """Select once, before output clipping, cache lookup or chunked prefill."""
++    explicit = (req.sampling_params.custom_params or {}).get("yarn_factor")
++    if config is None:
++        if explicit is not None:
++            raise ValueError("custom_params.yarn_factor requires request-static YaRN")
++        return
++    if getattr(req, "rope_profile", None) is not None:
++        return
++    prompt_len = len(req.origin_input_ids)
++    output_budget = req.sampling_params.max_new_tokens
++    # None is the existing SGLang unbounded-output contract: reserve the whole
++    # remaining server context rather than silently treating it as one token.
++    if output_budget is None:
++        output_budget = max(0, context_length - prompt_len)
++    budget = prompt_len + output_budget
++    if budget > context_length:
++        raise ValueError(
++            "Prompt plus requested output budget exceeds server context length"
++        )
++    profile = config.select(budget, explicit)
++    mm = getattr(req, "multimodal_inputs", None)
++    if mm is not None and mm.mrope_positions is not None:
++        positions = mm.mrope_positions
++        max_position = int(positions.max()) if positions.numel() else -1
++        if (
++            max_position + output_budget
++            >= 4 * config.original_max_position * profile.factor
++        ):
++            raise ValueError(
++                "Multimodal positions exceed the selected YaRN table capacity"
++            )
++    # Preserve the caller namespace without ambiguous string concatenation.
++    req.extra_key = json.dumps(
++        [req.extra_key, profile.profile_id], separators=(",", ":")
++    )
++    req.rope_profile = profile
+diff --git a/python/sglang/srt/layers/rotary_embedding/factory.py b/python/sglang/srt/layers/rotary_embedding/factory.py
+index 56de48197cde7cbae2f4e2a9f6d9e4df02df84f1..fc0d7db695881f1a2bee645410b2dfceed988587 100644
+--- a/python/sglang/srt/layers/rotary_embedding/factory.py
++++ b/python/sglang/srt/layers/rotary_embedding/factory.py
+@@ -351,7 +351,7 @@ def get_rope(
+                     original_max_position,
+                     base,
+                     is_neox_style,
+-                    scaling_factor,
++                    rope_scaling.get("request_static_factors", scaling_factor),
+                     dtype,
+                     mrope_section=rope_scaling["mrope_section"],
+                     mrope_interleaved=rope_scaling.get("mrope_interleaved", False),
+diff --git a/python/sglang/srt/layers/rotary_embedding/mrope.py b/python/sglang/srt/layers/rotary_embedding/mrope.py
+index 5f42f89fceef387f3f081edde2973f57645b7a8d..42b25c6c714e406f2c79eb5206f8ecdc0ad3794d 100644
+--- a/python/sglang/srt/layers/rotary_embedding/mrope.py
++++ b/python/sglang/srt/layers/rotary_embedding/mrope.py
+@@ -436,7 +436,7 @@ class YaRNScalingMRotaryEmbedding(MRotaryEmbedding):
+         max_position_embeddings: int,
+         base: int,
+         is_neox_style: bool,
+-        scaling_factor: float,
++        scaling_factor: float | list[float] | tuple[float, ...],
+         dtype: torch.dtype,
+         *,
+         mrope_section: Optional[List[int]] = None,
+@@ -447,7 +447,14 @@ class YaRNScalingMRotaryEmbedding(MRotaryEmbedding):
+         beta_slow: int = 1,
+         truncate: bool = True,
+     ) -> None:
+-        self.scaling_factor = scaling_factor
++        self.scaling_factors = (
++            tuple(float(f) for f in scaling_factor)
++            if isinstance(scaling_factor, (list, tuple))
++            else None
++        )
++        self.scaling_factor = (
++            self.scaling_factors[-1] if self.scaling_factors else scaling_factor
++        )
+         self.extrapolation_factor = extrapolation_factor
+         self.attn_factor = attn_factor
+         self.beta_fast = beta_fast
+@@ -490,6 +497,12 @@ class YaRNScalingMRotaryEmbedding(MRotaryEmbedding):
+         return inv_freq
+ 
+     def _ensure_cos_sin_cache_length(self, needed_max_pos: int):
++        if self.scaling_factors is not None:
++            if needed_max_pos >= self.cos_sin_cache.shape[0]:
++                raise ValueError(
++                    "Immutable request-static YaRN tables cannot be extended"
++                )
++            return
+         self.cos_sin_cache, _ = _extend_yarn_cache(
+             cache=self.cos_sin_cache,
+             compute_inv_freq=lambda: self._compute_inv_freq(self.scaling_factor),
+@@ -498,6 +511,33 @@ class YaRNScalingMRotaryEmbedding(MRotaryEmbedding):
+         )
+ 
+     def _compute_cos_sin_cache(self) -> torch.Tensor:
++        if self.scaling_factors is not None:
++            caches = []
++            self.scaling_factor_to_offset = {}
++            offset = 0
++            for factor in self.scaling_factors:
++                # Factor 1 uses exactly the native frequencies and magnitude.
++                inv_freq = (
++                    RotaryEmbedding._compute_inv_freq(self, self.base)
++                    if factor == 1
++                    else self._compute_inv_freq(factor)
++                )
++                t = torch.arange(
++                    int(4 * self.max_position_embeddings * factor), dtype=torch.float32
++                )
++                freqs = torch.einsum("i,j -> ij", t, inv_freq)
++                magnitude = (
++                    1.0
++                    if factor == 1
++                    else yarn_get_mscale_simple(factor) * self.attn_factor
++                )
++                cache = torch.cat(
++                    (freqs.cos() * magnitude, freqs.sin() * magnitude), dim=-1
++                )
++                self.scaling_factor_to_offset[factor] = offset
++                caches.append(cache)
++                offset += cache.shape[0]
++            return torch.cat(caches, dim=0)
+         inv_freq = self._compute_inv_freq(self.scaling_factor)
+         t = torch.arange(
+             self.max_position_embeddings * self.scaling_factor, dtype=torch.float32
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 9354d60273cfebc453a54eb9850ebef51a7746ce..44a08e986fe4d0754dc55d05a827206d6c97923b 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -1120,6 +1120,7 @@ class Req(ReqDllmMixin):
+ 
+         self.extra_key = extra_key
+         self.cache_salt = cache_salt or None
++        self.rope_profile = None
+         self.lora_id = lora_id
+         self.routing_key = routing_key
+ 
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index f02615abec8ac0c55283f19b23820e319a44eadc..1885c0f678686cf8d9130e0abb653f077dad4249 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -109,6 +109,7 @@ from sglang.srt.disaggregation.utils import (
+     ReqToMetadataIdxAllocator,
+     TransferBackend,
+     get_dsa_seed_metadata_dim,
++    is_unadmitted_reject,
+     prepare_abort,
+     unified_memory_disagg_move_gate,
+ )
+@@ -3037,6 +3038,23 @@ class Scheduler(
+                 self._add_request_to_queue(req)
+                 return
+ 
++        # Admission sees the expanded multimodal prompt and the requested
++        # output budget, before init_req_max_new_tokens can clip that budget.
++        from sglang.srt.configs.request_static_yarn import admit_request_static_yarn
++
++        try:
++            admit_request_static_yarn(
++                req,
++                getattr(self.model_config, "request_static_yarn_config", None),
++                self.model_config.context_len,
++            )
++        except ValueError as error:
++            req.set_finish_with_abort(
++                str(error), status_code=HTTPStatus.BAD_REQUEST
++            )
++            self.retire_unadmitted_request(req)
++            return
++
+         # initialize before returning
+         self.init_req_max_new_tokens(req)
+ 
+@@ -3044,7 +3062,8 @@ class Scheduler(
+         error_msg = validate_input_length(
+             req,
+             self.max_req_input_len,
+-            get_serving().allow_auto_truncate,
++            get_serving().allow_auto_truncate
++            and getattr(self.model_config, "request_static_yarn_config", None) is None,
+         )
+         if error_msg:
+             req.set_finish_with_abort(error_msg)
+@@ -3260,6 +3279,13 @@ class Scheduler(
+         self.output_streamer.stream_output([req], req.return_logprob)
+ 
+     def _add_request_to_queue(self, req: Req, is_retracted: bool = False):
++        # Validation can fail before a request-static profile is assigned.
++        if (
++            getattr(self.model_config, "request_static_yarn_config", None) is not None
++            and is_unadmitted_reject(req)
++        ):
++            self.retire_unadmitted_request(req)
++            return
+         if not self._set_or_validate_priority(req):
+             self._release_aborted_request(req)
+             return
+diff --git a/python/sglang/srt/managers/scheduler_components/output_streamer.py b/python/sglang/srt/managers/scheduler_components/output_streamer.py
+index 752d456b9b984a9570922e10ba92c055f185e467..1a316a54c9d565a03bf8cfc34e172b4aab9c2a82 100644
+--- a/python/sglang/srt/managers/scheduler_components/output_streamer.py
++++ b/python/sglang/srt/managers/scheduler_components/output_streamer.py
+@@ -187,6 +187,20 @@ class SchedulerOutputStreamer:
+             acc.accept(req=req)
+             self._maybe_log_time_stats(req=req)
+ 
++        if any(
++            getattr(req, "rope_profile", None) is not None for req in acc.output_reqs
++        ):
++            acc.customized_info["yarn_profile"] = [
++                {
++                    "factor": req.rope_profile.factor,
++                    "id": req.rope_profile.profile_id,
++                    "budget": req.rope_profile.budget,
++                }
++                if req.rope_profile is not None
++                else None
++                for req in acc.output_reqs
++            ]
++
+         if (
+             self.has_additional_customized_info
+             and self.should_build_additional_customized_info()
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index c02f85671b0995dd6a0c971284a755973d06bc85..402bcefb88702a5656c36ac8940cc48c82cb26f6 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1304,12 +1304,16 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                     "encoder SWA replay cannot return cached prompt logprobs"
+                 )
+         _max_req_len = self.context_len
++        allow_auto_truncate = (
++            self.allow_auto_truncate
++            and getattr(self.model_config, "request_static_yarn_config", None) is None
++        )
+         input_token_num = len(input_ids) if input_ids is not None else 0
+         input_token_num += self.num_reserved_tokens
+ 
+         # Validate input length
+         if input_token_num >= self.context_len:
+-            if self.allow_auto_truncate:
++            if allow_auto_truncate:
+                 logger.warning(
+                     "The input (<redacted> tokens) is longer than the model's context length (<redacted> tokens). Truncating the input."
+                 )
+@@ -1328,7 +1332,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             and max_new_tokens is not None
+             and (max_new_tokens + input_token_num) > _max_req_len
+         ):
+-            if self.allow_auto_truncate:
++            if allow_auto_truncate:
+                 logger.warning(
+                     "Requested token count (<redacted> input + <redacted> new) exceeds the model's context length (<redacted> tokens). Truncating max_new_tokens."
+                 )
+@@ -1508,6 +1512,21 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+ 
+         # Build return object
+         if isinstance(obj, GenerateReqInput):
++            if (
++                getattr(self.model_config, "request_static_yarn_config", None)
++                is not None
++            ):
++                if obj.session_id is not None or obj.session_params:
++                    raise ValueError(
++                        "Request-static YaRN does not support session continuation"
++                    )
++                if (
++                    self.server_args.enable_lmcache
++                    or self.server_args.disaggregation_mode != "null"
++                ):
++                    raise ValueError(
++                        "Request-static YaRN does not support LMCache or disaggregated serving"
++                    )
+             session_params = (
+                 SessionParams(**obj.session_params) if obj.session_params else None
+             )
+@@ -2755,6 +2774,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+     ) -> None:
+         """Accumulate metadata; subclasses may use finish_reason for terminal data."""
+         for key, values in customized_info.items():
++            if key == "yarn_profile":
++                meta_info[key] = values[index]
++                continue
+             self._accumulate_request_meta_info(
+                 meta_info,
+                 state,
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index ee2e5d2bf05639fe7b4e23b2d39e893635cb7f8f..530e1f068e6522921ddab4cc9ba42467477b7e6f 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -1386,6 +1386,41 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+         )
+ 
+         self.mrope_positions = next_input_positions
++        self._apply_request_static_yarn_offsets(model_runner, batch, uniform=True)
++
++    def _apply_request_static_yarn_offsets(self, model_runner, batch, *, uniform=False):
++        if getattr(model_runner.model_config, "request_static_yarn_config", None) is None:
++            return
++        num_tokens = self.mrope_positions.shape[-1]
++        if not num_tokens:
++            return
++        profiles = [req.rope_profile for req in batch.reqs]
++        if any(profile is None for profile in profiles):
++            raise RuntimeError("Request-static YaRN profile missing at model forward")
++        batch_size = len(profiles)
++        if uniform:
++            if num_tokens % batch_size:
++                raise RuntimeError(
++                    "Request-static YaRN speculative token layout is not uniform"
++                )
++            repeats = [num_tokens // batch_size] * batch_size
++        else:
++            repeats = batch.extend_lens
++            if sum(repeats) != num_tokens:
++                raise RuntimeError("Request-static YaRN extend token layout mismatch")
++        offsets = torch.tensor(
++            [profile.offset for profile in profiles],
++            dtype=torch.int64,
++            device=model_runner.device,
++        )
++        token_offsets = torch.repeat_interleave(
++            offsets,
++            torch.tensor(repeats, dtype=torch.int64, device=model_runner.device),
++            output_size=num_tokens,
++        )
++        # Keep physical positions, lengths and KV indices untouched. These
++        # model-only positions are copied into the existing CUDA graph slot.
++        self.mrope_positions = self.mrope_positions + token_offsets.unsqueeze(0)
+ 
+     def _expand_mrope_from_input(
+         self,
+@@ -1419,6 +1454,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+ 
+         if forward_mode.is_decode():
+             self._compute_mrope_positions_decode(model_runner, batch)
++            self._apply_request_static_yarn_offsets(model_runner, batch, uniform=True)
+             return
+ 
+         if not forward_mode.is_extend(include_draft_extend_v2=True):
+@@ -1429,6 +1465,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+             )
+ 
+         self._compute_mrope_positions_extend(model_runner, batch)
++        self._apply_request_static_yarn_offsets(model_runner, batch)
+ 
+     def _compute_mrope_positions_decode(
+         self, model_runner: ModelRunner, batch: ScheduleBatch
+diff --git a/python/sglang/srt/models/qwen3_5.py b/python/sglang/srt/models/qwen3_5.py
+index fac16f30a38a5e9ba234e04b6c75803001ace90a..cd7336ae02a35d4d8e7c3278667a16e3944ced31 100644
+--- a/python/sglang/srt/models/qwen3_5.py
++++ b/python/sglang/srt/models/qwen3_5.py
+@@ -2264,7 +2264,8 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
+             self.config, "rope_scaling", {}
+         )
+         self.is_mrope_enabled = (
+-            not self.language_model_only and "mrope_section" in rope_config
++            (not self.language_model_only or "request_static_factors" in rope_config)
++            and "mrope_section" in rope_config
+         )
+ 
+         self.deepstack_visual_indexes = (
+@@ -2426,7 +2427,8 @@ class Qwen3_5MoeForConditionalGeneration(Qwen3VLForConditionalGeneration):
+             self.config, "rope_scaling", {}
+         )
+         self.is_mrope_enabled = (
+-            not self.language_model_only and "mrope_section" in rope_config
++            (not self.language_model_only or "request_static_factors" in rope_config)
++            and "mrope_section" in rope_config
+         )
+ 
+         self.deepstack_visual_indexes = (
+diff --git a/python/sglang/srt/models/qwen3_5_mtp.py b/python/sglang/srt/models/qwen3_5_mtp.py
+index b90d6f728c5791f31b1c9c595434e0d33b678237..030c414dda5c85d66f00e3e2512e2af56c97e866 100644
+--- a/python/sglang/srt/models/qwen3_5_mtp.py
++++ b/python/sglang/srt/models/qwen3_5_mtp.py
+@@ -123,6 +123,10 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
+         quant_config = _mtp_quant_config(quant_config)
+ 
+         self.config = config
++        rope = getattr(config, "rope_parameters", None) or getattr(
++            config, "rope_scaling", {}
++        )
++        self.is_mrope_enabled = "request_static_factors" in rope
+         self.tp_size = get_parallel().tp_size
+         self.quant_config = quant_config
+         self.pp_group = get_parallel().pp_group
+@@ -195,6 +199,8 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
+         input_embeds: Optional[torch.Tensor] = None,
+         **kwargs,
+     ):
++        if self.is_mrope_enabled:
++            positions = forward_batch.mrope_positions
+         exit_stack = ExitStack()
+         if (
+             is_npu()
+diff --git a/test/registered/unit/configs/test_request_static_yarn_policy.py b/test/registered/unit/configs/test_request_static_yarn_policy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2daa368ff1a2a238cdafcd07bef4bc96a2109451
+--- /dev/null
++++ b/test/registered/unit/configs/test_request_static_yarn_policy.py
+@@ -0,0 +1,197 @@
++"""Pure CPU checks of the real admission policy; no CUDA/import substitutes."""
++
++import ast
++import importlib.util
++from pathlib import Path
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++SOURCE = (
++    Path(__file__).resolve().parents[4]
++    / "python/sglang/srt/configs/request_static_yarn.py"
++)
++spec = importlib.util.spec_from_file_location(
++    "request_static_yarn_policy_under_test", SOURCE
++)
++policy = importlib.util.module_from_spec(spec)
++sys.modules[spec.name] = policy
++spec.loader.exec_module(policy)
++
++
++def config(**updates):
++    rope = {
++        "rope_type": "yarn",
++        "factor": 4.0,
++        "request_static_factors": [1, 2, 4],
++        "original_max_position_embeddings": 262144,
++        "rope_theta": 10000000,
++        "partial_rotary_factor": 0.25,
++        "mrope_section": [11, 11, 10],
++        "mrope_interleaved": True,
++        **updates,
++    }
++    return policy.RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(rope_parameters=rope)
++    )
++
++
++def request(prompt, output, *, explicit=None, namespace=None):
++    return SimpleNamespace(
++        origin_input_ids=range(prompt),
++        sampling_params=SimpleNamespace(
++            max_new_tokens=output, custom_params={"yarn_factor": explicit}
++        ),
++        extra_key=namespace,
++        rope_profile=None,
++        multimodal_inputs=None,
++    )
++
++
++@pytest.mark.parametrize(
++    "budget,factor",
++    [
++        (1, 1),
++        (262144, 1),
++        (262145, 2),
++        (524288, 2),
++        (524289, 4),
++        (1000000, 4),
++        (1048576, 4),
++    ],
++)
++def test_smallest_covering_profile(budget, factor):
++    assert config().select(budget).factor == factor
++
++
++def test_table_offsets_and_profile_identity():
++    first = config()
++    assert [x[1] for x in first.profiles] == [0, 1048576, 3145728]
++    assert len({x[2] for x in first.profiles}) == 3
++    assert first.select(1).profile_id == config().select(1).profile_id
++    assert first.select(1).profile_id != config(rope_theta=1000000).select(1).profile_id
++
++
++@pytest.mark.parametrize(
++    "architecture",
++    ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"],
++)
++def test_supported_wrapper_requires_multimodal_mode(architecture):
++    config().validate_model_support([architecture], True)
++    with pytest.raises(ValueError, match="requires multimodal mode"):
++        config().validate_model_support([architecture], False)
++
++
++@pytest.mark.parametrize(
++    "architectures",
++    [None, [], ["Qwen3_5ForCausalLM"], ["Qwen3_5MoeForCausalLM"], ["Qwen3ForCausalLM"]],
++)
++def test_unported_architecture_is_not_silently_accepted(architectures):
++    with pytest.raises(ValueError, match="ConditionalGeneration wrapper"):
++        config().validate_model_support(architectures, True)
++
++
++def test_model_support_guard_precedes_embedded_mtp_architecture_remapping():
++    # This source-wiring check runs without Torch. Behavioral model startup is
++    # a separate image gate; validating the rewritten MTP arch would reject
++    # the supported wrapper's own embedded draft worker.
++    tree = ast.parse(SOURCE.with_name("model_config.py").read_text(encoding="utf8"))
++    model_config = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.ClassDef) and node.name == "ModelConfig"
++    )
++    init = next(
++        node for node in model_config.body if getattr(node, "name", None) == "__init__"
++    )
++    calls = {
++        node.func.attr: node.lineno
++        for node in ast.walk(init)
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Attribute)
++        and node.func.attr in ("validate_model_support", "_config_draft_model")
++    }
++    assert calls["validate_model_support"] < calls["_config_draft_model"]
++
++
++@pytest.mark.parametrize(
++    "updates",
++    [
++        {"request_static_factors": []},
++        {"request_static_factors": [2, 1, 4]},
++        {"request_static_factors": [1, 2, 2, 4]},
++        {"request_static_factors": [1, float("nan"), 4]},
++        {"request_static_factors": [1, float("inf")]},
++        {"request_static_factors": [0.5, 4]},
++        {"request_static_factors": [1, 2]},
++        {"rope_type": "default"},
++        {"original_max_position_embeddings": 0},
++    ],
++)
++def test_invalid_configuration_fails(updates):
++    with pytest.raises(ValueError):
++        config(**updates)
++
++
++def test_prompt_plus_output_and_expanded_mm_admission():
++    req = request(262140, 5)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 2
++    assert req.rope_profile.budget == 262145
++
++
++def test_no_reselection_after_chunking_retraction_or_custom_param_change():
++    req = request(262140, 5)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    selected, namespace = req.rope_profile, req.extra_key
++    req.origin_input_ids = range(300000)
++    req.sampling_params.custom_params["yarn_factor"] = 4
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile is selected
++    assert req.extra_key == namespace
++    with pytest.raises(Exception):
++        selected.factor = 4
++
++
++def test_explicit_output_budget_is_not_clipped_to_make_it_fit():
++    with pytest.raises(ValueError, match="server context"):
++        policy.admit_request_static_yarn(request(999999, 2), config(), 1000000)
++    with pytest.raises(ValueError, match="profile capacity"):
++        policy.admit_request_static_yarn(
++            request(262140, 5, explicit=1), config(), 1000000
++        )
++    with pytest.raises(ValueError):
++        config().select(1048577)
++
++
++@pytest.mark.parametrize("explicit", [0, 3, True, "2", float("nan")])
++def test_invalid_explicit_factor_rejected(explicit):
++    with pytest.raises(ValueError):
++        config().select(32, explicit)
++
++
++def test_explicit_factor_is_test_control_and_none_reserves_full_context():
++    req = request(10, 10, explicit=4)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 4
++    req = request(10, None)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 4
++    assert req.rope_profile.budget == 1000000
++
++
++def test_cache_namespace_keeps_user_identity_and_isolates_profiles():
++    reqs = [request(100, 10, explicit=f, namespace="tenant|x") for f in [1, 2, 4]]
++    for req in reqs:
++        policy.admit_request_static_yarn(req, config(), 1000000)
++    assert len({req.extra_key for req in reqs}) == 3
++    assert all(policy.json.loads(req.extra_key)[0] == "tenant|x" for req in reqs)
++
++
++def test_feature_off_is_unchanged_and_override_not_silently_ignored():
++    req = request(1000001, 10)
++    policy.admit_request_static_yarn(req, None, 1000000)
++    assert req.rope_profile is None
++    with pytest.raises(ValueError, match="requires"):
++        policy.admit_request_static_yarn(request(10, 1, explicit=2), None, 1000000)
+diff --git a/test/registered/unit/managers/test_request_static_yarn_admission_reject.py b/test/registered/unit/managers/test_request_static_yarn_admission_reject.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b8cced5cb3a88f91dd3f8a771a568239fae7be2
+--- /dev/null
++++ b/test/registered/unit/managers/test_request_static_yarn_admission_reject.py
+@@ -0,0 +1,315 @@
++"""Real Scheduler/Req intake rejection lifecycle; no inference or GPU claim."""
++
++from array import array
++from http import HTTPStatus
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++import torch
++
++from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++from sglang.srt.disaggregation.utils import DisaggregationMode
++from sglang.srt.managers.io_struct import TokenizedGenerateReqInput
++from sglang.srt.managers.schedule_batch import (
++    FINISH_ABORT,
++    Modality,
++    MultimodalDataItem,
++    MultimodalInputs,
++    Req,
++)
++from sglang.srt.managers.scheduler import Scheduler, _MultimodalInputProcessingError
++from sglang.srt.multimodal.transport.cuda_ipc import CudaIpcTensorTransportProxy
++from sglang.srt.sampling.sampling_params import SamplingParams
++
++
++def yarn_config():
++    return RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={
++                "rope_type": "yarn",
++                "factor": 4.0,
++                "request_static_factors": [1, 2, 4],
++                "original_max_position_embeddings": 262144,
++                "mrope_section": [11, 11, 10],
++            }
++        )
++    )
++
++
++def make_case(*, output, factor=None, mm=False, stream=False, logprob=False):
++    params = SamplingParams(
++        temperature=0,
++        max_new_tokens=output,
++        custom_params={"yarn_factor": factor} if factor is not None else None,
++    )
++    params.normalize(None)
++    ids = array("q", range(23))
++    recv = TokenizedGenerateReqInput(
++        rid="intake-fixture",
++        input_text="",
++        input_ids=ids,
++        input_embeds=None,
++        mm_inputs=object() if mm else None,
++        token_type_ids=None,
++        sampling_params=params,
++        return_logprob=logprob,
++        logprob_start_len=0 if logprob else -1,
++        top_logprobs_num=0,
++        token_ids_logprob=None,
++        stream=stream,
++        bootstrap_port=1,
++        extra_key="caller-namespace",
++    )
++    req = Req(
++        recv.rid,
++        recv.input_text,
++        recv.input_ids,
++        params,
++        return_logprob=logprob,
++        stream=stream,
++        disagg_mode=DisaggregationMode.NULL,
++        extra_key=recv.extra_key,
++    )
++    req.time_stats = MagicMock()
++    req.init_next_round_input = MagicMock(
++        side_effect=AssertionError("rejected request reached cache lookup")
++    )
++
++    scheduler = object.__new__(Scheduler)
++    scheduler.enable_session_radix_cache = False
++    scheduler.disaggregation_mode = DisaggregationMode.NULL
++    scheduler.metrics_reporter = SimpleNamespace(enable_metrics=False)
++    scheduler.model_config = SimpleNamespace(
++        hf_eos_token_id={0},
++        vocab_size=128,
++        context_len=1000000,
++        request_static_yarn_config=yarn_config(),
++    )
++    scheduler.tokenizer = None
++    scheduler.dllm_config = None
++    scheduler.max_req_input_len = 999999
++    scheduler._maybe_namespace_elastic_radix_cache = MagicMock()
++    scheduler.validate_dllm_request = MagicMock(return_value=None)
++    scheduler.spec_algorithm = SimpleNamespace(
++        is_dflash_family=lambda: False,
++        is_uno=lambda: False,
++        is_none=lambda: True,
++    )
++    scheduler.init_req_max_new_tokens = MagicMock()
++    scheduler.waiting_queue = []
++    scheduler.enable_priority_scheduling = False
++    scheduler.abort_on_priority_when_disabled = True
++    scheduler.max_queued_requests = None
++    scheduler.enable_hicache_storage = False
++    scheduler.enable_lmcache = False
++    scheduler.processed_tokens_counter = 0
++    scheduler._add_request_to_queue = MagicMock(wraps=scheduler._add_request_to_queue)
++    scheduler.tree_cache = MagicMock()
++    scheduler.tree_cache.cache_controller = SimpleNamespace()
++    scheduler.beam_coordinator = MagicMock()
++    scheduler.grammar_manager = MagicMock()
++    scheduler.grammar_manager.process_req_with_grammar.return_value = False
++    scheduler.output_streamer = MagicMock()
++    scheduler.pad_input_ids_func = None
++    scheduler._maybe_compute_mrope_positions = MagicMock()
++
++    proxy = None
++    if mm:
++        # Reuse the deferred-transport lifecycle fixture: no CUDA allocation.
++        proxy = object.__new__(CudaIpcTensorTransportProxy)
++        proxy.total_consumer_count = 1
++        proxy.acknowledge_consumption = MagicMock()
++        mm_inputs = MultimodalInputs(
++            mm_items=[MultimodalDataItem(modality=Modality.IMAGE, feature=proxy)],
++            mrope_positions=torch.arange(95, dtype=torch.int64).expand(3, -1),
++        )
++        scheduler._get_multimodal_inputs = MagicMock(return_value=mm_inputs)
++
++        def pad(_recv, actual_req, _mm):
++            actual_req.origin_input_ids = array("q", range(95))
++            return True
++
++        scheduler._try_apply_padded_mm_input_ids = MagicMock(side_effect=pad)
++    return scheduler, recv, req, proxy
++
++
++def handle(scheduler, recv, req, **kwargs):
++    with (
++        patch("sglang.srt.managers.scheduler.Req", return_value=req),
++        patch(
++            "sglang.srt.managers.scheduler.get_serving",
++            return_value=SimpleNamespace(allow_auto_truncate=False),
++        ),
++        patch(
++            "sglang.srt.managers.scheduler.get_device",
++            return_value=SimpleNamespace(mlx_enable_sampling=False),
++        ),
++        patch(
++            "sglang.srt.managers.scheduler.get_parallel",
++            return_value=SimpleNamespace(pp_rank=0),
++        ),
++        patch(
++            "sglang.srt.managers.schedule_batch.get_parallel",
++            return_value=SimpleNamespace(tp_rank=1),
++        ),
++        patch(
++            "sglang.srt.managers.schedule_batch.get_spec",
++            return_value=SimpleNamespace(speculative_algorithm="EAGLE"),
++        ),
++    ):
++        scheduler.handle_generate_request(recv, **kwargs)
++
++
++def assert_local_rejection(
++    scheduler, req, message, *, queued_validator=False, internal_error=False
++):
++    assert scheduler.waiting_queue == []
++    if queued_validator:
++        scheduler._add_request_to_queue.assert_called_once_with(req)
++        scheduler.init_req_max_new_tokens.assert_called_once_with(req)
++    else:
++        scheduler._add_request_to_queue.assert_not_called()
++        scheduler.init_req_max_new_tokens.assert_not_called()
++    assert req.rope_profile is None
++    assert req.extra_key == "caller-namespace"
++    assert req.finished()
++    assert isinstance(req.finished_reason, FINISH_ABORT)
++    assert req.finished_reason.status_code == (
++        HTTPStatus.INTERNAL_SERVER_ERROR if internal_error else HTTPStatus.BAD_REQUEST
++    )
++    assert req.finished_reason.err_type == (
++        "InternalServerError" if internal_error else "BadRequestError"
++    )
++    assert message in req.finished_reason.message
++    assert req.to_finish is None
++    assert not req.kv.holds_kv and not req.kv.holds_mamba
++    scheduler.grammar_manager.process_req_with_grammar.assert_not_called()
++    req.init_next_round_input.assert_not_called()
++    scheduler.tree_cache.match_prefix.assert_not_called()
++    scheduler.tree_cache.finish.assert_called_once()
++    assert scheduler.tree_cache.finish.call_args.args[0] == req.cache_request_handle
++    scheduler.beam_coordinator.retire_group.assert_called_once_with(req)
++    req.time_stats.trace_ctx.abort.assert_called_once()
++    scheduler.output_streamer.stream_output.assert_called_once_with([req], False)
++
++
++@pytest.mark.parametrize(
++    "stream,logprob", [(False, False), (True, False), (False, True), (True, True)]
++)
++def test_mm_expansion_undercoverage_is_request_local(stream, logprob):
++    # Exact observed boundary: 23 text IDs -> 95 MM IDs; 95 + 262050 = 262145.
++    scheduler, recv, req, proxy = make_case(
++        output=262050, factor=1, mm=True, stream=stream, logprob=logprob
++    )
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, "selected YaRN profile capacity")
++    proxy.acknowledge_consumption.assert_called_once_with(1)
++    assert req.multimodal_inputs is None
++
++
++@pytest.mark.parametrize(
++    "output,factor,message",
++    [
++        (1000000, None, "server context length"),
++        (524266, 2, "selected YaRN profile capacity"),
++        (1, 3, "configured factor"),
++    ],
++)
++def test_native_policy_rejections_are_request_local(output, factor, message):
++    scheduler, recv, req, _ = make_case(output=output, factor=factor)
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, message)
++
++
++def test_explicit_factor_on_disabled_feature_is_request_local():
++    scheduler, recv, req, _ = make_case(output=1, factor=1)
++    scheduler.model_config.request_static_yarn_config = None
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, "requires request-static YaRN")
++
++
++def test_legal_request_after_rejection_keeps_normal_path():
++    scheduler, recv, rejected, _ = make_case(output=262050, factor=1, mm=True)
++    handle(scheduler, recv, rejected)
++    assert_local_rejection(scheduler, rejected, "selected YaRN profile capacity")
++    _, legal_recv, legal, _ = make_case(output=1, factor=2)
++    handle(scheduler, legal_recv, legal)
++    assert legal.rope_profile.factor == 2
++    assert legal.rope_profile.budget == 24
++    assert not legal.finished()
++    assert scheduler.waiting_queue == [legal]
++    scheduler._add_request_to_queue.assert_called_once_with(legal)
++    scheduler.init_req_max_new_tokens.assert_called_once_with(legal)
++    scheduler.grammar_manager.process_req_with_grammar.assert_called_once_with(legal)
++    # The accepted request did not emit a second rejection completion.
++    scheduler.output_streamer.stream_output.assert_called_once_with([rejected], False)
++
++
++def test_auto_selection_still_uses_expanded_prompt_before_clipping():
++    scheduler, recv, req, proxy = make_case(output=262050, mm=True)
++    handle(scheduler, recv, req)
++    assert req.rope_profile.factor == 2
++    assert req.rope_profile.budget == 262145
++    assert req.sampling_params.max_new_tokens == 262050
++    assert not req.finished()
++    assert scheduler.waiting_queue == [req]
++    scheduler.init_req_max_new_tokens.assert_called_once_with(req)
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
++    proxy.acknowledge_consumption.assert_not_called()
++
++
++@pytest.mark.parametrize("failure", ["expanded-length", "processing", "fanout"])
++def test_pre_admission_mm_abort_never_enters_prefill(failure):
++    scheduler, recv, req, proxy = make_case(output=1, factor=1, mm=True)
++    if failure == "expanded-length":
++        scheduler.max_req_input_len = 95
++        handle(scheduler, recv, req)
++        message = "Multimodal prompt is too long"
++        proxy.acknowledge_consumption.assert_called_once_with(1)
++    elif failure == "processing":
++        scheduler._get_multimodal_inputs.side_effect = _MultimodalInputProcessingError(
++            "fixture MM processing failure"
++        )
++        handle(scheduler, recv, req)
++        message = "fixture MM processing failure"
++    else:
++        handle(scheduler, recv, req, mm_input_error="fixture MM fanout failure")
++        message = "fixture MM fanout failure"
++    assert_local_rejection(
++        scheduler,
++        req,
++        message,
++        queued_validator=True,
++        internal_error=failure != "expanded-length",
++    )
++    assert req.multimodal_inputs is None
++
++
++def test_feature_disabled_keeps_existing_mm_abort_queue_path():
++    scheduler, recv, req, proxy = make_case(output=1, mm=True)
++    scheduler.model_config.request_static_yarn_config = None
++    scheduler.max_req_input_len = 95
++    handle(scheduler, recv, req)
++    assert scheduler.waiting_queue == [req]
++    assert not req.finished()
++    assert isinstance(req.to_finish, FINISH_ABORT)
++    proxy.acknowledge_consumption.assert_called_once_with(1)
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
++
++
++@pytest.mark.parametrize("state", ["retracted", "holds-kv"])
++def test_owned_or_retracted_abort_keeps_existing_queue_path(state):
++    scheduler, _, req, _ = make_case(output=1)
++    req.rope_profile = scheduler.model_config.request_static_yarn_config.select(24)
++    req.to_finish = FINISH_ABORT("existing in-flight abort")
++    if state == "retracted":
++        req.is_retracted = True
++    else:
++        req.kv.req_pool_idx = 0
++    scheduler._add_request_to_queue(req)
++    assert scheduler.waiting_queue == [req]
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
+diff --git a/test/registered/unit/mem_cache/test_request_static_yarn_cache.py b/test/registered/unit/mem_cache/test_request_static_yarn_cache.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..97d0145fc4b38e0f2822912d238d129ff9d0066b
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_request_static_yarn_cache.py
+@@ -0,0 +1,207 @@
++"""Actual FULL/MAMBA cache and deferred COW; no model-inference claim."""
++
++from array import array
++from types import SimpleNamespace
++
++import pytest
++import torch
++from test_unified_radix_cache_unittest import CacheConfig, build_fixture
++
++from sglang.srt.configs.request_static_yarn import (
++    RequestStaticYarnConfig,
++    admit_request_static_yarn,
++)
++from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
++from sglang.srt.mem_cache.base_prefix_cache import InsertParams, MatchPrefixParams
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.unified_cache.components.base import ComponentType
++from sglang.srt.model_executor.forward_batch_info import ForwardMode
++from sglang.srt.model_executor.model_runner import ModelRunner
++from sglang.srt.sampling.sampling_params import SamplingParams
++
++
++def state_tensors(pool, logical_indices):
++    physical = pool.translate_mamba_indices(logical_indices)
++    state = pool.mamba_pool.mamba_cache
++    return [state.temporal[:, physical].clone()] + [
++        conv[:, physical].clone() for conv in state.conv
++    ]
++
++
++def write_state(pool, logical_indices, marker):
++    physical = pool.translate_mamba_indices(logical_indices)
++    state = pool.mamba_pool.mamba_cache
++    # Advanced indexing returns a copy, so fill_ on the indexed result would
++    # leave the actual pool unchanged. Assign into each pool tensor directly.
++    state.temporal[:, physical] = marker
++    for index, conv in enumerate(state.conv):
++        conv[:, physical] = marker + index + 1
++
++
++def cache_key(req, tokens):
++    return RadixKey(
++        array("q", tokens), extra_key=req.extra_key, cache_salt=req.cache_salt
++    )
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++def test_real_full_mamba_namespaces_deferred_cow_and_suffix_reuse():
++    cache, allocator, pool = build_fixture(
++        CacheConfig(
++            components=(ComponentType.FULL, ComponentType.MAMBA),
++            num_layers=4,
++            full_attention_layer_ids=(3,),
++            enable_mamba_extra_buffer=True,
++            kv_size=512,
++            max_num_reqs=16,
++            mamba_cache_size=64,
++        ),
++        tree_core_backend="python",
++    )
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={
++                "rope_type": "yarn",
++                "factor": 4.0,
++                "request_static_factors": [1, 2, 4],
++                "original_max_position_embeddings": 256,
++                "mrope_section": [11, 11, 10],
++                "mrope_interleaved": True,
++            }
++        )
++    )
++    prefix = list(range(64))
++    suffix = list(range(1000, 1064))
++
++    def make_req(tokens, factor, *, salt="tenant", namespace="adapter", alloc=True):
++        req = Req(
++            rid=f"{factor}-{salt}-{namespace}-{len(tokens)}",
++            origin_input_text="",
++            origin_input_ids=array("q", tokens),
++            sampling_params=SamplingParams(
++                temperature=0,
++                max_new_tokens=1,
++                custom_params={"yarn_factor": factor},
++            ),
++            extra_key=namespace,
++            cache_salt=salt,
++        )
++        admit_request_static_yarn(req, config, 1024)
++        if alloc:
++            assert pool.alloc([req]) is not None
++        return req
++
++    full_pool = allocator.get_kvcache().full_kv_pool
++    key_buffer = full_pool.get_key_buffer(full_pool.start_layer)
++    value_buffer = full_pool.get_value_buffer(full_pool.start_layer)
++    entries = []
++    for factor in (1, 2, 4):
++        req = make_req(prefix, factor)
++        # A prefix already inserted under another factor must be a cold miss.
++        miss = cache.match_prefix(MatchPrefixParams(key=cache_key(req, prefix)))
++        assert len(miss.device_indices) == 0
++        indices = allocator.alloc(len(prefix))
++        assert indices is not None
++        key_buffer[indices] = factor
++        value_buffer[indices] = factor + 8
++        slot = req.kv.mamba_pool_idx.unsqueeze(0)
++        write_state(pool, slot, factor * 10)
++        inserted = cache.insert(
++            InsertParams(key=cache_key(req, prefix), value=indices, mamba_value=slot)
++        )
++        entries.append((factor, indices, slot, inserted.last_device_node))
++
++    assert len({entry[3] for entry in entries}) == 3
++    continuations = []
++    for factor, indices, src_slot, node in entries:
++        req = make_req(prefix + suffix, factor)
++        match = cache.match_prefix(
++            MatchPrefixParams(
++                key=cache_key(req, prefix + suffix), cow_mamba=True, req=req
++            )
++        )
++        assert match.best_match_node == node
++        assert torch.equal(match.device_indices, indices)
++        assert torch.all(key_buffer[match.device_indices] == factor)
++        assert torch.all(value_buffer[match.device_indices] == factor + 8)
++        assert torch.equal(req.kv.mamba_cow_src_index, src_slot)
++        dst_slot = req.kv.mamba_pool_idx.unsqueeze(0)
++        assert not torch.equal(src_slot, dst_slot)
++        # Make the deferred copy observable even if a fresh slot starts at zero.
++        write_state(pool, dst_slot, -100)
++        continuations.append((req, match, src_slot, dst_slot))
++
++    cold_req = make_req(prefix, 1, salt="other")
++    write_state(pool, cold_req.kv.mamba_pool_idx.unsqueeze(0), 99)
++    cold_match = cache.match_prefix(
++        MatchPrefixParams(key=cache_key(cold_req, prefix), cow_mamba=True, req=cold_req)
++    )
++    assert len(cold_match.device_indices) == 0
++    assert cold_req.kv.mamba_cow_src_index is None
++    other_adapter = make_req(prefix, 1, namespace="other", alloc=False)
++    assert (
++        len(
++            cache.match_prefix(
++                MatchPrefixParams(key=cache_key(other_adapter, prefix))
++            ).device_indices
++        )
++        == 0
++    )
++
++    batch = SimpleNamespace()
++    ScheduleBatch._collect_deferred_mamba_cow_and_clear(
++        batch, [entry[0] for entry in continuations] + [cold_req]
++    )
++    assert batch.mamba_cow_src_indices.numel() == 3
++    assert batch.mamba_clear_indices.numel() == 1
++    forward_batch = SimpleNamespace(
++        forward_mode=ForwardMode.EXTEND,
++        mamba_cow_src_indices=batch.mamba_cow_src_indices,
++        mamba_cow_dst_indices=batch.mamba_cow_dst_indices,
++        mamba_clear_indices=batch.mamba_clear_indices,
++    )
++    runner = SimpleNamespace(req_to_token_pool=pool, is_draft_worker=False)
++    ModelRunner._maybe_execute_deferred_mamba_cow_and_clear(runner, forward_batch)
++    assert forward_batch.mamba_cow_src_indices is None
++    assert forward_batch.mamba_cow_dst_indices is None
++    assert forward_batch.mamba_clear_indices is None
++    for state in state_tensors(pool, cold_req.kv.mamba_pool_idx.unsqueeze(0)):
++        assert torch.count_nonzero(state) == 0
++
++    for req, match, src_slot, dst_slot in continuations:
++        assert req.kv.mamba_cow_src_index is None
++        assert not req.kv.mamba_needs_clear
++        source_state = state_tensors(pool, src_slot)
++        for actual, expected in zip(state_tensors(pool, dst_slot), source_state):
++            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++        write_state(pool, dst_slot, req.rope_profile.factor * 20)
++        for actual, expected in zip(state_tensors(pool, src_slot), source_state):
++            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++
++        suffix_indices = allocator.alloc(len(suffix))
++        assert suffix_indices is not None
++        key_buffer[suffix_indices] = req.rope_profile.factor + 16
++        value_buffer[suffix_indices] = req.rope_profile.factor + 24
++        extended_indices = torch.cat((match.device_indices, suffix_indices))
++        cache.insert(
++            InsertParams(
++                key=cache_key(req, prefix + suffix),
++                value=extended_indices,
++                mamba_value=dst_slot,
++            )
++        )
++        reused = cache.match_prefix(
++            MatchPrefixParams(key=cache_key(req, prefix + suffix))
++        )
++        assert torch.equal(reused.device_indices, extended_indices)
++        stored_slot = cache.tree_core.get_component_device_value(
++            reused.best_match_node, ComponentType.MAMBA
++        )
++        assert torch.equal(stored_slot, dst_slot)
++        assert torch.all(
++            key_buffer[reused.device_indices[:64]] == req.rope_profile.factor
++        )
++        assert torch.all(
++            key_buffer[reused.device_indices[64:]] == req.rope_profile.factor + 16
++        )
++    cache.sanity_check()
+diff --git a/test/registered/unit/model_executor/test_request_static_yarn_torch.py b/test/registered/unit/model_executor/test_request_static_yarn_torch.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a2c1eb26db3a2dfe4ed072286169799d53c9a21
+--- /dev/null
++++ b/test/registered/unit/model_executor/test_request_static_yarn_torch.py
+@@ -0,0 +1,297 @@
++"""Real Torch/kernel checks; CUDA cases run only on an actual GPU."""
++
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++import torch
++
++from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++from sglang.srt.layers.rotary_embedding import get_rope
++from sglang.srt.model_executor.forward_batch_info import ForwardBatch
++
++
++@pytest.mark.parametrize("feature", [False, True])
++def test_actual_tokenizer_budget_path_cannot_clip_request_static_budget(feature):
++    from sglang.srt.managers.tokenizer_manager import TokenizerManager
++
++    manager = object.__new__(TokenizerManager)
++    manager.context_len = 1000
++    manager.allow_auto_truncate = True
++    manager.validate_total_tokens = True
++    manager.num_reserved_tokens = 0
++    manager.model_config = SimpleNamespace(
++        request_static_yarn_config=object() if feature else None
++    )
++    req = SimpleNamespace(sampling_params={"max_new_tokens": 2})
++    execution = SimpleNamespace(
++        features=SimpleNamespace(enable_encoder_swa_bounded_replay=False)
++    )
++    with patch(
++        "sglang.srt.managers.tokenizer_manager.get_exec", return_value=execution
++    ):
++        if feature:
++            with pytest.raises(ValueError, match="maximum context length"):
++                manager._validate_token_budget(req, list(range(999)))
++            assert req.sampling_params["max_new_tokens"] == 2
++        else:
++            manager._validate_token_budget(req, list(range(999)))
++            assert req.sampling_params["max_new_tokens"] == 1
++
++
++PARAMETERS = {
++    "rope_type": "yarn",
++    "factor": 4.0,
++    "original_max_position_embeddings": 64,
++    "mrope_section": [11, 11, 10],
++    "mrope_interleaved": True,
++}
++
++
++def rope(factor=None, dtype=torch.float32):
++    params = dict(PARAMETERS)
++    if factor is None:
++        params["request_static_factors"] = [1, 2, 4]
++    elif factor == 1:
++        params["rope_type"] = "default"
++    else:
++        params["factor"] = factor
++    return get_rope(
++        head_size=256,
++        rotary_dim=256,
++        max_position=256,
++        base=10000000,
++        rope_scaling=params,
++        partial_rotary_factor=0.25,
++        dtype=dtype,
++    )
++
++
++def inputs(device, order=(1, 2, 4), vision=True):
++    gen = torch.Generator(device=device).manual_seed(71983)
++    positions = torch.cat(
++        [
++            torch.randint(0, int(64 * factor), (3, 4), generator=gen, device=device)
++            for factor in order
++        ],
++        dim=1,
++    )
++    if not vision:
++        positions = positions[0:1].expand(3, -1).contiguous()
++    q = torch.randn(12, 512, generator=gen, device=device)
++    k = torch.randn(12, 256, generator=gen, device=device)
++    return positions, q, k
++
++
++@pytest.mark.parametrize("vision", [False, True])
++def test_combined_native_matches_isolated_static_and_native_1x(vision):
++    combined = rope()
++    positions, q, k = inputs("cpu", vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)]
++    ).repeat_interleave(4)
++    actual = combined.forward_native(positions + offsets, q.clone(), k.clone())
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        expected = rope(factor).forward_native(
++            positions[:, sl], q[sl].clone(), k[sl].clone()
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++    assert torch.equal(actual[0][:, 64:256], q[:, 64:256])
++
++
++@pytest.mark.parametrize("uniform,lengths", [(False, [1, 3, 2]), (True, [4, 4, 4])])
++def test_real_forward_batch_offsets_preserve_physical_and_vision_positions(
++    uniform, lengths
++):
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={**PARAMETERS, "request_static_factors": [1, 2, 4]}
++        )
++    )
++    profiles = [config.select(1, f) for f in (4, 1, 2)]
++    n = sum(lengths)
++    physical = torch.arange(n)
++    original = torch.stack((physical, physical + 2, physical + 5))
++    # Exercise the actual ForwardBatch method without constructing unrelated
++    # scheduler resources or replacing its implementation with a simulator.
++    fb = object.__new__(ForwardBatch)
++    fb.positions = physical.clone()
++    fb.mrope_positions = original.clone()
++    batch = SimpleNamespace(
++        reqs=[SimpleNamespace(rope_profile=p) for p in profiles], extend_lens=lengths
++    )
++    runner = SimpleNamespace(
++        device="cpu", model_config=SimpleNamespace(request_static_yarn_config=config)
++    )
++    fb._apply_request_static_yarn_offsets(runner, batch, uniform=uniform)
++    expected_offsets = torch.tensor([p.offset for p in profiles]).repeat_interleave(
++        torch.tensor(lengths)
++    )
++    assert torch.equal(fb.mrope_positions, original + expected_offsets)
++    assert torch.equal(fb.positions, physical)
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("vision", [False, True])
++def test_cuda_mixed_profiles_match_isolated_tables(vision):
++    combined = rope().to("cuda")
++    positions, q, k = inputs("cuda", vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)], device="cuda"
++    ).repeat_interleave(4)
++    actual = combined.forward_cuda(positions + offsets, q.clone(), k.clone())
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        expected = (
++            rope(factor)
++            .to("cuda")
++            .forward_cuda(positions[:, sl], q[sl].clone(), k[sl].clone())
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++def test_cuda_graph_replays_new_mixed_profile_positions():
++    combined = rope().to("cuda")
++    positions, q, k = inputs("cuda")
++    position_buffer = torch.zeros_like(positions)
++    q_buffer, k_buffer = q.clone(), k.clone()
++    for _ in range(3):
++        combined.forward_cuda(position_buffer, q_buffer, k_buffer)
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        result = combined.forward_cuda(position_buffer, q_buffer, k_buffer)
++    for order in [(1, 2, 4), (4, 1, 2), (2, 4, 1)]:
++        positions, q, k = inputs("cuda", order=order)
++        offsets = torch.tensor(
++            [combined.scaling_factor_to_offset[f] for f in order], device="cuda"
++        ).repeat_interleave(4)
++        encoded = positions + offsets
++        expected = combined.forward_cuda(encoded, q.clone(), k.clone())
++        position_buffer.copy_(encoded)
++        q_buffer.copy_(q)
++        k_buffer.copy_(k)
++        graph.replay()
++        torch.cuda.synchronize()
++        for actual_tensor, expected_tensor in zip(result, expected):
++            torch.testing.assert_close(actual_tensor, expected_tensor, rtol=0, atol=0)
++
++
++def fused_inputs(order=(1, 2, 4), vision=True):
++    """Ordinary 27B head layout; tables stay small to isolate kernel/layout math."""
++    positions = torch.cat(
++        [
++            torch.tensor(
++                [
++                    [0, 1, 64 * factor - 2, 64 * factor - 1],
++                    [0, 3, 64 * factor - 1, 64 * factor - 2],
++                    [1, 0, 64 * factor - 3, 64 * factor - 1],
++                ],
++                device="cuda",
++            )
++            for factor in order
++        ],
++        dim=1,
++    )
++    if not vision:
++        positions = positions[0:1].expand(3, -1).contiguous()
++    gen = torch.Generator(device="cuda").manual_seed(71984)
++    q_gate = torch.randn(
++        12, 24 * 2 * 256, device="cuda", dtype=torch.bfloat16, generator=gen
++    )
++    k = torch.randn(12, 4 * 256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    q_weight = torch.randn(256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    k_weight = torch.randn(256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    return positions, q_gate, k, q_weight, k_weight
++
++
++def call_actual_qwen_fused(rotary, positions, q_gate, k, q_weight, k_weight):
++    from sglang.kernels.ops.attention.fused_qk_rmsnorm_rope_gate import (
++        fused_qk_gemma_rmsnorm_rope_gate,
++    )
++
++    return fused_qk_gemma_rmsnorm_rope_gate(
++        q_gate,
++        k,
++        q_weight,
++        k_weight,
++        rotary.cos_sin_cache,
++        positions,
++        1e-6,
++        24,
++        4,
++        256,
++        64,
++        has_gate=True,
++        mrope_axis_map=rotary.axis_map,
++    )
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("table_dtype", [torch.bfloat16, torch.float32])
++@pytest.mark.parametrize("vision", [False, True])
++def test_actual_qwen_fused_mixed_profiles_match_isolated_tables(table_dtype, vision):
++    combined = rope(dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++    positions, q_gate, k, q_weight, k_weight = fused_inputs(vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)], device="cuda"
++    ).repeat_interleave(4)
++    actual = call_actual_qwen_fused(
++        combined, positions + offsets, q_gate, k, q_weight, k_weight
++    )
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        isolated = rope(factor, dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++        expected = call_actual_qwen_fused(
++            isolated, positions[:, sl], q_gate[sl], k[sl], q_weight, k_weight
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++    torch.testing.assert_close(
++        actual[2], q_gate.view(12, 24, 512)[..., 256:], rtol=0, atol=0
++    )
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("table_dtype", [torch.bfloat16, torch.float32])
++def test_actual_qwen_fused_graph_replays_profile_reordering(table_dtype):
++    combined = rope(dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++    positions, q_gate, k, q_weight, k_weight = fused_inputs()
++    position_buffer = torch.zeros_like(positions)
++    q_gate_buffer, k_buffer = q_gate.clone(), k.clone()
++    for _ in range(3):
++        call_actual_qwen_fused(
++            combined, position_buffer, q_gate_buffer, k_buffer, q_weight, k_weight
++        )
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        result = call_actual_qwen_fused(
++            combined, position_buffer, q_gate_buffer, k_buffer, q_weight, k_weight
++        )
++    for order in [(1, 2, 4), (4, 1, 2), (2, 4, 1)]:
++        positions, q_gate, k, _q_weight, _k_weight = fused_inputs(order=order)
++        offsets = torch.tensor(
++            [combined.scaling_factor_to_offset[f] for f in order], device="cuda"
++        ).repeat_interleave(4)
++        position_buffer.copy_(positions + offsets)
++        q_gate_buffer.copy_(q_gate)
++        k_buffer.copy_(k)
++        graph.replay()
++        torch.cuda.synchronize()
++        for index, factor in enumerate(order):
++            sl = slice(index * 4, (index + 1) * 4)
++            isolated = rope(factor, dtype=table_dtype).to(
++                device="cuda", dtype=table_dtype
++            )
++            expected = call_actual_qwen_fused(
++                isolated, positions[:, sl], q_gate[sl], k[sl], q_weight, k_weight
++            )
++            for actual_tensor, expected_tensor in zip(result, expected):
++                torch.testing.assert_close(
++                    actual_tensor[sl], expected_tensor, rtol=0, atol=0
++                )

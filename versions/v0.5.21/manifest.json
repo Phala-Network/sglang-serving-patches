@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
-  "engine_tree": "88f64d00bc235d277890c76918401d82bb86e032",
-  "reproduced_tree": "88f64d00bc235d277890c76918401d82bb86e032",
+  "engine_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+  "engine_tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+  "reproduced_tree": null,
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -311,9 +311,23 @@
       "parent": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
       "sha256": "f88d3548fb5e5fd81568f8c3664bbd071affcfd7ec44c30c71e78144e440829f",
       "purpose": "Preserve Qwen XML required and empty schemas with official XGrammar"
+    },
+    {
+      "path": "patches/models/qwen/0045-request-static-yarn-and-safe-rejection.patch",
+      "commit": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "parent": "44784573caa022c155c1b07de66fdaf8e58caefd",
+      "sha256": "51a46551ef4ec75963798cb3f7477c25cdbbd38e697f065a760006b61274b333",
+      "purpose": "Support request-static Qwen YaRN profiles with safe rejected-request retirement"
+    },
+    {
+      "path": "patches/build/0046-source-bound-yarn-runtime-packaging.patch",
+      "commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "parent": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "sha256": "3f67c8f3126deda3b8f2c89e728bdaa1d28726210fb361d843164d331d6e950b",
+      "purpose": "Package qualified YaRN source with immutable base and verified wheel records"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
   "scope": "Shared v0.5.21 maintenance with retained common/Kimi fixes and common/Qwen additions; no new non-Qwen GPU qualification",
-  "release_status": "Source replay and 47 CPU files accepted; final wheel, image, GPU and service gates remain separate."
+  "release_status": "phala-v0.5.21-6: source replay and final-image gates required before publication"
 }

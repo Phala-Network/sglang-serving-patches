@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
-    "tree": "88f64d00bc235d277890c76918401d82bb86e032",
-    "branch": "codex/unified-v0521-maintenance-20261012"
+    "commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+    "tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+    "branch": "codex/v0.5.21-phala-runtime"
   },
-  "qualification": "44-patch exact replay and 47 CPU files passed; final wheel, image, GPU and service gates remain separate.",
+  "qualification": "53f runtime bytes retained; final release-image gates tracked separately",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -563,6 +563,24 @@
       "source_parent": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
       "result_tree": "88f64d00bc235d277890c76918401d82bb86e032",
       "sha256": "f88d3548fb5e5fd81568f8c3664bbd071affcfd7ec44c30c71e78144e440829f"
+    },
+    {
+      "id": "v0521-0045",
+      "path": "patches/models/qwen/0045-request-static-yarn-and-safe-rejection.patch",
+      "title": "Support request-static Qwen YaRN profiles with safe rejected-request retirement",
+      "source_commit": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "source_parent": "44784573caa022c155c1b07de66fdaf8e58caefd",
+      "result_tree": "e44b8c2b6d021367d516de2f827f593ff8ecdb65",
+      "sha256": "51a46551ef4ec75963798cb3f7477c25cdbbd38e697f065a760006b61274b333"
+    },
+    {
+      "id": "v0521-0046",
+      "path": "patches/build/0046-source-bound-yarn-runtime-packaging.patch",
+      "title": "Package qualified YaRN source with immutable base and verified wheel records",
+      "source_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "source_parent": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "result_tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+      "sha256": "3f67c8f3126deda3b8f2c89e728bdaa1d28726210fb361d843164d331d6e950b"
     }
   ]
 }
