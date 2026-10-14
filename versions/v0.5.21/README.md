@@ -1,9 +1,9 @@
 # SGLang 0.5.21 compatibility maintenance
 
-Xing request-static MLA YaRN extends the same ordered stack at step0052,
-preserving all51 earlier patch files. The52-step replay matches complete
-engine `2b3cf0096c9ccc2562c784042afac3f22a10e22b`; combined source CPU checks
-on201 report142 passed and10 explicit CUDA skips. Actual final-image and
+Xing request-static MLA YaRN extends the same ordered stack at steps 0052/0053,
+preserving all 51 earlier patch files. The 53-step replay matches complete
+engine `a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9`; combined source CPU checks
+on 201 report 143 passed and 10 explicit CUDA skips. Actual final-image and
 GPU/service acceptance remain separate gates. See
 [Xing source and image contract](XING4-DYNAMIC-YARN.md).
 

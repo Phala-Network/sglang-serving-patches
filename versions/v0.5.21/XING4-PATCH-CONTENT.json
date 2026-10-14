@@ -1,10 +1,10 @@
 {
   "schema": "phala.sglang.patch-content.v1",
-  "patch_content_sha256": "42fe0b861188cbb32a447ab9f811d1ffb46f792f1fdb901a181ba0168c6fdaad",
+  "patch_content_sha256": "1452ccc0de8e9108409fe722c1399ad0f1f0fa1b1437e6ca3b133566e85380b1",
   "definition": "SHA256 over series-order concatenation of each relative patch path encoded UTF-8, NUL, exact patch bytes, NUL. Paths are relative to versions/v0.5.21.",
   "series": "series",
   "stack": "stack.json",
-  "patch_count": 52,
-  "engine_commit": "2b3cf0096c9ccc2562c784042afac3f22a10e22b",
-  "engine_tree": "478b624f8a0c4455634692716a80c126fad914c6"
+  "patch_count": 53,
+  "engine_commit": "a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9",
+  "engine_tree": "8882014544894c607cac4fb7dce480fe4aa4f306"
 }

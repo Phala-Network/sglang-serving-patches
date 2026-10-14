@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "2b3cf0096c9ccc2562c784042afac3f22a10e22b",
-    "tree": "478b624f8a0c4455634692716a80c126fad914c6",
+    "commit": "a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9",
+    "tree": "8882014544894c607cac4fb7dce480fe4aa4f306",
     "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Unified Xing request-static 64/128 candidate with official tokenizer/auth. Exact 52-step replay and 142 passed/10 CUDA skipped CPU checks on201; final-image and GPU gates are separate. Published 51-step prefix unchanged.",
+  "qualification": "Unified Xing request-static 64/128 candidate with official tokenizer/auth and zero-output empty-pool rejection. Exact 53-step replay and 143 passed/10 CUDA skipped CPU checks on201; final-image and GPU gates are separate. Published 51-step prefix unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -647,6 +647,19 @@
       "sha256": "b901d3a3bf6a21edf1361dcaf9d6af121aa570bd66c31e92cd2e5911cb646255",
       "origin": {
         "development_commit": "4f265885d9d4800c799220a27fbf53368be42b4a",
+        "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0053",
+      "path": "patches/models/xing4/0053-zero-output-empty-pool-rejection.patch",
+      "title": "Reject Xing zero-output requests beyond empty KV capacity",
+      "source_commit": "a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9",
+      "source_parent": "2b3cf0096c9ccc2562c784042afac3f22a10e22b",
+      "result_tree": "8882014544894c607cac4fb7dce480fe4aa4f306",
+      "sha256": "8dc6a5e33be02ef415d0abb9095c3498427105ec2b386268f4a71fb043096492",
+      "origin": {
+        "development_commit": "5cba9943c7b3bdb46c53c8f04214d83983b755df",
         "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
       }
     }
