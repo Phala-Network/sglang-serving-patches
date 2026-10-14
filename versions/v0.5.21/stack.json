@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
-    "tree": "a073c32a40ff18b92a87c1657893440b75e2ba08",
+    "commit": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
+    "tree": "c6ec47142df3a4131455b504bd559fadff3f53f1",
     "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Unified Xing request-static 64/128 with stable decoder construction repair, official tokenizer/auth and safe startup diagnostics. Actual constructor red4/green4 and source151 passed/10 CUDA skipped on201. Final-image/GPU/service gates separate. All published55 patch files unchanged.",
+  "qualification": "Unified Xing request-static64/128 with stable constructor and forward/terminal API repair. Source159 passed/10 CUDA skipped on201, including8 full official40layer forward cases and4 constructors. Final-image/GPU/service gates separate. All published56 patch files unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -699,6 +699,18 @@
       "sha256": "e97a9b3cbaebfba22fd88aaf87f46f2addfa02b4419071c016cfc2a0f182c10e",
       "origin": {
         "scope": "Actual GPU constructor ImportError repair: current dense helper, reduction enum and next_sparse; full official BF16/FP8 constructor red-green"
+      }
+    },
+    {
+      "id": "v0521-0057",
+      "path": "patches/models/xing4/0057-stable-forward-terminal-api.patch",
+      "title": "Adapt Xing forward and terminal normalization to stable APIs",
+      "source_commit": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
+      "source_parent": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
+      "result_tree": "c6ec47142df3a4131455b504bd559fadff3f53f1",
+      "sha256": "f918ca46cb763d08ca7914e52a977ea08e80b2d49f6c406749e054944d76a95b",
+      "origin": {
+        "scope": "Actual dual-GPU prefill graph forward TypeError repair: stable MLA slice argument, boundary capture/property/postprocess, and terminal residual norm; full official40layer forward red-green with production-signature GPU compute mocks"
       }
     }
   ],
