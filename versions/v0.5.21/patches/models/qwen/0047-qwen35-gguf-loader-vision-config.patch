@@ -1,0 +1,2148 @@
+From e9abbcf0b556019424d19f987816b5a9e7447d24 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 13 Oct 2026 15:13:15 +0800
+Subject: [PATCH] Adapt maintained Qwen GGUF vision loading to v0.5.21 with
+ nested YaRN overrides
+
+---
+ .../sglang/srt/arg_groups/model_path_hook.py  |  21 +-
+ python/sglang/srt/layers/linear.py            |   4 +
+ .../sglang/srt/model_loader/gguf_name_maps.py | 217 +++++
+ python/sglang/srt/model_loader/gguf_vision.py | 131 +++
+ python/sglang/srt/model_loader/loader.py      |  92 +-
+ python/sglang/srt/models/qwen3_5.py           |  36 +-
+ python/sglang/srt/models/qwen3_5_text.py      |  12 +-
+ .../srt/utils/hf_transformers/__init__.py     |   2 +
+ .../srt/utils/hf_transformers/common.py       |  17 +
+ .../srt/utils/hf_transformers/config.py       |  11 +-
+ .../srt/utils/hf_transformers/gguf_native.py  | 148 ++++
+ .../srt/utils/hf_transformers/processor.py    |   5 +-
+ .../unit/test_qwen35_gguf_config_cpu.py       | 356 ++++++++
+ .../unit/test_qwen_gguf_migration_cpu.py      | 822 ++++++++++++++++++
+ 14 files changed, 1851 insertions(+), 23 deletions(-)
+ create mode 100644 python/sglang/srt/model_loader/gguf_vision.py
+ create mode 100644 test/manual/unit/test_qwen35_gguf_config_cpu.py
+ create mode 100644 test/registered/unit/test_qwen_gguf_migration_cpu.py
+
+diff --git a/python/sglang/srt/arg_groups/model_path_hook.py b/python/sglang/srt/arg_groups/model_path_hook.py
+index 0093fac31..f5755fcff 100644
+--- a/python/sglang/srt/arg_groups/model_path_hook.py
++++ b/python/sglang/srt/arg_groups/model_path_hook.py
+@@ -43,11 +43,16 @@ def handle_model_source_paths(server_args: Any):
+ 
+ 
+ def resolve_hf_gguf_model_path(server_args: Any):
+-    """Turn a Hub reference to a .gguf into a local file path."""
++    """Turn a Hub reference or local GGUF directory into a file path."""
+     cfg = resolving_view(server_args)
+-    from sglang.srt.utils.hf_transformers_utils import resolve_hf_gguf_reference
++    from sglang.srt.utils.hf_transformers_utils import (
++        resolve_hf_gguf_reference,
++        resolve_local_gguf_directory,
++    )
+ 
+-    resolved = resolve_hf_gguf_reference(cfg.model_path, revision=cfg.revision)
++    resolved = resolve_local_gguf_directory(cfg.model_path)
++    if resolved is None:
++        resolved = resolve_hf_gguf_reference(cfg.model_path, revision=cfg.revision)
+     if resolved is not None:
+         logger.info("Resolved GGUF %s -> %s", cfg.model_path, resolved)
+         if cfg.tokenizer_path == cfg.model_path:
+@@ -65,10 +70,12 @@ def resolve_hf_gguf_model_path(server_args: Any):
+     # A speculative draft can be a .gguf too, and it is loaded by path, so it
+     # needs the same Hub-reference resolution as the target.
+     if cfg.speculative_draft_model_path:
+-        resolved_draft = resolve_hf_gguf_reference(
+-            cfg.speculative_draft_model_path,
+-            revision=cfg.speculative_draft_model_revision,
+-        )
++        resolved_draft = resolve_local_gguf_directory(cfg.speculative_draft_model_path)
++        if resolved_draft is None:
++            resolved_draft = resolve_hf_gguf_reference(
++                cfg.speculative_draft_model_path,
++                revision=cfg.speculative_draft_model_revision,
++            )
+         if resolved_draft is not None:
+             logger.info(
+                 "Resolved draft GGUF %s -> %s",
+diff --git a/python/sglang/srt/layers/linear.py b/python/sglang/srt/layers/linear.py
+index 4504bbcb7..2b345de00 100644
+--- a/python/sglang/srt/layers/linear.py
++++ b/python/sglang/srt/layers/linear.py
+@@ -599,6 +599,10 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
+         is_gguf_weight = getattr(param, "is_gguf_weight", False)
+         is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
+         if is_gguf_weight_type:
++            # Packed Qwen shards broadcast one-element type metadata to scalar
++            # slots; copy_ cannot broadcast shape [1] into shape [].
++            if loaded_weight.numel() == 1:
++                loaded_weight = loaded_weight.reshape(())
+             param.data[loaded_shard_id].copy_(loaded_weight)
+             param.shard_weight_type[loaded_shard_id] = loaded_weight.item()
+             return
+diff --git a/python/sglang/srt/model_loader/gguf_name_maps.py b/python/sglang/srt/model_loader/gguf_name_maps.py
+index 434f337af..87f9227d9 100644
+--- a/python/sglang/srt/model_loader/gguf_name_maps.py
++++ b/python/sglang/srt/model_loader/gguf_name_maps.py
+@@ -70,3 +70,220 @@ def build_muse_glimmer_name_map(config: PretrainedConfig) -> Dict[str, str]:
+ GGUF_HF_NAME_MAP_BUILDERS: Dict[str, Callable[[PretrainedConfig], Dict[str, str]]] = {
+     "muse_glimmer": build_muse_glimmer_name_map,
+ }
++
++# Ported from the accepted Qwen GGUF source 5404f76007558048d16a458743fcc48afce37cc9
++# and shared-identity audit d67e821bd5ea95286a0f3d7896b6d46f41032df6.
++# Qwen3-Next and ordinary safetensors paths intentionally do not use this adapter.
++_QWEN3_5_MODEL_TYPES = ("qwen3_5", "qwen3_5_text")
++
++
++def build_qwen3_5_name_map(config: PretrainedConfig) -> Dict[str, str]:
++    import gguf
++    import torch
++    from transformers import AutoModelForCausalLM
++
++    text_config = getattr(config, "text_config", None) or config
++    num_layers = text_config.num_hidden_layers
++    if getattr(text_config, "layer_types", None) is None:
++        interval = getattr(text_config, "full_attention_interval", 4)
++        if interval <= 0:
++            raise ValueError("Qwen GGUF full_attention_interval must be positive")
++        text_config.layer_types = [
++            "full_attention" if (i + 1) % interval == 0 else "linear_attention"
++            for i in range(num_layers)
++        ]
++    arch = next(
++        (key for key, value in gguf.MODEL_ARCH_NAMES.items() if value == "qwen35"),
++        None,
++    )
++    if arch is None:
++        raise RuntimeError("GGUF package must support the qwen35 architecture")
++    name_map = gguf.get_tensor_name_map(arch, num_layers)
++    with torch.device("meta"):
++        state_dict = AutoModelForCausalLM.from_config(text_config).state_dict()
++
++    result, unresolved = {}, []
++    for hf_name in state_dict:
++        stem, _, suffix = hf_name.rpartition(".")
++        gguf_name = name_map.get_name(stem)
++        if gguf_name is None:
++            unresolved.append(hf_name)
++        else:
++            result[f"{gguf_name}.{suffix}"] = hf_name
++    # These GDN parameters have no .weight suffix; the generic splitter above
++    # cannot map them using a module stem.
++    for layer in range(num_layers):
++        for gguf_suffix, hf_suffix in {
++            "ssm_a": "linear_attn.A_log",
++            "ssm_dt.bias": "linear_attn.dt_bias",
++        }.items():
++            hf_name = f"model.layers.{layer}.{hf_suffix}"
++            if hf_name in state_dict:
++                result[f"blk.{layer}.{gguf_suffix}"] = hf_name
++                if hf_name in unresolved:
++                    unresolved.remove(hf_name)
++    if unresolved:
++        raise RuntimeError(f"Qwen GGUF parameters have no tensor name: {unresolved}")
++    return result
++
++
++def _permute_head_blocks(tensor, index, block, offset=0):
++    """Exact row/byte permutation; leave Q/K rows before offset unchanged."""
++    import torch
++
++    body = tensor[offset:]
++    count = len(index)
++    if body.shape[0] != count * block:
++        raise ValueError(
++            f"cannot split {body.shape[0]} rows into {count} groups of {block}"
++        )
++    rest = tuple(body.shape[1:])
++    body = body.reshape(count, block, *rest)[list(index)].reshape(count * block, *rest)
++    return body if offset == 0 else torch.cat([tensor[:offset], body], dim=0)
++
++
++class Qwen3_5GGUFWeightTransform:
++    """Undo llama.cpp's qwen35 head order, decay and folded-norm conventions.
++
++    llama.cpp stores value head p as HF head (p % nk) * (nv / nk) + p // nk,
++    and stores ssm_a as -exp(A_log). SGLang expects HF head order and A_log.
++    Quantized head reordering is an exact packed-byte move, not requantization.
++    """
++
++    def __init__(self, config):
++        text = getattr(config, "text_config", None) or config
++        self.num_k_heads = int(text.linear_num_key_heads)
++        self.num_v_heads = int(text.linear_num_value_heads)
++        self.head_k_dim = int(text.linear_key_head_dim)
++        self.head_v_dim = int(text.linear_value_head_dim)
++        if (
++            min(self.num_k_heads, self.num_v_heads, self.head_k_dim, self.head_v_dim)
++            <= 0
++        ):
++            raise ValueError("Qwen linear attention geometry must be positive")
++        if self.num_v_heads % self.num_k_heads:
++            raise ValueError("Qwen value heads must be a multiple of key heads")
++        self.key_dim = self.num_k_heads * self.head_k_dim
++        self.value_dim = self.num_v_heads * self.head_v_dim
++        group = self.num_v_heads // self.num_k_heads
++        self.gguf_index_of_hf_head = [
++            (head % group) * self.num_k_heads + head // group
++            for head in range(self.num_v_heads)
++        ]
++
++    def _permute_columns(self, name, tensor, weight_type):
++        import gguf
++        import torch
++
++        index = self.gguf_index_of_hf_head
++        if tensor.dtype != torch.uint8:
++            if tensor.shape[1] != self.value_dim:
++                raise ValueError(f"{name}: expected {self.value_dim} columns")
++            return _permute_head_blocks(
++                tensor.T.contiguous(), index, self.head_v_dim
++            ).T.contiguous()
++        quant = gguf.GGMLQuantizationType(int(weight_type))
++        block_size, type_size = gguf.GGML_QUANT_SIZES[quant]
++        if self.head_v_dim % block_size:
++            raise NotImplementedError(
++                f"{name}: head dim {self.head_v_dim} does not divide into "
++                f"{quant.name} blocks of {block_size}; requantization is unsupported"
++            )
++        group_bytes = self.head_v_dim // block_size * type_size
++        if tensor.shape[1] != self.num_v_heads * group_bytes:
++            raise ValueError(f"{name}: invalid packed column geometry for {quant.name}")
++        return (
++            tensor.reshape(tensor.shape[0], self.num_v_heads, group_bytes)[
++                :, list(index), :
++            ]
++            .reshape(tensor.shape[0], -1)
++            .contiguous()
++        )
++
++    def __call__(self, name, tensor, weight_type):
++        import gguf
++        import torch
++
++        index = self.gguf_index_of_hf_head
++        if name.endswith(".qweight") and weight_type == gguf.GGMLQuantizationType.BF16:
++            if tensor.dtype != torch.uint8 or tensor.shape[-1] % 2:
++                raise ValueError(f"{name}: invalid packed GGUF BF16 payload")
++            tensor = tensor.contiguous().view(torch.bfloat16)
++
++        if name == "model.norm.weight" or name.endswith(
++            (
++                ".input_layernorm.weight",
++                ".post_attention_layernorm.weight",
++                ".q_norm.weight",
++                ".k_norm.weight",
++            )
++        ):
++            # The linear_attn.norm gated norm is raw, not zero-centred.
++            if tensor.dtype == torch.uint8:
++                raise NotImplementedError(f"{name}: folded RMSNorm must be unquantized")
++            return tensor - 1.0
++        if ".linear_attn." not in name:
++            return tensor
++        if name.endswith(".linear_attn.A_log"):
++            tensor = _permute_head_blocks(tensor, index, 1)
++            if not bool((torch.isfinite(tensor) & (tensor < 0)).all()):
++                raise ValueError(f"{name}: ssm_a must be finite and negative")
++            return torch.log(-tensor.to(torch.float32)).to(tensor.dtype)
++        if name.endswith(".linear_attn.dt_bias"):
++            return _permute_head_blocks(tensor, index, 1)
++        if ".linear_attn.conv1d." in name:
++            tensor = _permute_head_blocks(
++                tensor, index, self.head_v_dim, offset=2 * self.key_dim
++            )
++            return tensor.unsqueeze(1) if tensor.dim() == 2 else tensor
++        if ".linear_attn.in_proj_qkv." in name:
++            return _permute_head_blocks(
++                tensor, index, self.head_v_dim, offset=2 * self.key_dim
++            )
++        if ".linear_attn.in_proj_z." in name:
++            return _permute_head_blocks(tensor, index, self.head_v_dim)
++        if ".linear_attn.in_proj_b." in name or ".linear_attn.in_proj_a." in name:
++            return _permute_head_blocks(tensor, index, 1)
++        if ".linear_attn.out_proj." in name:
++            return self._permute_columns(name, tensor, weight_type)
++        return tensor
++
++
++GGUF_HF_NAME_MAP_BUILDERS.update(
++    {model_type: build_qwen3_5_name_map for model_type in _QWEN3_5_MODEL_TYPES}
++)
++
++
++def get_gguf_weight_transform(config):
++    if config.model_type not in _QWEN3_5_MODEL_TYPES:
++        return None
++    return Qwen3_5GGUFWeightTransform(config)
++
++
++def get_missing_gguf_parameters(model, loaded_names):
++    """Compare parameter identity, including aliases; equal values are not enough."""
++    by_name = dict(model.named_parameters(remove_duplicate=False))
++    loaded_ids = {id(by_name[name]) for name in loaded_names if name in by_name}
++    return sorted(
++        name
++        for name, parameter in model.named_parameters()
++        if id(parameter) not in loaded_ids
++    )
++
++
++def apply_gguf_weight_transform(weights_iterator, transform):
++    # weight_utils yields metadata before packed tensors.
++    weight_types = {}
++    for name, tensor in weights_iterator:
++        if name.endswith(".qweight_type"):
++            if tensor.numel() != 1:
++                raise ValueError(f"{name}: GGUF weight type must be scalar")
++            weight_types[name.removesuffix(".qweight_type")] = int(
++                tensor.reshape(-1)[0]
++            )
++            yield name, tensor
++        else:
++            stem, _, _ = name.rpartition(".")
++            if name.endswith(".qweight") and stem not in weight_types:
++                raise ValueError(f"{name}: missing GGUF weight type metadata")
++            yield name, transform(name, tensor, weight_types.get(stem))
+diff --git a/python/sglang/srt/model_loader/gguf_vision.py b/python/sglang/srt/model_loader/gguf_vision.py
+new file mode 100644
+index 000000000..9e64d868e
+--- /dev/null
++++ b/python/sglang/srt/model_loader/gguf_vision.py
+@@ -0,0 +1,131 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Load the separately supplied unquantized qwen35 GGUF vision projector.
++
++Ported from 2b2584575aa53702ce331c60a70f96b038610665. llama.cpp's Qwen3-VL
++converter splits Conv3d along temporal axis 2; stack the two exact slices.
++Unsupported geometry, metadata, tensor names, shapes and types fail closed.
++"""
++
++import logging
++
++logger = logging.getLogger(__name__)
++
++
++def qwen35_vision_tensor_map(config):
++    vision = config.vision_config
++    if vision.temporal_patch_size != 2 or vision.deepstack_visual_indexes:
++        raise ValueError("GGUF vision requires temporal_patch_size=2 and no deepstack")
++    hidden = vision.hidden_size
++    intermediate = vision.intermediate_size
++    merged = hidden * vision.spatial_merge_size**2
++    patch_shape = (hidden, vision.in_channels, vision.patch_size, vision.patch_size)
++    mapping = {
++        "v.patch_embd.weight": ("visual.patch_embed.proj.weight", patch_shape),
++        "v.patch_embd.weight.1": ("visual.patch_embed.proj.weight", patch_shape),
++        "v.patch_embd.bias": ("visual.patch_embed.proj.bias", (hidden,)),
++        "v.position_embd.weight": (
++            "visual.pos_embed.weight",
++            (vision.num_position_embeddings, hidden),
++        ),
++        "v.post_ln.weight": ("visual.merger.norm.weight", (hidden,)),
++        "v.post_ln.bias": ("visual.merger.norm.bias", (hidden,)),
++        "mm.0.weight": ("visual.merger.linear_fc1.weight", (merged, merged)),
++        "mm.0.bias": ("visual.merger.linear_fc1.bias", (merged,)),
++        "mm.2.weight": (
++            "visual.merger.linear_fc2.weight",
++            (vision.out_hidden_size, merged),
++        ),
++        "mm.2.bias": ("visual.merger.linear_fc2.bias", (vision.out_hidden_size,)),
++    }
++    layers = {
++        "attn_qkv": ("attn.qkv_proj", (3 * hidden, hidden)),
++        "attn_out": ("attn.proj", (hidden, hidden)),
++        "ffn_up": ("mlp.linear_fc1", (intermediate, hidden)),
++        "ffn_down": ("mlp.linear_fc2", (hidden, intermediate)),
++        "ln1": ("norm1", (hidden,)),
++        "ln2": ("norm2", (hidden,)),
++    }
++    for layer in range(vision.depth):
++        for gguf_name, (hf_name, shape) in layers.items():
++            for suffix, tensor_shape in (("weight", shape), ("bias", (shape[0],))):
++                mapping[f"v.blk.{layer}.{gguf_name}.{suffix}"] = (
++                    f"visual.blocks.{layer}.{hf_name}.{suffix}",
++                    tensor_shape,
++                )
++    return mapping
++
++
++def _read_unquantized_tensor(tensor, expected_shape):
++    import gguf
++    import torch
++
++    if tuple(reversed(tuple(map(int, tensor.shape)))) != expected_shape:
++        raise ValueError(f"{tensor.name}: GGUF shape does not match {expected_shape}")
++    value = torch.from_numpy(tensor.data.copy())
++    if tensor.tensor_type == gguf.GGMLQuantizationType.BF16:
++        if value.dtype != torch.uint8 or value.shape[-1] % 2:
++            raise ValueError(f"{tensor.name}: invalid BF16 byte payload")
++        value = value.view(torch.bfloat16)
++    elif tensor.tensor_type not in (
++        gguf.GGMLQuantizationType.F32,
++        gguf.GGMLQuantizationType.F16,
++    ):
++        raise ValueError(
++            f"{tensor.name}: only F32/F16/BF16 vision tensors are supported"
++        )
++    if tuple(value.shape) != expected_shape:
++        raise ValueError(
++            f"{tensor.name}: decoded payload shape does not match {expected_shape}"
++        )
++    return value
++
++
++def qwen35_vision_weights_iterator(path, config):
++    import gguf
++    import torch
++
++    reader = gguf.GGUFReader(path)
++    vision = config.vision_config
++    expected_metadata = {
++        "general.architecture": "clip",
++        "clip.projector_type": "qwen3vl_merger",
++        "clip.vision.block_count": vision.depth,
++        "clip.vision.embedding_length": vision.hidden_size,
++        "clip.vision.attention.head_count": vision.num_heads,
++        "clip.vision.feed_forward_length": vision.intermediate_size,
++        "clip.vision.patch_size": vision.patch_size,
++        "clip.vision.spatial_merge_size": vision.spatial_merge_size,
++        "clip.vision.projection_dim": vision.out_hidden_size,
++    }
++    for key, expected in expected_metadata.items():
++        field = reader.get_field(key)
++        if field is None or field.contents() != expected:
++            raise ValueError(
++                f"Qwen GGUF vision metadata mismatch: {key}, expected {expected}"
++            )
++    mapping = qwen35_vision_tensor_map(config)
++    tensors = {tensor.name: tensor for tensor in reader.tensors}
++    missing = sorted(mapping.keys() - tensors.keys())
++    extra = sorted(tensors.keys() - mapping.keys())
++    if missing or extra or len(tensors) != len(reader.tensors):
++        raise ValueError(
++            f"Incomplete or unexpected Qwen GGUF vision tensors: missing={missing}, extra={extra}"
++        )
++    # Check all source geometry before yielding any weights.
++    for name, (_, shape) in mapping.items():
++        if tuple(reversed(tuple(map(int, tensors[name].shape)))) != shape:
++            raise ValueError(f"{name}: GGUF shape does not match {shape}")
++    patch_names = ("v.patch_embd.weight", "v.patch_embd.weight.1")
++    patches = [
++        _read_unquantized_tensor(tensors[name], mapping[name][1])
++        for name in patch_names
++    ]
++    yield "visual.patch_embed.proj.weight", torch.stack(patches, dim=2)
++    for name, (target, shape) in mapping.items():
++        if name not in patch_names:
++            yield target, _read_unquantized_tensor(tensors[name], shape)
++    logger.info(
++        "Qwen GGUF vision audit: source_tensors=%d loaded_parameters=%d missing=[]",
++        len(tensors),
++        len(mapping) - 1,
++    )
+diff --git a/python/sglang/srt/model_loader/loader.py b/python/sglang/srt/model_loader/loader.py
+index 19863c5ee..5fed3f3ae 100644
+--- a/python/sglang/srt/model_loader/loader.py
++++ b/python/sglang/srt/model_loader/loader.py
+@@ -3176,9 +3176,23 @@ class GGUFModelLoader(BaseModelLoader):
+                 f"load format {load_config.load_format}"
+             )
+ 
+-    def _prepare_weights(self, model_name_or_path: str):
++    def _prepare_weights(self, model_name_or_path: str, allow_mmproj: bool = False):
+         if os.path.isfile(model_name_or_path):
+             return model_name_or_path
++        elif os.path.isdir(model_name_or_path):
++            candidates = glob.glob(os.path.join(model_name_or_path, "*.gguf"))
++            if allow_mmproj:
++                candidates = [
++                    path
++                    for path in candidates
++                    if not os.path.basename(path).startswith("mmproj-")
++                ]
++            if len(candidates) == 1:
++                return candidates[0]
++            raise ValueError(
++                f"Expected exactly one GGUF model file in {model_name_or_path}, "
++                f"found {len(candidates)}"
++            )
+         else:
+             raise ValueError(f"{model_name_or_path} is not a file.")
+ 
+@@ -3236,12 +3250,37 @@ class GGUFModelLoader(BaseModelLoader):
+         return gguf_to_hf_name_map
+ 
+     def _get_weights_iterator(
+-        self, model_name_or_path: str, gguf_to_hf_name_map: Dict[str, str]
++        self,
++        model_name_or_path: str,
++        gguf_to_hf_name_map: Dict[str, str],
++        model_config: Optional[ModelConfig] = None,
+     ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+-        return gguf_quant_weights_iterator(model_name_or_path, gguf_to_hf_name_map)
++        from sglang.srt.model_loader.gguf_name_maps import (
++            apply_gguf_weight_transform,
++            get_gguf_weight_transform,
++        )
++
++        weights = gguf_quant_weights_iterator(model_name_or_path, gguf_to_hf_name_map)
++        transform = (
++            get_gguf_weight_transform(model_config.hf_config)
++            if model_config is not None
++            else None
++        )
++        if transform is None:
++            return weights
++        import gguf
++
++        architecture = gguf.GGUFReader(model_name_or_path).get_field(
++            "general.architecture"
++        )
++        if architecture is None or architecture.contents() != "qwen35":
++            raise ValueError("Qwen3.5 GGUF requires general.architecture=qwen35")
++        return apply_gguf_weight_transform(weights, transform)
+ 
+     def download_model(self, model_config: ModelConfig) -> None:
+-        self._prepare_weights(model_config.model_path)
++        self._prepare_weights(
++            model_config.model_path, model_config.hf_config.model_type == "qwen3_5"
++        )
+ 
+     def load_model(
+         self,
+@@ -3250,7 +3289,21 @@ class GGUFModelLoader(BaseModelLoader):
+         device_config: DeviceConfig,
+     ) -> nn.Module:
+ 
+-        local_model_path = self._prepare_weights(model_config.model_path)
++        has_vision = model_config.hf_config.model_type == "qwen3_5" and not getattr(
++            model_config.hf_config, "language_model_only", False
++        )
++        local_model_path = self._prepare_weights(model_config.model_path, has_vision)
++        mmproj_path = None
++        if has_vision:
++            candidates = glob.glob(
++                os.path.join(os.path.dirname(local_model_path), "mmproj-*.gguf")
++            )
++            if len(candidates) != 1:
++                raise ValueError(
++                    "Qwen multimodal GGUF requires exactly one mmproj file, "
++                    f"found {len(candidates)}"
++                )
++            mmproj_path = candidates[0]
+         gguf_weights_map = self._get_gguf_weights_map(model_config)
+         # we can only know if tie word embeddings after mapping weights
+         if "lm_head.weight" in get_gguf_extra_tensor_names(
+@@ -3260,12 +3313,37 @@ class GGUFModelLoader(BaseModelLoader):
+ 
+         target_device = torch.device(device_config.device)
+         quant_config = _get_quantization_config(model_config, self.load_config)
++        if model_config.hf_config.model_type in ("qwen3_5", "qwen3_5_text") and (
++            quant_config is None or quant_config.get_name() != "gguf"
++        ):
++            raise ValueError("Qwen GGUF loading requires GGUF quantization")
+         with set_default_torch_dtype(model_config.dtype):
+             with target_device:
+                 model = _initialize_model(model_config, self.load_config, quant_config)
+-            model.load_weights(
+-                self._get_weights_iterator(local_model_path, gguf_weights_map)
++            weights = self._get_weights_iterator(
++                local_model_path, gguf_weights_map, model_config
+             )
++            if mmproj_path is not None:
++                from itertools import chain
++
++                from sglang.srt.model_loader.gguf_vision import (
++                    qwen35_vision_weights_iterator,
++                )
++
++                weights = chain(
++                    weights,
++                    qwen35_vision_weights_iterator(mmproj_path, model_config.hf_config),
++                )
++            loaded_params = model.load_weights(weights)
++            if model_config.hf_config.model_type in ("qwen3_5", "qwen3_5_text"):
++                from sglang.srt.model_loader.gguf_name_maps import (
++                    get_missing_gguf_parameters,
++                )
++
++                missing = get_missing_gguf_parameters(model, loaded_params or ())
++                if missing:
++                    raise RuntimeError(f"Incomplete Qwen3.5 GGUF weights: {missing}")
++                logger.info("Qwen3.5 GGUF load audit: missing=[]")
+ 
+             for _, module in model.named_modules():
+                 quant_method = getattr(module, "quant_method", None)
+diff --git a/python/sglang/srt/models/qwen3_5.py b/python/sglang/srt/models/qwen3_5.py
+index cd7336ae0..3191d5bce 100644
+--- a/python/sglang/srt/models/qwen3_5.py
++++ b/python/sglang/srt/models/qwen3_5.py
+@@ -485,10 +485,22 @@ class Qwen3_5GatedDeltaNet(nn.Module):
+ 
+     def _bind_packed_weight_loaders(self, module):
+         """Bind packed-checkpoint-aware loaders to all relevant params of a merged module."""
+-        for attr_name in ("weight", "weight_scale_inv", "weight_scale", "input_scale"):
++        for attr_name in (
++            "weight",
++            "weight_scale_inv",
++            "weight_scale",
++            "input_scale",
++            "qweight",
++            "qweight_type",
++        ):
+             param = getattr(module, attr_name, None)
+             if param is None:
+                 continue
++            if attr_name in ("qweight", "qweight_type") and not (
++                getattr(param, "is_gguf_weight", False)
++                or getattr(param, "is_gguf_weight_type", False)
++            ):
++                continue
+             original_loader = getattr(param, "weight_loader", None)
+             if original_loader is None:
+                 continue
+@@ -1669,7 +1681,15 @@ class Qwen3_5ForCausalLM(nn.Module):
+         alt_stream = get_stream("alt") if _is_cuda or _hip_use_alt_stream else None
+ 
+         # Embedding layer
+-        self.embed_tokens = self._build_embed_tokens(config)
++        if (
++            config.model_type in ("qwen3_5", "qwen3_5_text")
++            and quant_config is not None
++            and quant_config.get_name() == "gguf"
++        ):
++            self.embed_tokens = self._build_embed_tokens(config, quant_config, prefix)
++        else:
++            # Keep subclass hooks and non-GGUF embedding construction unchanged.
++            self.embed_tokens = self._build_embed_tokens(config)
+ 
+         # Decoder layers
+         def get_layer(idx: int, prefix: str):
+@@ -1740,7 +1760,9 @@ class Qwen3_5ForCausalLM(nn.Module):
+ 
+         self.layers_to_capture = []
+ 
+-    def _build_embed_tokens(self, config: Qwen3_5TextConfig) -> nn.Module:
++    def _build_embed_tokens(
++        self, config: Qwen3_5TextConfig, quant_config=None, prefix: str = ""
++    ) -> nn.Module:
+         """Embedding sharding hook for models reusing this backbone."""
+         if not self.pp_group.is_first_rank:
+             return PPMissingLayer()
+@@ -1749,6 +1771,14 @@ class Qwen3_5ForCausalLM(nn.Module):
+             config.hidden_size,
+             org_num_embeddings=config.vocab_size,
+             enable_tp=not is_dp_attention_enabled(),
++            **(
++                {
++                    "quant_config": quant_config,
++                    "prefix": add_prefix("embed_tokens", prefix),
++                }
++                if quant_config is not None
++                else {}
++            ),
+         )
+ 
+     def get_input_embeddings(self):
+diff --git a/python/sglang/srt/models/qwen3_5_text.py b/python/sglang/srt/models/qwen3_5_text.py
+index be8d67034..4f2bef546 100644
+--- a/python/sglang/srt/models/qwen3_5_text.py
++++ b/python/sglang/srt/models/qwen3_5_text.py
+@@ -198,17 +198,21 @@ class Qwen3_5ForCausalLM(nn.Module):
+             for name, loaded_weight in weights:
+                 if name.startswith(_MODEL_PREFIX):
+                     yield name[len(_MODEL_PREFIX) :], loaded_weight
+-                elif name == "lm_head.weight":
++                elif name == "lm_head.weight" or (
++                    self.quant_config is not None
++                    and self.quant_config.get_name() == "gguf"
++                    and name in ("lm_head.qweight", "lm_head.qweight_type")
++                ):
+                     if self.config.tie_word_embeddings:
+                         continue
+-                    if "lm_head.weight" not in params_dict:
++                    if name not in params_dict:
+                         continue
+-                    param = params_dict["lm_head.weight"]
++                    param = params_dict[name]
+                     weight_loader = getattr(
+                         param, "weight_loader", default_weight_loader
+                     )
+                     weight_loader(param, loaded_weight)
+-                    loaded_params.add("lm_head.weight")
++                    loaded_params.add(name)
+ 
+         body_loaded = self.model.load_weights(body_weights())
+         loaded_params.update(f"{_MODEL_PREFIX}{n}" for n in body_loaded)
+diff --git a/python/sglang/srt/utils/hf_transformers/__init__.py b/python/sglang/srt/utils/hf_transformers/__init__.py
+index 56d1c150e..124260578 100644
+--- a/python/sglang/srt/utils/hf_transformers/__init__.py
++++ b/python/sglang/srt/utils/hf_transformers/__init__.py
+@@ -36,6 +36,7 @@ from .common import (
+     get_sparse_attention_config,
+     get_tokenizer_from_processor,
+     resolve_hf_gguf_reference,
++    resolve_local_gguf_directory,
+ )
+ from .config import get_config
+ from .processor import get_processor, resolve_image_processor_backend
+@@ -53,6 +54,7 @@ __all__ = [
+     "attach_additional_stop_token_ids",
+     "check_gguf_file",
+     "resolve_hf_gguf_reference",
++    "resolve_local_gguf_directory",
+     "download_from_hf",
+     "get_config",
+     "get_context_length",
+diff --git a/python/sglang/srt/utils/hf_transformers/common.py b/python/sglang/srt/utils/hf_transformers/common.py
+index f07d8c76a..2c347c25d 100644
+--- a/python/sglang/srt/utils/hf_transformers/common.py
++++ b/python/sglang/srt/utils/hf_transformers/common.py
+@@ -386,6 +386,23 @@ def check_gguf_file(model: Union[str, os.PathLike]) -> bool:
+     return header == b"GGUF"
+ 
+ 
++def resolve_local_gguf_directory(model: Union[str, os.PathLike]) -> Optional[str]:
++    """Select a local GGUF weight file, ignoring a neighboring vision projector."""
++    directory = Path(model)
++    if not directory.is_dir() or (directory / "config.json").is_file():
++        return None
++    files = sorted(directory.glob("*.gguf"))
++    if not files:
++        return None
++    weights = [file for file in files if not file.name.startswith("mmproj-")]
++    if len(weights) != 1:
++        raise ValueError(
++            f"Expected exactly one model GGUF in {directory}, found {len(weights)}: "
++            f"{[file.name for file in weights]}"
++        )
++    return str(weights[0])
++
++
+ def resolve_hf_gguf_reference(
+     model: str, revision: Optional[str] = None
+ ) -> Optional[str]:
+diff --git a/python/sglang/srt/utils/hf_transformers/config.py b/python/sglang/srt/utils/hf_transformers/config.py
+index 645ee3c10..a606f5b15 100644
+--- a/python/sglang/srt/utils/hf_transformers/config.py
++++ b/python/sglang/srt/utils/hf_transformers/config.py
+@@ -42,6 +42,7 @@ from .common import (
+     check_gguf_file,
+     get_hf_text_config,
+     gguf_sidecar_dir,
++    resolve_local_gguf_directory,
+     resolve_runai_obj_uri,
+ )
+ from .gguf_native import build_gguf_config, has_native_gguf_support
+@@ -283,6 +284,7 @@ def get_config(
+     model_config_parser: str = "auto",
+     **kwargs,
+ ):
++    model = resolve_local_gguf_directory(model) or model
+     is_gguf = check_gguf_file(model)
+     gguf_has_sidecar_config = False
+     if is_gguf:
+@@ -296,7 +298,14 @@ def get_config(
+         if not gguf_has_sidecar_config and has_native_gguf_support(model):
+             config = build_gguf_config(model)
+             if model_override_args:
+-                config.update(model_override_args)
++                # Match the standard config path: preserve nested config objects.
++                # In particular YaRN must reach the VLM text_config, not replace it.
++                for key, value in model_override_args.items():
++                    current = getattr(config, key, None)
++                    if isinstance(value, dict) and isinstance(current, PretrainedConfig):
++                        current.update(value)
++                    else:
++                        setattr(config, key, value)
+             return config
+         if not gguf_has_sidecar_config:
+             kwargs["gguf_file"] = model
+diff --git a/python/sglang/srt/utils/hf_transformers/gguf_native.py b/python/sglang/srt/utils/hf_transformers/gguf_native.py
+index a9a95b6cd..dedd43500 100644
+--- a/python/sglang/srt/utils/hf_transformers/gguf_native.py
++++ b/python/sglang/srt/utils/hf_transformers/gguf_native.py
+@@ -30,6 +30,7 @@ Reaching for these is a last resort: a config.json next to the .gguf still wins,
+ because the checkpoint author's own config outranks anything reconstructed.
+ """
+ 
++from pathlib import Path
+ from typing import Any, Callable, Dict, Optional
+ 
+ from transformers import PretrainedConfig
+@@ -38,6 +39,7 @@ from sglang.srt.configs.muse_glimmer import MuseGlimmerConfig
+ 
+ GGUF_NATIVE_CONFIG_BUILDERS: Dict[str, Callable[[str], PretrainedConfig]] = {
+     "muse-glimmer": MuseGlimmerConfig.from_gguf,
++    "qwen35": lambda path: build_qwen3_5_gguf_config(path),
+ }
+ 
+ 
+@@ -65,6 +67,152 @@ def build_gguf_config(gguf_path: str) -> PretrainedConfig:
+     return GGUF_NATIVE_CONFIG_BUILDERS[arch](gguf_path)
+ 
+ 
++def build_qwen3_5_gguf_config(gguf_path: str) -> PretrainedConfig:
++    """Reconstruct the Qwen3.5 text/vision config from llama.cpp GGUF metadata."""
++    from gguf import GGUFReader
++
++    from sglang.srt.configs.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig
++
++    reader = GGUFReader(gguf_path)
++    meta = {key: field.contents() for key, field in reader.fields.items()}
++    if meta.get("general.architecture") != "qwen35":
++        raise ValueError("Qwen3.5 GGUF requires general.architecture=qwen35")
++    tensors = {tensor.name: tensor for tensor in reader.tensors}
++
++    def required(key):
++        if key not in meta:
++            raise ValueError(f"Qwen3.5 GGUF is missing {key}")
++        return meta[key]
++
++    def integer(key):
++        value = int(required(f"qwen35.{key}"))
++        if value <= 0:
++            raise ValueError(f"Qwen3.5 GGUF requires positive qwen35.{key}")
++        return value
++
++    if "token_embd.weight" not in tensors:
++        raise ValueError("Qwen3.5 GGUF is missing token_embd.weight")
++    vocab_size = int(tensors["token_embd.weight"].shape[1])
++    total_layers = integer("block_count")
++    mtp_layers = int(meta.get("qwen35.nextn_predict_layers", 0))
++    if mtp_layers < 0 or mtp_layers >= total_layers:
++        raise ValueError("Qwen3.5 GGUF has invalid nextn_predict_layers")
++    layers = total_layers - mtp_layers
++    interval = integer("full_attention_interval")
++    key_dim = integer("ssm.state_size")
++    inner_size = integer("ssm.inner_size")
++    if inner_size % key_dim:
++        raise ValueError("Qwen3.5 GGUF ssm.inner_size must divide by ssm.state_size")
++    rope_dim = integer("rope.dimension_count")
++    head_dim = integer("attention.key_length")
++    if rope_dim > head_dim:
++        raise ValueError(
++            "Qwen3.5 GGUF rope.dimension_count exceeds attention.key_length"
++        )
++    rope_parameters = {
++        "rope_theta": float(required("qwen35.rope.freq_base")),
++        "partial_rotary_factor": rope_dim / head_dim,
++        "rope_type": "default",
++    }
++    sections = meta.get("qwen35.rope.dimension_sections")
++    if sections is not None:
++        sections = [int(section) for section in sections]
++        while sections and sections[-1] == 0:
++            sections.pop()
++        if len(sections) != 3 or sum(sections) * 2 != rope_dim:
++            raise ValueError("Qwen3.5 GGUF has invalid rope.dimension_sections")
++        rope_parameters.update(
++            mrope_section=sections,
++            mrope_interleaved=True,
++        )
++
++    text_kwargs = dict(
++        vocab_size=vocab_size,
++        hidden_size=integer("embedding_length"),
++        intermediate_size=integer("feed_forward_length"),
++        num_hidden_layers=layers,
++        num_attention_heads=integer("attention.head_count"),
++        num_key_value_heads=integer("attention.head_count_kv"),
++        head_dim=head_dim,
++        max_position_embeddings=integer("context_length"),
++        rms_norm_eps=float(required("qwen35.attention.layer_norm_rms_epsilon")),
++        rope_theta=rope_parameters["rope_theta"],
++        rope_parameters=rope_parameters,
++        partial_rotary_factor=rope_dim / head_dim,
++        linear_conv_kernel_dim=integer("ssm.conv_kernel"),
++        linear_key_head_dim=key_dim,
++        linear_value_head_dim=key_dim,
++        linear_num_key_heads=integer("ssm.group_count"),
++        linear_num_value_heads=inner_size // key_dim,
++        full_attention_interval=interval,
++        layer_types=[
++            "full_attention" if (i + 1) % interval == 0 else "linear_attention"
++            for i in range(layers)
++        ],
++        bos_token_id=meta.get("tokenizer.ggml.bos_token_id"),
++        eos_token_id=meta.get("tokenizer.ggml.eos_token_id"),
++        pad_token_id=meta.get("tokenizer.ggml.padding_token_id"),
++        dtype="bfloat16",
++    )
++    projector_files = sorted(Path(gguf_path).parent.glob("mmproj-*.gguf"))
++    if not projector_files:
++        return Qwen3_5TextConfig(**text_kwargs, architectures=["Qwen3_5ForCausalLM"])
++    if len(projector_files) != 1:
++        raise ValueError("Qwen3.5 GGUF requires exactly one mmproj-*.gguf")
++
++    projector = GGUFReader(str(projector_files[0]))
++    vision_meta = {key: field.contents() for key, field in projector.fields.items()}
++    vision_tensors = {tensor.name: tensor for tensor in projector.tensors}
++    if (
++        vision_meta.get("general.architecture"),
++        vision_meta.get("clip.projector_type"),
++    ) != (
++        "clip",
++        "qwen3vl_merger",
++    ):
++        raise ValueError("Qwen3.5 GGUF has an unsupported vision projector")
++    try:
++        patch_shape = vision_tensors["v.patch_embd.weight"].shape
++        position_shape = vision_tensors["v.position_embd.weight"].shape
++        vision_kwargs = dict(
++            depth=int(vision_meta["clip.vision.block_count"]),
++            hidden_size=int(vision_meta["clip.vision.embedding_length"]),
++            intermediate_size=int(vision_meta["clip.vision.feed_forward_length"]),
++            num_heads=int(vision_meta["clip.vision.attention.head_count"]),
++            patch_size=int(vision_meta["clip.vision.patch_size"]),
++            spatial_merge_size=int(vision_meta["clip.vision.spatial_merge_size"]),
++            out_hidden_size=int(vision_meta["clip.vision.projection_dim"]),
++            in_channels=int(patch_shape[2]),
++            num_position_embeddings=int(position_shape[1]),
++            temporal_patch_size=2,
++            deepstack_visual_indexes=[],
++        )
++    except (KeyError, IndexError) as exc:
++        raise ValueError(f"Qwen3.5 GGUF vision metadata is incomplete: {exc}") from exc
++    tokens = meta.get("tokenizer.ggml.tokens")
++    if tokens is None:
++        raise ValueError("Qwen3.5 multimodal GGUF is missing tokenizer.ggml.tokens")
++    token_ids = {}
++    for field, token in (
++        ("image_token_id", "<|image_pad|>"),
++        ("video_token_id", "<|video_pad|>"),
++        ("vision_start_token_id", "<|vision_start|>"),
++        ("vision_end_token_id", "<|vision_end|>"),
++    ):
++        try:
++            token_ids[field] = tokens.index(token)
++        except ValueError as exc:
++            raise ValueError(f"Qwen3.5 multimodal GGUF is missing {token}") from exc
++    return Qwen3_5Config(
++        text_config=text_kwargs,
++        vision_config=vision_kwargs,
++        architectures=["Qwen3_5ForConditionalGeneration"],
++        rope_scaling=rope_parameters,
++        pad_token_id=text_kwargs["pad_token_id"],
++        **token_ids,
++    )
++
++
+ _GPT4O_SPLIT_REGEX = (
+     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*"
+     r"[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|"
+diff --git a/python/sglang/srt/utils/hf_transformers/processor.py b/python/sglang/srt/utils/hf_transformers/processor.py
+index 9bc673aea..e9723260a 100644
+--- a/python/sglang/srt/utils/hf_transformers/processor.py
++++ b/python/sglang/srt/utils/hf_transformers/processor.py
+@@ -34,6 +34,7 @@ from .common import (
+     _override_v_head_dim_if_zero,
+     _resolve_local_or_cached_file,
+     attach_additional_stop_token_ids,
++    check_gguf_file,
+     download_from_hf,
+     get_tokenizer_from_processor,
+     resolve_runai_obj_uri,
+@@ -229,7 +230,9 @@ def get_processor(
+             trust_remote_code=trust_remote_code,
+             revision=revision,
+         )
+-    elif model_name is not None:
++    elif model_name is not None and not (
++        model_name != tokenizer_name and check_gguf_file(model_name)
++    ):
+         config = AutoConfig.from_pretrained(
+             model_name,
+             trust_remote_code=trust_remote_code,
+diff --git a/test/manual/unit/test_qwen35_gguf_config_cpu.py b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+new file mode 100644
+index 000000000..d0d3aed98
+--- /dev/null
++++ b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+@@ -0,0 +1,356 @@
++"""CPU contracts for local Qwen3.5 GGUF selection and native config loading."""
++
++import ast
++import logging
++import sys
++import tempfile
++import types
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def source_function(relative, name, namespace):
++    tree = ast.parse((SRT / relative).read_text(encoding="utf-8"))
++    node = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.FunctionDef) and node.name == name
++    )
++    node.decorator_list = []
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias(name="annotations")], level=0
++    )
++    module = ast.fix_missing_locations(ast.Module(body=[future, node], type_ignores=[]))
++    exec(compile(module, str(relative), "exec"), namespace)
++    return namespace[name]
++
++
++class FakeConfig:
++    model_type = "qwen3_5_text"
++
++    def __init__(self, **kwargs):
++        self.__dict__.update(kwargs)
++
++
++class FakeMultiConfig(FakeConfig):
++    model_type = "qwen3_5"
++
++    def __init__(self, text_config, vision_config, **kwargs):
++        super().__init__(
++            text_config=FakeConfig(**text_config),
++            vision_config=FakeConfig(**vision_config),
++            **kwargs,
++        )
++
++
++class FakeReader:
++    records = {}
++
++    def __init__(self, path):
++        meta, shapes = self.records[str(path)]
++        self.fields = {
++            key: SimpleNamespace(contents=lambda value=value: value)
++            for key, value in meta.items()
++        }
++        self.tensors = [
++            SimpleNamespace(name=name, shape=shape) for name, shape in shapes.items()
++        ]
++
++
++def text_metadata():
++    return {
++        "general.architecture": "qwen35",
++        "qwen35.block_count": 4,
++        "qwen35.full_attention_interval": 2,
++        "qwen35.ssm.state_size": 32,
++        "qwen35.ssm.inner_size": 192,
++        "qwen35.ssm.group_count": 2,
++        "qwen35.ssm.conv_kernel": 4,
++        "qwen35.rope.dimension_count": 16,
++        "qwen35.rope.freq_base": 1000000.0,
++        "qwen35.attention.key_length": 64,
++        "qwen35.attention.head_count": 8,
++        "qwen35.attention.head_count_kv": 2,
++        "qwen35.attention.layer_norm_rms_epsilon": 1e-6,
++        "qwen35.embedding_length": 512,
++        "qwen35.feed_forward_length": 1536,
++        "qwen35.context_length": 8192,
++        "tokenizer.ggml.eos_token_id": 42,
++    }
++
++
++def vision_metadata():
++    return {
++        "general.architecture": "clip",
++        "clip.projector_type": "qwen3vl_merger",
++        "clip.vision.block_count": 2,
++        "clip.vision.embedding_length": 128,
++        "clip.vision.feed_forward_length": 384,
++        "clip.vision.attention.head_count": 4,
++        "clip.vision.patch_size": 16,
++        "clip.vision.spatial_merge_size": 2,
++        "clip.vision.projection_dim": 512,
++    }
++
++
++class TestQwenGGUFConfig(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.directory = Path(self.temp.name)
++        self.weight = self.directory / "qwen35-Q8_0.gguf"
++        self.weight.write_bytes(b"GGUF")
++        self.mmproj = self.directory / "mmproj-model-f16.gguf"
++        self.reader_modules = {
++            "gguf": types.SimpleNamespace(GGUFReader=FakeReader),
++            "sglang.srt.configs.qwen3_5": types.SimpleNamespace(
++                Qwen3_5Config=FakeMultiConfig,
++                Qwen3_5TextConfig=FakeConfig,
++            ),
++        }
++        FakeReader.records = {
++            str(self.weight): (
++                text_metadata(),
++                {"token_embd.weight": (512, 8192)},
++            )
++        }
++        self.resolve = source_function(
++            "utils/hf_transformers/common.py",
++            "resolve_local_gguf_directory",
++            {"Path": Path},
++        )
++        self.build = source_function(
++            "utils/hf_transformers/gguf_native.py",
++            "build_qwen3_5_gguf_config",
++            {"Path": Path, "PretrainedConfig": FakeConfig},
++        )
++
++    def build_config(self):
++        with patch.dict(sys.modules, self.reader_modules):
++            return self.build(str(self.weight))
++
++    def test_directory_selects_model_not_projector(self):
++        self.mmproj.write_bytes(b"GGUF")
++        self.assertEqual(self.resolve(self.directory), str(self.weight))
++        (self.directory / "config.json").write_text("{}", encoding="utf-8")
++        self.assertIsNone(self.resolve(self.directory))
++
++    def test_argument_hook_rewrites_model_and_tokenizer_paths(self):
++        args = SimpleNamespace(
++            model_path=str(self.directory),
++            tokenizer_path=str(self.directory),
++            revision=None,
++            speculative_draft_model_path=None,
++        )
++        shim = types.SimpleNamespace(
++            resolve_local_gguf_directory=self.resolve,
++            resolve_hf_gguf_reference=lambda *args, **kwargs: None,
++        )
++        resolve_hook = source_function(
++            "arg_groups/model_path_hook.py",
++            "resolve_hf_gguf_model_path",
++            {
++                "resolving_view": lambda server_args: server_args,
++                "declare_resolution": lambda server_args, _, **changes: (
++                    server_args.__dict__.update(changes)
++                ),
++                "logger": logging.getLogger(__name__),
++            },
++        )
++        with patch.dict(sys.modules, {"sglang.srt.utils.hf_transformers_utils": shim}):
++            resolve_hook(args)
++        self.assertEqual(args.model_path, str(self.weight))
++        self.assertEqual(args.tokenizer_path, str(self.weight))
++
++    def test_ambiguous_and_projector_only_directories_fail(self):
++        other = self.directory / "qwen35-Q4.gguf"
++        other.write_bytes(b"GGUF")
++        with self.assertRaisesRegex(ValueError, "exactly one model GGUF"):
++            self.resolve(self.directory)
++        other.unlink()
++        self.weight.unlink()
++        self.mmproj.write_bytes(b"GGUF")
++        with self.assertRaisesRegex(ValueError, "found 0"):
++            self.resolve(self.directory)
++
++    def test_text_config_uses_metadata_and_weight_shape(self):
++        config = self.build_config()
++        self.assertEqual(config.model_type, "qwen3_5_text")
++        self.assertEqual(config.vocab_size, 8192)
++        self.assertEqual(config.linear_num_key_heads, 2)
++        self.assertEqual(config.linear_num_value_heads, 6)
++        self.assertEqual(config.partial_rotary_factor, 0.25)
++        self.assertEqual(config.dtype, "bfloat16")
++        self.assertIsNone(config.pad_token_id)
++        self.assertEqual(config.layer_types, ["linear_attention", "full_attention"] * 2)
++        self.assertEqual(config.architectures, ["Qwen3_5ForCausalLM"])
++
++    def test_live_27b_block_count_excludes_mtp_layer(self):
++        meta = FakeReader.records[str(self.weight)][0]
++        meta.update(
++            {
++                "qwen35.block_count": 65,
++                "qwen35.nextn_predict_layers": 1,
++                "qwen35.full_attention_interval": 4,
++                "qwen35.rope.dimension_count": 64,
++                "qwen35.attention.key_length": 256,
++                "qwen35.rope.freq_base": 10000000.0,
++                "qwen35.rope.dimension_sections": [11, 11, 10, 0],
++                "qwen35.ssm.state_size": 128,
++                "qwen35.ssm.inner_size": 6144,
++                "qwen35.ssm.group_count": 16,
++            }
++        )
++        config = self.build_config()
++        self.assertEqual(config.num_hidden_layers, 64)
++        self.assertEqual(len(config.layer_types), 64)
++        self.assertEqual(config.layer_types[-1], "full_attention")
++        self.assertEqual(config.linear_num_value_heads, 48)
++        self.assertEqual(config.rope_parameters["mrope_section"], [11, 11, 10])
++        self.assertEqual(config.rope_parameters["partial_rotary_factor"], 0.25)
++        self.assertEqual(config.rope_parameters["rope_type"], "default")
++
++    def test_invalid_mtp_count_fails_closed(self):
++        meta = FakeReader.records[str(self.weight)][0]
++        meta["qwen35.nextn_predict_layers"] = meta["qwen35.block_count"]
++        with self.assertRaisesRegex(ValueError, "nextn_predict_layers"):
++            self.build_config()
++
++    def test_vision_projector_builds_multimodal_config(self):
++        self.mmproj.write_bytes(b"GGUF")
++        tokens = [f"token-{i}" for i in range(8192)]
++        for token_id, token in (
++            (8053, "<|vision_start|>"),
++            (8054, "<|vision_end|>"),
++            (8056, "<|image_pad|>"),
++            (8057, "<|video_pad|>"),
++        ):
++            tokens[token_id] = token
++        FakeReader.records[str(self.weight)][0]["tokenizer.ggml.tokens"] = tokens
++        FakeReader.records[str(self.weight)][0]["qwen35.rope.dimension_sections"] = [
++            2,
++            2,
++            4,
++            0,
++        ]
++        FakeReader.records[str(self.mmproj)] = (
++            vision_metadata(),
++            {
++                "v.patch_embd.weight": (16, 16, 3, 128),
++                "v.position_embd.weight": (128, 256),
++            },
++        )
++        config = self.build_config()
++        self.assertEqual(config.model_type, "qwen3_5")
++        self.assertEqual(config.text_config.hidden_size, 512)
++        self.assertEqual(config.vision_config.num_position_embeddings, 256)
++        self.assertEqual(config.vision_config.deepstack_visual_indexes, [])
++        self.assertEqual(config.rope_scaling["mrope_section"], [2, 2, 4])
++        self.assertTrue(config.rope_scaling["mrope_interleaved"])
++        self.assertEqual(config.image_token_id, 8056)
++        self.assertEqual(config.video_token_id, 8057)
++        self.assertEqual(config.vision_start_token_id, 8053)
++        self.assertEqual(config.vision_end_token_id, 8054)
++        self.assertIsNone(config.text_config.pad_token_id)
++        self.assertEqual(config.architectures, ["Qwen3_5ForConditionalGeneration"])
++
++    def test_multimodal_config_requires_image_marker(self):
++        self.mmproj.write_bytes(b"GGUF")
++        FakeReader.records[str(self.mmproj)] = (
++            vision_metadata(),
++            {
++                "v.patch_embd.weight": (16, 16, 3, 128),
++                "v.position_embd.weight": (128, 256),
++            },
++        )
++        FakeReader.records[str(self.weight)][0]["tokenizer.ggml.tokens"] = []
++        with self.assertRaisesRegex(ValueError, "<\\|image_pad\\|>"):
++            self.build_config()
++
++    def test_processor_uses_tokenizer_config_for_separate_gguf_weights(self):
++        selected = []
++        tokenizer = SimpleNamespace(chat_template="synthetic")
++        processor = SimpleNamespace(tokenizer=tokenizer)
++        def no_op(*args, **kwargs):
++            return None
++        load = source_function(
++            "utils/hf_transformers/processor.py",
++            "get_processor",
++            {
++                "resolve_runai_obj_uri": lambda path: path,
++                "_normalize_image_processor_backend": lambda backend, use_fast: "auto",
++                "is_mistral_model": lambda path: False,
++                "check_gguf_file": lambda path: path == str(self.weight),
++                "AutoConfig": SimpleNamespace(
++                    from_pretrained=lambda path, **kwargs: (
++                        selected.append(path) or SimpleNamespace(model_type="qwen3_5")
++                    )
++                ),
++                "_is_deepseek_ocr_model": lambda config: False,
++                "_is_deepseek_ocr2_model": lambda config: False,
++                "_CUSTOMIZED_MM_PROCESSOR": {},
++                "AutoProcessor": SimpleNamespace(
++                    from_pretrained=lambda path, *args, **kwargs: processor
++                ),
++                "_apply_image_processor_backend": lambda proc, *args: proc,
++                "PreTrainedTokenizerBase": type("PreTrainedTokenizerBase", (), {}),
++                "get_tokenizer_from_processor": lambda proc: proc.tokenizer,
++                "_TOKENIZERS_BACKEND": "TokenizersBackend",
++                "_install_tokenizer_warnings_filter": no_op,
++                "patch_mistral_common_tokenizer": no_op,
++                "_fix_special_tokens_pattern": no_op,
++                "_fix_added_tokens_encoding": no_op,
++                "attach_additional_stop_token_ids": no_op,
++            },
++        )
++        processor_path = str(self.directory / "fp8-processor")
++        self.assertIs(load(processor_path, model_name=str(self.weight)), processor)
++        self.assertEqual(selected, [processor_path])
++        selected.clear()
++        self.assertIs(load(processor_path, model_name="ordinary-model"), processor)
++        self.assertEqual(selected, ["ordinary-model"])
++
++    def test_native_gguf_nested_yarn_override_preserves_text_config(self):
++        class Config(FakeConfig):
++            def update(self, values):
++                self.__dict__.update(values)
++
++        text = Config(rope_parameters={"rope_type": "default"}, hidden_size=5120)
++        config = Config(text_config=text)
++        load = source_function(
++            "utils/hf_transformers/config.py", "get_config",
++            {
++                "resolve_local_gguf_directory": lambda path: path,
++                "check_gguf_file": lambda path: True,
++                "_ensure_gguf_version": lambda: None,
++                "gguf_sidecar_dir": lambda *args: None,
++                "has_native_gguf_support": lambda path: True,
++                "build_gguf_config": lambda path: config,
++                "PretrainedConfig": Config,
++            },
++        )
++        rope = {"rope_type": "yarn", "factor": 4.0,
++                "original_max_position_embeddings": 262144,
++                "rope_theta": 10000000, "partial_rotary_factor": 0.25,
++                "mrope_section": [11, 11, 10], "mrope_interleaved": True}
++        result = load("model.gguf", False,
++                      model_override_args={"text_config": {"rope_parameters": rope}})
++        self.assertIs(result.text_config, text)
++        self.assertEqual(result.text_config.hidden_size, 5120)
++        self.assertEqual(result.text_config.rope_parameters, rope)
++
++    def test_missing_geometry_fails_closed(self):
++        del FakeReader.records[str(self.weight)][0]["qwen35.ssm.group_count"]
++        with self.assertRaisesRegex(ValueError, "qwen35.ssm.group_count"):
++            self.build_config()
++        self.assertIsNone(self.resolve(self.directory / "does-not-exist"))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/test_qwen_gguf_migration_cpu.py b/test/registered/unit/test_qwen_gguf_migration_cpu.py
+new file mode 100644
+index 000000000..69a4b05a7
+--- /dev/null
++++ b/test/registered/unit/test_qwen_gguf_migration_cpu.py
+@@ -0,0 +1,822 @@
++"""Real CPU tensor/reader tests with source-method loader/model integration.
++
++The model constructors/distributed/native imports are not loaded. The integration
++fixture executes the actual GGUF loader, weight iterator, Qwen body/head loaders
++and identity audit on a small CPU parameter graph. It is not full-model/GPU
++acceptance. Historical donors: 81881bd7c1, 39eedc17eb and 788a898375.
++"""
++
++import ast
++from contextlib import nullcontext
++import glob
++import importlib.util
++import logging
++import os
++from pathlib import Path
++import re
++import sys
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest.mock import patch
++
++import gguf
++import numpy as np
++import torch
++import torch.nn.functional as F
++
++
++ROOT = Path(__file__).resolve().parents[3]
++SRT = ROOT / "python/sglang/srt"
++
++
++def load_file(name, relative):
++    spec = importlib.util.spec_from_file_location(name, SRT / relative)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++NAMES_MODULE = "sglang.srt.model_loader.gguf_name_maps"
++VISION_MODULE = "sglang.srt.model_loader.gguf_vision"
++NAMES = load_file(NAMES_MODULE, "model_loader/gguf_name_maps.py")
++VISION = load_file(VISION_MODULE, "model_loader/gguf_vision.py")
++
++
++def source_nodes(relative, names, class_name=None):
++    tree = ast.parse((SRT / relative).read_text(encoding="utf-8"))
++    if class_name:
++        tree = next(
++            node
++            for node in tree.body
++            if isinstance(node, ast.ClassDef) and node.name == class_name
++        )
++    nodes = [
++        node
++        for node in tree.body
++        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
++    ]
++    if {node.name for node in nodes} != set(names):
++        raise AssertionError(f"Missing real source methods: {relative}: {names}")
++    return nodes
++
++
++def execute(nodes, namespace):
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias(name="annotations")], level=0
++    )
++    exec(
++        compile(
++            ast.fix_missing_locations(
++                ast.Module(body=[future, *nodes], type_ignores=[])
++            ),
++            "real_sglang_source_methods",
++            "exec",
++        ),
++        namespace,
++    )
++    return namespace
++
++
++def config(model_type="qwen3_5_text"):
++    return SimpleNamespace(
++        model_type=model_type,
++        linear_num_key_heads=2,
++        linear_num_value_heads=6,
++        linear_key_head_dim=32,
++        linear_value_head_dim=32,
++        tie_word_embeddings=False,
++        language_model_only=False,
++    )
++
++
++def base_namespace():
++    namespace = dict(
++        torch=torch,
++        nn=torch.nn,
++        glob=glob,
++        os=os,
++        logger=logging.getLogger(__name__),
++        _MODEL_PREFIX="model.",
++        _is_cpu=False,
++        _is_amx_available=False,
++        QWEN3_5_KV_SCALE_MAPPER=SimpleNamespace(apply=lambda weights: weights),
++        get_layer_id=lambda name: (
++            int(re.search(r"layers\.(\d+)", name)[1])
++            if re.search(r"layers\.(\d+)", name)
++            else None
++        ),
++    )
++    return execute(
++        source_nodes(
++            "model_loader/weight_utils.py",
++            {
++                "gguf_quant_weights_iterator",
++                "default_weight_loader",
++            },
++        ),
++        namespace,
++    )
++
++
++class TestQwenGGUFTransform(unittest.TestCase):
++    def setUp(self):
++        self.cfg = config()
++        self.transform = NAMES.Qwen3_5GGUFWeightTransform(self.cfg)
++        self.order = [0, 2, 4, 1, 3, 5]
++
++    def test_state_conversion_and_head_order(self):
++        expected = torch.arange(6, dtype=torch.float32) / 4
++        stored = expected.reshape(2, 3).T.reshape(-1)
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.A_log", -stored.exp(), None),
++            expected,
++        )
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.dt_bias", stored, None), expected
++        )
++
++    def test_folded_norm_excludes_raw_gated_norm(self):
++        weight = torch.tensor([1.25, 0.75])
++        for name in (
++            "model.norm.weight",
++            "model.layers.3.self_attn.q_norm.weight",
++            "model.layers.3.self_attn.k_norm.weight",
++            "model.layers.0.input_layernorm.weight",
++            "model.layers.0.post_attention_layernorm.weight",
++        ):
++            torch.testing.assert_close(self.transform(name, weight, None), weight - 1)
++        self.assertIs(
++            self.transform("model.layers.0.linear_attn.norm.weight", weight, None),
++            weight,
++        )
++
++    def test_qkv_conv_and_other_gdn_row_permutations(self):
++        weight = torch.arange(320 * 4).reshape(320, 4)
++        expected = torch.cat(
++            (weight[:128], weight[128:].reshape(6, 32, 4)[self.order].reshape(192, 4))
++        )
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.in_proj_qkv.qweight", weight, 8),
++            expected,
++        )
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.conv1d.weight", weight, None),
++            expected.unsqueeze(1),
++        )
++        for suffix, rows, block in (
++            ("in_proj_z", 192, 32),
++            ("in_proj_b", 6, 1),
++            ("in_proj_a", 6, 1),
++        ):
++            data = torch.arange(rows * 4).reshape(rows, 4)
++            expected = data.reshape(6, block, 4)[self.order].reshape(rows, 4)
++            torch.testing.assert_close(
++                self.transform(f"model.layers.0.linear_attn.{suffix}.qweight", data, 8),
++                expected,
++            )
++
++    def test_q8_output_columns_are_exact_bytes(self):
++        weight = torch.arange(2 * 6 * 34).remainder(256).to(torch.uint8).reshape(2, 204)
++        expected = weight.reshape(2, 6, 34)[:, self.order].reshape(2, 204)
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.out_proj.qweight", weight, 8),
++            expected,
++        )
++        real = torch.arange(2 * 192).reshape(2, 192)
++        expected = real.reshape(2, 6, 32)[:, self.order].reshape(2, 192)
++        torch.testing.assert_close(
++            self.transform("model.layers.0.linear_attn.out_proj.weight", real, None),
++            expected,
++        )
++
++    def test_bf16_payload_and_type_iterator(self):
++        weight = torch.tensor([[1.5, -2, 0.25]], dtype=torch.bfloat16)
++        values = [
++            ("model.embed_tokens.qweight_type", torch.tensor(30)),
++            ("model.embed_tokens.qweight", weight.view(torch.uint8)),
++        ]
++        actual = list(NAMES.apply_gguf_weight_transform(iter(values), self.transform))
++        torch.testing.assert_close(actual[1][1], weight, rtol=0, atol=0)
++        with self.assertRaisesRegex(ValueError, "scalar"):
++            list(
++                NAMES.apply_gguf_weight_transform(
++                    [("x.qweight_type", torch.tensor([8, 8]))], self.transform
++                )
++            )
++        with self.assertRaisesRegex(ValueError, "missing GGUF weight type"):
++            list(NAMES.apply_gguf_weight_transform([values[1]], self.transform))
++
++    def test_invalid_decay_geometry_and_quant_block_fail_closed(self):
++        for invalid in (
++            torch.zeros(6),
++            torch.full((6,), -float("inf")),
++            torch.full((6,), float("nan")),
++        ):
++            with self.assertRaises(ValueError):
++                self.transform("model.layers.0.linear_attn.A_log", invalid, None)
++        for key, value in (("linear_num_key_heads", 0), ("linear_num_value_heads", 5)):
++            cfg = config()
++            setattr(cfg, key, value)
++            with self.assertRaises(ValueError):
++                NAMES.Qwen3_5GGUFWeightTransform(cfg)
++        with self.assertRaises(NotImplementedError):
++            self.transform(
++                "model.layers.0.linear_attn.out_proj.qweight",
++                torch.zeros(2, 210, dtype=torch.uint8),
++                14,
++            )
++        with self.assertRaises(ValueError):
++            self.transform(
++                "model.embed_tokens.qweight", torch.zeros(1, 3, dtype=torch.uint8), 30
++            )
++
++    def test_other_architectures_are_not_transformed(self):
++        for name in ("gemma4", "qwen2", "qwen3_next", "qwen3_5_moe", "muse_glimmer"):
++            self.assertIsNone(
++                NAMES.get_gguf_weight_transform(SimpleNamespace(model_type=name))
++            )
++        self.assertIs(
++            NAMES.GGUF_HF_NAME_MAP_BUILDERS["muse_glimmer"],
++            NAMES.build_muse_glimmer_name_map,
++        )
++
++    def test_completeness_uses_identity_not_equal_values(self):
++        model = torch.nn.Module()
++        model.register_parameter("first", torch.nn.Parameter(torch.ones(2)))
++        model.register_parameter("alias", model.first)
++        model.register_parameter(
++            "equal_but_distinct", torch.nn.Parameter(torch.ones(2))
++        )
++        self.assertEqual(
++            NAMES.get_missing_gguf_parameters(model, {"alias"}), ["equal_but_distinct"]
++        )
++        self.assertEqual(
++            NAMES.get_missing_gguf_parameters(model, {"alias", "equal_but_distinct"}),
++            [],
++        )
++        self.assertEqual(
++            NAMES.get_missing_gguf_parameters(model, {"unknown"}),
++            ["equal_but_distinct", "first"],
++        )
++
++    def test_real_transformers_meta_name_map(self):
++        from transformers import Qwen3_5TextConfig
++
++        cfg = Qwen3_5TextConfig(
++            num_hidden_layers=2,
++            hidden_size=32,
++            intermediate_size=64,
++            num_attention_heads=2,
++            num_key_value_heads=1,
++            head_dim=16,
++            linear_num_key_heads=2,
++            linear_num_value_heads=4,
++            linear_key_head_dim=16,
++            linear_value_head_dim=16,
++            vocab_size=32,
++            full_attention_interval=2,
++        )
++        mapping = NAMES.build_qwen3_5_name_map(cfg)
++        self.assertEqual(mapping["blk.0.ssm_a"], "model.layers.0.linear_attn.A_log")
++        self.assertEqual(
++            mapping["blk.0.ssm_dt.bias"], "model.layers.0.linear_attn.dt_bias"
++        )
++        self.assertEqual(mapping["output.weight"], "lm_head.weight")
++        self.assertEqual(
++            mapping["blk.1.attn_q.weight"], "model.layers.1.self_attn.q_proj.weight"
++        )
++
++
++class TestQwenGGUFVision(unittest.TestCase):
++    def setUp(self):
++        self.vision = SimpleNamespace(
++            temporal_patch_size=2,
++            deepstack_visual_indexes=[],
++            hidden_size=4,
++            intermediate_size=8,
++            spatial_merge_size=2,
++            in_channels=3,
++            patch_size=2,
++            num_position_embeddings=16,
++            out_hidden_size=12,
++            depth=1,
++            num_heads=2,
++        )
++        self.config = SimpleNamespace(vision_config=self.vision)
++        self.mapping = VISION.qwen35_vision_tensor_map(self.config)
++        self.metadata = {
++            "general.architecture": "clip",
++            "clip.projector_type": "qwen3vl_merger",
++            "clip.vision.block_count": 1,
++            "clip.vision.embedding_length": 4,
++            "clip.vision.attention.head_count": 2,
++            "clip.vision.feed_forward_length": 8,
++            "clip.vision.patch_size": 2,
++            "clip.vision.spatial_merge_size": 2,
++            "clip.vision.projection_dim": 12,
++        }
++        self.tensors = [
++            self.tensor(
++                name,
++                torch.arange(int(np.prod(shape)), dtype=torch.float32).reshape(shape)
++                / 64,
++            )
++            for name, (_, shape) in self.mapping.items()
++        ]
++        self.reader = SimpleNamespace(
++            tensors=self.tensors,
++            get_field=lambda key: (
++                SimpleNamespace(contents=lambda: self.metadata[key])
++                if key in self.metadata
++                else None
++            ),
++        )
++
++    @staticmethod
++    def tensor(name, value):
++        bf16 = value.dtype == torch.bfloat16
++        return SimpleNamespace(
++            name=name,
++            shape=tuple(reversed(value.shape)),
++            tensor_type=gguf.GGMLQuantizationType.BF16
++            if bf16
++            else gguf.GGMLQuantizationType.F32,
++            data=value.view(torch.uint8).numpy() if bf16 else value.numpy(),
++        )
++
++    def load(self):
++        with patch.object(gguf, "GGUFReader", return_value=self.reader):
++            return dict(
++                VISION.qwen35_vision_weights_iterator(
++                    "fixture-mmproj.gguf", self.config
++                )
++            )
++
++    def test_temporal_conv3d_matches_exact_converter_slices(self):
++        torch.manual_seed(63)
++        weight = torch.randn(4, 3, 2, 2, 2)
++        self.tensors[0] = self.tensor(
++            "v.patch_embd.weight", weight[:, :, 0].contiguous()
++        )
++        self.tensors[1] = self.tensor(
++            "v.patch_embd.weight.1", weight[:, :, 1].contiguous()
++        )
++        loaded = self.load()
++        self.assertEqual(len(loaded), 21)
++        actual_weight = loaded["visual.patch_embed.proj.weight"]
++        torch.testing.assert_close(actual_weight, weight, rtol=0, atol=0)
++        inputs = torch.randn(2, 3, 2, 4, 4)
++        expected = F.conv2d(inputs[:, :, 0], weight[:, :, 0], stride=2) + F.conv2d(
++            inputs[:, :, 1], weight[:, :, 1], stride=2
++        )
++        torch.testing.assert_close(
++            F.conv3d(inputs, actual_weight, stride=(2, 2, 2)).squeeze(2), expected
++        )
++
++    def test_bf16_exact_bytes(self):
++        weight = torch.tensor(
++            [[1.5, -2, 0.03125], [3.5, -0.5, 64]], dtype=torch.bfloat16
++        )
++        torch.testing.assert_close(
++            VISION._read_unquantized_tensor(self.tensor("bf16", weight), (2, 3)),
++            weight,
++            rtol=0,
++            atol=0,
++        )
++
++    def test_missing_extra_duplicate_and_bad_shape_fail(self):
++        missing = self.tensors.pop()
++        with self.assertRaisesRegex(ValueError, "missing="):
++            self.load()
++        self.tensors.append(missing)
++        self.tensors.append(self.tensor("unexpected", torch.ones(2)))
++        with self.assertRaisesRegex(ValueError, "extra="):
++            self.load()
++        self.tensors.pop()
++        self.tensors.append(self.tensors[-1])
++        with self.assertRaisesRegex(ValueError, "Incomplete"):
++            self.load()
++        self.tensors.pop()
++        self.tensors[-1].shape = (123,)
++        with self.assertRaisesRegex(ValueError, "shape"):
++            self.load()
++
++    def test_metadata_geometry_and_quantized_vision_fail(self):
++        self.metadata["clip.projector_type"] = "qwen2vl_merger"
++        with self.assertRaisesRegex(ValueError, "metadata mismatch"):
++            self.load()
++        for key, value in (
++            ("deepstack_visual_indexes", [0]),
++            ("temporal_patch_size", 3),
++        ):
++            old = getattr(self.vision, key)
++            setattr(self.vision, key, value)
++            with self.assertRaisesRegex(ValueError, "no deepstack"):
++                VISION.qwen35_vision_tensor_map(self.config)
++            setattr(self.vision, key, old)
++        value = self.tensor("quantized", torch.ones(2, 32))
++        value.tensor_type = gguf.GGMLQuantizationType.Q8_0
++        with self.assertRaisesRegex(ValueError, "only F32/F16/BF16"):
++            VISION._read_unquantized_tensor(value, (2, 32))
++
++
++def load_loader_namespace(model=None):
++    namespace = base_namespace()
++    namespace.update(
++        BaseModelLoader=type("BaseModelLoader", (), {}),
++        _initialize_model=lambda *args: model,
++        _get_quantization_config=lambda *args: SimpleNamespace(get_name=lambda: "gguf"),
++        set_default_torch_dtype=lambda *args: nullcontext(),
++        device_loading_context=lambda *args: nullcontext(),
++        get_gguf_extra_tensor_names=lambda *args: [],
++    )
++    return execute(
++        source_nodes("model_loader/loader.py", {"GGUFModelLoader"}), namespace
++    )
++
++
++class TestQwenGGUFLoadChain(unittest.TestCase):
++    def setUp(self):
++        # Restore only our two injected modules. patch.dict(sys.modules) would
++        # also remove lazy Torch imports, leaving C++ dispatcher registrations
++        # alive and causing duplicate registration on the next import.
++        for name, module in ((NAMES_MODULE, NAMES), (VISION_MODULE, VISION)):
++            previous = sys.modules.get(name)
++            sys.modules[name] = module
++            if previous is None:
++                self.addCleanup(sys.modules.pop, name, None)
++            else:
++                self.addCleanup(sys.modules.__setitem__, name, previous)
++
++    def test_snapshot_selection_rejects_ambiguity(self):
++        Loader = load_loader_namespace()["GGUFModelLoader"]
++        loader = object.__new__(Loader)
++        with tempfile.TemporaryDirectory() as directory:
++            with self.assertRaises(ValueError):
++                loader._prepare_weights(directory)
++            target = Path(directory) / "model.gguf"
++            target.touch()
++            self.assertEqual(loader._prepare_weights(directory), str(target))
++            (Path(directory) / "mmproj-bf16.gguf").touch()
++            self.assertEqual(loader._prepare_weights(directory, True), str(target))
++            with self.assertRaises(ValueError):
++                loader._prepare_weights(directory)
++            (Path(directory) / "draft.gguf").touch()
++            with self.assertRaises(ValueError):
++                loader._prepare_weights(directory, True)
++
++    def test_actual_iterator_reader_and_text_body_head_loaders(self):
++        namespace = base_namespace()
++        execute(
++            source_nodes("models/qwen3_5.py", {"load_weights"}, "Qwen3_5ForCausalLM"),
++            namespace,
++        )
++        Body = type(
++            "Body", (torch.nn.Module,), {"load_weights": namespace["load_weights"]}
++        )
++        execute(
++            source_nodes(
++                "models/qwen3_5_text.py", {"load_weights"}, "Qwen3_5ForCausalLM"
++            ),
++            namespace,
++        )
++        Text = type(
++            "Text", (torch.nn.Module,), {"load_weights": namespace["load_weights"]}
++        )
++        model = Text()
++        model.config = config()
++        model.quant_config = SimpleNamespace(get_name=lambda: "gguf")
++        model.pp_group = SimpleNamespace(is_last_rank=True)
++        model.model = Body()
++        model.model.norm = torch.nn.Module()
++        model.model.norm.weight = torch.nn.Parameter(
++            torch.zeros(2), requires_grad=False
++        )
++        model.lm_head = torch.nn.Module()
++        model.lm_head.qweight = torch.nn.Parameter(
++            torch.zeros(2, 2, dtype=torch.bfloat16), requires_grad=False
++        )
++        model.lm_head.qweight_type = torch.nn.Parameter(
++            torch.zeros((), dtype=torch.int64), requires_grad=False
++        )
++        namespace = load_loader_namespace(model)
++        Loader = namespace["GGUFModelLoader"]
++        loader = object.__new__(Loader)
++        loader.load_config = SimpleNamespace()
++        loader._get_gguf_weights_map = lambda _: {
++            "output_norm.weight": "model.norm.weight",
++            "output.weight": "lm_head.weight",
++        }
++        with tempfile.TemporaryDirectory() as directory:
++            path = str(Path(directory) / "model.gguf")
++            writer = gguf.GGUFWriter(path, "qwen35")
++            norm = torch.tensor([1.25, 0.75])
++            head = torch.tensor([[1.5, -2], [0.25, 8]], dtype=torch.bfloat16)
++            writer.add_tensor("output_norm.weight", norm.numpy())
++            writer.add_tensor(
++                "output.weight",
++                head.view(torch.uint8).numpy(),
++                raw_dtype=gguf.GGMLQuantizationType.BF16,
++            )
++            writer.write_header_to_file()
++            writer.write_kv_data_to_file()
++            writer.write_tensors_to_file()
++            writer.close()
++            cfg = SimpleNamespace(
++                hf_config=config(), model_path=path, dtype=torch.bfloat16
++            )
++            loaded = loader.load_model(
++                model_config=cfg, device_config=SimpleNamespace(device="cpu")
++            )
++            self.assertIs(loaded, model)
++            torch.testing.assert_close(model.model.norm.weight, norm - 1)
++            torch.testing.assert_close(model.lm_head.qweight, head, rtol=0, atol=0)
++            self.assertEqual(model.lm_head.qweight_type.item(), 30)
++            model.register_parameter("unloaded", torch.nn.Parameter(torch.ones(2)))
++            with self.assertRaisesRegex(RuntimeError, "unloaded"):
++                loader.load_model(
++                    model_config=cfg, device_config=SimpleNamespace(device="cpu")
++                )
++            namespace["_get_quantization_config"] = lambda *args: SimpleNamespace(
++                get_name=lambda: "fp8"
++            )
++            with self.assertRaisesRegex(ValueError, "requires GGUF quantization"):
++                loader.load_model(
++                    model_config=cfg, device_config=SimpleNamespace(device="cpu")
++                )
++
++    def test_architecture_mismatch_and_other_architecture_passthrough(self):
++        namespace = load_loader_namespace()
++        sentinel = iter([("sentinel", torch.ones(1))])
++        namespace["gguf_quant_weights_iterator"] = lambda *args: sentinel
++        loader = object.__new__(namespace["GGUFModelLoader"])
++        cfg = SimpleNamespace(hf_config=config())
++        reader = SimpleNamespace(
++            get_field=lambda _: SimpleNamespace(contents=lambda: "qwen3next")
++        )
++        with patch.object(gguf, "GGUFReader", return_value=reader):
++            with self.assertRaisesRegex(ValueError, "architecture=qwen35"):
++                loader._get_weights_iterator("fixture.gguf", {}, cfg)
++        for architecture in ("gemma4", "qwen2", "muse_glimmer"):
++            cfg.hf_config = SimpleNamespace(model_type=architecture)
++            self.assertIs(
++                loader._get_weights_iterator("fixture.gguf", {}, cfg), sentinel
++            )
++
++    def test_actual_multimodal_loader_chains_visual_and_text_weights(self):
++        vision_fixture = TestQwenGGUFVision()
++        vision_fixture.setUp()
++        cfg = config("qwen3_5")
++        cfg.text_config = config()
++        cfg.vision_config = vision_fixture.vision
++        namespace = base_namespace()
++        execute(
++            source_nodes(
++                "models/qwen3_5.py", {"load_weights"}, "Qwen3_5ForConditionalGeneration"
++            ),
++            namespace,
++        )
++        Model = type(
++            "VisionLanguage",
++            (torch.nn.Module,),
++            {"load_weights": namespace["load_weights"]},
++        )
++        model = Model()
++        model.config = cfg.text_config
++        model.pp_group = SimpleNamespace(is_last_rank=True)
++
++        def add_parameter(path, shape):
++            parent = model
++            parts = path.split(".")
++            for part in parts[:-1]:
++                if not hasattr(parent, part):
++                    parent.add_module(part, torch.nn.Module())
++                parent = getattr(parent, part)
++            parent.register_parameter(
++                parts[-1], torch.nn.Parameter(torch.zeros(shape), requires_grad=False)
++            )
++
++        add_parameter("model.norm.weight", (2,))
++        for target, shape in vision_fixture.mapping.values():
++            if target == "visual.patch_embed.proj.weight":
++                shape = (shape[0], shape[1], 2, *shape[2:])
++            if target not in dict(model.named_parameters()):
++                add_parameter(target, shape)
++        namespace = load_loader_namespace(model)
++        loader = object.__new__(namespace["GGUFModelLoader"])
++        loader.load_config = SimpleNamespace()
++        loader._get_gguf_weights_map = lambda _: {
++            "output_norm.weight": "model.norm.weight"
++        }
++        main_reader = SimpleNamespace(
++            get_field=lambda _: SimpleNamespace(contents=lambda: "qwen35"),
++            tensors=[
++                vision_fixture.tensor("output_norm.weight", torch.tensor([1.25, 0.75]))
++            ],
++        )
++        with tempfile.TemporaryDirectory() as directory:
++            model_file = Path(directory) / "model.gguf"
++            model_file.touch()
++            model_cfg = SimpleNamespace(
++                hf_config=cfg, model_path=str(model_file), dtype=torch.float32
++            )
++            with self.assertRaisesRegex(ValueError, "exactly one mmproj"):
++                loader.load_model(
++                    model_config=model_cfg, device_config=SimpleNamespace(device="cpu")
++                )
++            projector = Path(directory) / "mmproj-bf16.gguf"
++            projector.touch()
++            with patch.object(
++                gguf,
++                "GGUFReader",
++                side_effect=lambda path: (
++                    vision_fixture.reader if "mmproj-" in str(path) else main_reader
++                ),
++            ):
++                loaded = loader.load_model(
++                    model_config=model_cfg, device_config=SimpleNamespace(device="cpu")
++                )
++            self.assertIs(loaded, model)
++            expected = vision_fixture.load()
++            for name, value in expected.items():
++                torch.testing.assert_close(
++                    dict(model.named_parameters())[name], value, rtol=0, atol=0
++                )
++            torch.testing.assert_close(
++                model.model.norm.weight, torch.tensor([0.25, -0.25])
++            )
++            (Path(directory) / "mmproj-duplicate.gguf").touch()
++            with self.assertRaisesRegex(ValueError, "exactly one mmproj"):
++                loader.load_model(
++                    model_config=model_cfg, device_config=SimpleNamespace(device="cpu")
++                )
++
++    def test_non_gguf_head_does_not_consume_quantized_names(self):
++        namespace = base_namespace()
++        execute(
++            source_nodes(
++                "models/qwen3_5_text.py", {"load_weights"}, "Qwen3_5ForCausalLM"
++            ),
++            namespace,
++        )
++        param = torch.nn.Parameter(torch.zeros(1))
++        model = SimpleNamespace(
++            config=SimpleNamespace(tie_word_embeddings=False),
++            quant_config=SimpleNamespace(get_name=lambda: "fp8"),
++            pp_group=SimpleNamespace(is_last_rank=True),
++            named_parameters=lambda: iter([("lm_head.qweight", param)]),
++            model=SimpleNamespace(
++                load_weights=lambda weights: set(name for name, _ in weights)
++            ),
++        )
++        loaded = namespace["load_weights"](
++            model, iter([("lm_head.qweight", torch.ones(1))])
++        )
++        self.assertEqual(loaded, set())
++        self.assertEqual(param.item(), 0)
++
++    def test_embedding_hook_only_receives_gguf_for_supported_qwen(self):
++        namespace = base_namespace()
++        namespace.update(
++            VocabParallelEmbedding=lambda *args, **kwargs: kwargs,
++            PPMissingLayer=lambda: "missing",
++            is_dp_attention_enabled=lambda: False,
++            add_prefix=lambda suffix, prefix: (
++                f"{prefix}.{suffix}" if prefix else suffix
++            ),
++        )
++        execute(
++            source_nodes(
++                "models/qwen3_5.py", {"_build_embed_tokens"}, "Qwen3_5ForCausalLM"
++            ),
++            namespace,
++        )
++        build = namespace["_build_embed_tokens"]
++        init = source_nodes("models/qwen3_5.py", {"__init__"}, "Qwen3_5ForCausalLM")[0]
++        selection = next(
++            node
++            for node in init.body
++            if isinstance(node, ast.If)
++            and "config.model_type" in ast.unparse(node.test)
++        )
++        for architecture, quant, expected in (
++            ("qwen3_5_text", "gguf", True),
++            ("qwen3_5", "gguf", True),
++            ("qwen3_5_text", "fp8", False),
++            ("gemma4", "gguf", False),
++            ("qwen4_exp", "gguf", False),
++            ("qwen2", "fp8", False),
++        ):
++            with self.subTest(architecture=architecture, quant=quant):
++                subject = SimpleNamespace(pp_group=SimpleNamespace(is_first_rank=True))
++                subject._build_embed_tokens = lambda *args: build(subject, *args)
++                cfg = SimpleNamespace(
++                    model_type=architecture, vocab_size=4, hidden_size=2
++                )
++                qcfg = SimpleNamespace(get_name=lambda: quant)
++                execute(
++                    [selection],
++                    {
++                        **namespace,
++                        "self": subject,
++                        "config": cfg,
++                        "quant_config": qcfg,
++                        "prefix": "model",
++                    },
++                )
++                self.assertEqual("quant_config" in subject.embed_tokens, expected)
++                if expected:
++                    self.assertIs(subject.embed_tokens["quant_config"], qcfg)
++                    self.assertEqual(
++                        subject.embed_tokens["prefix"], "model.embed_tokens"
++                    )
++        # A subclass's old one-argument hook must still work.
++        subject = SimpleNamespace(_build_embed_tokens=lambda cfg: "subclass")
++        execute(
++            [selection],
++            {
++                **namespace,
++                "self": subject,
++                "config": SimpleNamespace(model_type="qwen4_exp"),
++                "quant_config": None,
++                "prefix": "",
++            },
++        )
++        self.assertEqual(subject.embed_tokens, "subclass")
++
++    def test_packed_gguf_type_binding_and_scalar_slot(self):
++        namespace = base_namespace()
++        namespace.update(
++            BlockQuantScaleParameter=type("Block", (), {}),
++            PerTensorScaleParameter=type("Scale", (), {}),
++            set_weight_attrs=lambda p, attrs: [
++                setattr(p, key, value) for key, value in attrs.items()
++            ],
++        )
++        nodes = source_nodes(
++            "models/qwen3_5.py",
++            {
++                "_override_weight_loader",
++                "_bind_packed_weight_loaders",
++                "_get_split_sizes_for_param",
++                "_make_packed_weight_loader",
++            },
++            "Qwen3_5GatedDeltaNet",
++        )
++        cls = ast.ClassDef(
++            name="GDN", bases=[], keywords=[], body=nodes, decorator_list=[]
++        )
++        execute([cls], namespace)
++        execute(
++            source_nodes(
++                "layers/linear.py", {"weight_loader"}, "MergedColumnParallelLinear"
++            ),
++            namespace,
++        )
++        module = SimpleNamespace(output_sizes=[4, 4, 12, 12])
++        param = torch.nn.Parameter(torch.zeros(4), requires_grad=False)
++        param.is_gguf_weight_type = True
++        param.shard_weight_type = {}
++        param.weight_loader = lambda p, value, shard: namespace["weight_loader"](
++            module, p, value, shard
++        )
++        module.qweight_type = param
++        namespace["GDN"]()._bind_packed_weight_loaders(module)
++        param.weight_loader(param, torch.tensor(8), (0, 1, 2))
++        torch.testing.assert_close(param.data, torch.tensor([8.0, 8.0, 8.0, 0.0]))
++        self.assertEqual(param.shard_weight_type, {0: 8, 1: 8, 2: 8})
++        packed = torch.nn.Parameter(
++            torch.empty(0, dtype=torch.uint8), requires_grad=False
++        )
++        packed.is_gguf_weight = True
++        packed.output_dim = 0
++        packed.shard_id, packed.shard_id_map, packed.data_container = [], {}, []
++        module.tp_size, module.tp_rank = 1, 0
++        packed.weight_loader = lambda p, value, shard: namespace["weight_loader"](
++            module, p, value, shard
++        )
++        namespace["GDN"]()._bind_packed_weight_loaders(
++            SimpleNamespace(qweight=packed, output_sizes=module.output_sizes)
++        )
++        data = torch.arange(40, dtype=torch.uint8).reshape(20, 2)
++        packed.weight_loader(packed, data, (0, 1, 2))
++        self.assertEqual(packed.shard_id, [0, 1, 2])
++        self.assertEqual(
++            [tuple(value.shape) for value in packed.data_container],
++            [(4, 2), (4, 2), (12, 2)],
++        )
++        torch.testing.assert_close(
++            torch.cat(packed.data_container), data, rtol=0, atol=0
++        )
++        non_gguf = torch.nn.Parameter(torch.zeros(1))
++        original = lambda *args: None
++        non_gguf.weight_loader = original
++        namespace["GDN"]()._bind_packed_weight_loaders(
++            SimpleNamespace(qweight=non_gguf)
++        )
++        self.assertIs(non_gguf.weight_loader, original)
++
++
++if __name__ == "__main__":
++    unittest.main()

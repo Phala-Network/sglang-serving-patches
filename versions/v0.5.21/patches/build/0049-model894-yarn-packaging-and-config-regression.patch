@@ -1,0 +1,194 @@
+From c2ce5382dad45fd85e39f5d4e1d93165225eb34d Mon Sep 17 00:00:00 2001
+From: zozyo <zzy.touhou@gmail.com>
+Date: Wed, 14 Oct 2026 09:52:21 +0800
+Subject: [PATCH] Package GGUF increments over immutable request-static YaRN
+ release with config regression
+
+---
+ docker/phala-model894-yarn/Dockerfile         | 19 ++++
+ docker/phala-model894-yarn/install.py         | 96 +++++++++++++++++++
+ .../unit/test_qwen35_gguf_config_cpu.py       | 29 +++++-
+ 3 files changed, 143 insertions(+), 1 deletion(-)
+ create mode 100644 docker/phala-model894-yarn/Dockerfile
+ create mode 100644 docker/phala-model894-yarn/install.py
+
+diff --git a/docker/phala-model894-yarn/Dockerfile b/docker/phala-model894-yarn/Dockerfile
+new file mode 100644
+index 000000000..681d00887
+--- /dev/null
++++ b/docker/phala-model894-yarn/Dockerfile
+@@ -0,0 +1,19 @@
++FROM ghcr.io/phala-network/sglang:phala-v0.5.21-6@sha256:cf0cf7a61358162e31dd96cd5591e8e0c42d2b5fcd0dd570ed02a5212710a26e
++
++ARG ENGINE_COMMIT
++ARG PATCHES_COMMIT
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_COMMIT}" \
++      org.phala.serving-patches.revision="${PATCHES_COMMIT}" \
++      org.phala.base-engine.revision="80afb70020aad5ce1135fcbb00864c0d761c8413"
++
++# This build context contains only source-bound GGUF deltas and focused tests.
++# The pinned released image supplies the unchanged official native dependencies.
++COPY . /opt/phala-model894-yarn/
++RUN python /opt/phala-model894-yarn/docker/phala-model894-yarn/install.py \
++    && hf --help >/dev/null \
++    && hf download --help >/dev/null \
++    && sglang serve --help >/dev/null \
++    && curl --version >/dev/null
++
++ENTRYPOINT ["sglang", "serve"]
+diff --git a/docker/phala-model894-yarn/install.py b/docker/phala-model894-yarn/install.py
+new file mode 100644
+index 000000000..015e3203f
+--- /dev/null
++++ b/docker/phala-model894-yarn/install.py
+@@ -0,0 +1,96 @@
++"""Bake verified GGUF deltas into the installed, immutable YaRN release."""
++import base64
++import csv
++import hashlib
++import importlib
++import importlib.metadata
++import io
++import json
++from pathlib import Path
++import shutil
++
++import sglang
++
++
++def digest(path, *, normalize=False):
++    payload = path.read_bytes()
++    if normalize:
++        payload = payload.replace(b"\r\n", b"\n")
++    return hashlib.sha256(payload).hexdigest()
++
++
++root = Path(__file__).resolve().parents[2]
++manifest = json.loads((root / "source-manifest.json").read_text(encoding="utf8"))
++installed = Path(sglang.__file__).resolve().parent
++if installed == (root / "python/sglang").resolve():
++    raise RuntimeError("Source context must not shadow the installed release")
++if len(manifest["engine_commit"]) != 40 or len(manifest["patches_commit"]) != 40:
++    raise RuntimeError("Complete engine and patch commit identities are required")
++if len(manifest["runtime_sha256"]) != 13:
++    raise RuntimeError("Expected exactly 13 reviewed GGUF runtime modules")
++
++# Prove the published dynamic implementation, including rejected-request
++# retirement, is present before adding the GGUF loader/vision changes.
++for name, expected in manifest["base_yarn_sha256"].items():
++    path = installed / Path(name).relative_to("python/sglang")
++    if digest(path, normalize=True) != expected:
++        raise RuntimeError(f"Published YaRN source mismatch: {name}")
++
++copied = {}
++for name, expected in manifest["runtime_sha256"].items():
++    relative = Path(name).relative_to("python/sglang")
++    source, target = root / name, installed / relative
++    prior = manifest["base_runtime_sha256"][name]
++    if prior is None:
++        if target.exists():
++            raise RuntimeError(f"Unexpected pre-existing GGUF module: {name}")
++    elif not target.exists() or digest(target, normalize=True) != prior:
++        raise RuntimeError(f"Published GGUF preimage mismatch: {name}")
++    if digest(source) != expected:
++        raise RuntimeError(f"Candidate source mismatch: {name}")
++    target.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copyfile(source, target)
++    if digest(target) != expected:
++        raise RuntimeError(f"Installed candidate mismatch: {name}")
++    copied[f"sglang/{relative.as_posix()}"] = target
++
++# Keep the wheel's standard RECORD truthful for changed and new modules.
++distribution = importlib.metadata.distribution("sglang")
++record = next(
++    distribution.locate_file(file)
++    for file in distribution.files
++    if file.name == "RECORD" and ".dist-info" in str(file)
++)
++rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf8"))))
++existing = {row[0]: row for row in rows}
++for name, target in copied.items():
++    encoded = base64.urlsafe_b64encode(hashlib.sha256(target.read_bytes()).digest())
++    row = [name, "sha256=" + encoded.decode().rstrip("="), str(target.stat().st_size)]
++    if name in existing:
++        existing[name][:] = row
++    else:
++        rows.append(row)
++with record.open("w", encoding="utf8", newline="") as stream:
++    csv.writer(stream, lineterminator="\n").writerows(rows)
++
++importlib.invalidate_caches()
++for name, expected in manifest["candidate_yarn_sha256"].items():
++    target = installed / Path(name).relative_to("python/sglang")
++    if digest(target, normalize=True) != expected:
++        raise RuntimeError(f"Candidate YaRN source mismatch after GGUF install: {name}")
++policy = importlib.import_module("sglang.srt.configs.request_static_yarn")
++if Path(policy.__file__).resolve() != (installed / "srt/configs/request_static_yarn.py").resolve():
++    raise RuntimeError("YaRN policy is not imported from the installed package")
++receipt = {
++    "engine_commit": manifest["engine_commit"],
++    "patches_commit": manifest["patches_commit"],
++    "base_engine_commit": manifest["base_engine_commit"],
++    "installed_sglang": str(installed),
++    "runtime_module_count": len(copied),
++    "runtime_sha256": manifest["runtime_sha256"],
++    "candidate_yarn_sha256": manifest["candidate_yarn_sha256"],
++    "wheel_record_updated": True,
++    "native_dependencies": "unchanged from immutable phala-v0.5.21-6 base",
++}
++(root / "installed-source.json").write_text(json.dumps(receipt, indent=2) + "\n")
++print(json.dumps(receipt, sort_keys=True), flush=True)
+diff --git a/test/manual/unit/test_qwen35_gguf_config_cpu.py b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+index d0d3aed98..c6085713f 100644
+--- a/test/manual/unit/test_qwen35_gguf_config_cpu.py
++++ b/test/manual/unit/test_qwen35_gguf_config_cpu.py
+@@ -1,6 +1,7 @@
+ """CPU contracts for local Qwen3.5 GGUF selection and native config loading."""
+ 
+ import ast
++import importlib.util
+ import logging
+ import sys
+ import tempfile
+@@ -338,13 +339,39 @@ class TestQwenGGUFConfig(unittest.TestCase):
+         rope = {"rope_type": "yarn", "factor": 4.0,
+                 "original_max_position_embeddings": 262144,
+                 "rope_theta": 10000000, "partial_rotary_factor": 0.25,
+-                "mrope_section": [11, 11, 10], "mrope_interleaved": True}
++                "mrope_section": [11, 11, 10], "mrope_interleaved": True,
++                "request_static_factors": [1, 2, 4]}
+         result = load("model.gguf", False,
+                       model_override_args={"text_config": {"rope_parameters": rope}})
+         self.assertIs(result.text_config, text)
+         self.assertEqual(result.text_config.hidden_size, 5120)
+         self.assertEqual(result.text_config.rope_parameters, rope)
+ 
++        # Exercise the actual admission policy against the GGUF early-return
++        # config. Losing the nested object or opt-in factors must fail here.
++        spec = importlib.util.spec_from_file_location(
++            "gguf_yarn_policy_under_test", SRT / "configs/request_static_yarn.py"
++        )
++        policy_module = importlib.util.module_from_spec(spec)
++        sys.modules[spec.name] = policy_module
++        spec.loader.exec_module(policy_module)
++        policy = policy_module.RequestStaticYarnConfig.from_hf_config(
++            result.text_config
++        )
++        policy.validate_model_support(["Qwen3_5ForConditionalGeneration"], True)
++        for budget, expected in [(262144, 1), (262145, 2), (524289, 4), (1048576, 4)]:
++            req = SimpleNamespace(
++                origin_input_ids=[1],
++                sampling_params=SimpleNamespace(
++                    max_new_tokens=budget - 1, custom_params=None
++                ),
++                extra_key=None, rope_profile=None, multimodal_inputs=None,
++            )
++            policy_module.admit_request_static_yarn(req, policy, 1048576)
++            selected = req.rope_profile
++            self.assertEqual(selected.factor, expected)
++            self.assertEqual(selected.budget, budget)
++
+     def test_missing_geometry_fails_closed(self):
+         del FakeReader.records[str(self.weight)][0]["qwen35.ssm.group_count"]
+         with self.assertRaisesRegex(ValueError, "qwen35.ssm.group_count"):

@@ -1,7 +1,7 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
-  "engine_tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+  "engine_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+  "engine_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
   "reproduced_tree": null,
   "patches": [
     {
@@ -325,9 +325,36 @@
       "parent": "c92bc45d552dbaf53deecee723b74762f603d0c5",
       "sha256": "3f67c8f3126deda3b8f2c89e728bdaa1d28726210fb361d843164d331d6e950b",
       "purpose": "Package qualified YaRN source with immutable base and verified wheel records"
+    },
+    {
+      "path": "patches/models/qwen/0047-qwen35-gguf-loader-vision-config.patch",
+      "commit": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "parent": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "sha256": "326f5f7757c0e2c0da469366fd37c4a0ec717fe372e0a1f6e7b2707762649082",
+      "purpose": "Adapt maintained Qwen GGUF vision loading to v0.5.21 with nested YaRN overrides"
+    },
+    {
+      "path": "patches/models/qwen/0048-gguf-prefill-dense-1024.patch",
+      "commit": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "parent": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "sha256": "c5614d55b5f9a763da095a4661d35caebcc4c20b78580b2eca566094b3485158",
+      "purpose": "Limit transient GGUF dense GEMM to large prefill batches"
+    },
+    {
+      "path": "patches/build/0049-model894-yarn-packaging-and-config-regression.patch",
+      "commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "parent": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "sha256": "45a93c12f2300deb2aacda0564e162195210e4f48b14934cef4a56f229974b62",
+      "purpose": "Package GGUF increments over immutable request-static YaRN release with config regression"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "Shared v0.5.21 maintenance with retained common/Kimi fixes and common/Qwen additions; no new non-Qwen GPU qualification",
-  "release_status": "phala-v0.5.21-6: source replay and final-image gates required before publication"
+  "scope": "local GGUF dynamic YaRN test; no publication",
+  "release_status": "phala-v0.5.21-6: source replay and final-image gates required before publication",
+  "incremental_base_engine": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+  "incremental_base_patch_commit": "ffeedda55c5d4bdf66b80210ccbbe74a6f54e077",
+  "incremental_donors": [
+    "03a053ca9b61e80169675de1aca72769c3d0da22",
+    "dd5afa83a3efb463b48dc7e80dea8ad63bf2a122"
+  ]
 }
