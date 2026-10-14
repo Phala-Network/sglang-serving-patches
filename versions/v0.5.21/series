@@ -51,3 +51,5 @@ patches/models/xing4/0050-native-xing4-stable.patch
 patches/models/xing4/0051-official-xing-tokenizer-data-only.patch
 patches/models/xing4/0052-request-static-yarn-public-budget.patch
 patches/models/xing4/0053-zero-output-empty-pool-rejection.patch
+patches/common/0054-safe-scheduler-startup-diagnostics.patch
+patches/common/0055-startup-weight-shape-context.patch
