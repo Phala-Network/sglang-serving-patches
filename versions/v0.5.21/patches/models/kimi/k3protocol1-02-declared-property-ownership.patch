@@ -1,0 +1,208 @@
+diff --git a/python/sglang/srt/function_call/kimik3_structural_tag.py b/python/sglang/srt/function_call/kimik3_structural_tag.py
+index 3a47a119d2f8f7a87cfcbfa41728191d0f3c8a7f..2b2ab800d1b4f09ba8e2a02045d8236888763efd 100644
+--- a/python/sglang/srt/function_call/kimik3_structural_tag.py
++++ b/python/sglang/srt/function_call/kimik3_structural_tag.py
+@@ -1,4 +1,4 @@
+-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
++from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
+ 
+ from xgrammar import StructuralTag
+ from xgrammar.structural_tag import (
+@@ -367,15 +367,74 @@ def _known_argument_format(
+     return OrFormat(elements=variants)
+ 
+ 
++# Regex text of the characters an argument key may not contain, and the same
++# characters as a Python set.
++_KEY_FORBIDDEN_CHARS = r'"& \t\r\n\f\v=<>'
++_KEY_FORBIDDEN_SET = set('"& \t\r\n\f\v=<>')
++
++
++def _regex_literal(text: str) -> str:
++    """Escape ``text`` for xgrammar's regex dialect, inside or outside a class."""
++    return "".join(
++        char
++        if char.isascii() and (char.isalnum() or char == "_")
++        else f"\\{char}"
++        if char.isascii()
++        else f"\\u{ord(char):04x}"
++        if ord(char) <= 0xFFFF
++        else f"\\U{ord(char):08x}"
++        for char in text
++    )
++
++
++def _dynamic_key_pattern(excluded_keys: Iterable[str]) -> str:
++    """Regex for an argument key that is none of ``excluded_keys``.
++
++    A strict tool pins each declared property to its own schema, so the
++    additionalProperties branch must not accept a declared name under the
++    looser schema (JSON Schema applies additionalProperties only to keys that
++    ``properties`` does not name). xgrammar's regex dialect has no lookahead,
++    so the exclusion walks a trie of the names: a key is acceptable when it
++    leaves the trie with a character no excluded name continues with, or when
++    it stops at a proper prefix of an excluded name.
++    """
++    any_key_char = f"[^{_KEY_FORBIDDEN_CHARS}]"
++    names = {key for key in excluded_keys if key and not set(key) & _KEY_FORBIDDEN_SET}
++    if not names:
++        return any_key_char + "+"
++
++    trie: Dict[str, Any] = {}
++    for name in names:
++        node = trie
++        for char in name:
++            node = node.setdefault(char, {})
++        node[""] = {}
++
++    alternatives: List[str] = []
++
++    def walk(node: Dict[str, Any], prefix: str) -> None:
++        children = [char for char in node if char]
++        diverge = f"[^{_KEY_FORBIDDEN_CHARS}{''.join(map(_regex_literal, children))}]"
++        alternatives.append(f"{_regex_literal(prefix)}{diverge}{any_key_char}*")
++        if prefix and "" not in node:
++            alternatives.append(_regex_literal(prefix))
++        for char in children:
++            walk(node[char], prefix + char)
++
++    walk(trie, "")
++    return "(?:" + "|".join(alternatives) + ")"
++
++
+ def _dynamic_argument_format(
+     schema: Union[bool, Dict[str, Any]],
+     root_schema: Dict[str, Any],
+     loose_strings: bool = False,
++    excluded_keys: Iterable[str] = (),
+ ) -> Format:
+     variants = [
+         SequenceFormat(
+             elements=[
+-                RegexFormat(pattern=r'[^"& \t\r\n\f\v=<>]+'),
++                RegexFormat(pattern=_dynamic_key_pattern(excluded_keys)),
+                 ConstStringFormat(
+                     value=(f'" type="{_JSON_TO_XTML_TYPE[json_type]}"<|sep|>')
+                 ),
+@@ -429,11 +488,22 @@ def _strict_arguments_format(parameters: Dict[str, Any]) -> Format:
+         )
+ 
+     additional = parameters.get("additionalProperties", True)
++    declared = set(properties)
+     if additional is True:
+-        elements.append(StarFormat(content=_dynamic_argument_format(True, parameters)))
++        elements.append(
++            StarFormat(
++                content=_dynamic_argument_format(
++                    True, parameters, excluded_keys=declared
++                )
++            )
++        )
+     elif isinstance(additional, dict):
+         elements.append(
+-            StarFormat(content=_dynamic_argument_format(additional, parameters))
++            StarFormat(
++                content=_dynamic_argument_format(
++                    additional, parameters, excluded_keys=declared
++                )
++            )
+         )
+     elif additional is not False:
+         raise ValueError(
+diff --git a/test/registered/unit/function_call/test_kimik3_structural_tag.py b/test/registered/unit/function_call/test_kimik3_structural_tag.py
+index 1b239351d78f28237c83331923f4b01d62c6aa02..238f9e40105ad861be3a1c5c90d5da001ba30fef 100644
+--- a/test/registered/unit/function_call/test_kimik3_structural_tag.py
++++ b/test/registered/unit/function_call/test_kimik3_structural_tag.py
+@@ -537,6 +537,92 @@ def test_strict_schema_preserves_additional_properties_default():
+     )
+ 
+ 
++def _annotate_tool(additional_properties):
++    return Tool(
++        type="function",
++        function=Function(
++            name="annotate",
++            strict=True,
++            parameters={
++                "type": "object",
++                "properties": {
++                    # Patterned so the string value cannot swallow a following
++                    # argument tag; the test then only exercises key matching.
++                    "label": {"type": "string", "pattern": "[a-z]+"},
++                    "score": {"type": "integer"},
++                },
++                "required": ["label"],
++                "additionalProperties": additional_properties,
++            },
++        ),
++    )
++
++
++@pytest.mark.parametrize("additional_properties", [True, {"type": "string"}])
++def test_strict_additional_properties_do_not_relax_declared_keys(
++    additional_properties,
++):
++    """The additionalProperties branch matched any key, so a declared property
++    could reappear there under the looser schema: ``score`` declared as an
++    integer was accepted as a string and ``label`` could be repeated. JSON
++    Schema applies additionalProperties only to undeclared keys (#38587)."""
++    grammar = _grammar([_annotate_tool(additional_properties)], tool_choice="required")
++    label = _argument("label", "string", "sample")
++
++    assert _accepts(
++        grammar,
++        _tools_section(_call("annotate", 1, label, _argument("note", "string", "x"))),
++    )
++    assert _accepts(
++        grammar,
++        _tools_section(_call("annotate", 1, label, _argument("score", "number", "3"))),
++    )
++    assert not _accepts(
++        grammar,
++        _tools_section(
++            _call("annotate", 1, label, _argument("score", "string", "high"))
++        ),
++    )
++    assert not _accepts(
++        grammar,
++        _tools_section(
++            _call("annotate", 1, label, _argument("label", "string", "again"))
++        ),
++    )
++
++
++def test_dynamic_keys_exclude_only_the_exact_declared_names():
++    tool = Tool(
++        type="function",
++        function=Function(
++            name="lookup",
++            strict=True,
++            parameters={
++                "type": "object",
++                "properties": {
++                    "data": {"type": "integer"},
++                    "database": {"type": "string"},
++                },
++                "required": [],
++                "additionalProperties": True,
++            },
++        ),
++    )
++    grammar = _grammar([tool], tool_choice="required")
++
++    for key in ("dat", "datab", "databases", "data_x", "d", "x"):
++        assert _accepts(
++            grammar, _tools_section(_call("lookup", 1, _argument(key, "string", "v")))
++        ), key
++    assert not _accepts(
++        grammar, _tools_section(_call("lookup", 1, _argument("data", "string", "v")))
++    )
++    assert not _accepts(
++        grammar,
++        _tools_section(_call("lookup", 1, _argument("database", "number", "1"))),
++    )
++
++
+ def test_dynamic_argument_key_compiles_without_xgrammar_unicode_warning(capfd):
+     tool = Tool(
+         type="function",

@@ -4,3 +4,6 @@
 # These exports contain CRLF source context that is part of their verified bytes.
 patches/common/0073-reconcile-r5-installed-srt-baseline.patch -text
 patches/common/0075-format-r5-cold-source.patch -text
+# K3 release exports preserve the qualified CRLF product bytes.
+versions/v0.5.21/patches/models/kimi/k3protocol1-*.patch -text
+versions/v0.5.21/patches/build/k3protocol1-*.patch -text

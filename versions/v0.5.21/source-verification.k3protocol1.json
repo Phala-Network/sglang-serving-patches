@@ -1,0 +1,16 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "350852e6b384c1881431b0e8ec59e73cd5be3107",
+  "engine_tree": "ef9cef2c85ab76e55e5d49d43cc2359a21addf30",
+  "patch_count": 15,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false,
+  "release_record": "releases/phala-v0.5.21-3-k3protocol1.json",
+  "canonical_prefix_count": 8,
+  "new_source_exports": 7,
+  "qualified_product_blob_hashes": "All eight release Git blobs equal the frozen qualified source manifest; semantic candidate code unchanged."
+}

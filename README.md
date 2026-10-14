@@ -22,6 +22,11 @@ pinned versions of these projects.
 source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
 integration below remains intact.
 
+The [K3 protocol compatibility release](versions/v0.5.21/K3-PROTOCOL1.md)
+reuses the deployed mcfix3 prefix and the qualified protocol source/dependency.
+It records its exact ordered selection without replacing the 49-step GGUF
+composition or including unqualified performance candidates.
+
 The phala-v0.5.21-7 source maps the unchanged phala-6 prefix plus three GGUF
 increments to complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
 Its original build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;

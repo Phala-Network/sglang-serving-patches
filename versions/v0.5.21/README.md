@@ -1,5 +1,11 @@
 # SGLang 0.5.21 compatibility maintenance
 
+The deployed mcfix3 [K3 protocol repair](K3-PROTOCOL1.md) preserves the canonical
+first eight patches and adds six qualified source commits plus exact-byte/image
+packaging. Its [release selection](releases/phala-v0.5.21-3-k3protocol1.json)
+and [series](series.k3protocol1) reuse existing patch paths; the current GGUF
+49-step `stack.json` and `series` below remain unchanged.
+
 The phala-v0.5.21-7 source adds three GGUF increments to the unchanged
 published phala-6 46-step prefix. The canonical 49-step [stack](stack.json),
 [series](series) and [source/image qualification](qualification.json) bind
