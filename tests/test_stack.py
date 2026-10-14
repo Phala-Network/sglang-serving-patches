@@ -145,6 +145,53 @@ class StackTests(unittest.TestCase):
             self.document["selectors"]["unified"]["patches"][0]["id"],
         ]
 
+    def use_mail_patch(self):
+        entry = self.document["selectors"]["unified"]["patches"][0]
+        data = STACK.git(
+            self.source,
+            "format-patch",
+            "-1",
+            "--stdout",
+            "--no-signature",
+            entry["source_commit"],
+        ).stdout
+        (self.root / entry["path"]).write_bytes(data)
+        entry["sha256"] = STACK.sha256(data)
+        entry["export_format"] = "git-format-patch"
+        self.write_inputs()
+        return entry, data
+
+    def test_declared_mail_export_verifies_source_and_actual_replay(self):
+        self.use_mail_patch()
+        before = self.source_snapshot()
+        result = STACK.verify(self.source, self.root)
+        self.assertEqual(result["engine_tree"], self.tree(self.engine))
+        self.assertEqual(result["patch_count"], 2)
+        self.assertEqual(before, self.source_snapshot())
+
+    def test_mail_header_change_with_updated_hash_still_fails_source_binding(self):
+        entry, data = self.use_mail_patch()
+        self.assertIn(b"Subject: [PATCH] fixture", data)
+        altered = data.replace(
+            b"Subject: [PATCH] fixture", b"Subject: [PATCH] altered", 1
+        )
+        (self.root / entry["path"]).write_bytes(altered)
+        entry["sha256"] = STACK.sha256(altered)
+        self.write_inputs()
+        with self.assertRaisesRegex(
+            STACK.StackError, "Source-to-patch export differs"
+        ):
+            STACK.verify(self.source, self.root)
+
+    def test_unknown_export_format_fails(self):
+        entry, _ = self.use_mail_patch()
+        entry["export_format"] = "unchecked"
+        self.write_inputs()
+        with self.assertRaisesRegex(
+            STACK.StackError, "Unsupported source patch export"
+        ):
+            STACK.verify(self.source, self.root)
+
     def assert_flat_stack(self, output, result):
         stack_path = output / "stack.json"
         self.assertTrue(stack_path.is_file())

@@ -2,7 +2,7 @@
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
   "engine_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
   "engine_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
-  "reproduced_tree": null,
+  "reproduced_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -349,12 +349,13 @@
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "local GGUF dynamic YaRN test; no publication",
-  "release_status": "phala-v0.5.21-6: source replay and final-image gates required before publication",
+  "scope": "Qualified Qwen GGUF request-static YaRN source/image; production acceptance separate",
+  "release_status": "phala-v0.5.21-7 source release; image publication mapping recorded in engine Release",
   "incremental_base_engine": "80afb70020aad5ce1135fcbb00864c0d761c8413",
   "incremental_base_patch_commit": "ffeedda55c5d4bdf66b80210ccbbe74a6f54e077",
   "incremental_donors": [
     "03a053ca9b61e80169675de1aca72769c3d0da22",
     "dd5afa83a3efb463b48dc7e80dea8ad63bf2a122"
-  ]
+  ],
+  "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0"
 }

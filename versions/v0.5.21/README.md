@@ -1,5 +1,14 @@
 # SGLang 0.5.21 compatibility maintenance
 
+The phala-v0.5.21-7 source adds three GGUF increments to the unchanged
+published phala-6 46-step prefix. The canonical 49-step [stack](stack.json),
+[series](series) and [source/image qualification](qualification.json) bind
+complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
+The original tested build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;
+subsequent metadata repair changes neither patch bytes nor series.
+See [GGUF usage and limits](MODEL894-DYNAMIC-YARN.md). The existing compatibility
+release exception below remains in effect; shared v0.5.20 main is preserved.
+
 The `phala-v0.5.21-6` source candidate adds request-static 1x/2x/4x YaRN and
 safe retirement of rejected requests. It uses the same official dependencies,
 native extensions and complete maintenance ancestry as phala-5. The tested

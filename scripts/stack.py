@@ -146,6 +146,24 @@ def read_stack(root=ROOT):
     }
 
 
+def source_patch_export(source, entry):
+    """Verify a declared patch serialization against its actual Git source."""
+    export_format = entry.get("export_format", "git-diff")
+    if export_format not in ("git-diff", "git-format-patch"):
+        raise StackError("Unsupported source patch export format: " + export_format)
+    parent, data = export_patch(source, entry["source_commit"])
+    if export_format == "git-format-patch":
+        data = git(
+            source,
+            "format-patch",
+            "-1",
+            "--stdout",
+            "--no-signature",
+            entry["source_commit"],
+        ).stdout
+    return parent, data
+
+
 def verify(source, root=ROOT):
     source = source.resolve()
     stack = read_stack(root)
@@ -164,7 +182,7 @@ def verify(source, root=ROOT):
         git(source, "read-tree", stack["upstream"], env=env)
         for index, entry in enumerate(stack["patches"], 1):
             if entry.get("source_commit"):
-                parent, data = export_patch(source, entry["source_commit"])
+                parent, data = source_patch_export(source, entry)
                 component = entry.get("component_source")
                 if component:
                     if component["sha256"] != entry["sha256"] or not entry.get(

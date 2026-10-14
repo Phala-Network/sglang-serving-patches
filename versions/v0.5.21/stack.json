@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
-    "tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+    "commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+    "tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
     "branch": "codex/v0.5.21-phala-runtime"
   },
-  "qualification": "53f runtime bytes retained; final release-image gates tracked separately",
+  "qualification": "Qualified GGUF increments over unchanged published 46-step prefix; see qualification.json and the published phala-v0.5.21-7 Release for image/service stage.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -581,6 +581,37 @@
       "source_parent": "c92bc45d552dbaf53deecee723b74762f603d0c5",
       "result_tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
       "sha256": "3f67c8f3126deda3b8f2c89e728bdaa1d28726210fb361d843164d331d6e950b"
+    },
+    {
+      "id": "v0521-0047",
+      "path": "patches/models/qwen/0047-qwen35-gguf-loader-vision-config.patch",
+      "title": "Adapt maintained Qwen GGUF vision loading to v0.5.21 with nested YaRN overrides",
+      "source_commit": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "source_parent": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "result_tree": "9802a7753b176b5d0629791851d02661fd066c47",
+      "sha256": "326f5f7757c0e2c0da469366fd37c4a0ec717fe372e0a1f6e7b2707762649082",
+      "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0048",
+      "path": "patches/models/qwen/0048-gguf-prefill-dense-1024.patch",
+      "title": "Limit transient GGUF dense GEMM to large prefill batches",
+      "source_commit": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "source_parent": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "result_tree": "12b1b948af176aa84c1c73bc678cca41458d453a",
+      "sha256": "c5614d55b5f9a763da095a4661d35caebcc4c20b78580b2eca566094b3485158",
+      "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0049",
+      "path": "patches/build/0049-model894-yarn-packaging-and-config-regression.patch",
+      "title": "Package GGUF increments over immutable request-static YaRN release with config regression",
+      "source_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "source_parent": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "result_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
+      "sha256": "45a93c12f2300deb2aacda0564e162195210e4f48b14934cef4a56f229974b62",
+      "export_format": "git-format-patch"
     }
-  ]
+  ],
+  "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0"
 }

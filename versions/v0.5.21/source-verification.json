@@ -1,0 +1,12 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+  "engine_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
+  "patch_count": 49,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false
+}

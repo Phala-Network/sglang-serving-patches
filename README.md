@@ -22,6 +22,14 @@ pinned versions of these projects.
 source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
 integration below remains intact.
 
+The phala-v0.5.21-7 source maps the unchanged phala-6 prefix plus three GGUF
+increments to complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
+Its original build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;
+the subsequent release-metadata fix preserves all 49 patch files and their series.
+See the [version record](versions/v0.5.21/MODEL894-DYNAMIC-YARN.md) and
+[engine Release](https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-7)
+for the final-image and service qualification boundaries.
+
 The [frozen 0.5.21 control maintenance candidate](versions/v0.5.21-control/README.md)
 preserves its existing control baseline and records the isolated DSPARK backport.
 It does not select the Kimi stack or replace shared integration.
