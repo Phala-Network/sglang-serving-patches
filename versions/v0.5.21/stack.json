@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
-    "tree": "c6ec47142df3a4131455b504bd559fadff3f53f1",
+    "commit": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+    "tree": "bd1076178d4f39d4f0be8e2328f9fda5f4ba35c0",
     "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Unified Xing request-static64/128 with stable constructor and forward/terminal API repair. Source159 passed/10 CUDA skipped on201, including8 full official40layer forward cases and4 constructors. Final-image/GPU/service gates separate. All published56 patch files unchanged.",
+  "qualification": "Unified Xing request-static64/128 with reviewed legacy profiler export safety. Source172 passed/10 CUDA skipped on201, including13 focused profiler tests and8 full official40layer forwards; real Gloo3scenarios/6rank cases passed. Final-image/GPU/service gates separate. All published57 patch files unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -711,6 +711,19 @@
       "sha256": "f918ca46cb763d08ca7914e52a977ea08e80b2d49f6c406749e054944d76a95b",
       "origin": {
         "scope": "Actual dual-GPU prefill graph forward TypeError repair: stable MLA slice argument, boundary capture/property/postprocess, and terminal residual norm; full official40layer forward red-green with production-signature GPU compute mocks"
+      }
+    },
+    {
+      "id": "v0521-0058",
+      "path": "patches/common/0058-legacy-profiler-export-failure.patch",
+      "title": "Contain legacy profiler export I/O failures without hiding fatal errors",
+      "source_commit": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+      "source_parent": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
+      "result_tree": "bd1076178d4f39d4f0be8e2328f9fda5f4ba35c0",
+      "sha256": "f32a0429a70a173f4b4eb8d6a53617d9855896367161b66cccd89ccfb2e61fbb",
+      "origin": {
+        "reviewed_source_commit": "f64aa5469b9bc4e3f53c28a511dcd5dac55884b4",
+        "scope": "Single legacy stop/cleanup, all-rank export failure reduction, fatal CUDA/runtime/communication propagation; v2 unchanged; 13 focused CPU tests and real two-process Gloo control/permission failures"
       }
     }
   ],

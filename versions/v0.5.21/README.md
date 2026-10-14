@@ -1,3 +1,5 @@
+The Xing runtime RC4 candidate adds the reviewed legacy profiler export I/O repair in step0058. CPU172passed/10CUDA-skipped and real Gloo3scenario/6rank cases pass on builder201; final-image and GPU gates remain separate. All57 previous patch bytes are preserved.
+
 # SGLang 0.5.21 compatibility maintenance
 
 Xing request-static MLA YaRN extends the same ordered stack at steps 0052/0053,
