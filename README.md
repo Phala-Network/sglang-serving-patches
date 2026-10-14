@@ -22,6 +22,10 @@ pinned versions of these projects.
 source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
 integration below remains intact.
 
+[Xing4 request-static 64/128](versions/v0.5.21/XING4-DYNAMIC-YARN.md) adds one
+logical step to the unchanged51-step prefix. Its exact52-step complete-source
+replay and affected CPU checks pass; image/GPU acceptance is recorded separately.
+
 The phala-v0.5.21-7 source maps the unchanged phala-6 prefix plus three GGUF
 increments to complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
 Its original build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;

@@ -1,5 +1,12 @@
 # SGLang 0.5.21 compatibility maintenance
 
+Xing request-static MLA YaRN extends the same ordered stack at step0052,
+preserving all51 earlier patch files. The52-step replay matches complete
+engine `2b3cf0096c9ccc2562c784042afac3f22a10e22b`; combined source CPU checks
+on201 report142 passed and10 explicit CUDA skips. Actual final-image and
+GPU/service acceptance remain separate gates. See
+[Xing source and image contract](XING4-DYNAMIC-YARN.md).
+
 The phala-v0.5.21-7 source adds three GGUF increments to the unchanged
 published phala-6 46-step prefix. The canonical 49-step [stack](stack.json),
 [series](series) and [source/image qualification](qualification.json) bind

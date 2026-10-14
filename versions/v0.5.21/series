@@ -49,3 +49,4 @@ patches/models/qwen/0048-gguf-prefill-dense-1024.patch
 patches/build/0049-model894-yarn-packaging-and-config-regression.patch
 patches/models/xing4/0050-native-xing4-stable.patch
 patches/models/xing4/0051-official-xing-tokenizer-data-only.patch
+patches/models/xing4/0052-request-static-yarn-public-budget.patch
