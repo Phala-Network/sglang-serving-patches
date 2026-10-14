@@ -1,0 +1,704 @@
+diff --git a/docker/xing4/README.md b/docker/xing4/README.md
+index ae479e940d8965ac90811b7a2bbf4ca5b224c84d..677dca2ce19dd4a58eb652df93a713fa86ac7630 100644
+--- a/docker/xing4/README.md
++++ b/docker/xing4/README.md
+@@ -22,3 +22,16 @@ image identity without source mounts or startup installation. Direct `hf --help`
+ The focused CPU checks are in `test/registered/unit/models/test_xing4_native.py`;
+ CUDA attention, TileLang, real checkpoint loading, FP8 storage and model quality
+ still require scoped B300 qualification. No embedded Governor is selected.
++
++The official SentencePiece `Xing4_0Tokenizer` is installed and registered in
++the image. Model mounts need only fixed weights, JSON, `tokenizer.model` and
++Jinja data; loading uses `trust_remote_code=False` and never imports Python
++from the model mount. Tokenizer reconstruction and real vocabulary probes are
++in `test_xing4_tokenizer.py`; the latter take `XING4_TOKENIZER_ASSETS` pointing
++to fixed BF16/FP8 data assets on the CPU builder.
++
++For protected backend authentication, set `PIG_AUTH_FROM_TOKEN=1` and supply
++`TOKEN` through the protected process environment. Do not put keys in CLI
++arguments. The maintained resolution pipeline uses that environment for API
++and admin authentication and redacts diagnostics. Backend health/metrics
++probes are exempt, so public ingress must enforce authentication on every path.
+diff --git a/python/sglang/srt/tokenizer/xing4_0.py b/python/sglang/srt/tokenizer/xing4_0.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a071aefb2159d1b6e5bafe5f7a2922bf25e81c6c
+--- /dev/null
++++ b/python/sglang/srt/tokenizer/xing4_0.py
+@@ -0,0 +1,225 @@
++# SPDX-License-Identifier: Apache-2.0
++# Adapted from XingChen-AGI/Xing4.0-29B-A4B at
++# 5f65c5895db48bc6144a467ecffe9c8a92e145e8/tokenization_xing4_0.py.
++# The implementation is installed in the runtime; model mounts contain data only.
++import os
++from shutil import copyfile
++from typing import Any, Dict, List, Optional, Tuple
++import sentencepiece as spm
++from transformers.tokenization_utils import AddedToken, PreTrainedTokenizer
++from transformers.utils import logging
++
++logger = logging.get_logger(__name__)
++
++VOCAB_FILES_NAMES = {"vocab_file": "tokenizer.model"}
++
++# TODO: when we get download url from huggingface, refresh the map
++PRETRAINED_VOCAB_FILES_MAP = {
++    "vocab_file": {},
++    "tokenizer_file": {},
++}
++
++
++class Xing4_0Tokenizer(PreTrainedTokenizer):
++    vocab_files_names = VOCAB_FILES_NAMES
++    pretrained_vocab_files_map = PRETRAINED_VOCAB_FILES_MAP
++    model_input_names = ["input_ids", "attention_mask"]
++
++    def __init__(
++            self,
++            vocab_file,
++            unk_token="<unk>",
++            bos_token="<_start>",
++            eos_token="<_end>",
++            pad_token="<_pad>",
++            sp_model_kwargs: Optional[Dict[str, Any]] = None,
++            add_bos_token=True,
++            add_eos_token=False,
++            clean_up_tokenization_spaces=False,
++            **kwargs,
++    ):
++        self.sp_model_kwargs = {} if sp_model_kwargs is None else sp_model_kwargs
++        bos_token = AddedToken(bos_token, lstrip=False, rstrip=False) if isinstance(bos_token, str) else bos_token
++        eos_token = AddedToken(eos_token, lstrip=False, rstrip=False) if isinstance(eos_token, str) else eos_token
++        pad_token = AddedToken(pad_token, lstrip=False, rstrip=False) if isinstance(pad_token, str) else pad_token
++        self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
++        self.sp_model.Load(vocab_file)
++        super().__init__(
++            bos_token=bos_token,
++            eos_token=eos_token,
++            pad_token=pad_token,
++            add_bos_token=add_bos_token,
++            add_eos_token=add_eos_token,
++            sp_model_kwargs=self.sp_model_kwargs,
++            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
++            **kwargs,
++        )
++        self.vocab_file = vocab_file
++        self.add_bos_token = add_bos_token
++        self.add_eos_token = add_eos_token
++
++    def __getstate__(self):
++        state = self.__dict__.copy()
++        state["sp_model"] = None
++        return state
++
++    def __setstate__(self, d):
++        self.__dict__ = d
++        self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
++        self.sp_model.Load(self.vocab_file)
++
++    @property
++    def vocab_size(self):
++        """Returns vocab size"""
++        return self.sp_model.get_piece_size()
++
++    def get_vocab(self):
++        """Returns vocab as a dict"""
++        vocab = {self.convert_ids_to_tokens(i): i for i in range(self.vocab_size)}
++        vocab.update(self.added_tokens_encoder)
++        return vocab
++
++    @property
++    def vocab(self):
++        return self.get_vocab()
++
++    def _tokenize(self, text):
++        """Returns a tokenized string."""
++        return self.sp_model.encode(text, out_type=str)
++
++    def _convert_token_to_id(self, token):
++        """Converts a token (str) in an id using the vocab."""
++        return self.sp_model.piece_to_id(token)
++
++    def _convert_id_to_token(self, index):
++        """Converts an index (integer) in a token (str) using the vocab."""
++        token = self.sp_model.IdToPiece(index)
++        return token
++
++    def convert_tokens_to_string(self, tokens):
++        """Converts a sequence of tokens (string) in a single string."""
++        current_sub_tokens = []
++        out_string = ""
++        # prev_is_special = False
++        for i, token in enumerate(tokens):
++            # make sure that special tokens are not decoded using sentencepiece model
++            if token in self.all_special_tokens:
++                # if not prev_is_special and i != 0:
++                #     out_string += " "
++                out_string += self.sp_model.decode(current_sub_tokens) + token
++                # prev_is_special = True
++                current_sub_tokens = []
++            else:
++                current_sub_tokens.append(token)
++                # prev_is_special = False
++        out_string += self.sp_model.decode(current_sub_tokens)
++        return out_string
++
++    def save_vocabulary(self, save_directory, filename_prefix: Optional[str] = None) -> Tuple[str]:
++        """
++        Save the vocabulary and special tokens file to a directory.
++
++        Args:
++            save_directory (`str`):
++                The directory in which to save the vocabulary.
++
++        Returns:
++            `Tuple(str)`: Paths to the files saved.
++        """
++        if not os.path.isdir(save_directory):
++            logger.error(f"Vocabulary path ({save_directory}) should be a directory")
++            return
++        out_vocab_file = os.path.join(
++            save_directory, (filename_prefix + "-" if filename_prefix else "") + VOCAB_FILES_NAMES["vocab_file"]
++        )
++
++        if os.path.abspath(self.vocab_file) != os.path.abspath(out_vocab_file) and os.path.isfile(self.vocab_file):
++            copyfile(self.vocab_file, out_vocab_file)
++        elif not os.path.isfile(self.vocab_file):
++            with open(out_vocab_file, "wb") as fi:
++                content_spiece_model = self.sp_model.serialized_model_proto()
++                fi.write(content_spiece_model)
++
++        return (out_vocab_file,)
++
++    def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
++        bos_token_id = [self.bos_token_id] if self.add_bos_token else []
++        eos_token_id = [self.eos_token_id] if self.add_eos_token else []
++
++        output = bos_token_id + token_ids_0 + eos_token_id
++
++        if token_ids_1 is not None:
++            output = output + bos_token_id + token_ids_1 + eos_token_id
++
++        return output
++
++    def get_special_tokens_mask(
++            self, token_ids_0: List[int], token_ids_1: Optional[List[int]] = None,
++            already_has_special_tokens: bool = False
++    ) -> List[int]:
++        """
++        Retrieve sequence ids from a token list that has no special tokens added. This method is called when adding
++        special tokens using the tokenizer `prepare_for_model` method.
++
++        Args:
++            token_ids_0 (`List[int]`):
++                List of IDs.
++            token_ids_1 (`List[int]`, *optional*):
++                Optional second list of IDs for sequence pairs.
++            already_has_special_tokens (`bool`, *optional*, defaults to `False`):
++                Whether or not the token list is already formatted with special tokens for the model.
++
++        Returns:
++            `List[int]`: A list of integers in the range [0, 1]: 1 for a special token, 0 for a sequence token.
++        """
++        if already_has_special_tokens:
++            return super().get_special_tokens_mask(
++                token_ids_0=token_ids_0, token_ids_1=token_ids_1, already_has_special_tokens=True
++            )
++
++        bos_token_id = [1] if self.add_bos_token else []
++        eos_token_id = [1] if self.add_eos_token else []
++
++        if token_ids_1 is None:
++            return bos_token_id + ([0] * len(token_ids_0)) + eos_token_id
++        return (
++                bos_token_id
++                + ([0] * len(token_ids_0))
++                + eos_token_id
++                + bos_token_id
++                + ([0] * len(token_ids_1))
++                + eos_token_id
++        )
++
++    def create_token_type_ids_from_sequences(
++            self, token_ids_0: List[int], token_ids_1: Optional[List[int]] = None
++    ) -> List[int]:
++        """
++        Creates a mask from the two sequences passed to be used in a sequence-pair classification task. An ALBERT
++        sequence pair mask has the following format:
++
++        ```
++        0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1
++        | first sequence    | second sequence |
++        ```
++
++        if token_ids_1 is None, only returns the first portion of the mask (0s).
++
++        Args:
++            token_ids_0 (`List[int]`):
++                List of ids.
++            token_ids_1 (`List[int]`, *optional*):
++                Optional second list of IDs for sequence pairs.
++
++        Returns:
++            `List[int]`: List of [token type IDs](../glossary#token-type-ids) according to the given sequence(s).
++        """
++        bos_token_id = [self.bos_token_id] if self.add_bos_token else []
++        eos_token_id = [self.eos_token_id] if self.add_eos_token else []
++
++        output = [0] * len(bos_token_id + token_ids_0 + eos_token_id)
++
++        if token_ids_1 is not None:
++            output += [1] * len(bos_token_id + token_ids_1 + eos_token_id)
++
++        return output
+diff --git a/python/sglang/srt/utils/hf_transformers/tokenizer.py b/python/sglang/srt/utils/hf_transformers/tokenizer.py
+index 44613e5ae63c9ef4298763f8806e65edb3b1a19e..eb3250cb29a1d4f00e18a0885adead6f2395195b 100644
+--- a/python/sglang/srt/utils/hf_transformers/tokenizer.py
++++ b/python/sglang/srt/utils/hf_transformers/tokenizer.py
+@@ -26,6 +26,8 @@ from transformers import (
+ )
+ 
+ from sglang.srt.connector import create_remote_connector
++from sglang.srt.configs.xing4_0 import Xing4_0Config
++from sglang.srt.tokenizer.xing4_0 import Xing4_0Tokenizer
+ from sglang.srt.utils import is_remote_url, logger
+ from sglang.srt.utils.patch_tokenizer import patch_tokenizer
+ 
+@@ -45,6 +47,12 @@ from .mistral_utils import (
+     retry_without_mistral_common_kwargs,
+ )
+ 
++# Resolve the checkpoint's custom tokenizer locally even when its HF auto_map
++# requests remote code. The class is frozen in the runtime, never model mounts.
++AutoTokenizer.register(
++    Xing4_0Config, slow_tokenizer_class=Xing4_0Tokenizer, exist_ok=True
++)
++
+ # A fast LLaMA tokenizer with the pre-processed `tokenizer.json` file.
+ _FAST_LLAMA_TOKENIZER = "hf-internal-testing/llama-tokenizer"
+ 
+diff --git a/test/registered/unit/models/test_xing4_runtime_auth.py b/test/registered/unit/models/test_xing4_runtime_auth.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7372839e906a36ae8631335d0e0fe2b9acf715f6
+--- /dev/null
++++ b/test/registered/unit/models/test_xing4_runtime_auth.py
+@@ -0,0 +1,48 @@
++"""Final runtime's explicit env-auth path, without credentials in process argv."""
++
++import json
++import secrets
++
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from sglang.srt.arg_groups.overrides import resolving_view
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.utils.auth import AuthLevel, add_api_key_middleware, auth_level
++
++
++def test_env_token_resolution_redaction_and_http_auth(monkeypatch):
++    token = secrets.token_hex(24)
++    monkeypatch.setenv("PIG_AUTH_FROM_TOKEN", "1")
++    monkeypatch.setenv("TOKEN", token)
++    args = ServerArgs(model_path="dummy")
++    args.resolve_once()
++    view = resolving_view(args)
++    assert view.api_key is not None and secrets.compare_digest(view.api_key, token)
++    assert view.admin_api_key is not None and secrets.compare_digest(view.admin_api_key, token)
++    assert token not in json.dumps(args.diagnostic_dict())
++    assert args.api_key is None and args.admin_api_key is None
++
++    app = FastAPI()
++
++    @app.get("/v1/models")
++    def models():
++        return {"object": "list"}
++
++    @app.get("/admin")
++    @auth_level(AuthLevel.ADMIN_FORCE)
++    def admin():
++        return {"ok": True}
++
++    @app.get("/health")
++    def health():
++        return {"ok": True}
++
++    add_api_key_middleware(app, api_key=view.api_key, admin_api_key=view.admin_api_key)
++    with TestClient(app) as client:
++        for path in ("/v1/models", "/admin"):
++            assert client.get(path).status_code == 401
++            assert client.get(path, headers={"Authorization": "Bearer invalid"}).status_code == 401
++            assert client.get(path, headers={"Authorization": "Bearer " + token}).status_code == 200
++        # Backend probes are exempt; public ingress must authenticate them.
++        assert client.get("/health").status_code == 200
+diff --git a/test/registered/unit/models/test_xing4_tokenizer.py b/test/registered/unit/models/test_xing4_tokenizer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..39817dc7d86af32a66fb0318aaa84b0b0d6847f0
+--- /dev/null
++++ b/test/registered/unit/models/test_xing4_tokenizer.py
+@@ -0,0 +1,113 @@
++"""Xing tokenizer loading with data-only model mounts and no remote Python.
++
++Set XING4_TOKENIZER_ASSETS to a directory with bf16/ and fp8/ subdirectories
++containing the fixed official config/tokenizer.model/JSON/Jinja assets to run
++the real vocabulary probes on the authorized CPU builder as well.
++"""
++
++import os
++import pickle
++from pathlib import Path
++
++import pytest
++import sentencepiece as spm
++
++from sglang.srt.tokenizer.xing4_0 import Xing4_0Tokenizer
++from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
++
++FIXTURES = Path(__file__).with_name("xing4_configs")
++TEXTS = ["Hello, world!", "中国电信星辰模型", "a  b\n\tmath: 2 + 2 = 4", "🙂 café"]
++
++
++@pytest.fixture
++def data_only_model(tmp_path):
++    spm.SentencePieceTrainer.train(
++        sentence_iterator=iter(TEXTS * 10),
++        model_prefix=str(tmp_path / "tokenizer"),
++        model_type="bpe",
++        vocab_size=128,
++        hard_vocab_limit=False,
++        unk_id=0,
++        bos_id=1,
++        eos_id=2,
++        pad_id=3,
++        bos_piece="<_start>",
++        eos_piece="<_end>",
++        pad_piece="<_pad>",
++        user_defined_symbols=[
++            "<_user>", "<_bot>", "<_system>", "<unused7>", "<unused8>",
++            "<think>", "</think>", "<tool_call>", "</tool_call>",
++            "<tool_response>", "</tool_response>",
++        ],
++        minloglevel=2,
++    )
++    for source, target in [
++        ("bf16.json", "config.json"),
++        ("tokenizer_config.json", "tokenizer_config.json"),
++        ("chat_template.jinja", "chat_template.jinja"),
++    ]:
++        (tmp_path / target).write_bytes((FIXTURES / source).read_bytes())
++    assert not list(tmp_path.glob("*.py"))
++    return tmp_path
++
++
++def assert_tokenizer_contract(path):
++    tokenizer = get_tokenizer(str(path), trust_remote_code=False, local_files_only=True)
++    assert isinstance(tokenizer, Xing4_0Tokenizer)
++    assert tokenizer.__class__.__module__ == "sglang.srt.tokenizer.xing4_0"
++    assert tokenizer.add_bos_token is False
++    assert tokenizer.add_eos_token is False
++    sentencepiece = spm.SentencePieceProcessor(model_file=str(path / "tokenizer.model"))
++    for text in TEXTS:
++        assert tokenizer.encode(text, add_special_tokens=False) == sentencepiece.encode(text)
++        assert tokenizer.encode(text) == sentencepiece.encode(text)
++    for marker, token_id in [
++        ("<_start>", 1), ("<_end>", 2), ("<_user>", 4), ("<_bot>", 5),
++        ("<think>", 9), ("</think>", 10), ("<tool_call>", 11),
++        ("</tool_call>", 12), ("<tool_response>", 13), ("</tool_response>", 14),
++    ]:
++        assert tokenizer.encode(marker, add_special_tokens=False) == [token_id]
++        assert tokenizer.decode([token_id], skip_special_tokens=False) == marker
++    assert tokenizer.decode(
++        [9, 10, 11, 12], skip_special_tokens=False, spaces_between_special_tokens=False
++    ) == "<think></think><tool_call></tool_call>"
++    return tokenizer
++
++
++def test_registered_loader_with_official_auto_map_and_no_python(data_only_model):
++    assert_tokenizer_contract(data_only_model)
++
++
++def test_chat_template_and_reconstruction(data_only_model, tmp_path):
++    tokenizer = assert_tokenizer_contract(data_only_model)
++    rendered = tokenizer.apply_chat_template(
++        [{"role": "user", "content": "Hello"}],
++        tokenize=False,
++        add_generation_prompt=True,
++        enable_thinking=True,
++    )
++    assert "<_user>Hello" in rendered
++    assert rendered.endswith("<_bot><think>\n")
++    expected = tokenizer.encode(rendered, add_special_tokens=False)
++    assert tokenizer.apply_chat_template(
++        [{"role": "user", "content": "Hello"}],
++        tokenize=True,
++        return_dict=False,
++        add_generation_prompt=True,
++        enable_thinking=True,
++    ) == expected
++    restored = pickle.loads(pickle.dumps(tokenizer))
++    assert restored.encode(rendered, add_special_tokens=False) == expected
++    target = tmp_path / "saved"
++    tokenizer.save_pretrained(target)
++    assert not list(target.glob("*.py"))
++    reloaded = get_tokenizer(str(target), trust_remote_code=False, local_files_only=True)
++    assert reloaded.encode(rendered, add_special_tokens=False) == expected
++
++
++@pytest.mark.skipif(not os.environ.get("XING4_TOKENIZER_ASSETS"), reason="official data not configured")
++@pytest.mark.parametrize("kind", ["bf16", "fp8"])
++def test_fixed_official_data_only_checkpoint(kind):
++    path = Path(os.environ["XING4_TOKENIZER_ASSETS"]) / kind
++    assert not list(path.glob("*.py"))
++    assert_tokenizer_contract(path)
+diff --git a/test/registered/unit/models/xing4_configs/chat_template.jinja b/test/registered/unit/models/xing4_configs/chat_template.jinja
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0424494f17f26640e31b25db532a1d0e165dcff
+--- /dev/null
++++ b/test/registered/unit/models/xing4_configs/chat_template.jinja
+@@ -0,0 +1,110 @@
++{%- macro visible_text(content) -%}
++    {%- if content is string -%}
++        {{- content }}
++    {%- elif content is iterable and content is not mapping -%}
++        {%- for item in content -%}
++            {%- if item is mapping and item.type == 'text' -%}
++                {{- item.text }}
++            {%- elif item is string -%}
++                {{- item }}
++            {%- endif -%}
++        {%- endfor -%}
++    {%- else -%}
++        {{- content }}
++    {%- endif -%}
++{%- endmacro -%}
++{%- if messages[0]["role"] == "system" %}
++    {%- set system_message = messages[0]["content"] %}
++    {%- set loop_messages = messages[1:] %}
++{%- else %}
++    {%- set loop_messages = messages %}
++{%- endif %}
++{%- if not tools is defined %}
++    {%- set tools = [] %}
++{%- endif %}
++{%- if system_message is defined %}
++    {{- "<_system>" + visible_text(system_message) }}
++{%- else %}
++    {{- "<_system>" }}
++{%- endif %}
++{% if tools is iterable and tools | length > 0 %}
++
++# Tools
++
++You may call one or more functions to assist with the user query.
++
++You are provided with function signatures within <tools></tools> XML tags:
++<tools>
++{% for tool in tools %}
++{{ tool | tojson(ensure_ascii=False) }}
++{% endfor %}
++</tools>
++
++For each function call, output the function name and arguments within the following XML format:
++<tool_call>{function-name}<param_key>{param-key-1}</param_key><param_value>{param-value-1}</param_value><param_key>{param-key-2}</param_key><param_value>{param-value-2}</param_value>...</tool_call>
++{%- endif %}
++
++
++{%- set ns = namespace(last_user_index=-1) %}
++{%- for m in loop_messages %}
++    {%- if m.role == 'user' %}
++        {%- set ns.last_user_index = loop.index0 -%}
++    {%- endif %}
++{%- endfor %}
++{%- for m in loop_messages %}
++{%- if m.role == 'user' -%}<_user>{{ visible_text(m.content) }}
++{%- elif m.role == 'assistant' or m.role == 'bot' -%}
++<_bot>
++{%- set reasoning_content = '' %}
++{%- set content = visible_text(m.content) %}
++{%- if m.reasoning_content is string %}
++{%- set reasoning_content = m.reasoning_content %}
++{%- elif m.reasoning is string %}
++{%- set reasoning_content = m.reasoning %}
++{%- else %}
++{%- if '</think>' in content %}
++{%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
++{%- set content = content.split('</think>')[-1].lstrip('\n') %}
++{%- endif %}
++{%- endif %}
++{%- if loop.index0 < ns.last_user_index -%}
++{{ '</think>' }}
++{%- elif enable_thinking is not defined or enable_thinking -%}
++{{ '<think>\n' + reasoning_content.strip() +  '\n</think>'}}
++{%- else -%}
++{{ '</think>' }}
++{%- endif -%}
++{%- if content.strip() -%}
++{{ content.strip() }}
++{%- endif -%}
++{% if m.tool_calls %}
++{%- for tc in m.tool_calls %}
++{%- if tc.function %}
++{%- set tc = tc.function %}
++{%- endif %}
++{{- '<tool_call>' + tc.name -}}
++{% set _args = tc.arguments %}
++{%- for k, v in _args.items() %}<param_key>{{ k }}</param_key><param_value>{{ v | tojson(ensure_ascii=False) if v is not string else v }}</param_value>{% endfor %}{{ '</tool_call>' }}{% endfor %}{% endif %}{{- '<_end>\n' }}
++{%- elif m.role == 'tool' -%}
++{%- if loop.index0 > 0 -%}
++{%- set prev_element = loop_messages[loop.index0 - 1] -%}
++{%- if prev_element.role != "tool" -%}
++{{- '<_observation>' -}}
++{%- endif -%}
++{%- endif -%}
++{%- if m.content is string -%}
++{{- '<tool_response>' -}}
++{{- m.content }}
++{{- '</tool_response>' -}}
++{%- else -%}
++{% for tr in m.content %}
++{{- '<tool_response>' -}}{{ tr.output if tr.output is defined else tr }}{{- '</tool_response>' -}}
++{% endfor -%}
++{% endif -%}
++{%- elif m.role == 'system' -%}
++<_system>{{ visible_text(m.content) }}
++{%- endif -%}
++{%- endfor -%}
++{%- if add_generation_prompt -%}
++    <_bot>{{- '</think>' if (enable_thinking is defined and not enable_thinking) else '<think>\n' -}}
++{%- endif -%}
+diff --git a/test/registered/unit/models/xing4_configs/tokenizer_config.json b/test/registered/unit/models/xing4_configs/tokenizer_config.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..be63286ff13dff6f7d47a224c4105d2ec27a9f3a
+--- /dev/null
++++ b/test/registered/unit/models/xing4_configs/tokenizer_config.json
+@@ -0,0 +1,131 @@
++{
++  "tokenizer_class": "Xing4_0Tokenizer",
++  "auto_map": {
++    "AutoTokenizer": [
++      "tokenization_xing4_0.Xing4_0Tokenizer",
++      null
++    ]
++  },
++  "added_tokens_decoder": {
++    "1": {
++      "content": "<_start>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "2": {
++      "content": "<_end>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "3": {
++      "content": "<_pad>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "4": {
++      "content": "<_user>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "5": {
++      "content": "<_bot>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "6": {
++      "content": "<_system>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "9": {
++      "content": "<think>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "10": {
++      "content": "</think>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "11": {
++      "content": "<tool_call>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "12": {
++      "content": "</tool_call>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "13": {
++      "content": "<tool_response>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    },
++    "14": {
++      "content": "</tool_response>",
++      "lstrip": false,
++      "normalized": false,
++      "rstrip": false,
++      "single_word": false,
++      "special": true
++    }
++  },
++  "additional_special_tokens": [
++    "<_start>",
++    "<_end>",
++    "<_pad>",
++    "<_user>",
++    "<_bot>",
++    "<_system>",
++    "<think>",
++    "</think>",
++    "<tool_call>",
++    "</tool_call>",
++    "<tool_response>",
++    "</tool_response>"
++  ],
++  "add_bos_token": false,
++  "add_eos_token": false,
++  "use_fast": false,
++  "clean_up_tokenization_spaces": false,
++  "split_special_tokens": false,
++  "model_max_length": 100000000,
++  "sp_model_kwargs": {},
++  "bos_token": "<_start>",
++  "eos_token": "<_end>",
++  "pad_token": "<_pad>"
++}

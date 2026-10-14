@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "57d3ef39034b14c75e532fce89fdffe83b77e172",
-    "tree": "121a639593c8613f9435969b921479d32ea9e6cb",
+    "commit": "2c2f6fcf0f4870f235ce44ef1d403fdc5d5e35f4",
+    "tree": "c09ec7bba570672d5dc68e041d66063ecf4c0360",
     "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Xing native candidate: 15 CPU cases pass; GPU and final-image qualification pending. Published 49-step prefix unchanged.",
+  "qualification": "Xing native data-only tokenizer candidate: 20 focused source CPU cases pass, including both fixed official vocabularies and env-auth. GPU/final-image pending. Published 49-step prefix unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -622,6 +622,20 @@
       "sha256": "c2ee25ac4701cfe25538fcb70be968c2655f536e9b456864825e3c5d27fe56f4",
       "upstream_pr": "https://github.com/sgl-project/sglang/pull/39793",
       "upstream_head": "aa737beda5878755dffe40836de014663ca2a106"
+    },
+    {
+      "id": "v0521-0051",
+      "path": "patches/models/xing4/0051-official-xing-tokenizer-data-only.patch",
+      "title": "Package official Xing SentencePiece tokenizer with data-only loading and env-auth regression",
+      "source_commit": "2c2f6fcf0f4870f235ce44ef1d403fdc5d5e35f4",
+      "source_parent": "57d3ef39034b14c75e532fce89fdffe83b77e172",
+      "result_tree": "c09ec7bba570672d5dc68e041d66063ecf4c0360",
+      "sha256": "6d1c30e84ec5a1c1244ebdfa54a4451351294c75c5b12f2ab17cf048af1dfce3",
+      "origin": {
+        "tokenizer_repository": "https://huggingface.co/XingChen-AGI/Xing4.0-29B-A4B",
+        "revision": "5f65c5895db48bc6144a467ecffe9c8a92e145e8",
+        "official_tokenizer_sha256": "4c18df574fad90ee3cadb25586d47b8b32c62c7239e76f246a1bfaedf177799f"
+      }
     }
   ],
   "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0"

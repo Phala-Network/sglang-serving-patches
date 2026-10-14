@@ -103,3 +103,11 @@ Caller IDs that independently reuse that parent/child naming convention remain
 ambiguous; this change does not introduce a complete ownership registry.
 
 Patch 0008 is normalized from its original mail-patch wrapper to the same full-index deterministic diff format as the remaining stack; its source commit and resulting tree are unchanged.
+
+Xing4 native support extends the same stack at steps 0050/0051: the frozen
+upstream PR39793 port and stable repairs, then the fixed official SentencePiece
+tokenizer installed/registered for data-only model mounts. The canonical
+51-step source replay matches the complete engine tree. Twenty focused CPU
+cases include both official tokenizer vocabularies and explicit environment
+authentication; GPU and final-image checks remain separate. The reproducible
+ordered patch-content digest is defined in [XING4-PATCH-CONTENT.json](XING4-PATCH-CONTENT.json).
