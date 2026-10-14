@@ -1,11 +1,11 @@
 # Xing4 request-static 64/128 compatibility candidate
 
-The [complete engine](https://github.com/Phala-Network/sglang/tree/3fbff0a280fd4b6ebf8487903b86da993d24643a)
+The [complete engine](https://github.com/Phala-Network/sglang/tree/8d58bc12e0f69203a012db7c8d8ee377f2554c2a)
 continues the official v0.5.21 maintenance line with the existing compatibility
 exception. The canonical [stack](stack.json) and [series](series) preserve the
-published 51-step prefix and add source-derived steps 0052/0053 plus shared startup diagnostics 0054/0055.
+published 51-step prefix and add source-derived steps 0052/0053 plus shared startup diagnostics 0054/0055 and stable decoder API repair 0056.
 [XING4-PATCH-CONTENT.json](XING4-PATCH-CONTENT.json) defines the ordered content
-SHA256. The complete tree is `62a2366644f75efe5db6ca409597a2496fdfe1ae`.
+SHA256. The complete tree is `a073c32a40ff18b92a87c1657893440b75e2ba08`.
 
 The implementation preserves native factor64/original4096 and uses factor128
 for budgets262145 through524288. Selection precedes clipping and cache lookup;
@@ -16,9 +16,9 @@ quantization. Independent input-page padding/spare-page/sentinel reserve does
 not change public capacity or clip original output. Unsupported runtime paths
 fail before weight allocation.
 
-Builder201 actually replayed all 55 steps from official upstream
+Builder201 actually replayed all 56 steps from official upstream
 `e00930c5489053f26d86b179cee0d087f846acbb` and matched the complete tree.
-Nine affected source CPU files report 147 passed and 10 skipped CUDA cases;
+Ten affected source CPU files report 151 passed and 10 skipped CUDA cases;
 coverage includes retained Qwen policy/graph-buffer behavior, real Xing
 ModelConfig/MHA/MLA/scheduler seams, official tokenizers and protected-env auth.
 The dynamic author's budget red control reports9 real behavior failures and
@@ -26,10 +26,16 @@ The dynamic author's budget red control reports9 real behavior failures and
 they do not execute CUDA/TileLang or qualify B300 kernels or serving.
 
 Build/test instructions and the flags-only `sglang serve` entrypoint live in
-the [engine-owned Docker directory](https://github.com/Phala-Network/sglang/tree/3fbff0a280fd4b6ebf8487903b86da993d24643a/docker/xing4).
-The [source prerelease](https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-xing4-yarn-rc1)
+the [engine-owned Docker directory](https://github.com/Phala-Network/sglang/tree/8d58bc12e0f69203a012db7c8d8ee377f2554c2a/docker/xing4).
+The [source prerelease](https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-xing4-yarn-rc2)
 records the source-to-image identity and focused actual final-image checks.
-All four weight/KV evaluation cells must use its same immutable image.
+All four weight/KV evaluation cells must use the same eventual GPU-accepted immutable image.
+RC1's two actual GPU native startups exposed a constructor ImportError before
+weight loading. RC2 adapts the current dense helper, SCOPED/LOCAL_TAIL enums
+and next_sparse declaration argument together. Four full official BF16/FP8
+constructor cases actually fail on RC1 source and pass after this repair.
+The constructors execute all40 main layers and real mHC/declarations/context;
+GPU storage and distributed binding use the real production signatures.
 GPU scores, throughput, real512K and production acceptance are separate gates.
 Shared v0.5.20 main and unrelated maintained integrations retain their existing
 contract. This candidate includes no embedded Governor.

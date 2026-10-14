@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
-    "tree": "62a2366644f75efe5db6ca409597a2496fdfe1ae",
+    "commit": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
+    "tree": "a073c32a40ff18b92a87c1657893440b75e2ba08",
     "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Unified Xing request-static 64/128 with official tokenizer/auth, zero-output capacity rejection and safe startup diagnostics. Exact 55-step replay and 147 passed/10 CUDA skipped source CPU checks on201; final-image and GPU gates are separate. Published 51-step prefix unchanged.",
+  "qualification": "Unified Xing request-static 64/128 with stable decoder construction repair, official tokenizer/auth and safe startup diagnostics. Actual constructor red4/green4 and source151 passed/10 CUDA skipped on201. Final-image/GPU/service gates separate. All published55 patch files unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -687,6 +687,18 @@
       "origin": {
         "development_commit": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
         "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0056",
+      "path": "patches/models/xing4/0056-stable-decoder-construction.patch",
+      "title": "Adapt Xing decoder construction to stable layer-boundary API",
+      "source_commit": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
+      "source_parent": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
+      "result_tree": "a073c32a40ff18b92a87c1657893440b75e2ba08",
+      "sha256": "e97a9b3cbaebfba22fd88aaf87f46f2addfa02b4419071c016cfc2a0f182c10e",
+      "origin": {
+        "scope": "Actual GPU constructor ImportError repair: current dense helper, reduction enum and next_sparse; full official BF16/FP8 constructor red-green"
       }
     }
   ],
