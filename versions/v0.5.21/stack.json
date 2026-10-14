@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
-    "tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
-    "branch": "codex/v0.5.21-phala-runtime"
+    "commit": "57d3ef39034b14c75e532fce89fdffe83b77e172",
+    "tree": "121a639593c8613f9435969b921479d32ea9e6cb",
+    "branch": "codex/xing4-v0521-20261014"
   },
-  "qualification": "Qualified GGUF increments over unchanged published 46-step prefix; see qualification.json and the published phala-v0.5.21-7 Release for image/service stage.",
+  "qualification": "Xing native candidate: 15 CPU cases pass; GPU and final-image qualification pending. Published 49-step prefix unchanged.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -611,6 +611,17 @@
       "result_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
       "sha256": "45a93c12f2300deb2aacda0564e162195210e4f48b14934cef4a56f229974b62",
       "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0050",
+      "path": "patches/models/xing4/0050-native-xing4-stable.patch",
+      "title": "Support native Xing4 MLA mHC on stable v0.5.21 with source-bound image",
+      "source_commit": "57d3ef39034b14c75e532fce89fdffe83b77e172",
+      "source_parent": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "result_tree": "121a639593c8613f9435969b921479d32ea9e6cb",
+      "sha256": "c2ee25ac4701cfe25538fcb70be968c2655f536e9b456864825e3c5d27fe56f4",
+      "upstream_pr": "https://github.com/sgl-project/sglang/pull/39793",
+      "upstream_head": "aa737beda5878755dffe40836de014663ca2a106"
     }
   ],
   "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0"
