@@ -1,0 +1,63 @@
+{
+  "schema": "phala.sglang.source-qualification.v1",
+  "engine_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+  "engine_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "base_engine_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+  "ordered_patch_count": 49,
+  "unchanged_published_prefix_count": 46,
+  "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0",
+  "source_replay": "Passed full canonical49-step replay with actual source export bytes, all intermediate trees and final tree matching exactly; see source-verification.json.",
+  "installed_image": {
+    "image_id": "sha256:c8bd826b1f1227c827d6906fb0148a8c7622d2fde4da72b9e9945bd4f09532d1",
+    "source_overlay": false,
+    "native_or_dependency_changes": false,
+    "cpu": {
+      "gguf_passed": 47,
+      "request_static_yarn_passed": 58,
+      "cuda_only_skips_retained": 9
+    },
+    "gpu": {
+      "passed": 10,
+      "hardware": "H200"
+    },
+    "direct_hf_help": "passed",
+    "direct_hf_download_help": "passed",
+    "sglang_serve_help": "passed",
+    "curl": "passed",
+    "direct_hf_confirmation_utc": "2026-10-14T04:22:38.096786+00:00"
+  },
+  "model_scope": {
+    "weights": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+    "weight_revision": "993a5971fda8f30dd1b7eb2654792ba4415c7460",
+    "tokenizer": "Qwen/Qwen3.8-27B-FP8",
+    "tokenizer_revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+    "context_budget": 1048576,
+    "request_static_factors": [
+      1,
+      2,
+      4
+    ],
+    "kv_dtype": "fp8_e4m3",
+    "speculative_decoding": false,
+    "structured_outputs": "32/35 in initial dynamic, cleared dynamic and cleared native1; all 35 complete choices and usage exactly match across all three rounds. Three shared failures remain disclosed.",
+    "real_long_input_tokens": [
+      261888,
+      524032,
+      1048320
+    ],
+    "long_declared_output_tokens": 256,
+    "long_observed_output_tokens": 27,
+    "real_overlimit_and_recovery": "passed",
+    "protocol_vision_cache_cancellation": "passed in scoped experiment"
+  },
+  "governor": "No embedded Governor selected; external PIG is a separate deployment component.",
+  "known_limits": [
+    "1M is total declared prompt plus output budget; the tested top prompt1048320 plus declared256 was internally capped to254 output positions.",
+    "Three 2000-token unclosed structured outputs are shared with the same-image native1 control; no weight-causality or all-model quality claim.",
+    "GGUF cannot use Weight Cache Daemon IPC; weight_cache_mode remains off.",
+    "No new throughput, concurrency-capacity, GPQA or TAU qualification.",
+    "Image retains its base OCI version label phala-v0.5.21-6; exact engine/patch labels and the Release mapping identify the new artifact."
+  ],
+  "publication_and_production": "Separate stages; consult published Release/immutable image receipt and scoped deployment acceptance."
+}

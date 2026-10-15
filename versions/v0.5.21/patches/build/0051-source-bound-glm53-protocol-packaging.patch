@@ -1,0 +1,248 @@
+diff --git a/docker/phala-glm53-protocol/Dockerfile b/docker/phala-glm53-protocol/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..2021db84dbbfe559089acd851de85b33121ca088
+--- /dev/null
++++ b/docker/phala-glm53-protocol/Dockerfile
+@@ -0,0 +1,21 @@
++FROM ghcr.io/phala-network/sglang:phala-v0.5.21-7@sha256:6a74c66ab1c44d32d07d8f227fc5074a43a330251ea3e2b37ebe731a6178e5ee
++
++ARG ENGINE_COMMIT
++ARG PATCHES_COMMIT
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_COMMIT}" \
++      org.opencontainers.image.version="phala-v0.5.21-8" \
++      org.phala.serving-patches.revision="${PATCHES_COMMIT}" \
++      org.phala.base-engine.revision="c2ce5382dad45fd85e39f5d4e1d93165225eb34d"
++
++# prepare_context.py exports only immutable Git objects and their manifest.
++COPY . /opt/phala-glm53-protocol/
++RUN python /opt/phala-glm53-protocol/docker/phala-glm53-protocol/install.py \
++      --engine-commit "${ENGINE_COMMIT}" --patches-commit "${PATCHES_COMMIT}" \
++    && python -m pytest /opt/phala-glm53-protocol/test/registered/unit/entrypoints/openai/test_serving_chat.py -k glm53 -q \
++    && hf --help >/dev/null \
++    && hf download --help >/dev/null \
++    && sglang serve --help >/dev/null \
++    && curl --version >/dev/null
++
++ENTRYPOINT ["sglang", "serve"]
+diff --git a/docker/phala-glm53-protocol/README.md b/docker/phala-glm53-protocol/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a1fc329e0c0d262fa87e8021bae1ae553e383e2
+--- /dev/null
++++ b/docker/phala-glm53-protocol/README.md
+@@ -0,0 +1,37 @@
++# GLM-5.3 protocol maintenance image
++
++This source-bound incremental recipe installs the GLM-5.3 reasoning repair over
++the immutable Phala7 image. It preserves official native dependencies and the
++pinned model's original chat template. The only installed runtime change is
++`serving_chat.py`; the matching focused tests are retained in the image.
++
++Prepare the context on builder201 from the final reviewed complete engine commit:
++
++```bash
++python docker/phala-glm53-protocol/prepare_context.py \
++  --engine-ref "$ENGINE_COMMIT" --patches-commit "$PATCHES_COMMIT" \
++  --output /path/to/new/context
++docker build -f /path/to/new/context/docker/phala-glm53-protocol/Dockerfile \
++  --build-arg ENGINE_COMMIT="$ENGINE_COMMIT" \
++  --build-arg PATCHES_COMMIT="$PATCHES_COMMIT" \
++  -t "$CANDIDATE_IMAGE" /path/to/new/context
++```
++
++The installer checks the base module preimage, all context bytes and both source
++identities, then updates the installed wheel's `RECORD`. Build-time tests import
++the installed package. After building, repeat focused installed tests and direct
++`hf --help`, `hf download --help`, and `sglang serve --help` against the final
++image ID without source mounts. Image publication requires the exact remote
++source tag and published Release first.
++
++For GLM-5.3's always-thinking template, `none` wins over conflicting template
++settings and closes only the final generation token prefix, including raw
++`input_ids`, without mutating message history or caller IDs. An unclosed thinking
++continuation conflicts with reasoning-off and returns a client error; plain and
++closed answer prefixes remain supported. Omitted effort uses
++a 1024-token reasoning cap with `--enable-strict-thinking`; explicit
++`reasoning.max_tokens` supplies its own cap. Explicit official `low`, `high` and
++`max` effort values retain the original template's semantics. Budgeted requests
++reuse the reasoner backend around GLM47's answer/tool grammar so the cap applies
++to ordinary text and tool requests. Final image and
++GPU/direct-endpoint acceptance are separate from source CPU tests.
+diff --git a/docker/phala-glm53-protocol/install.py b/docker/phala-glm53-protocol/install.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..61921a4118230c85d249421e4b279185cda4c802
+--- /dev/null
++++ b/docker/phala-glm53-protocol/install.py
+@@ -0,0 +1,102 @@
++"""Install one reviewed GLM protocol module into the pinned Phala7 wheel."""
++
++import argparse
++import base64
++import csv
++import hashlib
++import importlib.metadata
++import io
++import json
++from pathlib import Path
++import re
++import shutil
++
++import sglang
++
++RUNTIME = "python/sglang/srt/entrypoints/openai/serving_chat.py"
++TEST = "test/registered/unit/entrypoints/openai/test_serving_chat.py"
++BASE_COMMIT = "c2ce5382dad45fd85e39f5d4e1d93165225eb34d"
++BASE_IMAGE = "ghcr.io/phala-network/sglang@sha256:6a74c66ab1c44d32d07d8f227fc5074a43a330251ea3e2b37ebe731a6178e5ee"
++CONTEXT_FILES = {
++    RUNTIME,
++    TEST,
++    "docker/phala-glm53-protocol/Dockerfile",
++    "docker/phala-glm53-protocol/install.py",
++}
++
++
++def digest(path, *, normalize=False):
++    payload = path.read_bytes()
++    if normalize:
++        payload = payload.replace(b"\r\n", b"\n")
++    return hashlib.sha256(payload).hexdigest()
++
++
++parser = argparse.ArgumentParser()
++parser.add_argument("--engine-commit", required=True)
++parser.add_argument("--patches-commit", required=True)
++args = parser.parse_args()
++root = Path(__file__).resolve().parents[2]
++manifest = json.loads((root / "source-manifest.json").read_text(encoding="utf8"))
++for field, expected in (
++    ("engine_commit", args.engine_commit),
++    ("patches_commit", args.patches_commit),
++):
++    if not re.fullmatch(r"[0-9a-f]{40}", expected) or manifest[field] != expected:
++        raise RuntimeError(f"Source identity mismatch: {field}")
++if (
++    manifest["base_engine_commit"] != BASE_COMMIT
++    or manifest["base_image"] != BASE_IMAGE
++):
++    raise RuntimeError("The immutable Phala7 base identity differs")
++if set(manifest["source_sha256"]) != CONTEXT_FILES:
++    raise RuntimeError("Expected exactly the reviewed runtime, test and build files")
++for name, expected in manifest["source_sha256"].items():
++    if digest(root / name) != expected:
++        raise RuntimeError(f"Source context hash mismatch: {name}")
++
++installed = Path(sglang.__file__).resolve().parent
++if installed == (root / "python/sglang").resolve():
++    raise RuntimeError("Source context must not shadow the installed wheel")
++relative = Path(RUNTIME).relative_to("python/sglang")
++target = installed / relative
++if digest(target, normalize=True) != manifest["base_runtime_sha256"]:
++    raise RuntimeError("Installed serving_chat.py does not match the Phala7 preimage")
++shutil.copyfile(root / RUNTIME, target)
++if digest(target) != manifest["source_sha256"][RUNTIME]:
++    raise RuntimeError("Installed serving_chat.py differs from the reviewed source")
++
++distribution = importlib.metadata.distribution("sglang")
++record = next(
++    distribution.locate_file(file)
++    for file in distribution.files
++    if file.name == "RECORD" and ".dist-info" in str(file)
++)
++rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf8"))))
++name = f"sglang/{relative.as_posix()}"
++encoded = base64.urlsafe_b64encode(hashlib.sha256(target.read_bytes()).digest())
++replacement = [
++    name,
++    "sha256=" + encoded.decode().rstrip("="),
++    str(target.stat().st_size),
++]
++matches = [row for row in rows if row[0] == name]
++if len(matches) != 1:
++    raise RuntimeError("Expected one serving_chat.py entry in the wheel RECORD")
++matches[0][:] = replacement
++with record.open("w", encoding="utf8", newline="") as stream:
++    csv.writer(stream, lineterminator="\n").writerows(rows)
++
++receipt = {
++    "engine_commit": manifest["engine_commit"],
++    "patches_commit": manifest["patches_commit"],
++    "base_engine_commit": BASE_COMMIT,
++    "base_image": BASE_IMAGE,
++    "installed_module": str(target),
++    "runtime_sha256": digest(target),
++    "test_sha256": manifest["source_sha256"][TEST],
++    "wheel_record_updated": True,
++    "native_dependencies": "unchanged from immutable Phala7 base",
++}
++(root / "installed-source.json").write_text(json.dumps(receipt, indent=2) + "\n")
++print(json.dumps(receipt, sort_keys=True), flush=True)
+diff --git a/docker/phala-glm53-protocol/prepare_context.py b/docker/phala-glm53-protocol/prepare_context.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f2df91913464ac9928fb091ba98ecfaa14150bd
+--- /dev/null
++++ b/docker/phala-glm53-protocol/prepare_context.py
+@@ -0,0 +1,64 @@
++"""Export the small GLM build context from a complete immutable engine commit."""
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import re
++import subprocess
++
++BASE_COMMIT = "c2ce5382dad45fd85e39f5d4e1d93165225eb34d"
++BASE_IMAGE = "ghcr.io/phala-network/sglang@sha256:6a74c66ab1c44d32d07d8f227fc5074a43a330251ea3e2b37ebe731a6178e5ee"
++RUNTIME = "python/sglang/srt/entrypoints/openai/serving_chat.py"
++FILES = (
++    RUNTIME,
++    "test/registered/unit/entrypoints/openai/test_serving_chat.py",
++    "docker/phala-glm53-protocol/Dockerfile",
++    "docker/phala-glm53-protocol/install.py",
++)
++
++
++def git(*args):
++    return subprocess.run(
++        ["git", "-C", str(Path(__file__).resolve().parents[2]), *args],
++        check=True,
++        stdout=subprocess.PIPE,
++    ).stdout
++
++
++parser = argparse.ArgumentParser()
++parser.add_argument("--engine-ref", required=True)
++parser.add_argument("--patches-commit", required=True)
++parser.add_argument("--output", type=Path, required=True)
++args = parser.parse_args()
++if not re.fullmatch(r"[0-9a-f]{40}", args.patches_commit):
++    raise ValueError("An immutable complete patch-set commit is required")
++engine = (
++    git("rev-parse", "--verify", "--end-of-options", args.engine_ref + "^{commit}")
++    .decode()
++    .strip()
++)
++git("merge-base", "--is-ancestor", BASE_COMMIT, engine)
++if args.output.exists() and any(args.output.iterdir()):
++    raise ValueError("Build context output must be new or empty")
++args.output.mkdir(parents=True, exist_ok=True)
++hashes = {}
++for name in FILES:
++    payload = git("show", f"{engine}:{name}")
++    target = args.output / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(payload)
++    hashes[name] = hashlib.sha256(payload).hexdigest()
++manifest = {
++    "engine_commit": engine,
++    "engine_tree": git("rev-parse", engine + "^{tree}").decode().strip(),
++    "patches_commit": args.patches_commit,
++    "base_engine_commit": BASE_COMMIT,
++    "base_image": BASE_IMAGE,
++    "base_runtime_sha256": hashlib.sha256(
++        git("show", f"{BASE_COMMIT}:{RUNTIME}")
++    ).hexdigest(),
++    "source_sha256": hashes,
++}
++(args.output / "source-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
++print(json.dumps(manifest, indent=2))

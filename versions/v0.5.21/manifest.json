@@ -1,8 +1,8 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
-  "engine_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
-  "engine_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
-  "reproduced_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
+  "engine_commit": "bf761530e2b47bd212a94229635d570ca2e1a6b2",
+  "engine_tree": "764bd17f01ff6ad58e8f3715375fe96cf23217e3",
+  "reproduced_tree": "764bd17f01ff6ad58e8f3715375fe96cf23217e3",
   "patches": [
     {
       "path": "patches/common/0001-request-lifecycle.patch",
@@ -346,16 +346,27 @@
       "parent": "b0a9011be2759f7a9dbab46e5c070a0119269577",
       "sha256": "45a93c12f2300deb2aacda0564e162195210e4f48b14934cef4a56f229974b62",
       "purpose": "Package GGUF increments over immutable request-static YaRN release with config regression"
+    },
+    {
+      "path": "patches/models/glm/0050-glm53-reasoning-off-and-bounded-native-tools.patch",
+      "commit": "58e2e3e0a6ea5c21636e07405b80270b32c4fc50",
+      "parent": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "sha256": "f52bf67b557105d91ce9c3b8aaa093a2f9df4f12ab4e7d1e007842d19ebc172f",
+      "purpose": "Honor GLM-5.3 reasoning-off and enforce bounded thinking through native tools"
+    },
+    {
+      "path": "patches/build/0051-source-bound-glm53-protocol-packaging.patch",
+      "commit": "bf761530e2b47bd212a94229635d570ca2e1a6b2",
+      "parent": "58e2e3e0a6ea5c21636e07405b80270b32c4fc50",
+      "sha256": "b4362d9632222d355c3baf57bf4c3f8df325cc674606c9469e77b641e4edc124",
+      "purpose": "Package GLM-5.3 protocol repair over immutable Phala7 runtime"
     }
   ],
   "embedded_governor": "not selected; external PIG v0.12.31",
-  "scope": "Qualified Qwen GGUF request-static YaRN source/image; production acceptance separate",
-  "release_status": "phala-v0.5.21-7 source release; image publication mapping recorded in engine Release",
-  "incremental_base_engine": "80afb70020aad5ce1135fcbb00864c0d761c8413",
-  "incremental_base_patch_commit": "ffeedda55c5d4bdf66b80210ccbbe74a6f54e077",
-  "incremental_donors": [
-    "03a053ca9b61e80169675de1aca72769c3d0da22",
-    "dd5afa83a3efb463b48dc7e80dea8ad63bf2a122"
-  ],
+  "scope": "Source-only GLM-5.3 reasoning-off and native-tool thinking-budget repair",
+  "release_status": "phala-v0.5.21-8 source candidate; image/GPU/publication pending",
+  "incremental_base_engine": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+  "incremental_base_patch_commit": "2d02d0dda35c5d58986c1de874ae56ba2b348e10",
+  "incremental_donors": [],
   "original_build_patches_commit": "90adf120aa19e683f95d8702c89e31fb1c3d4ab0"
 }

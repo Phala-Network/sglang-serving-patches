@@ -1,5 +1,15 @@
 # SGLang 0.5.21 compatibility maintenance
 
+The phala-v0.5.21-8 source candidate adds the GLM-5.3 reasoning-off and bounded
+native-tool repair over the unchanged published 49-step Phala7 prefix. The
+canonical 51-step [stack](stack.json) binds complete engine
+`bf761530e2b47bd212a94229635d570ca2e1a6b2` and its incremental build recipe.
+See [GLM-5.3 behavior and CPU evidence](GLM53-PROTOCOL.md) and the current
+[source qualification](qualification.json). Final image and GPU acceptance are
+separate; prior Phala7 qualification is preserved in
+[its original record](qualification-phala-v0.5.21-7.json). The existing version
+maintenance exception below continues to apply.
+
 The phala-v0.5.21-7 source adds three GGUF increments to the unchanged
 published phala-6 46-step prefix. The canonical 49-step [stack](stack.json),
 [series](series) and [source/image qualification](qualification.json) bind

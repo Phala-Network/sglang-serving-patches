@@ -47,3 +47,5 @@ patches/build/0046-source-bound-yarn-runtime-packaging.patch
 patches/models/qwen/0047-qwen35-gguf-loader-vision-config.patch
 patches/models/qwen/0048-gguf-prefill-dense-1024.patch
 patches/build/0049-model894-yarn-packaging-and-config-regression.patch
+patches/models/glm/0050-glm53-reasoning-off-and-bounded-native-tools.patch
+patches/build/0051-source-bound-glm53-protocol-packaging.patch
