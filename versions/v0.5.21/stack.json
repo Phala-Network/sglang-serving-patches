@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
-    "tree": "95fcbbc4638d58ddee1c56cdb03dfece74cf087b",
-    "branch": "codex/xing4-startup-rc52-20261015"
+    "commit": "1f3ff5c19e4beeecfa467e4d1e8f9577da6ca36f",
+    "tree": "26533a7fbe9baca7c1a476a43d4abf302ef6f3d9",
+    "branch": "codex/xing4-fastload-tuning-20261015"
   },
-  "qualification": "RC5.2 actual EAGLEWorkerV2/BaseSpecWorker draft_worker property: old installed image reproduces AttributeError; source14 affected CPU cases pass (13 full-run plus corrected unrelated hicache fixture one-case delta). First58 published patch bytes preserved. Runtime delta from RC5.1 is one property traversal line. Final-image and GPU/service gates separate; unchanged RC4 CPU172/10CUDA-skipped and Gloo3scenarios/6rank evidence retained.",
+  "qualification": "Tuning-only fastsafetensors 0.4.0 small layer from immutable RC5.2; no dependency upgrades or SGLang runtime changes. First59 published patch bytes preserved. Full60-step clean Git index replay reproduces every recorded intermediate tree. RC52 installed14 CPU cases retained for byte-identical runtime; final tuning-image loader/CLI checks and actual GPU storage/time acceptance remain separate. Production uses original RC52/default auto loader.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -736,6 +736,18 @@
       "sha256": "874417b8a9693337b9ca256cd949cb7fa714fcfc08f4770487a16b6ca9088cf0",
       "origin": {
         "scope": "Startup-only metadata, actual EAGLE facade property; no tensor values, transfer, numerical, kernel, backend or dependency changes; source14 affected cases, retained RC4 unchanged172/Gloo evidence."
+      }
+    },
+    {
+      "id": "v0521-0060",
+      "path": "patches/dependencies/fastsafetensors/0060-tuning-loader-image.patch",
+      "title": "Package tuning-only fastsafetensors 0.4.0 small image layer",
+      "source_commit": "1f3ff5c19e4beeecfa467e4d1e8f9577da6ca36f",
+      "source_parent": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
+      "result_tree": "26533a7fbe9baca7c1a476a43d4abf302ef6f3d9",
+      "sha256": "b2471717a7482bd6f422b88ed96c309e5061950c9dd9e64a5981f9929f4dadb7",
+      "origin": {
+        "scope": "Only Dockerfile, hash-pinned requirements and tuning loader documentation; unchanged RC52 runtime, kernels and native extensions. Official wheel fallback reviewed; GPU loading/time and production-default startup separate."
       }
     }
   ],

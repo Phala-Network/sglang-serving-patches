@@ -1,0 +1,46 @@
+diff --git a/docker/xing4/Dockerfile.fastload-tuning b/docker/xing4/Dockerfile.fastload-tuning
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ebd747d404e99d32b037e8dc786fafddf93c5cf
+--- /dev/null
++++ b/docker/xing4/Dockerfile.fastload-tuning
+@@ -0,0 +1,18 @@
++# Tuning only; production uses unmodified RC5.2 with its default loader.
++ARG BASE_IMAGE=ghcr.io/phala-network/sglang:phala-v0.5.21-xing4-yarn-rc5.2@sha256:69ee0bee39fae2711212d4f765c735c10738142da91e0f9bf4655bfd30a22c35
++FROM ${BASE_IMAGE}
++ARG ENGINE_COMMIT
++ARG PATCHES_COMMIT
++ARG RELEASE_VERSION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_COMMIT}" \
++      org.opencontainers.image.version="${RELEASE_VERSION}" \
++      org.phala.serving-patches.revision="${PATCHES_COMMIT}" \
++      org.phala.tuning.only="true" \
++      org.phala.tuning.base-engine.revision="5b32c5227da46c3db3f2569aab1d83f81f9d9080" \
++      org.phala.tuning.fastsafetensors.version="0.4.0"
++COPY fastsafetensors-0.4.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /tmp/fastload-wheel/
++COPY fastload-requirements.txt /tmp/fastload-wheel/
++RUN python -m pip install --disable-pip-version-check --no-deps --no-index --require-hashes --find-links=/tmp/fastload-wheel -r /tmp/fastload-wheel/fastload-requirements.txt \
++    && python -c 'import json,os;from pathlib import Path;p=Path("/opt/phala-xing4/installed-source.json");a=json.loads(p.read_text());assert a["engine_commit"]=="5b32c5227da46c3db3f2569aab1d83f81f9d9080";a["engine_commit"]=os.environ["ENGINE_COMMIT"];a["tuning_base_engine_commit"]="5b32c5227da46c3db3f2569aab1d83f81f9d9080";a["tuning_dependency"]={"name":"fastsafetensors","version":"0.4.0","wheel_sha256":"d1ecbb199d98d222c827ae1cc9c7b09dd9ef2d34aa0eb01baa8f81f70345dc0a"};p.write_text(json.dumps(a,indent=2)+"\n")' \
++    && rm -rf /tmp/fastload-wheel
+diff --git a/docker/xing4/FASTLOAD-TUNING.md b/docker/xing4/FASTLOAD-TUNING.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..549fb17e3578c5852b17b5a2526e6d5aa8e54b71
+--- /dev/null
++++ b/docker/xing4/FASTLOAD-TUNING.md
+@@ -0,0 +1,9 @@
++# Tuning-only fastsafetensors layer
++
++This optional image starts from the immutable RC5.2 runtime and installs only the official fastsafetensors 0.4.0 cp312 x86_64 wheel (2,096,153 bytes) offline, without dependency upgrades. Its SHA256 is pinned in `fastload-requirements.txt`; existing typer 0.27.2 satisfies typer>=0.9.0. The base SGLang runtime files, kernels, model data and native extensions remain unchanged.
++
++Build `Dockerfile.fastload-tuning` from a context containing the committed Dockerfile/requirements and the hash-verified official wheel. Supply the complete engine and serving-patches commits. Use `--load-format fastsafetensors` only during authorized tuning; the existing load format also applies to the native BF16 NextN checkpoint. No model copy or production startup pip install is required.
++
++Official 0.4.0 `fastsafetensors/copier/gds.py` checks `/dev/nvidia-fs0` on Linux before GDS initialization. A missing node skips `init_gds()` and selects the nogds copier; missing libcufile or capability=0 also selects nogds. File-handle setup RuntimeError falls back to nogds, while already submitted I/O failures, capability<0 and init_gds failure remain fatal. SGLang additionally supports `--model-loader-extra-config '{"enable_gds":false}'` to force nogds, but automatic fallback needs no extra flag. This source review is not a GPU storage acceptance result.
++
++The original RC5.2 image with its default auto loader remains the production candidate. Before production acceptance remove the tuning image/loader and verify an actual startup from the original image. CPU import and loader-boundary checks do not prove GPU file loading speed or GDS support. At the next necessary GPU tuning restart, record the actual copier/fallback behavior, weights-loading seconds and total ready seconds separately; do not repeat the quality/performance scoring matrix solely for this loader.
+diff --git a/docker/xing4/fastload-requirements.txt b/docker/xing4/fastload-requirements.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..307927d952e88baec0c3de9043b07fe61d443e09
+--- /dev/null
++++ b/docker/xing4/fastload-requirements.txt
+@@ -0,0 +1 @@
++fastsafetensors==0.4.0 --hash=sha256:d1ecbb199d98d222c827ae1cc9c7b09dd9ef2d34aa0eb01baa8f81f70345dc0a
