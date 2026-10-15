@@ -731,12 +731,13 @@
       "path": "patches/models/xing4/0059-startup-spec-identity.patch",
       "title": "Observe final Xing EAGLE pools, quant methods and weight sharing at startup",
       "source_commit": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
-      "source_parent": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+      "source_parent": "585d270714ced0c77656506f49f5c5b955791210",
       "result_tree": "95fcbbc4638d58ddee1c56cdb03dfece74cf087b",
       "sha256": "874417b8a9693337b9ca256cd949cb7fa714fcfc08f4770487a16b6ca9088cf0",
       "origin": {
         "scope": "Startup-only metadata, actual EAGLE facade property; no tensor values, transfer, numerical, kernel, backend or dependency changes; source14 affected cases, retained RC4 unchanged172/Gloo evidence."
-      }
+      },
+      "source_range_base": "3796ead177e2c344da9e8ca026bf64f32de7f09e"
     },
     {
       "id": "v0521-0060",

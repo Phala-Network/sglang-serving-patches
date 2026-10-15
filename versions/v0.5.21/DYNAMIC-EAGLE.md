@@ -26,4 +26,4 @@ the actual rotary table offset. All61 intermediate patch trees actually replay a
 Dynamic image build/publication and CUDA graph/kernel, real512K, mixed cache, quality and recovery
 remain separate pending gates. Source/CPU success does not claim dynamic512K serving support.
 
-The existing stack verifier stops at the frozen step0059 source-parent range representation; the receipt records this separate historical metadata issue. Actual index replay still matches every one of61 trees. Prefix bytes and verifier code are unchanged.
+Step0059 explicitly exports source_range_base `3796ead177e2c344da9e8ca026bf64f32de7f09e` through `5b32c5227da46c3db3f2569aab1d83f81f9d9080`; source_parent records its real immediate parent `585d270714ced0c77656506f49f5c5b955791210`. The existing verifier now supports this optional immutable git-diff ancestor range while retaining default immediate-parent semantics, source-byte binding and every intermediate-tree check. Canonical61-step verification and29 real-Git unit tests pass; a wrong range is rejected. All60 published prefix patch bytes remain unchanged.

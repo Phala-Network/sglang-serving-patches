@@ -67,7 +67,8 @@ def read_stack(root=ROOT):
         frozen_count, frozen_tree = 0, None
         previous = upstream
         for entry in patches:
-            if entry.get("source_parent") != previous:
+            source_base = entry.get("source_range_base", entry.get("source_parent"))
+            if source_base != previous:
                 raise StackError("Unified source commits must form one ordered chain")
             previous = object_id(entry["source_commit"])
         if previous != engine_commit:
@@ -116,6 +117,9 @@ def read_stack(root=ROOT):
             raise StackError("Patch hash differs: " + entry["path"])
         if entry.get("source_commit"):
             object_id(entry["source_commit"])
+        if "source_range_base" in entry:
+            object_id(entry["source_range_base"])
+            object_id(entry.get("source_parent"))
     dependencies = {}
     if (root / "external-dependencies.json").exists():
         for dependency, spec in read_json(root / "external-dependencies.json").items():
@@ -152,7 +156,26 @@ def source_patch_export(source, entry):
     if export_format not in ("git-diff", "git-format-patch"):
         raise StackError("Unsupported source patch export format: " + export_format)
     parent, data = export_patch(source, entry["source_commit"])
-    if export_format == "git-format-patch":
+    if "source_range_base" in entry:
+        base = object_id(entry["source_range_base"])
+        if export_format != "git-diff":
+            raise StackError("Source ranges require git-diff export format")
+        if git(
+            source, "merge-base", "--is-ancestor", base, parent, check=False
+        ).returncode:
+            raise StackError("Source range base must be an ancestor of the source parent")
+        data = git(
+            source,
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-renames",
+            base,
+            entry["source_commit"],
+            "--",
+        ).stdout
+    elif export_format == "git-format-patch":
         data = git(
             source,
             "format-patch",

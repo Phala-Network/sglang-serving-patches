@@ -291,12 +291,48 @@
   },
   "limits": "Source/CPU candidate only; no dynamic image or GPU runtime qualification.",
   "existing_stack_verifier": {
-    "status": "blocked-on-preexisting-frozen-step59-range-metadata",
+    "status": "source-verified",
     "path": "patches/models/xing4/0059-startup-spec-identity.patch",
-    "declared_range_parent": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
-    "actual_commit_parent": "585d270714ced0c77656506f49f5c5b955791210",
+    "source_range_base": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+    "actual_source_parent": "585d270714ced0c77656506f49f5c5b955791210",
     "source_commit": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
-    "frozen_patch_equals_declared_range": true,
-    "scope": "All61 intermediate trees actually replay and match; all60 frozen patch bytes unchanged. Existing verifier assumes immediate-parent export and refuses the preexisting aggregated step59 range. No prefix rewrite or verifier framework change."
+    "frozen_patch_sha256": "874417b8a9693337b9ca256cd949cb7fa714fcfc08f4770487a16b6ca9088cf0",
+    "prefix60_patch_bytes_unchanged": true,
+    "canonical_result": {
+      "status": "source-verified",
+      "scope": "source-only",
+      "active_selector": "unified",
+      "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "engine_commit": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
+      "engine_tree": "e0ee5561feb18c56c619f714492da9e93f993156",
+      "patch_count": 61,
+      "dependencies": {},
+      "component_origins": [],
+      "image_or_runtime_qualified": false
+    },
+    "negative_control": {
+      "schema": "phala.source-range-negative-control.v1",
+      "status": "passed",
+      "control": "wrong-step59-range-base-rejected",
+      "mutated_field": "patches[58].source_range_base",
+      "correct_value": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+      "wrong_value": "585d270714ced0c77656506f49f5c5b955791210",
+      "expected_failure": "Unified source commits must form one ordered chain",
+      "source_tree_unchanged": true,
+      "patch_files_unchanged": true
+    },
+    "real_git_unit_tests": {
+      "passed": 29,
+      "failures": 0,
+      "new_range_case": "positive aggregate replay plus wrong valid-ancestor byte-binding refusal"
+    },
+    "validation": "Optional source_range_base permits only immutable git-diff ancestor ranges and requires the actual source_parent field. Source bytes, actual immediate parent, single-parent commit and every intermediate tree are checked. Default export semantics unchanged.",
+    "evidence_sha256": {
+      "stack-verify-v3.json": "5874a3d5f5ebb6fbaf3c40d08a7bb696c95be2f32ba966977083e61d86e2f250",
+      "stack-verify-v3.log": "5874a3d5f5ebb6fbaf3c40d08a7bb696c95be2f32ba966977083e61d86e2f250",
+      "source-range-negative-control-v1.json": "01965556dcb3010107a7478d5657ff540db2c47500e57e3e0e589f2ea2d9dccd",
+      "source-range-negative-control-v1.log": "8053262e34a8453cd1b1358c8f51786ea0a261deb3ae57b7fa6bf302bf04eebd",
+      "stack-range-unit-v2.log": "3969f3ce1b2682334689d02f4e10013e60c637ee1583e44ffb360476b829c8f1"
+    }
   }
 }
