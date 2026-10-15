@@ -59,3 +59,4 @@ patches/common/0058-legacy-profiler-export-failure.patch
 patches/models/xing4/0059-startup-spec-identity.patch
 patches/models/xing4/0060-native-eagle-public-budget.patch
 patches/models/xing4/0061-request-static-yarn-eagle.patch
+patches/models/xing4/0062-request-static-yarn-startup-dummy.patch

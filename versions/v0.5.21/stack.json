@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
-    "tree": "e0ee5561feb18c56c619f714492da9e93f993156",
-    "branch": "codex/xing4-dynamic-eagle-release-20261015"
+    "commit": "119e05e0ebb55c0fb324c493ea052f56b0e28350",
+    "tree": "10393a48efb1fed4c0bbc44671a208b8e9d5af21",
+    "branch": "codex/xing4-dynamic-eagle-startup-20261016"
   },
-  "qualification": "Request-static Xing fixed TP1 BF16/E4M3 page64 TRTMLA EAGLE3/1/4 non-kernel source/CPU candidate:17 dedicated cases,184 affected passes/10 explicit CUDA skips; independent source review closed the new cross-stream model-position lifetime finding. Prior60 patch bytes preserved. No dynamic image or GPU qualification.",
+  "qualification": "Startup-only repair atop RC5.4: real EAGLE target autotune/dummy CPU red1fail+1pass to green2pass/0skip; source review; prior17 dynamic and184 affected pass/10CUDA-skip evidence retained. Only runtime file base_runner.py. Image and real dynamic startup/remaining GPU acceptance are separate gates.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -763,6 +763,18 @@
         "reviewed_commit": "30300d021996ceb354ab8fb2b6d09ebf6dc74bcd",
         "reviewed_tree_equal": true,
         "scope": "Target/MTP per-profile RoPE scratch, verify/draft/extend positions and graph capture/replay, public budget and allocator stream lifetime; no kernel or KV namespace/lifecycle changes"
+      }
+    },
+    {
+      "id": "v0521-0062",
+      "path": "patches/models/xing4/0062-request-static-yarn-startup-dummy.patch",
+      "title": "Initialize short-profile model positions for request-static startup dummy",
+      "source_commit": "119e05e0ebb55c0fb324c493ea052f56b0e28350",
+      "source_parent": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
+      "result_tree": "10393a48efb1fed4c0bbc44671a208b8e9d5af21",
+      "sha256": "7f5675aa8db5f65c7f7a21763e8089098fc962e3e1e8a7fa5e3330d51ca02ee5",
+      "origin": {
+        "scope": "BaseRunner dummy constructor only; alias physical positions as short offset0 model positions when MLA request-static config is active, default None preserved; one two-case real target autotune regression; no kernel/model-function/graph or KV change"
       }
     }
   ],
