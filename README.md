@@ -27,6 +27,11 @@ reuses the deployed mcfix3 prefix and the qualified protocol source/dependency.
 It records its exact ordered selection without replacing the 49-step GGUF
 composition or including unqualified performance candidates.
 
+The [K3 feedback compatibility repair](versions/v0.5.21/K3-PROTOCOL2.md)
+extends that selection with qualified JSON/reference/parser and stream-lifecycle
+fixes. Its 19-step exact replay preserves the previous 15 entries once and
+leaves the shared integration and GGUF selections unchanged.
+
 The phala-v0.5.21-7 source maps the unchanged phala-6 prefix plus three GGUF
 increments to complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
 Its original build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;

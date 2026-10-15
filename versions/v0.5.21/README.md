@@ -1,5 +1,13 @@
 # SGLang 0.5.21 compatibility maintenance
 
+The [K3 feedback repair](K3-PROTOCOL2.md) extends the unchanged 15-entry
+protocol1 selection with four source-derived increments. Its
+[release selection](releases/phala-v0.5.21-3-k3protocol2.json) and
+[series](series.k3protocol2) replay 19 steps to complete engine
+`3b7091b271fe6b0d62d2f730f4ece18228591533`. Existing shared integration,
+GGUF stack and canonical patch bytes remain unchanged; the compatibility
+maintenance exception below continues to apply.
+
 The deployed mcfix3 [K3 protocol repair](K3-PROTOCOL1.md) preserves the canonical
 first eight patches and adds six qualified source commits plus exact-byte/image
 packaging. Its [release selection](releases/phala-v0.5.21-3-k3protocol1.json)

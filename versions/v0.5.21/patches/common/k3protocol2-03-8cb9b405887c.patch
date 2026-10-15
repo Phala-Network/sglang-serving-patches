@@ -1,0 +1,633 @@
+diff --git a/python/sglang/srt/constrained/json_schema_validation.py b/python/sglang/srt/constrained/json_schema_validation.py
+index d3d2391208cabbf2d1455e7424f7c12db8532396..90a80fbed029b1c6eafc3f77a907057784f7cf9a 100644
+--- a/python/sglang/srt/constrained/json_schema_validation.py
++++ b/python/sglang/srt/constrained/json_schema_validation.py
+@@ -1,7 +1,9 @@
+ """Detect JSON Schema constraints that grammar backends silently ignore."""
+ 
++import re
+ from collections.abc import Iterator
+ from typing import Any
++from urllib.parse import unquote
+ 
+ 
+ class UnsupportedJSONSchemaFeature(ValueError):
+@@ -96,6 +98,65 @@ def _escape_json_pointer(value: str) -> str:
+     return value.replace("~", "~0").replace("/", "~1")
+ 
+ 
++def resolve_local_json_pointer(ref: str, root_schema: Any) -> Any:
++    """Resolve one-resource pointers shared by preflight and K3 extraction."""
++    if ref == "":
++        ref = "#"
++    if (
++        not isinstance(ref, str)
++        or not ref.startswith("#")
++        or re.search(r"%(?![0-9A-Fa-f]{2})", ref)
++    ):
++        return None
++    try:
++        pointer = unquote(ref[1:], encoding="utf-8", errors="strict")
++    except UnicodeError:
++        return None
++    if not pointer:
++        return root_schema
++    if not pointer.startswith("/"):
++        return None
++    value = root_schema
++    location = "schema"
++    for part in pointer[1:].split("/"):
++        if (
++            location == "schema"
++            and isinstance(value, dict)
++            and value is not root_schema
++            and "$id" in value
++        ):
++            _raise_unsupported("xgrammar", ref, "nested $id resource scope is unsupported")
++        if re.search(r"~(?![01])", part):
++            return None
++        key = part.replace("~1", "/").replace("~0", "~")
++        if isinstance(value, dict) and key in value:
++            child = value[key]
++            if location == "schema_map":
++                location = "schema"
++            elif location == "schema":
++                if key in _SUBSCHEMA_MAP_KEYWORDS or key == "dependencies":
++                    location = "schema_map"
++                elif key in _SUBSCHEMA_ARRAY_KEYWORDS or (
++                    key == "items" and isinstance(child, list)
++                ):
++                    location = "schema_array"
++                elif key not in _SINGLE_SUBSCHEMA_KEYWORDS:
++                    location = "data"
++            else:
++                location = "data"
++            value = child
++        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", key):
++            if len(key) > len(str(len(value))) or int(key) >= len(value):
++                return None
++            value = value[int(key)]
++            location = "schema" if location == "schema_array" else "data"
++        else:
++            return None
++    if isinstance(value, dict) and value is not root_schema and "$id" in value:
++        _raise_unsupported("xgrammar", ref, "nested $id resource scope is unsupported")
++    return value if isinstance(value, (bool, dict)) else None
++
++
+ def _iter_subschemas(
+     schema: Any, pointer: str = "#", *, include_definitions: bool = True
+ ) -> Iterator[tuple[dict[str, Any], str]]:
+@@ -146,6 +207,26 @@ def _raise_unsupported(backend: str, pointer: str, reason: str) -> None:
+     )
+ 
+ 
++def _iter_referenced_subschemas(schema: Any) -> Iterator[tuple[dict[str, Any], str]]:
++    """Visit annotations only when a schema reference makes them active."""
++    pending = [(schema, "#")]
++    seen = set()
++    while pending:
++        root, pointer = pending.pop()
++        if id(root) in seen:
++            continue
++        for node, location in _iter_subschemas(root, pointer):
++            if id(node) in seen:
++                continue
++            seen.add(id(node))
++            yield node, location
++            ref = node.get("$ref")
++            if isinstance(ref, str):
++                target = resolve_local_json_pointer(ref, schema)
++                if isinstance(target, dict) and id(target) not in seen:
++                    pending.append((target, ref))
++
++
+ def _string_constraint_groups(schema: dict[str, Any]) -> list[str]:
+     groups = []
+     if "format" in schema:
+@@ -168,15 +249,16 @@ def _can_describe_string(schema: dict[str, Any]) -> bool:
+ 
+ def validate_local_json_reference_scope(schema: Any) -> None:
+     """The pinned converter supports one schema resource, not nested $id bases."""
+-    for subschema, pointer in _iter_subschemas(schema):
+-        if pointer != "#" and "$id" in subschema:
++    for subschema, pointer in _iter_referenced_subschemas(schema):
++        if subschema is not schema and "$id" in subschema:
+             _raise_unsupported("xgrammar", pointer, "nested $id resource scope is unsupported")
+ 
+ 
+ def validate_xgrammar_json_schema(schema: Any) -> None:
+     """Reject constraints XGrammar 0.2.x accepts without fully enforcing."""
+-    validate_local_json_reference_scope(schema)
+-    for subschema, pointer in _iter_subschemas(schema):
++    for subschema, pointer in _iter_referenced_subschemas(schema):
++        if subschema is not schema and "$id" in subschema:
++            _raise_unsupported("xgrammar", pointer, "nested $id resource scope is unsupported")
+         unsupported = sorted(_XGRAMMAR_UNSUPPORTED_KEYWORDS.intersection(subschema))
+         if subschema.get("uniqueItems") is False:
+             unsupported.remove("uniqueItems")
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 98bd90393082d48acff8165962331b8073203235..3c496adab1637f918c9813b8dfc995c7af8aecb9 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1047,8 +1047,22 @@ class OpenAIServingChat(OpenAIServingBase):
+         The reasoning parser is told the same thing, so channel-framed formats
+         keep their framing intact exactly when a tool-call parser consumes it.
+         """
++        response_format = request.response_format
++        # Match to_sampling_params: an explicit JSON constraint takes precedence
++        # over auto tool grammar. Its string data must not be parsed as tools.
++        constrained_json = response_format is not None and (
++            response_format.type == "json_object"
++            or (
++                response_format.type == "json_schema"
++                and (
++                    response_format.json_schema.strict is not False
++                    or self.chat_encoding_spec != "kimi_k3"
++                )
++            )
++        )
+         return bool(
+-            request.tool_choice != "none"
++            not constrained_json
++            and request.tool_choice != "none"
+             and self._effective_tools(request)
+             and self.tool_call_parser
+         )
+diff --git a/python/sglang/srt/function_call/kimik3_structural_tag.py b/python/sglang/srt/function_call/kimik3_structural_tag.py
+index 3ead1c68777881118d44c392cf136973989eb76a..7fb89d22a37e658af336660ccb607a48ce3d438d 100644
+--- a/python/sglang/srt/function_call/kimik3_structural_tag.py
++++ b/python/sglang/srt/function_call/kimik3_structural_tag.py
+@@ -1,7 +1,6 @@
+ import copy
+ import re
+ from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple, Union
+-from urllib.parse import unquote
+ 
+ from xgrammar import StructuralTag
+ from xgrammar.structural_tag import (
+@@ -25,6 +24,7 @@ from xgrammar.structural_tag import (
+ from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
+ from sglang.srt.constrained.json_schema_validation import (
+     _iter_subschemas,
++    resolve_local_json_pointer as _resolve_local_ref,
+     validate_local_json_reference_scope,
+ )
+ from sglang.srt.function_call.kimik3_format import (
+@@ -135,40 +135,6 @@ def _matches_json_type(value: Any, json_type: str) -> bool:
+     )
+ 
+ 
+-def _resolve_local_ref(
+-    ref: str, root_schema: Dict[str, Any]
+-) -> Optional[Union[bool, Dict[str, Any]]]:
+-    if ref == "":
+-        ref = "#"
+-    if not ref.startswith("#") or re.search(r"%(?![0-9A-Fa-f]{2})", ref):
+-        return None
+-    try:
+-        pointer = unquote(ref[1:], encoding="utf-8", errors="strict")
+-    except UnicodeError:
+-        return None
+-    if not pointer:
+-        return root_schema
+-    if not pointer.startswith("/"):
+-        return None
+-    value: Any = root_schema
+-    for part in pointer[1:].split("/"):
+-        if re.search(r"~(?![01])", part):
+-            return None
+-        key = part.replace("~1", "/").replace("~0", "~")
+-        if isinstance(value, dict) and key in value:
+-            value = value[key]
+-        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", key):
+-            # Compare length before int() to keep adversarial indices bounded.
+-            if len(key) > len(str(len(value))) or int(key) >= len(value):
+-                return None
+-            value = value[int(key)]
+-        else:
+-            return None
+-    if isinstance(value, (bool, dict)):
+-        return value
+-    return None
+-
+-
+ def _dereference_schema(
+     schema: Union[bool, Dict[str, Any]], root_schema: Dict[str, Any]
+ ) -> Union[bool, Dict[str, Any]]:
+diff --git a/test/registered/unit/kimi_feedback/test_argument_refs.py b/test/registered/unit/kimi_feedback/test_argument_refs.py
+index df2154065979f1a96f7da5f75369e6f36921ceb7..e293a95d792367ab04b91f800014b5bf29809763 100644
+--- a/test/registered/unit/kimi_feedback/test_argument_refs.py
++++ b/test/registered/unit/kimi_feedback/test_argument_refs.py
+@@ -1,14 +1,20 @@
+ """Synthetic root-scope and preflight checks; no request captures."""
+ import copy
+ import json
++
+ import pytest
+ import xgrammar as xgr
+ from xgrammar.testing import _is_grammar_accept_string
+-from sglang.srt.function_call.kimik3_structural_tag import (
+-    _argument_value_variants, _resolve_local_ref, _with_root_definitions,
+-)
++
+ from sglang.srt.constrained.json_schema_validation import (
+-    validate_xgrammar_json_schema, UnsupportedJSONSchemaFeature,
++    UnsupportedJSONSchemaFeature,
++    validate_local_json_reference_scope,
++    validate_xgrammar_json_schema,
++)
++from sglang.srt.function_call.kimik3_structural_tag import (
++    _argument_value_variants,
++    _resolve_local_ref,
++    _with_root_definitions,
+ )
+ 
+ def accepts(schema, value):
+@@ -133,3 +139,92 @@ def test_reference_scope_guard_ignores_instance_data():
+         schema={key:[value] if key in ('enum','examples') else value}
+         validate_local_json_reference_scope(schema)
+         validate_xgrammar_json_schema(schema)
++
++
++@pytest.mark.parametrize('location,ref', [
++    ('default', '#/default/target'), ('x-extra', '#/x-extra/target'),
++    ('examples', '#/examples/0'), ('default', '#%2Fdefault%2Ftarget'),
++])
++@pytest.mark.parametrize('target', [
++    {'type':'array','items':{'type':'integer'},'uniqueItems':True},
++    {'type':'integer','multipleOf':2},
++    {'type':'string','format':'email','pattern':'^x$'},
++])
++def test_referenced_annotation_constraints_are_preflighted(location,ref,target):
++    root={'$ref':ref,location:[target] if location=='examples' else {'target':target}}
++    with pytest.raises(UnsupportedJSONSchemaFeature):
++        validate_xgrammar_json_schema(root)
++
++
++def test_unreferenced_annotations_remain_instance_data():
++    target={'uniqueItems':True,'multipleOf':2,'$id':'data','$ref':'data'}
++    for location in ('default','examples','enum','const','x-extra'):
++        schema={location:[target] if location in ('examples','enum') else target}
++        validate_xgrammar_json_schema(schema)
++
++
++def test_valid_annotation_reference_keeps_native_constraints():
++    root={'$ref':'#/default/target','default':{'target':{'type':'integer'}}}
++    validate_xgrammar_json_schema(root)
++    assert accepts(root,3) and not accepts(root,'3')
++
++
++def test_consuming_annotation_reference_cycle_is_bounded():
++    root={'$ref':'#/default/node','default':{'node':{'anyOf':[
++        {'type':'null'}, {'type':'array','items':{'$ref':'#/default/node'}}]}}}
++    validate_xgrammar_json_schema(root)
++    assert accepts(root,[[None]]) and not accepts(root,[3])
++
++
++def test_annotation_reference_intermediate_id_remains_literal_data():
++    target = {"type": "integer", "minimum": 2}
++    root = {
++        "$ref": "#/default/inner/properties/value",
++        "default": {
++            "inner": {
++                "$id": "https://example.invalid/nested",
++                "properties": {"value": target},
++            }
++        },
++    }
++    assert _resolve_local_ref(root["$ref"], root) is target
++    validate_local_json_reference_scope(root)
++    validate_xgrammar_json_schema(root)
++    assert accepts(root, 2)
++    assert not accepts(root, 1)
++    assert not accepts(root, "2")
++
++
++@pytest.mark.parametrize("container", ["$defs", "properties"])
++def test_schema_map_member_named_id_keeps_native_constraints(container):
++    target = {"type": "integer", "minimum": 2}
++    root = {
++        "$ref": f"#/{container}/target",
++        container: {"$id": {"type": "string"}, "target": target},
++    }
++    assert _resolve_local_ref(root["$ref"], root) is target
++    validate_local_json_reference_scope(root)
++    validate_xgrammar_json_schema(root)
++    assert accepts(root, 2)
++    assert not accepts(root, 1)
++    assert not accepts(root, "2")
++
++
++def test_annotation_reference_target_own_id_is_refused():
++    root = {
++        "$ref": "#/default/target",
++        "default": {
++            "target": {
++                "$id": "https://example.invalid/target",
++                "type": "integer",
++            }
++        },
++    }
++    with pytest.raises(UnsupportedJSONSchemaFeature, match=r"nested \$id"):
++        _resolve_local_ref(root["$ref"], root)
++    with pytest.raises(UnsupportedJSONSchemaFeature, match=r"nested \$id"):
++        validate_local_json_reference_scope(root)
++    with pytest.raises(UnsupportedJSONSchemaFeature, match=r"nested \$id"):
++        validate_xgrammar_json_schema(root)
++    with pytest.raises(RuntimeError, match=r"Nested \$id schema resources"):
++        accepts(root, 2)
+diff --git a/test/registered/unit/kimi_feedback/test_k3_json_tools.py b/test/registered/unit/kimi_feedback/test_k3_json_tools.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..44ab99a734631ceca6a3c71820634f9c54ba0f27
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_k3_json_tools.py
+@@ -0,0 +1,288 @@
++"""Synthetic Chat HTTP entrypoint: a JSON constraint must own its output.
++
++Prompt rendering and engine generation are isolated CPU boundary doubles. The
++request's constraint selection, reasoning/tool parsers and JSON/SSE response
++builders are real. No model weights, sockets or native compilation are used.
++"""
++
++import asyncio
++import copy
++import json
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import httpx
++import pytest
++
++from sglang.srt.entrypoints.http_server import app
++from sglang.srt.entrypoints.openai import serving_chat as module
++from sglang.srt.function_call.function_call_parser import FunctionCallParser
++from sglang.srt.function_call.kimik3_format import (
++    ARGUMENT_CLOSE,
++    CALL_CLOSE,
++    MESSAGE_CLOSE,
++    RESPONSE_CLOSE,
++    RESPONSE_OPEN,
++    THINK_CLOSE,
++    TOOLS_CLOSE,
++    TOOLS_OPEN,
++)
++
++
++@pytest.fixture(autouse=True, params=[0, 2])
++def strict_level(request, monkeypatch):
++    monkeypatch.setenv("SGLANG_TOOL_STRICT_LEVEL", str(request.param))
++
++
++def _request(
++    native, *, stream, thinking, response_format=None, choice="auto",
++    reasoning_parser="kimi_k3", encoding_spec="kimi_k3",
++):
++    state = {"generated": 0, "closed": False}
++    serving = object.__new__(module.OpenAIServingChat)
++    serving.tool_call_parser = "kimi_k3"
++    serving.reasoning_parser = reasoning_parser
++    serving.chat_encoding_spec = encoding_spec
++    # A template default must not override the request's thinking=False.
++    serving.template_manager = SimpleNamespace(force_reasoning=True)
++    serving._get_reasoning_from_request = lambda request: thinking
++    serving._validate_request = lambda request: None
++
++    def convert(request, raw_request):
++        parser = FunctionCallParser(
++            request.tools, "kimi_k3", tokenizer=None, tool_choice=request.tool_choice
++        )
++        constraint = parser.get_structure_constraint(
++            request.tool_choice, thinking_mode=False
++        )
++        state["sampling_params"] = request.to_sampling_params(
++            stop=[],
++            model_generation_config={},
++            tool_call_constraint=constraint,
++            renderer_handles_response_format=encoding_spec == "kimi_k3",
++        )
++        return SimpleNamespace(), request
++
++    serving._convert_to_internal_request = convert
++    generators = []
++
++    async def generate(*args):
++        try:
++            # Cumulative engine text split inside markers and JSON escapes.
++            ends = range(1, len(native) + 1) if stream else (len(native),)
++            for end in ends:
++                state["generated"] += 1
++                yield {
++                    "text": native[:end],
++                    "index": 0,
++                    "meta_info": {
++                        "id": "chatcmpl-synthetic-k3-json-tools",
++                        "prompt_tokens": 13,
++                        "completion_tokens": end,
++                        "cached_tokens": 0,
++                        "finish_reason": {"type": "stop", "matched": None}
++                        if end == len(native)
++                        else None,
++                        "weight_version": "synthetic",
++                    },
++                }
++        finally:
++            state["closed"] = True
++
++    def generate_request(*args):
++        generator = generate(*args)
++        generators.append(generator)
++        return generator
++
++    serving.tokenizer_manager = SimpleNamespace(
++        tokenizer=None,
++        request_logger=SimpleNamespace(log_requests=False),
++        generate_request=generate_request,
++        create_abort_task=lambda request: None,
++    )
++    body = {
++        "model": "synthetic",
++        "messages": [{"role": "user", "content": "synthetic"}],
++        "tools": [{"type": "function", "function": {
++            "name": "fixture",
++            "strict": True,
++            "parameters": {
++                "type": "object", "properties": {"x": {"const": 7}},
++                "required": ["x"], "additionalProperties": False,
++            },
++        }}],
++        "tool_choice": choice,
++        "stream": stream,
++    }
++    if response_format is not None:
++        body["response_format"] = copy.deepcopy(response_format)
++    config = SimpleNamespace(
++        incremental_streaming_output=False,
++        stream_response_default_include_usage=False,
++        enable_cache_report=False,
++        return_input_ids=False,
++        return_output_ids=False,
++    )
++
++    async def round_trip():
++        transport = httpx.ASGITransport(app=app)
++        try:
++            async with httpx.AsyncClient(
++                transport=transport, base_url="http://synthetic"
++            ) as client:
++                return await client.post("/v1/chat/completions", json=body)
++        finally:
++            for generator in generators:
++                await generator.aclose()
++
++    with (
++        patch.object(app.state, "openai_serving_chat", serving, create=True),
++        patch.object(module, "get_serving", return_value=config),
++    ):
++        return asyncio.run(round_trip()), state
++
++
++def _events(response):
++    assert response.status_code == 200
++    data = [line[6:] for line in response.text.splitlines() if line.startswith("data: ")]
++    assert data.count("[DONE]") == 1 and data[-1] == "[DONE]"
++    events = [json.loads(item) for item in data[:-1]]
++    assert not any("error" in event for event in events)
++    return events
++
++
++def _format(kind, strict=None):
++    if kind == "json_object":
++        return {"type": kind}
++    schema = {"name": "fixture", "schema": {"type": "object"}}
++    if strict is not None:
++        schema["strict"] = strict
++    return {"type": "json_schema", "json_schema": schema}
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize("thinking", [False, True])
++@pytest.mark.parametrize("kind,strict", [
++    ("json_object", None), ("json_schema", True), ("json_schema", None),
++])
++def test_auto_tools_do_not_reparse_constrained_json(stream, thinking, kind, strict):
++    value = {"text": " ".join((
++        RESPONSE_OPEN, RESPONSE_CLOSE, MESSAGE_CLOSE, TOOLS_OPEN, TOOLS_CLOSE,
++        THINK_CLOSE, 'escaped " and slash \\ and Unicode é',
++    ))}
++    native = (
++        ("reasoning" + THINK_CLOSE if thinking else "") + RESPONSE_OPEN
++        + json.dumps(value, ensure_ascii=False) + RESPONSE_CLOSE + MESSAGE_CLOSE
++    )
++    response, state = _request(
++        native, stream=stream, thinking=thinking, response_format=_format(kind, strict)
++    )
++    assert response.status_code == 200
++    assert state["sampling_params"].get("json_schema") is not None
++    assert state["sampling_params"].get("structural_tag") is None
++    if stream:
++        choices = [choice for event in _events(response) for choice in event.get("choices", [])]
++        text = "".join(choice.get("delta", {}).get("content") or "" for choice in choices)
++        reasoning = "".join(choice.get("delta", {}).get("reasoning_content") or "" for choice in choices)
++        assert not any(choice.get("delta", {}).get("tool_calls") for choice in choices)
++        assert [choice["finish_reason"] for choice in choices if choice.get("finish_reason")] == ["stop"]
++    else:
++        choice = response.json()["choices"][0]
++        text = choice["message"]["content"]
++        reasoning = choice["message"].get("reasoning_content") or ""
++        assert not choice["message"].get("tool_calls")
++        assert choice["finish_reason"] == "stop"
++    assert json.loads(text) == value
++    assert reasoning == ("reasoning" if thinking else "")
++    assert state["closed"]
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize("thinking", [False, True])
++@pytest.mark.parametrize("response_format", [None, _format("json_schema", False)])
++def test_plain_and_strict_false_keep_tool_parser(stream, thinking, response_format):
++    native = (
++        ("reasoning" + THINK_CLOSE if thinking else "") + TOOLS_OPEN
++        + '<|open|>call tool="fixture" index="1"<|sep|>'
++        + '<|open|>argument key="x" type="number"<|sep|>7' + ARGUMENT_CLOSE
++        + CALL_CLOSE + TOOLS_CLOSE + MESSAGE_CLOSE
++    )
++    response, state = _request(
++        native, stream=stream, thinking=thinking, response_format=response_format
++    )
++    assert response.status_code == 200
++    assert state["sampling_params"].get("json_schema") is None
++    assert state["sampling_params"].get("structural_tag") is not None
++    if stream:
++        choices = [choice for event in _events(response) for choice in event.get("choices", [])]
++        calls = [call for choice in choices for call in choice.get("delta", {}).get("tool_calls") or []]
++        arguments = "".join(call["function"].get("arguments") or "" for call in calls)
++        assert [call["function"].get("name") for call in calls if call["function"].get("name")] == ["fixture"]
++        assert [choice["finish_reason"] for choice in choices if choice.get("finish_reason")] == ["tool_calls"]
++    else:
++        choice = response.json()["choices"][0]
++        calls = choice["message"]["tool_calls"]
++        assert len(calls) == 1 and calls[0]["function"]["name"] == "fixture"
++        arguments = calls[0]["function"]["arguments"]
++        assert choice["finish_reason"] == "tool_calls"
++    assert json.loads(arguments) == {"x": 7}
++    assert state["closed"]
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize("choice", ["required", {"type": "function", "function": {"name": "fixture"}}])
++def test_required_json_conflict_is_rejected_before_generation(stream, choice):
++    response, state = _request(
++        "unused", stream=stream, thinking=False,
++        response_format=_format("json_object"), choice=choice,
++    )
++    assert response.status_code == 400
++    assert state["generated"] == 0
++
++
++@pytest.mark.parametrize("stream", [False, True])
++@pytest.mark.parametrize("kind,strict", [
++    ("json_object", None), ("json_schema", True), ("json_schema", None),
++])
++def test_constrained_json_without_reasoning_parser(stream, kind, strict):
++    value = {"text": TOOLS_OPEN + RESPONSE_CLOSE}
++    response, state = _request(
++        json.dumps(value), stream=stream, thinking=False, reasoning_parser=None,
++        response_format=_format(kind, strict),
++    )
++    assert response.status_code == 200
++    assert state["sampling_params"].get("json_schema") is not None
++    if stream:
++        choices = [choice for event in _events(response) for choice in event.get("choices", [])]
++        text = "".join(choice.get("delta", {}).get("content") or "" for choice in choices)
++        assert not any(choice.get("delta", {}).get("tool_calls") for choice in choices)
++        assert [choice["finish_reason"] for choice in choices if choice.get("finish_reason")] == ["stop"]
++    else:
++        choice = response.json()["choices"][0]
++        text = choice["message"]["content"]
++        assert not choice["message"].get("tool_calls")
++        assert choice["finish_reason"] == "stop"
++    assert json.loads(text) == value
++    assert state["closed"]
++
++
++@pytest.mark.parametrize("stream", [False, True])
++def test_strict_false_remains_constrained_without_k3_renderer(stream):
++    value = {"text": TOOLS_OPEN + RESPONSE_CLOSE}
++    response, state = _request(
++        json.dumps(value), stream=stream, thinking=False, reasoning_parser=None,
++        encoding_spec=None, response_format=_format("json_schema", False),
++    )
++    assert response.status_code == 200
++    assert state["sampling_params"].get("json_schema") is not None
++    assert state["sampling_params"].get("structural_tag") is None
++    if stream:
++        choices = [choice for event in _events(response) for choice in event.get("choices", [])]
++        text = "".join(choice.get("delta", {}).get("content") or "" for choice in choices)
++        assert not any(choice.get("delta", {}).get("tool_calls") for choice in choices)
++    else:
++        choice = response.json()["choices"][0]
++        text = choice["message"]["content"]
++        assert not choice["message"].get("tool_calls")
++    assert json.loads(text) == value
++    assert state["closed"]

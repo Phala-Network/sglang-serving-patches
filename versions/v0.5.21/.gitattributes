@@ -1,0 +1,4 @@
+patches/common/k3protocol2-01-3cc1c8b808b5.patch -text -whitespace
+patches/common/k3protocol2-02-41d888af8959.patch -text -whitespace
+patches/common/k3protocol2-03-8cb9b405887c.patch -text -whitespace
+patches/build/k3protocol2-04-3b7091b271fe.patch -text -whitespace

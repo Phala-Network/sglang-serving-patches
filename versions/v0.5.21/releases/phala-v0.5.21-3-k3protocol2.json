@@ -1,0 +1,300 @@
+{
+  "schema": "phala.sglang.unified-stack.v1",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.21",
+    "commit": "e00930c5489053f26d86b179cee0d087f846acbb"
+  },
+  "engine": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "commit": "3b7091b271fe6b0d62d2f730f4ece18228591533",
+    "tree": "d24d3c9cf23dbb45a38d4dc7c8431d299afbb187",
+    "branch": "codex/kimi-feedback-release-20261015",
+    "tag": "phala-v0.5.21-3-k3protocol2"
+  },
+  "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+  "unchanged_canonical_prefix_count": 8,
+  "unchanged_k3protocol1_prefix_count": 15,
+  "series": "series.k3protocol2",
+  "patches": [
+    {
+      "id": "v0521-0001",
+      "path": "patches/common/0001-request-lifecycle.patch",
+      "title": "Fix stream, request-owner and health-probe cleanup",
+      "source_commit": "da3f3d730257db2d2e012f989db937689f039170",
+      "source_parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "result_tree": "d886d53a8c983096fb534a392ff52db7774dfe9d",
+      "sha256": "d84e6b9696b38479bd4cbcb65b018a22c6a2caf084587490000d57ac411a4c47"
+    },
+    {
+      "id": "v0521-0002",
+      "path": "patches/common/0002-hybrid-storage.patch",
+      "title": "Preserve common hybrid restore endpoints and batch Mooncake operations",
+      "source_commit": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "source_parent": "da3f3d730257db2d2e012f989db937689f039170",
+      "result_tree": "24360137a1cd3caf4d2daa3b88e857e307d382bb",
+      "sha256": "757a5bbbfd92508027d93c985db8b3de05f5f2881be1592cc58607795d43039c"
+    },
+    {
+      "id": "v0521-0003",
+      "path": "patches/models/kimi/0003-tokenizer.patch",
+      "title": "Backport Kimi tokenizer fast path with ID equivalence regressions",
+      "source_commit": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "source_parent": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "result_tree": "7f1dc3232abccd92e74ef0950e17c158e36352af",
+      "sha256": "6e82b587c3dddb9329f681ae008ee34b6ade39a2c72986c5a1904b28e1849825"
+    },
+    {
+      "id": "v0521-0004",
+      "path": "patches/models/kimi/0004-prefill-graphs.patch",
+      "title": "Gate prefill replay by sequence length and allow eager Kimi MLA",
+      "source_commit": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "source_parent": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "result_tree": "766c0c14a146a2da632a1293f497265778b9d40e",
+      "sha256": "3f1201a1e209ee72f3bbc2f51a8033695590aa7a07fd6b911ee730668522a76d"
+    },
+    {
+      "id": "v0521-0005",
+      "path": "patches/common/0005-fp8-prefix.patch",
+      "title": "Backport fused FP8 prefix commits with rounding-preserving fallbacks",
+      "source_commit": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "source_parent": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "result_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
+      "sha256": "782cb4ff7125535ec7bf926a3314ffcb36f2a0728b15f4dbc430ed0fb5be4781"
+    },
+    {
+      "id": "v0521-0006",
+      "path": "patches/common/0006-mamba-checkpoint-pressure.patch",
+      "title": "Keep running Mamba requests alive when optional checkpoints cannot allocate",
+      "source_commit": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+      "source_parent": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "result_tree": "ad6292d842a447fbab23b031e7b119b918bf9de5",
+      "sha256": "45435ffd8250d95ae8e4c1d52b106e2ddc6e50a8d88890cb3238f1300b2df56c"
+    },
+    {
+      "id": "v0521-0007",
+      "path": "patches/common/0007-mamba-live-admission.patch",
+      "title": "fix: backpressure and atomically allocate initial Mamba states",
+      "source_commit": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
+      "source_parent": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+      "result_tree": "e3bafd61cc07e37a1bef569f57dcee64b1d31b19",
+      "sha256": "587a24998323d9a45d913cb7d358fe7490a91f25ecc133c5cb102ceba99fd1be"
+    },
+    {
+      "id": "v0521-0008",
+      "path": "patches/common/0008-mamba-load-back-reservation.patch",
+      "title": "fix: reserve batch Mamba states across HiCache load-back",
+      "source_commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "source_parent": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
+      "result_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
+      "sha256": "1545d7a4906e317f13ce0baa1e0633317fb33452e6802ec8c796956f75eaab12"
+    },
+    {
+      "id": "v0521-k3protocol1-01",
+      "path": "patches/models/kimi/k3protocol1-01-string-close-boundary.patch",
+      "title": "Stop Kimi-K3 free-text string arguments at their own close marker",
+      "source_commit": "8a5348ca91eb4215cdf5bf17a7cd2ec148171662",
+      "source_parent": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "result_tree": "1eed21c6a70573302402f28681a6bc506d009f9c",
+      "sha256": "ef349e7b34ad92dc193e4f35c78a8cf484dfd232cfec82d7ea1ec351ffd82eaf"
+    },
+    {
+      "id": "v0521-k3protocol1-02",
+      "path": "patches/models/kimi/k3protocol1-02-declared-property-ownership.patch",
+      "title": "Keep declared Kimi-K3 properties out of the additionalProperties branch",
+      "source_commit": "0196efb29e757d31c7df3500aa71fb332289a0df",
+      "source_parent": "8a5348ca91eb4215cdf5bf17a7cd2ec148171662",
+      "result_tree": "8fb08607a56d5a5e827ac87b30d9d5b89ca496a4",
+      "sha256": "9ec10a2e32ac4d0adf91a7a8a048b7ec537da538b9a9b6364883dc53be1b3ecc"
+    },
+    {
+      "id": "v0521-k3protocol1-03",
+      "path": "patches/models/kimi/k3protocol1-03-constraint-construction-fail-closed.patch",
+      "title": "fix: fail closed on Kimi K3 constraint construction",
+      "source_commit": "13bd9c7352d0fb4d0c180b38e27c40227e54a439",
+      "source_parent": "0196efb29e757d31c7df3500aa71fb332289a0df",
+      "result_tree": "b3989d7b0d283175df170501411a7b625312014b",
+      "sha256": "ae4e154ca3baca68e867149916978f05e557eb2f441e747a877d0d2f7c9b2d72"
+    },
+    {
+      "id": "v0521-k3protocol1-04",
+      "path": "patches/models/kimi/k3protocol1-04-server-strict-level.patch",
+      "title": "fix: honor server strict level in Kimi constraint failure guard",
+      "source_commit": "7e471c366abc6ffcbc3e670d2fa78ab8d5d09ea3",
+      "source_parent": "13bd9c7352d0fb4d0c180b38e27c40227e54a439",
+      "result_tree": "1904bf8132580030ccd66d14cd26275b17e75d59",
+      "sha256": "ab0afbcb2d476a373b8b44062a3b7076308f94b3820a22a2b62d9a0130dd347b"
+    },
+    {
+      "id": "v0521-k3protocol1-05",
+      "path": "patches/models/kimi/k3protocol1-05-root-reference-and-constraint-safety.patch",
+      "title": "fix(kimi-k3): preserve root references and reject lossy constraints",
+      "source_commit": "ab42aef8e3200273d1451f816f44e69a015de4e7",
+      "source_parent": "7e471c366abc6ffcbc3e670d2fa78ab8d5d09ea3",
+      "result_tree": "a8802ded635484e3a3b124c5d00b81afd1b24c0b",
+      "sha256": "49af5ad3d5187a6319c044a4695678356bb439b223e50558ef1923f5ee32e175"
+    },
+    {
+      "id": "v0521-k3protocol1-06",
+      "path": "patches/models/kimi/k3protocol1-06-values-and-response-boundaries.patch",
+      "title": "fix(kimi-k3): preserve constrained tool values and response boundaries",
+      "source_commit": "dfbdb81c0711575763d5ed26d04b0dd7e498faf0",
+      "source_parent": "ab42aef8e3200273d1451f816f44e69a015de4e7",
+      "result_tree": "bfdf87c2d274f8b8f7d0ad767bd09feca81ae466",
+      "sha256": "7f071c8436f330d22777f9fcb811dc253e301296ea39110b6034f58a667914f4"
+    },
+    {
+      "id": "v0521-k3protocol1-07",
+      "path": "patches/build/k3protocol1-07-qualified-byte-freeze-and-image-inputs.patch",
+      "title": "release(kimi-k3): freeze qualified protocol repair and image inputs",
+      "source_commit": "350852e6b384c1881431b0e8ec59e73cd5be3107",
+      "source_parent": "dfbdb81c0711575763d5ed26d04b0dd7e498faf0",
+      "result_tree": "ef9cef2c85ab76e55e5d49d43cc2359a21addf30",
+      "sha256": "f3c51ae8522e68f2cdb1a66b81eb1e39b0d5523f032f4bfcdbc75f88b4e6189c"
+    },
+    {
+      "id": "v0521-k3protocol2-01",
+      "path": "patches/common/k3protocol2-01-3cc1c8b808b5.patch",
+      "title": "Fix Kimi JSON boundaries, reference scope and streaming failure outcomes",
+      "source_commit": "3cc1c8b808b51ce636e7251d63e0f529b52487db",
+      "source_parent": "350852e6b384c1881431b0e8ec59e73cd5be3107",
+      "result_tree": "34cc404840135ede2767a755a144d2ccaa9931cf",
+      "sha256": "da332dcc1ae7d15a0524ae9c30e4f99b61358474d1ef20224c6d6e875849861a"
+    },
+    {
+      "id": "v0521-k3protocol2-02",
+      "path": "patches/common/k3protocol2-02-41d888af8959.patch",
+      "title": "Optimize K3 JSON parsing and stop success metadata after stream abort",
+      "source_commit": "41d888af89596321e683ab603dee3e563061b8a8",
+      "source_parent": "3cc1c8b808b51ce636e7251d63e0f529b52487db",
+      "result_tree": "47bcbed1ffa58e4d3dc1aaea35232e4f61de1a11",
+      "sha256": "f1b744ce423b5856e090308511ae7fde70bcfcb27043ce1ac4c64c596e5af2c0"
+    },
+    {
+      "id": "v0521-k3protocol2-03",
+      "path": "patches/common/k3protocol2-03-8cb9b405887c.patch",
+      "title": "fix(kimi): validate referenced schemas and preserve constrained JSON with tools",
+      "source_commit": "8cb9b405887c7c7660e6863c345f12c2f8b2eea5",
+      "source_parent": "41d888af89596321e683ab603dee3e563061b8a8",
+      "result_tree": "d7101e799b4d0c2c77de6a0ab2992d6a8f2ca0e9",
+      "sha256": "3f77caf4bb659eade84092ffd4fba101f6d0a1c8ade63617c940bdb29c1817db"
+    },
+    {
+      "id": "v0521-k3protocol2-04",
+      "path": "patches/build/k3protocol2-04-3b7091b271fe.patch",
+      "title": "build: freeze Kimi protocol2 runtime and native grammar provenance",
+      "source_commit": "3b7091b271fe6b0d62d2f730f4ece18228591533",
+      "source_parent": "8cb9b405887c7c7660e6863c345f12c2f8b2eea5",
+      "result_tree": "d24d3c9cf23dbb45a38d4dc7c8431d299afbb187",
+      "sha256": "13580c690ca1b02855969a28762c40c7875fac550c2cf9b54421a48b1a8c9efc"
+    }
+  ],
+  "scope": "Existing unified v0.5.21 compatibility-maintenance selection: preserve the K3 protocol1 prefix once, then append qualified shared schema/parser/lifecycle source changes and image packaging. Shared v0.5.20 and GGUF selections remain unchanged.",
+  "base_image": "ghcr.io/phala-network/sglang:v0.5.21-phala-3-k3protocol1@sha256:31d5b201dd88b46210b13cee50d87d328aff2c41432beb5e897a5d478b3874f4",
+  "base_serving_patches_commit": "86b9925e120847c93fe2d4149ff09c09e873e05b",
+  "product_files": [
+    {
+      "path": "python/sglang/srt/constrained/reasoner_grammar_backend.py",
+      "sha256": "fd973c633f33c62e6ed4c15173ab6a42a87a0bb1ff0bc2ea4b4f0e3563c36cd6",
+      "size": 28723
+    },
+    {
+      "path": "python/sglang/srt/constrained/kimik3_json_schema.py",
+      "sha256": "e9b656ac9adf74a39fd5ceb33123bf739d0c9a4f06b89f0f49e56c1e831eb75f",
+      "size": 2207
+    },
+    {
+      "path": "python/sglang/srt/constrained/json_schema_validation.py",
+      "sha256": "484cf7b602f3fac47b2b8649b5a8673878507a5490f1fb732dfeb870143899cf",
+      "size": 12368
+    },
+    {
+      "path": "python/sglang/srt/function_call/kimik3_structural_tag.py",
+      "sha256": "3d57374443c690415666ee63e7dd148384958f5523d1fab0bf11df05d302eb69",
+      "size": 27852
+    },
+    {
+      "path": "python/sglang/srt/entrypoints/openai/serving_chat.py",
+      "sha256": "e21c1d61f79a309388439653be6b03a77622587f27502cdb4f3f526cc7c3ae3b",
+      "size": 151222
+    },
+    {
+      "path": "python/sglang/srt/entrypoints/openai/serving_responses.py",
+      "sha256": "6d9ef84f4e34a0c77f95681ab52c1768ab700e7d85dc6ec9cedfde50e7c4dd28",
+      "size": 116085
+    },
+    {
+      "path": "python/sglang/srt/parser/reasoning_parser.py",
+      "sha256": "819a01c1845560889b91d4101037ad1f7ccec48703289b0cc62cbaf070bb6572",
+      "size": 104229
+    }
+  ],
+  "qualified_product_commit": "8cb9b405887c7c7660e6863c345f12c2f8b2eea5",
+  "qualification_references": [
+    {
+      "name": "prerelease-final-result.json",
+      "sha256": "a2369e4acff5246585efc0e6b030e3f4cbaf2a8945675646f3eb23be86cc9cf5"
+    }
+  ],
+  "mooncake_commit": "2214a3ca04e165ced3cab3cf604918d2ec22ed0f",
+  "governor": "Existing separately pinned external PIG; no embedded Governor or PIG change in this image.",
+  "xgrammar": {
+    "version": "0.2.6rc2+phala.feedback.20261015.p3",
+    "upstream_repository": "https://github.com/mlc-ai/xgrammar",
+    "upstream_tag": "v0.2.6rc2",
+    "upstream_commit": "8d9679cc4b2b7eb314f7840fbf3989e2a989f880",
+    "source_commit": "da0ecfb3a758c23650a9bbcc59b7ec15873f9c91",
+    "source_tree": "6c1105e4bfd75fa91d8a04b9f8d06019700cbc8c",
+    "patch": "xgrammar/native-source.patch",
+    "patch_sha256": "f63d313b26ac64c85eee184b37682570e2b08300608b66957bd4cadd32d39d11",
+    "source_replay_verified": true,
+    "notices": {
+      "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "NOTICE": "769c6907073c65801bfcfe3ce1c0e80bf0ae4e124e2769d4f026c038ad583c0f"
+    },
+    "wheel_asset": "xgrammar-0.2.6rc2+phala.feedback.20261015.p3-cp312-cp312-linux_x86_64.whl",
+    "wheel_sha256": "5235045af2d459f260d4e85fb3632631de858d91bbeec17adc2e75f21992956a",
+    "wheel_bytes": 1489972,
+    "wheel_package_members": {
+      "xgrammar/__init__.py": "1ed05da12db21c4aeb36daa1fd1c6b70bc5d8ffb45cdabbbf384c60c8b04ac43",
+      "xgrammar/base.py": "889935d4e0dd8b1fdafa008a21c69c8eb08f06bb55f1e37227a26d2f41c1f70e",
+      "xgrammar/builtin_structural_tag.py": "8ac13f9ed53d012859e88479123d73554a1197f32c7887e216fd66535c4384c8",
+      "xgrammar/compiler.py": "67e2154127ac14c7f9afde0761755124f2a981f7b0c5a11a1fb96092b6fd109c",
+      "xgrammar/config.py": "a5e71e4e2a2fd7908611d6d31031432993d656f39cdfbcff2563b7ffbea92640",
+      "xgrammar/contrib/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "xgrammar/contrib/hf.py": "7bb8c3853a94daacc51aff867d170c28e500ebef00095fc687962e7b2a9a37bf",
+      "xgrammar/contrib/mlxlm.py": "608c1f724144ce59a743220dabda21734edacec4263e6fa5e3b2a578d00bdb6e",
+      "xgrammar/exception.py": "3c3baeea3855169cb50d5312bf93d389c2df9a58ce67181a1687bd9a6431cf62",
+      "xgrammar/grammar.py": "2a26827c5cfbaa1e6625b3732e49d0bb3a8d790df288bfb66a73a7d118c9045d",
+      "xgrammar/kernels/__init__.py": "46675d969427ce7c2e47886b6575c8f9ad0fcb99b497213250a0812e7b449da5",
+      "xgrammar/kernels/apply_token_bitmask_inplace_cpu.py": "0d9dd747303b877bea069e9147344282a1da15ebe654320593dbc46e6210b6fc",
+      "xgrammar/kernels/apply_token_bitmask_inplace_cuda.cu": "91805d13f404e4668c48051432719cd88b84c0630403ca2c657a0905d4d145b6",
+      "xgrammar/kernels/apply_token_bitmask_inplace_cuda.py": "d890d4a5d967b726dab4b503d6774ccd337d0d69e35e781836db848616379626",
+      "xgrammar/kernels/apply_token_bitmask_inplace_torch.py": "14956986896b0efc52cbce893a098e6bbed4d75561918014abef308147f9ae6c",
+      "xgrammar/kernels/apply_token_bitmask_inplace_torch_compile.py": "a8274a98f934e5506ed4933ca82aab3ce94972575c9c302224a2dba8a206f204",
+      "xgrammar/kernels/apply_token_bitmask_inplace_triton.py": "3e517df264f70884203c9907e7ea191bfa146adc3d7b36c440128cd611260e22",
+      "xgrammar/kernels/apply_token_bitmask_mlx.py": "e563c82fa8650c4295b76c8bce49a90d978d65e2bcc0b3ba42808eb0d90e5d00",
+      "xgrammar/libxgrammar_bindings.so": "b1fa9fb58179fa49cb6cd25690a9c53cfb15391f9c6481fa146ac133289c847a",
+      "xgrammar/load_binding.py": "f35966016b2efff541b81ed94d8e74201e9b5c325bf043396974d22d99964d4d",
+      "xgrammar/matcher.py": "33159a0994724cc186203eb8d2792cf66d9df9197029632bbc674852dcb50990",
+      "xgrammar/openai_tool_call_schema.py": "81f2de14005133b298f5969268bfc6b1b94d0810cf5e9f0dab4e1fabb9cbb58c",
+      "xgrammar/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "xgrammar/structural_tag.py": "5495d4b2ed22d1e5a9471eea04cca47804f89be39d1a5590d738374412f80893",
+      "xgrammar/testing.py": "30ae431fea2b76c289e67ca7d32bca36bf7cc8af6bb7723feedfbfc9536332d8",
+      "xgrammar/tokenizer_info.py": "b6efbd2103e39c980f7660543b998adb504e306b7dd67aae5a9d0e89284a4b28",
+      "xgrammar/tvm_ffi_binding/__init__.py": "153d446f150093172f8364468a7f3a09716e22eaf2282c469d40da9699181cd4",
+      "xgrammar/tvm_ffi_binding/_ffi_api.py": "2e5ed586f8c410df4343c3f90b9135708f53c0ca7a4d1a60af50134b541c84d6",
+      "xgrammar/tvm_ffi_binding/config/__init__.py": "615e9623d99c0144801950646f35c92ca84019e859c126aa13436d6cfc792d02",
+      "xgrammar/tvm_ffi_binding/config/_ffi_api.py": "db5b24e5e5bd99fbae507e1a63182a2cd56d4dfb2d8b466fbbcae1deed87996c",
+      "xgrammar/tvm_ffi_binding/kernels/__init__.py": "c7038a1ee259b3531cfd8798ba062b2273d433db3c62db89dea3975145a4d64f",
+      "xgrammar/tvm_ffi_binding/kernels/_ffi_api.py": "39e8de26835da5d1c1d1e70390e8d914ec93733ffa2232cca2ddc325116c11fd",
+      "xgrammar/tvm_ffi_binding/testing/__init__.py": "a78697f4d44872d2eb7f1ebddfb0769c3c479522c55704f7d75c9eafffe62f50",
+      "xgrammar/tvm_ffi_binding/testing/_ffi_api.py": "645c6416b3b86d82c13a9351fb906ff77ab698748be0194d88e5f90e2d2262af",
+      "xgrammar/tvm_ffi_binding/testing/grammar_functor/__init__.py": "ef6966198e61297b7d65fabc99f1e74f580e662c3d9b4689d75edfac201deefd",
+      "xgrammar/tvm_ffi_binding/testing/grammar_functor/_ffi_api.py": "c85be1c82504bc2d37ee6e0165103c7989dcd007fe1e6de417833a666cff94ea"
+    },
+    "artifact_policy": "Install this already tested wheel without rebuilding and without dependency resolution. Source replay is not a byte-reproducible wheel claim.",
+    "source_patch_root": "https://github.com/Phala-Network/sglang/tree/3b7091b271fe6b0d62d2f730f4ece18228591533/docker/phala/kimi-protocol2",
+    "wheel_release": "https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-3-k3protocol2"
+  }
+}
