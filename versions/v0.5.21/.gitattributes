@@ -4,3 +4,5 @@ patches/common/k3protocol2-03-8cb9b405887c.patch -text -whitespace
 patches/build/k3protocol2-04-3b7091b271fe.patch -text -whitespace
 patches/common/k3protocol3-01-18a023124fbf.patch -text -whitespace
 patches/build/k3protocol3-02-2d50d344eeb2.patch -text -whitespace
+patches/build/k3protocol3-03-80ea17f6afbc.patch -text -whitespace
+patches/build/k3protocol3-04-83b5988844dc.patch -text -whitespace

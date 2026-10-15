@@ -7,8 +7,8 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "2d50d344eeb256200d9d2142a6dfe5dd5be95c35",
-    "tree": "e215b7f6d190c520ed1e75599fc7109510f1f8c3",
+    "commit": "83b5988844dc7e7e6dd907ef4c5553d8d3c3c303",
+    "tree": "e936fef5d5be3326ca175b7bb5b55738fc8ff3df",
     "branch": "codex/kimi-protocol3-repair",
     "tag": "phala-v0.5.21-3-k3protocol3"
   },
@@ -205,6 +205,24 @@
       "source_parent": "18a023124fbfe36316bfee76794037d94ea776a5",
       "result_tree": "e215b7f6d190c520ed1e75599fc7109510f1f8c3",
       "sha256": "94db110be251799722616009bcb081666d79470338b60c72206144ccf0ee311f"
+    },
+    {
+      "id": "v0521-k3protocol3-03",
+      "path": "patches/build/k3protocol3-03-80ea17f6afbc.patch",
+      "title": "build(kimi): combine verified overlays to stay within image layer depth",
+      "source_commit": "80ea17f6afbc8999e4d6b1cb78bc592fafda5b9e",
+      "source_parent": "2d50d344eeb256200d9d2142a6dfe5dd5be95c35",
+      "result_tree": "8a847443a0df6a32f610ce610b75267fe5dbda9e",
+      "sha256": "b501cb0c06f31e0e6b7c61ed61eeee2d28e71c2558c7ea17518462a725fa0d1a"
+    },
+    {
+      "id": "v0521-k3protocol3-04",
+      "path": "patches/build/k3protocol3-04-83b5988844dc.patch",
+      "title": "build(kimi): label the actual engine and Mooncake revisions",
+      "source_commit": "83b5988844dc7e7e6dd907ef4c5553d8d3c3c303",
+      "source_parent": "80ea17f6afbc8999e4d6b1cb78bc592fafda5b9e",
+      "result_tree": "e936fef5d5be3326ca175b7bb5b55738fc8ff3df",
+      "sha256": "f374d11a0696124ea85e233d8201406b09e76c1e8b2dff9b2465092f1ddfba5f"
     }
   ],
   "scope": "Existing unified v0.5.21 compatibility-maintenance selection: preserve the complete K3 protocol2 prefix once, then append qualified shared schema/parser/lifecycle source changes and image packaging. Shared v0.5.20 and GGUF selections remain unchanged.",
@@ -704,7 +722,7 @@
       "xgrammar/tvm_ffi_binding/testing/grammar_functor/_ffi_api.py": "c85be1c82504bc2d37ee6e0165103c7989dcd007fe1e6de417833a666cff94ea"
     },
     "artifact_policy": "Install this already tested wheel without rebuilding and without dependency resolution. Source replay is not a byte-reproducible wheel claim.",
-    "source_patch_root": "https://github.com/Phala-Network/sglang/tree/2d50d344eeb256200d9d2142a6dfe5dd5be95c35/docker/phala/kimi-protocol3",
+    "source_patch_root": "https://github.com/Phala-Network/sglang/tree/83b5988844dc7e7e6dd907ef4c5553d8d3c3c303/docker/phala/kimi-protocol3",
     "wheel_release": "https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-3-k3protocol3"
   }
 }
