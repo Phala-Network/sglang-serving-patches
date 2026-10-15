@@ -1,0 +1,956 @@
+diff --git a/docker/xing4/README.md b/docker/xing4/README.md
+index 0edf95513725ab6d337471b28ba922f2e208d438..29c205b1a3562d89e5c9dc196ba107382f1cfd2f 100644
+--- a/docker/xing4/README.md
++++ b/docker/xing4/README.md
+@@ -17,7 +17,7 @@ page64, and `--context-length 524288 --json-model-override-args` with one JSON
+ argument:
+ 
+ ```json
+-{"max_position_embeddings":524288,"rope_scaling":{"rope_type":"yarn","factor":128,"request_static_factors":[64,128],"original_max_position_embeddings":4096,"beta_fast":32,"beta_slow":1,"mscale":1,"mscale_all_dim":1}}
++{"max_position_embeddings":524288,"rope_scaling":{"rope_type":"yarn","rope_theta":10000,"factor":128,"request_static_factors":[64,128],"original_max_position_embeddings":4096,"beta_fast":32,"beta_slow":1,"mscale":1,"mscale_all_dim":1}}
+ ```
+ 
+ The original input plus output budget selects factor64 through262144 and
+@@ -37,15 +37,23 @@ The fixed BF16-weight/E4M3-KV, TP1, page64, TRTLLM-MLA prefill/decode/draft,
+ EAGLE3/topk1/draft4 recipe keeps eight internal lookahead slots for RoPE and
+ attention index tables. Existing KV spare-page and request-row capacity cover
+ this scratch. Intake rejects public overflow or insufficient empty-pool capacity
+-without shrinking either input or requested output. This does not enable EAGLE
+-for request-static dynamic YaRN. Prefill graph remains enabled by default.
++without shrinking either input or requested output. Prefill graph remains
++enabled by default.
+ The real-path CPU regression is
+ `test/registered/unit/managers/test_xing_native_eagle_public_budget.py`.
+ 
+ Static64 uses official unmodified model config and context262144. Static128
+ uses the JSON above without `request_static_factors`; it is a control, not a
+-request-static endpoint. Speculation, CP/DP/PP, LoRA, PD and offload are not
+-qualified for this dynamic path and are rejected before weight allocation.
++request-static endpoint.
++
++Request-static EAGLE uses the same fixed BF16-weight/E4M3-KV, TP1, page64,
++TRTMLA, single-layer3/topk1/draft4 prefill recipe. Each64/128 table has eight
++independent scratch rows; long-table model addresses start at262152. Physical KV
++positions remain unchanged. Verify, draft, draft-extend and their graph buffers
++carry the immutable profile; graph warmups restore both position inputs. CPU
++coverage includes the real constructors, intake, replay and mixed-profile paths.
++Real512K, CUDA graph/kernel equivalence, quality and capacity remain GPU gates.
++Other speculative layouts, CP/DP/PP, LoRA, PD and offload fail before allocation.
+ 
+ Protected `TOKEN` environment authentication requires `PIG_AUTH_FROM_TOKEN=1`.
+ Model mounts contain only weights/JSON/SentencePiece/Jinja data and use
+diff --git a/docker/xing4/verify_cpu.sh b/docker/xing4/verify_cpu.sh
+index d10bdf8d27ac2d42681d18f0dbf159b1e1cfb5d6..73a1b08aae6fedd7bc15296ee599e1b5039b01be 100644
+--- a/docker/xing4/verify_cpu.sh
++++ b/docker/xing4/verify_cpu.sh
+@@ -43,6 +43,7 @@ cd "$root"
+ python -m pytest -q --junitxml="${JUNIT_XML:-/tmp/xing4-cpu.xml}" \
+   test/registered/unit/configs/test_xing_request_static_yarn_policy.py \
+   test/registered/unit/model_executor/test_xing_request_static_yarn_torch.py \
++  test/registered/unit/model_executor/test_xing_request_static_yarn_eagle.py \
+   test/registered/unit/managers/test_xing_request_static_yarn_lifecycle.py \
+   test/registered/unit/managers/test_xing_native_eagle_public_budget.py \
+   test/registered/unit/configs/test_request_static_yarn_policy.py \
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index 4d0c2d45ff1e7ce0d2f7a0c790d81be0e789ee8d..524d10cb1a377eb2b69f5131b651fb607432e191 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -510,6 +510,14 @@ class ModelConfig:
+         rope_scaling = getattr(self.hf_text_config, "rope_parameters", None) or getattr(
+             self.hf_text_config, "rope_scaling", {}
+         )
++        if (
++            getattr(self.hf_text_config, "model_type", None) == "xing4_0"
++            and isinstance(rope_scaling, dict)
++            and rope_scaling.get("request_static_factors") is not None
++            and speculative_algorithm == "EAGLE"
++        ):
++            # Both target and embedded MTP own the same per-profile scratch layout.
++            rope_scaling["_request_static_yarn_lookahead"] = 8
+         from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
+ 
+         self.request_static_yarn_config = RequestStaticYarnConfig.from_hf_config(
+@@ -734,6 +742,12 @@ class ModelConfig:
+         self.use_engram = bool(getattr(self.hf_config, "engram_layer_ids", ()))
+         self._derive_multimodal_cuda_graph_support(enable_multimodal)
+         self.dtype = _get_and_verify_dtype(self.hf_text_config, dtype)
++        if (
++            self.request_static_yarn_config is not None
++            and self.request_static_yarn_config.lookahead
++            and (self.dtype != torch.bfloat16 or self.quantization is not None)
++        ):
++            raise ValueError("Xing request-static EAGLE requires unquantized BF16 weights")
+ 
+         # Derive context length and model shapes
+         self._derive_context_length(context_length)
+diff --git a/python/sglang/srt/configs/request_static_yarn.py b/python/sglang/srt/configs/request_static_yarn.py
+index 9fafb94b8aa9946cd791eb0dbb11d9b381b43f72..07b7cb154682b9dab1f036df005e612a4756a331 100644
+--- a/python/sglang/srt/configs/request_static_yarn.py
++++ b/python/sglang/srt/configs/request_static_yarn.py
+@@ -38,6 +38,7 @@ class RequestStaticYarnConfig:
+     original_max_position: int
+     profiles: tuple[tuple[float, int, str], ...]
+     position_kind: str = "mrope"
++    lookahead: int = 0
+ 
+     @classmethod
+     def from_hf_config(cls, hf_text_config: Any):
+@@ -58,6 +59,9 @@ class RequestStaticYarnConfig:
+             )
+         is_xing = getattr(hf_text_config, "model_type", None) == "xing4_0"
+         position_kind = "mla" if is_xing else "mrope"
++        lookahead = rope.get("_request_static_yarn_lookahead", 0) if is_xing else 0
++        if type(lookahead) is not int or lookahead not in (0, 8):
++            raise ValueError("Xing request-static YaRN lookahead must be zero or eight")
+         rope_type = rope.get("rope_type", rope.get("type"))
+         if is_xing:
+             if (
+@@ -135,8 +139,8 @@ class RequestStaticYarnConfig:
+                 json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+             ).hexdigest()
+             profiles.append((factor, offset, "yarn:" + digest))
+-            offset += int(rows)
+-        return cls(normalized, original, tuple(profiles), position_kind)
++            offset += int(rows) + lookahead
++        return cls(normalized, original, tuple(profiles), position_kind, lookahead)
+ 
+     def validate_model_support(self, architectures, is_multimodal: bool):
+         if self.position_kind == "mla":
+@@ -191,7 +195,6 @@ class RequestStaticYarnConfig:
+             or getattr(args, "enable_dsa_prefill_cp", False)
+             or getattr(args, "enable_mla_prefill_cp", False)
+             or getattr(args, "enable_lora", False)
+-            or getattr(args, "speculative_algorithm", None) not in (None, "NONE")
+             or getattr(args, "disaggregation_mode", "null") != "null"
+             or getattr(args, "enable_lmcache", False)
+             or getattr(args, "enable_hierarchical_cache", False)
+@@ -200,9 +203,37 @@ class RequestStaticYarnConfig:
+         ):
+             raise ValueError(
+                 "Xing request-static YaRN requires TP1/TP2, PP1, no CP/DP, "
+-                "speculation, LoRA, disaggregation or offload"
++                "LoRA, disaggregation or offload"
+             )
+ 
++        algorithm = getattr(args, "speculative_algorithm", None)
++        if algorithm not in (None, "NONE"):
++            if self.lookahead != 8:
++                raise ValueError("Xing EAGLE request-static YaRN requires eight lookahead rows")
++            if (
++                algorithm != "EAGLE"
++                or getattr(args, "tp_size", 1) != 1
++                or getattr(args, "page_size", 64) != 64
++                or getattr(args, "kv_cache_dtype", "auto") != "fp8_e4m3"
++                or getattr(args, "quantization", None) is not None
++                or getattr(args, "speculative_draft_attention_backend", None)
++                not in (None, "trtllm_mla")
++                or (
++                    getattr(args, "speculative_num_steps", None),
++                    getattr(args, "speculative_eagle_topk", None),
++                    getattr(args, "speculative_num_draft_tokens", None),
++                ) != (3, 1, 4)
++                or getattr(args, "speculative_attention_mode", "prefill") != "prefill"
++                or getattr(args, "speculative_adaptive", False)
++                or getattr(args, "enable_multi_layer_eagle", False)
++                or getattr(args, "speculative_use_rejection_sampling", False)
++                or getattr(args, "speculative_draft_window_size", None) not in (None, 0)
++            ):
++                raise ValueError(
++                    "Xing request-static EAGLE requires TP1, BF16 weights, FP8 E4M3 KV, "
++                    "page64, TRTMLA and fixed single-layer EAGLE3/topk1/draft4 prefill"
++                )
++
+     def select(self, budget: int, explicit_factor=None, reserved_tokens=0) -> YarnProfile:
+         if isinstance(budget, bool) or not isinstance(budget, int) or budget < 0:
+             raise ValueError("Request-static YaRN requires a nonnegative token budget")
+diff --git a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+index 0e3d1445d6e0a05bda9cf491ffac2f009bc9b416..dea407dbf69da8e8f8fb34fafbc2b8d6b0598d82 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+@@ -233,6 +233,9 @@ class FlashInferMLAAttnBackend(AttentionBackend):
+         # The public request context remains model_config.context_len.
+         self.max_context_len = model_runner.model_config.context_len + getattr(
+             model_runner.model_config, "xing_eagle_context_headroom", 0
++        ) + getattr(
++            getattr(model_runner.model_config, "request_static_yarn_config", None),
++            "lookahead", 0,
+         )
+         self.device = model_runner.device
+         self.skip_prefill = skip_prefill
+diff --git a/python/sglang/srt/layers/rotary_embedding/factory.py b/python/sglang/srt/layers/rotary_embedding/factory.py
+index 548b6294914e476f3670dc09c709aceb686836aa..80bb0a552c6400463e59da9e73b95d7a52b98666 100644
+--- a/python/sglang/srt/layers/rotary_embedding/factory.py
++++ b/python/sglang/srt/layers/rotary_embedding/factory.py
+@@ -397,7 +397,10 @@ def get_rope(
+                 is_neox_style,
+                 rope_scaling.get("request_static_factors", scaling_factor),
+                 dtype,
+-                speculative_headroom=rope_scaling.get("_xing_eagle_rope_headroom", 0),
++                speculative_headroom=rope_scaling.get(
++                    "_request_static_yarn_lookahead",
++                    rope_scaling.get("_xing_eagle_rope_headroom", 0),
++                ),
+                 **extra_kwargs,
+             )
+         elif scaling_type == "longrope":
+diff --git a/python/sglang/srt/layers/rotary_embedding/rope_variant.py b/python/sglang/srt/layers/rotary_embedding/rope_variant.py
+index ecda37f7713e021d96f3f8c17d2aa04019f14c13..526f2f239591609f067842417280baf58aae919f 100644
+--- a/python/sglang/srt/layers/rotary_embedding/rope_variant.py
++++ b/python/sglang/srt/layers/rotary_embedding/rope_variant.py
+@@ -365,14 +365,18 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
+         self.scaling_factor = self.scaling_factors[-1]
+         if type(speculative_headroom) is not int or speculative_headroom not in (0, 8):
+             raise ValueError("Xing EAGLE RoPE headroom must be zero or eight")
+-        if speculative_headroom and len(self.scaling_factors) != 1:
+-            raise ValueError("Xing EAGLE RoPE headroom currently requires a static profile")
++        if (
++            speculative_headroom
++            and len(self.scaling_factors) != 1
++            and self.scaling_factors != (64, 128)
++        ):
++            raise ValueError("Xing EAGLE RoPE headroom requires static or64/128 profiles")
+         self.speculative_headroom = speculative_headroom
+         self.scaling_factor_to_offset = {}
+         offset = 0
+         for factor in self.scaling_factors:
+             self.scaling_factor_to_offset[factor] = offset
+-            offset += int(max_position_embeddings * factor)
++            offset += int(max_position_embeddings * factor) + speculative_headroom
+         self.extrapolation_factor = extrapolation_factor
+         self.attn_factor = attn_factor
+         self.beta_fast = beta_fast
+@@ -436,7 +440,7 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
+             for factor in self.scaling_factors:
+                 inv_freq = self._compute_inv_freq(factor)
+                 t = torch.arange(
+-                    int(self.max_position_embeddings * factor),
++                    int(self.max_position_embeddings * factor) + self.speculative_headroom,
+                     device=self.device,
+                     dtype=torch.float32,
+                 )
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 14fde152b568561d819cd06cd87ace4fdcfc80d5..9ea109572f154d27e98d0cb571804832dd730ef0 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1306,6 +1306,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         _max_req_len = self.context_len
+         xing_eagle_public_budget = bool(
+             getattr(self.model_config, "xing_eagle_context_headroom", 0)
++            or getattr(
++                getattr(self.model_config, "request_static_yarn_config", None),
++                "lookahead", 0,
++            )
+         )
+         allow_auto_truncate = (
+             self.allow_auto_truncate
+@@ -1316,7 +1320,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         if not xing_eagle_public_budget:
+             input_token_num += self.num_reserved_tokens
+ 
+-        # Validate input length independently of native Xing EAGLE scratch.
++        # Validate input length independently of Xing EAGLE scratch.
+         if input_token_num >= self.context_len:
+             if allow_auto_truncate:
+                 logger.warning(
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index 703a1ece25b2c3529a6de27417cfc2c3cbab338f..98cacd92bed68fdc04cb3766e4c54eb7bec79abe 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -721,6 +721,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+     mrope_positions: torch.Tensor = None
+     # Xing YaRN table addresses only; positions / KV indices stay physical.
+     rope_positions: Optional[torch.Tensor] = None
++    rope_position_offsets: Optional[torch.Tensor] = None
+ 
+     # For two-batch overlap
+     tbo_parent_token_range: Optional[Tuple[int, int]] = None
+@@ -1433,30 +1434,42 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
+         if self.forward_mode.is_idle():
+             self.rope_positions = self.positions
+             return
+-        if not (self.forward_mode.is_decode() or self.forward_mode.is_extend()):
+-            raise RuntimeError("Xing request-static YaRN forward mode is unsupported")
+         profiles = [req.rope_profile for req in batch.reqs]
+         if any(profile is None for profile in profiles):
+             raise RuntimeError("Xing request-static YaRN profile missing at model forward")
+-        repeats = (
+-            [1] * len(profiles)
+-            if self.forward_mode.is_decode()
+-            else batch.extend_lens
+-        )
++        if self.forward_mode.is_target_verify() or self.forward_mode.is_draft_extend_v2():
++            # EAGLE carries fixed-width request blocks, not stale prefill lengths.
++            repeats = [self.spec_info.num_tokens_per_req] * len(profiles)
++        elif self.forward_mode.is_decode():
++            repeats = [1] * len(profiles)
++        elif self.forward_mode.is_extend():
++            repeats = batch.extend_lens
++        else:
++            raise RuntimeError("Xing request-static YaRN forward mode is unsupported")
+         num_tokens = self.positions.numel()
+-        if len(repeats) != len(profiles) or sum(repeats) != num_tokens:
+-            raise RuntimeError("Xing request-static YaRN token layout mismatch")
++        if isinstance(repeats, torch.Tensor):
++            if repeats.ndim != 1 or repeats.numel() != len(profiles):
++                raise RuntimeError("Xing request-static YaRN token layout mismatch")
++            repeats = repeats.to(device=self.positions.device, dtype=torch.int64)
++        else:
++            if len(repeats) != len(profiles) or sum(repeats) != num_tokens:
++                raise RuntimeError("Xing request-static YaRN token layout mismatch")
++            repeats = torch.tensor(
++                repeats, dtype=torch.int64, device=self.positions.device
++            )
+         offsets = torch.tensor(
+             [profile.offset for profile in profiles],
+             dtype=torch.int64,
+-            device=model_runner.device,
++            device=self.positions.device,
+         )
+-        token_offsets = torch.repeat_interleave(
+-            offsets,
+-            torch.tensor(repeats, dtype=torch.int64, device=model_runner.device),
+-            output_size=num_tokens,
++        self.rope_position_offsets = torch.repeat_interleave(
++            offsets, repeats, output_size=num_tokens
+         )
+-        self.rope_positions = self.positions + token_offsets
++        self.refresh_request_static_yarn_positions()
++
++    def refresh_request_static_yarn_positions(self):
++        if self.rope_position_offsets is not None:
++            self.rope_positions = self.positions + self.rope_position_offsets
+ 
+     def _expand_mrope_from_input(
+         self,
+diff --git a/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py b/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
+index edd6920e87372ace9c4d563270fa6e0390bed4f3..97bb95aa64ac446e63c3a6f31013ab73dfd140b9 100644
+--- a/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
++++ b/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
+@@ -1312,6 +1312,11 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
+                 self._stage_ragged_verify_layout(ragged_layout, graph_size_key)
+             self.buffers.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
+             self.buffers.positions[: self.raw_num_token].copy_(forward_batch.positions)
++            if self.buffers.rope_positions is not None:
++                self.buffers.rope_positions.zero_()
++                self.buffers.rope_positions[: self.raw_num_token].copy_(
++                    forward_batch.rope_positions
++                )
+             if (
+                 pp_proxy_tensors is not None
+                 and self.buffers.pp_proxy_tensors is not None
+diff --git a/python/sglang/srt/models/deepseek_v2.py b/python/sglang/srt/models/deepseek_v2.py
+index 60ce7cd885210f5be7d3aaef992e25fda1e2b917..dfba11c55fa53149e091a26b0e02837c9f7bea25 100644
+--- a/python/sglang/srt/models/deepseek_v2.py
++++ b/python/sglang/srt/models/deepseek_v2.py
+@@ -2142,10 +2142,9 @@ class DeepseekV2AttentionMLA(
+                 compute_mla_mscale_scaling(static_long_rope, self.qk_head_dim**-0.5)
+                 / self.scaling
+             )
+-            self.request_static_yarn_long_offset = int(
+-                rope_scaling["original_max_position_embeddings"]
+-                * rope_scaling["request_static_factors"][0]
+-            )
++            self.request_static_yarn_long_offset = self.rotary_emb.scaling_factor_to_offset[
++                rope_scaling["request_static_factors"][-1]
++            ]
+ 
+         self.attn_mqa = RadixAttention(
+             self.num_local_heads,
+diff --git a/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py b/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py
+index 543690c11321d76aa00914c26bd641c25ce4dba2..3833433697da5b2664e909687460b973916205fa 100644
+--- a/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py
++++ b/python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py
+@@ -66,6 +66,7 @@ class EagleDraftInputBuffers(ForwardInputBuffers):
+     req_pool_indices: torch.Tensor
+     out_cache_loc: torch.Tensor
+     positions: torch.Tensor
++    rope_positions: Optional[torch.Tensor]
+     mrope_positions: torch.Tensor
+     rids_int: Optional[torch.Tensor]
+     bootstrap_room_ids_int: Optional[torch.Tensor]
+@@ -177,6 +178,14 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+                 dtype=self._cache_loc_dtype(),
+             )
+             positions = torch.zeros((self.max_num_token,), dtype=torch.int64)
++            rope_positions = (
++                torch.zeros_like(positions)
++                if getattr(
++                    getattr(model_runner.model_config, "request_static_yarn_config", None),
++                    "position_kind", None,
++                ) == "mla"
++                else None
++            )
+             mrope_positions = torch.zeros((3, self.max_num_token), dtype=torch.int64)
+             rids_int = (
+                 torch.zeros((self.max_bs,), dtype=torch.int64)
+@@ -261,6 +270,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+             req_pool_indices=req_pool_indices,
+             out_cache_loc=out_cache_loc,
+             positions=positions,
++            rope_positions=rope_positions,
+             mrope_positions=mrope_positions,
+             rids_int=rids_int,
+             bootstrap_room_ids_int=bootstrap_room_ids_int,
+@@ -370,6 +380,11 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+         extend_seq_lens_cpu = self.extend_seq_lens_cpu[:num_seqs]
+         out_cache_loc = buffers.out_cache_loc[: num_tokens * self.speculative_num_steps]
+         positions = buffers.positions[:num_tokens]
++        rope_positions = (
++            buffers.rope_positions[:num_tokens]
++            if buffers.rope_positions is not None
++            else None
++        )
+         mrope_positions = buffers.mrope_positions[:, :num_tokens]
+         rids_int = buffers.rids_int[:num_seqs] if buffers.rids_int is not None else None
+         bootstrap_room_ids_int = (
+@@ -452,6 +467,7 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+             seq_lens_sum=seq_lens.sum().item(),
+             return_logprob=False,
+             positions=positions,
++            rope_positions=rope_positions,
+             mrope_positions=mrope_positions,
+             global_num_tokens_gpu=global_num_tokens,
+             global_num_tokens_for_logprob_gpu=global_num_tokens_for_logprob,
+@@ -489,6 +505,10 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+             forward_batch.spec_info.hidden_states = hidden_states_backup
+             forward_batch.spec_info.dsa_topk_indices = dsa_topk_indices_backup
+             forward_batch.positions.sub_(self.eagle_worker.speculative_num_steps - 1)
++            if forward_batch.rope_positions is not None:
++                forward_batch.rope_positions.sub_(
++                    self.eagle_worker.speculative_num_steps - 1
++                )
+             return ret
+ 
+         with forward_context(ForwardContext(attn_backend=self.draft_attn_backend)):
+@@ -598,6 +618,12 @@ class EAGLEDraftCudaGraphRunner(DecodeCudaGraphRunner):
+             forward_batch.spec_info.topk_index,
+             forward_batch.req_pool_indices,
+         ]
++        if buffers.rope_positions is not None:
++            if forward_batch.rope_positions is None:
++                raise RuntimeError("Xing EAGLE graph model positions are missing")
++            buffers.rope_positions.zero_()
++            copy_dsts.append(buffers.rope_positions[:raw_num_token])
++            copy_srcs.append(forward_batch.rope_positions)
+         if self.model_runner.model_config.model_is_mrope:
+             buffers.mrope_positions.zero_()
+             if forward_batch.mrope_positions is not None:
+diff --git a/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py b/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py
+index 8f542faa13719db698dfa5137592824b341df513..1ab90c110dbdccc6ef3ae6ff1debb7ac7685368f 100644
+--- a/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py
++++ b/python/sglang/srt/speculative/eagle_draft_extend_cuda_graph_runner.py
+@@ -75,6 +75,7 @@ class EagleDraftExtendInputBuffers(ForwardInputBuffers):
+     req_pool_indices: torch.Tensor
+     out_cache_loc: torch.Tensor
+     positions: torch.Tensor
++    rope_positions: Optional[torch.Tensor]
+     mrope_positions: torch.Tensor
+     hidden_states: Optional[torch.Tensor]
+     seq_lens: torch.Tensor
+@@ -170,6 +171,14 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
+                 (self.max_num_token,), dtype=self._cache_loc_dtype()
+             )
+             positions = torch.zeros((self.max_num_token,), dtype=torch.int64)
++            rope_positions = (
++                torch.zeros_like(positions)
++                if getattr(
++                    getattr(model_runner.model_config, "request_static_yarn_config", None),
++                    "position_kind", None,
++                ) == "mla"
++                else None
++            )
+             mrope_positions = torch.zeros((3, self.max_num_token), dtype=torch.int64)
+ 
+             # Width and dtype both come from the draft `model_runner` so the
+@@ -270,6 +279,7 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
+             req_pool_indices=req_pool_indices,
+             out_cache_loc=out_cache_loc,
+             positions=positions,
++            rope_positions=rope_positions,
+             mrope_positions=mrope_positions,
+             hidden_states=hidden_states,
+             seq_lens=seq_lens,
+@@ -360,6 +370,11 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
+         extend_seq_lens_cpu = self.extend_seq_lens_cpu[:bs]
+         out_cache_loc = buffers.out_cache_loc[:num_tokens]
+         positions = buffers.positions[:num_tokens]
++        rope_positions = (
++            buffers.rope_positions[:num_tokens]
++            if buffers.rope_positions is not None
++            else None
++        )
+         mrope_positions = buffers.mrope_positions[:, :num_tokens]
+         hidden_states = (
+             buffers.hidden_states[:num_tokens]
+@@ -429,6 +444,7 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
+             seq_lens_sum=seq_lens.sum().item(),
+             return_logprob=False,
+             positions=positions,
++            rope_positions=rope_positions,
+             mrope_positions=mrope_positions,
+             global_num_tokens_gpu=buffers.global_num_tokens_gpu,
+             global_num_tokens_for_logprob_cpu=global_num_tokens_for_logprob_cpu,
+@@ -550,6 +566,12 @@ class EAGLEDraftExtendCudaGraphRunner(DecodeCudaGraphRunner):
+             forward_batch.positions,
+             forward_batch.req_pool_indices,
+         ]
++        if buffers.rope_positions is not None:
++            if forward_batch.rope_positions is None:
++                raise RuntimeError("Xing EAGLE graph model positions are missing")
++            buffers.rope_positions.zero_()
++            copy_dsts.append(buffers.rope_positions[:num_tokens])
++            copy_srcs.append(forward_batch.rope_positions)
+         if self.model_runner.model_config.model_is_mrope:
+             buffers.mrope_positions.zero_()
+             if forward_batch.mrope_positions is not None:
+diff --git a/python/sglang/srt/speculative/eagle_worker_common.py b/python/sglang/srt/speculative/eagle_worker_common.py
+index 0c2c530860206169fce0f8b2e34d324ecdbab69e..e78b2bc33d39f338a9d7c8b6e0d79d13497c4dab 100644
+--- a/python/sglang/srt/speculative/eagle_worker_common.py
++++ b/python/sglang/srt/speculative/eagle_worker_common.py
+@@ -539,6 +539,11 @@ def run_eagle_verify(
+             ),
+         )
+ 
++    # Physical positions may be refreshed after the plan-stream dependency.
++    # Rebuild only model addresses; KV positions/locations remain untouched.
++    record_stream_each((verify_forward_batch.rope_position_offsets,), fwd_stream)
++    verify_forward_batch.refresh_request_static_yarn_positions()
++
+     # Must stay ahead of the target verify launch below.
+     grammar_tree = (
+         GrammarTree.from_device(
+diff --git a/python/sglang/srt/speculative/eagle_worker_v2.py b/python/sglang/srt/speculative/eagle_worker_v2.py
+index 993b53f637c14f21a0acb8093fcdfaaf31e5fc99..04c8cf723853d935c325e1782f14ec1629020ff3 100644
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -109,6 +109,7 @@ from sglang.srt.speculative.spec_utils import (
+     fast_sample,
+     get_plan_stream,
+     load_token_map,
++    record_stream_each,
+     renorm_draft_probs,
+     sample_draft_proposal,
+     select_top_k_tokens,
+@@ -823,6 +824,8 @@ class EagleDraftWorker(EagleDraftWorkerBase):
+                     )
+                     topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+                     forward_batch.positions.add_(1)
++                if forward_batch.rope_positions is not None:
++                    forward_batch.rope_positions.add_(1)
+                 if self.draft_runner.model_config.model_is_mrope:
+                     forward_batch.mrope_positions.add_(1)
+                 maybe_detect_oob(
+@@ -1078,9 +1081,11 @@ class EagleDraftWorker(EagleDraftWorkerBase):
+             )
+ 
+         if self.plan_stream:
+-            torch.get_device_module(self.device).current_stream().wait_stream(
+-                self.plan_stream
+-            )
++            forward_stream = torch.get_device_module(self.device).current_stream()
++            forward_stream.wait_stream(self.plan_stream)
++            # This model input was allocated on the plan stream. The join orders
++            # its writes; record the main-stream read to protect allocator reuse.
++            record_stream_each((forward_batch.rope_positions,), forward_stream)
+ 
+         # Run draft extend batch in the main compute stream
+         can_run_decode_cuda_graph = (
+diff --git a/test/registered/unit/managers/test_xing_native_eagle_public_budget.py b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+index 1e11e6a017d7657e9f3dd415a0ae0daaec64cab5..358e69642e73ff48f977af3438385d3a0c483a07 100644
+--- a/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
++++ b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+@@ -166,17 +166,19 @@ def test_actual_allocator_rounding_and_final_accepted_run_fit_reserved_row_and_e
+     assert len(actual_req.output_ids) == 259  # owned scratch is retained for normal release
+ 
+ 
+-@pytest.mark.parametrize("headroom", [0, 8])
+-def test_real_backend_construction_and_graph_metadata_cover_native_tail(headroom):
++@pytest.mark.parametrize("headroom,dynamic", [(0, False), (8, False), (8, True)])
++def test_real_backend_construction_and_graph_metadata_cover_native_tail(headroom, dynamic):
+     from sglang.srt.layers.attention import flashinfer_mla_backend as fi
+     from sglang.srt.layers.attention import trtllm_mla_backend as trt
+     from sglang.srt.model_executor.forward_batch_info import ForwardMode
+ 
+-    config = NS(context_len=262144, xing_eagle_context_headroom=headroom,
++    context = 524288 if dynamic else 262144
++    config = NS(context_len=context, xing_eagle_context_headroom=0 if dynamic else headroom,
++        request_static_yarn_config=NS(lookahead=headroom) if dynamic else None,
+         num_attention_heads=64, get_num_kv_heads=lambda size: 1, kv_lora_rank=512,
+         qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128, scaling=1.0)
+     runner = NS(model_config=config, device="cpu", page_size=64,
+-        req_to_token_pool=NS(size=2, req_to_token=torch.zeros((2, 262215), dtype=torch.int32)),
++        req_to_token_pool=NS(size=2, req_to_token=torch.zeros((2, context + 71), dtype=torch.int32)),
+         token_to_kv_pool=object(), kv_index_translator=NS(is_translating=False),
+         dtype=torch.bfloat16, kv_cache_dtype=torch.float8_e4m3fn,
+         max_running_requests=2, is_draft_worker=False)
+@@ -211,20 +213,20 @@ def test_real_backend_construction_and_graph_metadata_cover_native_tail(headroom
+         backend = trt.TRTLLMMLABackend(runner)
+         backend.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
+         for mode in (ForwardMode.TARGET_VERIFY, ForwardMode.DRAFT_EXTEND_V2):
+-            backend._init_cuda_graph_metadata(2, 8, mode, torch.tensor([262143, 16]), "cpu")
++            backend._init_cuda_graph_metadata(2, 8, mode, torch.tensor([context - 1, 16]), "cpu")
+             metadata = backend.forward_decode_metadata
+-            assert metadata.max_seq_len_k == 262144 + headroom
+-            assert metadata.block_kv_indices.shape[1] * 64 >= 262144 + headroom
++            assert metadata.max_seq_len_k == context + headroom
++            assert metadata.block_kv_indices.shape[1] * 64 >= context + headroom
+         draft = fi.FlashInferMLAMultiStepDraftBackend(runner, topk=1, speculative_num_steps=3)
+         draft.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
+-    assert config.context_len == 262144
+-    assert backend.max_context_len == draft.max_context_len == 262144 + headroom
+-    assert draft.cuda_graph_kv_indices.shape == (3, 2 * (262144 + headroom))
++    assert config.context_len == context
++    assert backend.max_context_len == draft.max_context_len == context + headroom
++    assert draft.cuda_graph_kv_indices.shape == (3, 2 * (context + headroom))
+     if headroom:
+         # Two last-step requests can still execute the entire draft/verify run.
+-        required = draft_kv_indices_used_len(2 * 262143, topk=1, bs=2, num_steps=3)
++        required = draft_kv_indices_used_len(2 * (context - 1), topk=1, bs=2, num_steps=3)
+         assert required <= draft.cuda_graph_kv_indices.shape[1]
+-        assert backend.forward_decode_metadata.block_kv_indices.shape[1] >= 4097
++        assert backend.forward_decode_metadata.block_kv_indices.shape[1] >= context // 64 + 1
+ 
+ 
+ def test_auto_truncate_cannot_shrink_native_public_input_or_output():
+diff --git a/test/registered/unit/model_executor/test_xing_request_static_yarn_eagle.py b/test/registered/unit/model_executor/test_xing_request_static_yarn_eagle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a951c39367b6eeab68062c9e9b972bf0c5748a69
+--- /dev/null
++++ b/test/registered/unit/model_executor/test_xing_request_static_yarn_eagle.py
+@@ -0,0 +1,336 @@
++"""CPU execution of Xing EAGLE position/config/replay paths; no CUDA claims."""
++
++from array import array
++from contextlib import nullcontext
++from dataclasses import fields
++import json
++from pathlib import Path
++from types import MethodType, SimpleNamespace as NS
++from unittest.mock import patch
++
++import pytest
++import torch
++
++from sglang.srt.configs.model_config import ModelConfig
++from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig, admit_request_static_yarn
++from sglang.srt.layers.rotary_embedding import get_rope
++from sglang.srt.layers.rotary_embedding.request_static_yarn import scale_request_static_yarn_query
++from sglang.srt.mem_cache.base_prefix_cache import InsertParams, MatchPrefixParams
++from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
++from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
++from sglang.srt.model_executor.runner.decode_cuda_graph_runner import DecodeCudaGraphRunner
++from sglang.srt.speculative.eagle_info import EagleDraftInput, EagleDraftExtendInput
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++
++PARAMETERS = dict(rope_type="deepseek_yarn", rope_theta=10000, factor=128,
++    request_static_factors=[64, 128], original_max_position_embeddings=4096,
++    beta_fast=32, beta_slow=1, mscale=1, mscale_all_dim=1)
++
++
++def config():
++    return RequestStaticYarnConfig.from_hf_config(NS(model_type="xing4_0",
++        rope_theta=10000, rope_scaling={**PARAMETERS, "_request_static_yarn_lookahead": 8}))
++
++
++def runtime_args(**updates):
++    return NS(attention_backend="trtllm_mla", device="cuda", dtype="bfloat16",
++        kv_cache_dtype="fp8_e4m3", tp_size=1, page_size=64, speculative_algorithm="EAGLE",
++        speculative_num_steps=3, speculative_eagle_topk=1,
++        speculative_num_draft_tokens=4, speculative_attention_mode="prefill", **updates)
++
++
++@pytest.mark.parametrize("draft", [False, True])
++def test_real_model_config_target_and_embedded_mtp_own_same_profile_layout(tmp_path, draft):
++    fixture = Path(__file__).parents[1] / "models/xing4_configs/bf16.json"
++    (tmp_path / "config.json").write_text(fixture.read_text())
++    model = ModelConfig(str(tmp_path), trust_remote_code=False, context_length=524288,
++        model_override_args=json.dumps(dict(max_position_embeddings=524288,
++            rope_scaling=PARAMETERS)), is_draft_model=draft, speculative_algorithm="EAGLE")
++    cfg = model.request_static_yarn_config
++    assert cfg.lookahead == 8
++    assert [p[1] for p in cfg.profiles] == [0, 262152]
++    assert cfg.select(262144).factor == 64 and cfg.select(262145).factor == 128
++    assert model.context_len == 524288 and model.dtype == torch.bfloat16
++    assert model.hf_text_config.rope_scaling["_request_static_yarn_lookahead"] == 8
++    assert model.hf_config.architectures[0] == ("DeepseekV3ForCausalLMNextN" if draft else "Xing4_0ForCausalLM")
++
++
++def test_fixed_eagle_runtime_is_supported_and_unknown_layouts_fail_closed():
++    config().validate_runtime_support(runtime_args())
++    invalid = [dict(tp_size=2), dict(speculative_algorithm="EAGLE3"),
++        dict(speculative_eagle_topk=2), dict(speculative_num_steps=4),
++        dict(speculative_num_draft_tokens=5), dict(speculative_adaptive=True),
++        dict(enable_multi_layer_eagle=True), dict(speculative_use_rejection_sampling=True),
++        dict(speculative_attention_mode="decode"), dict(speculative_draft_window_size=32),
++        dict(page_size=1), dict(kv_cache_dtype="bfloat16"), dict(quantization="fp8"),
++        dict(speculative_draft_attention_backend="flashmla"),
++        dict(prefill_attention_backend="flashmla"), dict(decode_attention_backend="flashmla")]
++    for changes in invalid:
++        args = runtime_args()
++        vars(args).update(changes)
++        with pytest.raises(ValueError):
++            config().validate_runtime_support(args)
++    no_headroom = RequestStaticYarnConfig.from_hf_config(NS(model_type="xing4_0", rope_scaling=PARAMETERS))
++    with pytest.raises(ValueError, match="lookahead"):
++        no_headroom.validate_runtime_support(runtime_args())
++
++
++@pytest.mark.parametrize("mode,width", [(ForwardMode.DECODE, 1),
++    (ForwardMode.TARGET_VERIFY, 4), (ForwardMode.DRAFT_EXTEND_V2, 4), (ForwardMode.EXTEND, 2)])
++def test_real_forward_batch_mixed_profiles_all_eagle_phases(mode, width):
++    cfg = config()
++    profiles = [cfg.select(32, f) for f in (64, 128, 64)]
++    fb = object.__new__(ForwardBatch)
++    fb.forward_mode, fb.positions = mode, torch.arange(3 * width, dtype=torch.int64) + 19
++    fb.out_cache_loc = torch.arange(3 * width) + 100
++    fb.spec_info = NS(num_tokens_per_req=width, num_front_tokens=0)
++    # Verify intentionally retains unrelated prefill lengths; it must use the
++    # uniform speculative width instead. GPU-only extend lengths are tensors.
++    lengths = [27, 31, 7] if mode.is_target_verify() else torch.tensor([width] * 3)
++    batch = NS(reqs=[NS(rope_profile=p) for p in profiles], extend_lens=lengths)
++    runner = NS(device="cpu", model_config=NS(request_static_yarn_config=cfg))
++    physical, cache_locs = fb.positions.clone(), fb.out_cache_loc.clone()
++    fb._init_request_static_yarn_mla(runner, batch)
++    offsets = torch.tensor([p.offset for p in profiles]).repeat_interleave(width)
++    assert torch.equal(fb.rope_positions, physical + offsets)
++    assert torch.equal(fb.positions, physical) and torch.equal(fb.out_cache_loc, cache_locs)
++    fb.positions.add_(7)
++    fb.refresh_request_static_yarn_positions()
++    assert torch.equal(fb.rope_positions, physical + offsets + 7)
++
++
++def test_real_rope_lookup_and_q_scale_keep_boundary_lookahead_in_own_profile():
++    cfg = config()
++    params = {**PARAMETERS, "_request_static_yarn_lookahead": 8}
++    combined = get_rope(64, 64, 524288, 10000, False, rope_scaling=params, dtype=torch.float32)
++    assert combined.cos_sin_cache.shape[0] == 786448
++    assert combined.scaling_factor_to_offset[128] == cfg.profiles[1][1]
++    gen = torch.Generator().manual_seed(519)
++    q, k = torch.randn(6, 2, 64, generator=gen), torch.randn(6, 1, 64, generator=gen)
++    physical = torch.tensor([262143, 262144, 262151, 524287, 524288, 524295])
++    offsets = torch.tensor([0] * 3 + [262152] * 3)
++    actual = combined.forward_native(physical + offsets, q, k)
++    for i, factor in enumerate((64, 128)):
++        static_params = {k: v for k, v in PARAMETERS.items() if k != "request_static_factors"}
++        static_params["factor"] = factor
++        static = get_rope(64, 64, 524288, 10000, False, rope_scaling=static_params, dtype=torch.float32)
++        static._ensure_cos_sin_cache_length(int(physical[i * 3 + 2]))
++        reference = static.forward_native(physical[i * 3:(i+1)*3], q[i*3:(i+1)*3], k[i*3:(i+1)*3])
++        for a, b in zip(actual, reference):
++            torch.testing.assert_close(a[i*3:(i+1)*3], b, rtol=0, atol=0)
++    module = NS(request_static_yarn_scale_ratio=1.1, request_static_yarn_long_offset=262152)
++    scaled = scale_request_static_yarn_query(q, NS(rope_positions=physical + offsets), module)
++    assert torch.equal(scaled[:3], q[:3])
++    torch.testing.assert_close(scaled[3:], q[3:] * 1.1, rtol=0, atol=0)
++    with pytest.raises(ValueError, match="table capacity"):
++        combined._ensure_cos_sin_cache_length(786448)
++
++
++def graph_fixture(phase, monkeypatch):
++    if phase == "draft":
++        import sglang.srt.speculative.eagle_draft_cuda_graph_runner as module
++        cls, width = module.EAGLEDraftCudaGraphRunner, 1
++        buffer_cls = module.EagleDraftInputBuffers
++    else:
++        import sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner as module
++        cls, width = module.EAGLEDraftExtendCudaGraphRunner, 4
++        buffer_cls = module.EagleDraftExtendInputBuffers
++    assert "rope_positions" in {f.name for f in fields(buffer_cls)}
++    n, bs = 3 * width, 3
++    z = lambda size, dtype=torch.int64: torch.zeros(size, dtype=dtype)
++    buffers = NS(input_ids=z(n), req_pool_indices=z(bs), out_cache_loc=z(n * (3 if phase == "draft" else 1)),
++        positions=z(n), rope_positions=z(n), mrope_positions=z((3, n)), seq_lens=z(bs), seq_lens_cpu=z(bs),
++        extend_seq_lens=z(bs, torch.int32), topk_p=z((bs, 1), torch.float32), topk_index=z((bs, 1)),
++        draft_probs=None, hidden_states=z((n if phase == "extend" else bs, 2), torch.float32),
++        rids_int=None, bootstrap_room_ids_int=None, dsa_seed_topk=None, dsa_seed_topk_capture=None,
++        num_correct_drafts=z(bs, torch.int32), num_accept_tokens=z(bs, torch.int32),
++        select_index=z(bs), next_token_logits_buffer=z((bs, 16), torch.float32))
++    graph = object.__new__(cls)
++    graph.buffers, graph.captured_req_width, graph.speculative_num_steps = buffers, width, 3
++    graph.require_mlp_tp_gather = graph.require_attn_tp_gather = graph.require_gathered_buffer = False
++    graph.capture_bs, graph.seq_len_fill_value = [3], 1
++    graph.extend_seq_lens_cpu = [width] * 3
++    graph.deepep_adapter = NS(replay=lambda: None)
++    graph.model_runner = NS(model_config=NS(model_is_mrope=False, vocab_size=16),
++        spec_algorithm=SpeculativeAlgorithm.from_string("EAGLE"), device_timer=None)
++    graph.draft_attn_backend = NS(init_forward_metadata_out_graph=lambda fb: None)
++    graph.draft_extend_attn_backend = NS(init_forward_metadata_out_graph=lambda fb: None)
++    graph.forward_mode = ForwardMode.DRAFT_EXTEND_V2
++    graph.device_module = NS(Event=lambda: NS(record=lambda: None))
++    graph._make_graph_key = lambda size: size
++    graph._pad_to_bucket = lambda size, buckets: 3
++    monkeypatch.setattr(module, "device_timer_ctx", lambda *a: nullcontext())
++    if phase == "draft":
++        monkeypatch.setattr(module, "get_spec", lambda: NS(speculative_use_rejection_sampling=False))
++    def replay(key, fb):
++        assert key == 3
++        if phase == "draft":
++            return tuple(torch.zeros((3, 1), dtype=torch.int64) for _ in range(3)) + (None,)
++        return NS(next_token_logits=torch.zeros(3, 16), hidden_states=torch.zeros(3, 2))
++    graph._replay_graph = replay
++    return graph, width
++
++
++@pytest.mark.parametrize("phase", ["draft", "extend"])
++def test_real_eagle_graph_execute_refreshes_profiles_and_clears_padded_rows(phase, monkeypatch):
++    graph, width = graph_fixture(phase, monkeypatch)
++    ptr = graph.buffers.rope_positions.data_ptr()
++    for factors in ((64, 128), (128,), (128, 64)):
++        bs, n = len(factors), len(factors) * width
++        physical = torch.arange(n) + 11
++        offsets = torch.tensor([config().select(32, f).offset for f in factors]).repeat_interleave(width)
++        fb = object.__new__(ForwardBatch)
++        fb.batch_size, fb.input_ids, fb.positions, fb.rope_positions = bs, torch.arange(n), physical, physical + offsets
++        fb.req_pool_indices, fb.seq_lens, fb.seq_lens_cpu = torch.arange(bs), torch.arange(bs) + 40, torch.arange(bs) + 40
++        fb.seq_lens_sum, fb.out_cache_loc = int(fb.seq_lens.sum()), torch.arange(n * (3 if phase == "draft" else 1))
++        fb.extend_seq_lens, fb.extend_seq_lens_cpu = torch.full((bs,), width), [width] * bs
++        fb.spec_info = (EagleDraftInput(topk_p=torch.ones(bs, 1), topk_index=torch.ones(bs, 1, dtype=torch.int64), hidden_states=torch.ones(bs, 2))
++            if phase == "draft" else EagleDraftExtendInput(hidden_states=torch.ones(n, 2),
++                num_correct_drafts=torch.zeros(bs, dtype=torch.int32), num_accept_tokens=torch.ones(bs, dtype=torch.int32),
++                num_tokens_per_req=width))
++        expected = fb.rope_positions.clone()
++        if phase == "draft": graph.execute(fb)
++        else: graph.execute(fb, torch.arange(bs) * width)
++        assert graph.buffers.rope_positions.data_ptr() == ptr
++        assert torch.equal(graph.buffers.rope_positions[:n], expected)
++        assert torch.count_nonzero(graph.buffers.rope_positions[n:]) == 0
++        assert torch.equal(graph.buffers.positions[:n], physical)
++
++
++def test_real_target_verify_late_load_refreshes_model_positions():
++    graph = object.__new__(DecodeCudaGraphRunner)
++    graph.dllm_uses_input_embeds = graph.ragged_verify_mode = graph.enable_pdmux = False
++    graph.deepep_adapter = NS(replay=lambda: None)
++    graph.bs, graph.raw_num_token, graph.captured_req_width = 3, 8, 4
++    graph._capture_graph_size = lambda **kw: 3
++    graph._resolve_lora_variant = graph._resolve_attention_variant = lambda fb: None
++    graph._make_graph_key = lambda *args: args
++    graph.model_runner = NS(spec_algorithm=SpeculativeAlgorithm.from_string("EAGLE"), is_draft_worker=False)
++    graph.buffers = NS(input_ids=torch.zeros(12, dtype=torch.int64), positions=torch.zeros(12, dtype=torch.int64),
++        rope_positions=torch.zeros(12, dtype=torch.int64), pp_proxy_tensors=None)
++    fb = NS(needs_forward_metadata_init=lambda: False, input_ids=torch.arange(8), positions=torch.arange(8) + 100,
++        rope_positions=torch.arange(8) + torch.tensor([0]*4 + [262152]*4) + 100)
++    graph.load_batch(fb)
++    assert torch.equal(graph.buffers.positions[:8], fb.positions)
++    assert torch.equal(graph.buffers.rope_positions[:8], fb.rope_positions)
++
++
++def test_real_draft_loop_advances_physical_and_model_positions_together(monkeypatch):
++    import sglang.srt.speculative.eagle_worker_v2 as module
++    worker = object.__new__(module.EagleDraftWorker)
++    worker.topk, worker.speculative_num_steps, worker.speculative_num_draft_tokens = 1, 3, 4
++    worker.hot_token_id, worker._topk1_parents_prealloc = None, torch.zeros(3, 3)
++    worker._topk1_score_indices_prealloc = torch.zeros(3, 3, dtype=torch.int64)
++    worker.index_share_for_mtp_iteration = worker.seed_dsa_topk_from_draft_extend = False
++    worker.draft_attn_backend = NS(attn_backends=[None, None])
++    seen = []
++    def forward(fb):
++        seen.append((fb.positions.clone(), fb.rope_positions.clone()))
++        return NS(logits_output=NS(next_token_logits=torch.tensor([[1., 2.], [2., 1.]]), hidden_states=torch.ones(2, 2)))
++    worker.draft_runner = NS(forward=forward, canary_manager=None,
++        model_config=NS(hf_config=NS(architectures=["DeepseekV3ForCausalLMNextN"]), model_is_mrope=False))
++    monkeypatch.setattr(module, "_is_cuda", False)
++    monkeypatch.setattr(module, "_is_hip", False)
++    monkeypatch.setattr(module, "get_spec", lambda: NS(speculative_use_rejection_sampling=False))
++    monkeypatch.setattr(module, "forward_context", lambda *a: nullcontext())
++    monkeypatch.setattr(module, "IndexTopKShareState", NS(mtp_iteration=lambda *a, **kw: nullcontext()))
++    monkeypatch.setattr(module, "per_step_draft_out_cache_loc", lambda loc, *a: loc.reshape(3, 2))
++    monkeypatch.setattr(module, "select_top_k_tokens", lambda i, p, ids, h, score, k: (ids.flatten(), h, p, (p, ids, ids)))
++    monkeypatch.setattr(module, "organize_draft_results", lambda *a: (None, None, None))
++    fb = NS(forward_mode=ForwardMode.DECODE, out_cache_loc=torch.arange(6), batch_size=2,
++        positions=torch.tensor([262143, 524287]), rope_positions=torch.tensor([262143, 524287+262152]),
++        spec_info=EagleDraftInput(topk_p=torch.ones(2, 1), topk_index=torch.ones(2, 1, dtype=torch.int64), hidden_states=torch.ones(2, 2)))
++    worker.draft_forward(fb)
++    assert len(seen) == 2
++    for step, (physical, model) in enumerate(seen):
++        assert torch.equal(model - physical, torch.tensor([0, 262152]))
++        assert torch.equal(physical, torch.tensor([262143, 524287]) + step)
++    assert torch.equal(fb.rope_positions - fb.positions, torch.tensor([0, 262152]))
++
++
++def test_real_cache_namespace_separates_profile_and_caller_salt():
++    cache, tokens = RadixCache.create_simulated(), array("q", range(16))
++    def key(factor, salt="a"):
++        req = NS(origin_input_ids=tokens, sampling_params=NS(max_new_tokens=4, custom_params={"yarn_factor": factor}),
++            rope_profile=None, extra_key="caller", multimodal_inputs=None)
++        admit_request_static_yarn(req, config(), 524288)
++        return RadixKey(tokens, req.extra_key, cache_salt=salt)
++    values = torch.arange(16)
++    cache.insert(InsertParams(key=key(64), value=values))
++    assert torch.equal(cache.match_prefix(MatchPrefixParams(key=key(64))).device_indices, values)
++    assert len(cache.match_prefix(MatchPrefixParams(key=key(128))).device_indices) == 0
++    assert len(cache.match_prefix(MatchPrefixParams(key=key(64, "b"))).device_indices) == 0
++
++
++def test_real_dynamic_frontend_keeps_exact_public_budget_and_rejects_without_truncation():
++    from sglang.srt.managers.tokenizer_manager import TokenizerManager
++    manager = object.__new__(TokenizerManager)
++    manager.context_len, manager.allow_auto_truncate, manager.validate_total_tokens = 524288, True, True
++    manager.num_reserved_tokens = 4
++    manager.model_config = NS(request_static_yarn_config=config(), xing_eagle_context_headroom=0)
++    execution = NS(features=NS(enable_encoder_swa_bounded_replay=False))
++    with patch("sglang.srt.managers.tokenizer_manager.get_exec", return_value=execution):
++        ids = array("q", [35]) * 524032
++        req = NS(sampling_params={"max_new_tokens": 256})
++        manager._validate_token_budget(req, ids)
++        assert len(ids) == 524032 and req.sampling_params["max_new_tokens"] == 256
++        ids.append(35)
++        with pytest.raises(ValueError):
++            manager._validate_token_budget(req, ids)
++        assert len(ids) == 524033 and req.sampling_params["max_new_tokens"] == 256
++
++
++@pytest.mark.parametrize("nextn", [False, True])
++def test_real_attention_constructor_uses_long_profile_start_after_short_scratch(nextn, monkeypatch):
++    import sglang.srt.models.deepseek_v2 as module
++    monkeypatch.setattr(module, "get_parallel", lambda: NS(attn_tp_rank=0, attn_tp_size=1, dcp_enabled=False))
++    monkeypatch.setattr(module, "get_model", lambda: NS(kv_cache_dtype="fp8_e4m3"))
++    monkeypatch.setattr(module, "get_device", lambda: NS(device="cpu"))
++    monkeypatch.setattr(module, "is_deepseek_dsa", lambda cfg: False)
++    for name in ("ColumnParallelLinear", "ReplicatedLinear", "RowParallelLinear", "RadixAttention", "RMSNorm"):
++        monkeypatch.setattr(module, name, lambda *a, **kw: torch.nn.Identity())
++    for name in ("init_mha_forward", "init_mla_forward", "init_mla_fused_rope_rocm_forward", "init_mla_fused_rope_cpu_forward"):
++        monkeypatch.setattr(module.DeepseekV2AttentionMLA, name, lambda self: None)
++    def cpu_rope(*args, **kwargs):
++        kwargs.pop("device", None)
++        return get_rope(*args, **kwargs, dtype=torch.float32)
++    monkeypatch.setattr(module, "get_rope_wrapper", cpu_rope)
++    attention = module.DeepseekV2AttentionMLA(NS(rms_norm_eps=1e-6), 8, 2, 128, 64, 128,
++        None, 512, rope_scaling={**PARAMETERS, "_request_static_yarn_lookahead": 8},
++        max_position_embeddings=524288, is_nextn=nextn)
++    assert attention.request_static_yarn_long_offset == attention.rotary_emb.scaling_factor_to_offset[128] == 262152
++    physical = torch.tensor([262143, 262144, 262151, 0])
++    fb = NS(rope_positions=physical + torch.tensor([0, 0, 0, 262152]))
++    query = torch.ones(4, 2, 64)
++    scaled = scale_request_static_yarn_query(query, fb, attention)
++    assert torch.equal(scaled[:3], query[:3])
++    torch.testing.assert_close(scaled[3:], query[3:] * attention.request_static_yarn_scale_ratio, rtol=0, atol=0)
++
++
++def test_real_draft_capture_restores_both_position_buffers_between_warmups(monkeypatch):
++    import sglang.srt.speculative.eagle_draft_cuda_graph_runner as module
++    graph, _ = graph_fixture("draft", monkeypatch)
++    graph.buffers.positions.copy_(torch.tensor([19, 23, 31]))
++    graph.buffers.rope_positions.copy_(graph.buffers.positions + torch.tensor([0, 262152, 0]))
++    original = graph.buffers.rope_positions.clone()
++    graph.temperatures, graph.top_ks = torch.ones(3, 1), torch.ones(3, dtype=torch.int32)
++    seen = []
++    def draft(fb):
++        seen.append((fb.positions.clone(), fb.rope_positions.clone()))
++        fb.positions.add_(2)
++        fb.rope_positions.add_(2)
++        return ()
++    graph.eagle_worker = NS(speculative_num_steps=3, draft_forward=draft)
++    graph.draft_attn_backend = NS(init_forward_metadata_in_graph=lambda fb: None,
++        init_forward_metadata_out_graph=lambda fb, **kw: None)
++    graph.deepep_adapter.capture = lambda **kw: None
++    graph.backend = NS(capture_one=lambda key, run, **kw: (run(), run()))
++    monkeypatch.setattr(module, "forward_context", lambda *a: nullcontext())
++    monkeypatch.setattr(module, "set_dp_buffer_len", lambda *a: None)
++    monkeypatch.setattr(module, "set_is_extend_in_batch", lambda *a: None)
++    monkeypatch.setattr(module, "maybe_flashinfer_autotune_speculative_draft", lambda *a, **kw: None)
++    monkeypatch.setattr(module.DpPaddingMode, "get_default_mode_in_cuda_graph", lambda: module.DpPaddingMode.MAX_LEN)
++    graph.capture_one_shape(3, None)
++    assert len(seen) == 2
++    assert torch.equal(seen[0][0], seen[1][0]) and torch.equal(seen[0][1], seen[1][1])
++    assert torch.equal(graph.buffers.rope_positions, original)

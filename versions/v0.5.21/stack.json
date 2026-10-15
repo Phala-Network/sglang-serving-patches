@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "48e9fc7d56930660999dc108cb5ecddee5245715",
-    "tree": "8dbf789abe62afb0b39aba6f6d4a7c9511938e00",
-    "branch": "codex/xing4-native-eagle-budget-20261015"
+    "commit": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
+    "tree": "e0ee5561feb18c56c619f714492da9e93f993156",
+    "branch": "codex/xing4-dynamic-eagle-release-20261015"
   },
-  "qualification": "Native Xing fixed-profile EAGLE public-budget repair: 16/16 dedicated real-path CPU cases and 166 affected passes with 10 explicit CUDA skips. Frozen RC5.2 source fails 15/16 dedicated cases. All59 earlier patch bytes preserved. Source replay/CPU gates only; final installed image and GPU/service acceptance remain separate.",
+  "qualification": "Request-static Xing fixed TP1 BF16/E4M3 page64 TRTMLA EAGLE3/1/4 non-kernel source/CPU candidate:17 dedicated cases,184 affected passes/10 explicit CUDA skips; independent source review closed the new cross-stream model-position lifetime finding. Prior60 patch bytes preserved. No dynamic image or GPU qualification.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -748,6 +748,20 @@
       "sha256": "a9602b7216eaa33ff5e5ede73cb371e588ce80ae3c9bde0f4d6f1d411992c607",
       "origin": {
         "scope": "Fixed native BF16/E4M3 TP1 page64 TRTMLA EAGLE3/1/4 public budget, internal RoPE/index tail; real CPU paths, no kernel changes"
+      }
+    },
+    {
+      "id": "v0521-0061",
+      "path": "patches/models/xing4/0061-request-static-yarn-eagle.patch",
+      "title": "Carry immutable Xing request-static YaRN through fixed EAGLE graphs",
+      "source_commit": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
+      "source_parent": "48e9fc7d56930660999dc108cb5ecddee5245715",
+      "result_tree": "e0ee5561feb18c56c619f714492da9e93f993156",
+      "sha256": "f37fc5cf0961bbb00651899dfaadaef923d2c324f48ed356a2eeb139eb0cfa0f",
+      "origin": {
+        "reviewed_commit": "30300d021996ceb354ab8fb2b6d09ebf6dc74bcd",
+        "reviewed_tree_equal": true,
+        "scope": "Target/MTP per-profile RoPE scratch, verify/draft/extend positions and graph capture/replay, public budget and allocator stream lifetime; no kernel or KV namespace/lifecycle changes"
       }
     }
   ],
