@@ -1,0 +1,84 @@
+{
+  "schema": "phala.xing4.dynamic-eagle-startup-source-replay.v1",
+  "engine_commit": "119e05e0ebb55c0fb324c493ea052f56b0e28350",
+  "engine_tree": "10393a48efb1fed4c0bbc44671a208b8e9d5af21",
+  "engine_parent": "2b9940cb7764c26c40cc8a48538374e7b200dc53",
+  "engine_branch": "codex/xing4-dynamic-eagle-startup-20261016",
+  "runtime_changed_files": [
+    "python/sglang/srt/model_executor/runner/base_runner.py"
+  ],
+  "all_changed_files": [
+    "python/sglang/srt/model_executor/runner/base_runner.py",
+    "test/registered/unit/model_executor/test_xing_request_static_yarn_startup.py"
+  ],
+  "cpu": {
+    "red": {
+      "failed": 1,
+      "passed": 1,
+      "reason": "RuntimeError: Xing request-static YaRN model positions are missing"
+    },
+    "green": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "evidence": {
+    "red.log": {
+      "sha256": "510d6f675ac11fa8e9278756f17fe1f35effe5e9a104598fca5064c209fc16d5",
+      "bytes": 10123
+    },
+    "red.xml": {
+      "sha256": "417faa1199dc67d711d4af46b4797820248c332cc52a679e817f7a087b3b6e3a",
+      "bytes": 8680
+    },
+    "green.log": {
+      "sha256": "df45d5911cfd9bb7b2a8129e18f5280737a01d047ff1d6aa8d5d717ad487ae1b",
+      "bytes": 1740
+    },
+    "green.xml": {
+      "sha256": "13e827a942fca183c902cdf23dbfbc3c80e01a33f795d0dade44586870b13aa2",
+      "bytes": 620
+    },
+    "startup-source.patch": {
+      "sha256": "7f5675aa8db5f65c7f7a21763e8089098fc962e3e1e8a7fa5e3330d51ca02ee5",
+      "bytes": 7311
+    }
+  },
+  "ordered_patch_count": 62,
+  "baseline_patches": "5006f054a1055d5269d906affc79864e118788ed",
+  "prefix61_unchanged": true,
+  "prefix61_content_sha256": "1de3b1c27b4a45af88697e6ac58b2d3bad0d7d7f5b351f43984843ce5a4bc464",
+  "patch_content_sha256": "6d4109cb611dbbdcf3915a480c974bf9058b0e84e163d03b01179e5095496b9e",
+  "patch62_sha256": "7f5675aa8db5f65c7f7a21763e8089098fc962e3e1e8a7fa5e3330d51ca02ee5",
+  "all_intermediate_trees_match": true,
+  "qualification": "source-only; final image and real GPU acceptance separate",
+  "retained_evidence": {
+    "affected_pass": 184,
+    "affected_cuda_skips": 10,
+    "rerun": false,
+    "prior_dynamic_dedicated_cases": 17
+  },
+  "independent_review": {
+    "reviewer": "draft_model_research",
+    "verdict": "pass-no-blockers",
+    "receipt": "RC54-DYNAMIC-STARTUP-DUMMY-REVIEW-v1.md",
+    "sha256": "6f660f3c33749ada75198060995cc3450e29e0e9e0d5b75f907d2e1873f82489"
+  },
+  "canonical_verification": {
+    "file": "canonical-stack-verify",
+    "sha256": "4fec814059bcdd8852fb95fc4e7fdfb442130f9f6cc9b91da0140317c865aac1",
+    "result": {
+      "status": "source-verified",
+      "scope": "source-only",
+      "active_selector": "unified",
+      "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "engine_commit": "119e05e0ebb55c0fb324c493ea052f56b0e28350",
+      "engine_tree": "10393a48efb1fed4c0bbc44671a208b8e9d5af21",
+      "patch_count": 62,
+      "dependencies": {},
+      "component_origins": [],
+      "image_or_runtime_qualified": false
+    }
+  }
+}

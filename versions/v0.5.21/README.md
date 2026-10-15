@@ -139,3 +139,5 @@ authentication; GPU and final-image checks remain separate. The reproducible
 ordered patch-content digest is defined in [XING4-PATCH-CONTENT.json](XING4-PATCH-CONTENT.json).
 
 Step0061 is the isolated [fixed-EAGLE dynamic YaRN source candidate](DYNAMIC-EAGLE.md); source/CPU and exact61-step replay only, no dynamic image/GPU acceptance.
+
+Step0062 repairs the actual [request-static startup dummy](DYNAMIC-EAGLE-STARTUP.md) only: CPU target red/green and default-None control; image and GPU acceptance remain separate.

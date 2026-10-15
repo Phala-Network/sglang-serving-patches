@@ -51,6 +51,12 @@ The [frozen 0.5.21 control maintenance candidate](versions/v0.5.21-control/READM
 preserves its existing control baseline and records the isolated DSPARK backport.
 It does not select the Kimi stack or replace shared integration.
 
+The [Xing request-static startup repair](versions/v0.5.21/DYNAMIC-EAGLE-STARTUP.md)
+adds step0062 without changing the61 frozen prefix patches. It fixes only the
+common target dummy model-position input; the two-case real CPU startup regression
+and independent source review pass. Canonical replay matches every intermediate
+tree. Installed-image and real dynamic GPU/512K/quality gates remain separate.
+
 ## Current unified source
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
