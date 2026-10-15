@@ -57,3 +57,4 @@ patches/models/xing4/0056-stable-decoder-construction.patch
 patches/models/xing4/0057-stable-forward-terminal-api.patch
 patches/common/0058-legacy-profiler-export-failure.patch
 patches/models/xing4/0059-startup-spec-identity.patch
+patches/models/xing4/0060-native-eagle-public-budget.patch

@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
-    "tree": "95fcbbc4638d58ddee1c56cdb03dfece74cf087b",
-    "branch": "codex/xing4-startup-rc52-20261015"
+    "commit": "48e9fc7d56930660999dc108cb5ecddee5245715",
+    "tree": "8dbf789abe62afb0b39aba6f6d4a7c9511938e00",
+    "branch": "codex/xing4-native-eagle-budget-20261015"
   },
-  "qualification": "RC5.2 actual EAGLEWorkerV2/BaseSpecWorker draft_worker property: old installed image reproduces AttributeError; source14 affected CPU cases pass (13 full-run plus corrected unrelated hicache fixture one-case delta). First58 published patch bytes preserved. Runtime delta from RC5.1 is one property traversal line. Final-image and GPU/service gates separate; unchanged RC4 CPU172/10CUDA-skipped and Gloo3scenarios/6rank evidence retained.",
+  "qualification": "Native Xing fixed-profile EAGLE public-budget repair: 16/16 dedicated real-path CPU cases and 166 affected passes with 10 explicit CUDA skips. Frozen RC5.2 source fails 15/16 dedicated cases. All59 earlier patch bytes preserved. Source replay/CPU gates only; final installed image and GPU/service acceptance remain separate.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -736,6 +736,18 @@
       "sha256": "874417b8a9693337b9ca256cd949cb7fa714fcfc08f4770487a16b6ca9088cf0",
       "origin": {
         "scope": "Startup-only metadata, actual EAGLE facade property; no tensor values, transfer, numerical, kernel, backend or dependency changes; source14 affected cases, retained RC4 unchanged172/Gloo evidence."
+      }
+    },
+    {
+      "id": "v0521-0060",
+      "path": "patches/models/xing4/0060-native-eagle-public-budget.patch",
+      "title": "Preserve native Xing EAGLE public context with independent scratch capacity",
+      "source_commit": "48e9fc7d56930660999dc108cb5ecddee5245715",
+      "source_parent": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
+      "result_tree": "8dbf789abe62afb0b39aba6f6d4a7c9511938e00",
+      "sha256": "a9602b7216eaa33ff5e5ede73cb371e588ce80ae3c9bde0f4d6f1d411992c607",
+      "origin": {
+        "scope": "Fixed native BF16/E4M3 TP1 page64 TRTMLA EAGLE3/1/4 public budget, internal RoPE/index tail; real CPU paths, no kernel changes"
       }
     }
   ],
