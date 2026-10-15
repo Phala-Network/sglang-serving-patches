@@ -17,7 +17,7 @@ index 8a9198f90454f23c19a2eb93440d33d0dd09f823..f7417bb2760631fef3cc443a77188de7
          # after these allocations, before elastic EP rejoins healthy ranks
 diff --git a/python/sglang/srt/managers/scheduler_components/startup_spec_identity.py b/python/sglang/srt/managers/scheduler_components/startup_spec_identity.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f09adedfe8e966b7f7eae0e4525a8610ab5a9ded
+index 0000000000000000000000000000000000000000..80509dc91dd50cb9954af0bceff042a156e8fecb
 --- /dev/null
 +++ b/python/sglang/srt/managers/scheduler_components/startup_spec_identity.py
 @@ -0,0 +1,122 @@
@@ -105,7 +105,7 @@ index 0000000000000000000000000000000000000000..f09adedfe8e966b7f7eae0e4525a8610
 +    ):
 +        return None
 +    try:
-+        draft = draft_worker.draft_runner
++        draft = draft_worker.draft_worker.draft_runner
 +        target_inner = getattr(target.model, "model", None)
 +        draft_inner = getattr(draft.model, "model", None)
 +        target_head = getattr(getattr(target.model, "lm_head", None), "weight", None)
@@ -145,10 +145,10 @@ index 0000000000000000000000000000000000000000..f09adedfe8e966b7f7eae0e4525a8610
 +        return None
 diff --git a/test/registered/unit/test_xing_spec_startup_identity.py b/test/registered/unit/test_xing_spec_startup_identity.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c4f1a528a
+index 0000000000000000000000000000000000000000..c2fe1544965c651bb2ac95ed5028a3ff3acdd5f3
 --- /dev/null
 +++ b/test/registered/unit/test_xing_spec_startup_identity.py
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,320 @@
 +"""CPU metadata fixtures and execution of the real scheduler startup method."""
 +
 +import ast
@@ -162,6 +162,8 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +import torch
 +
 +from sglang.srt.managers.scheduler_components import startup_spec_identity as obs
++from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
++from sglang.srt.speculative.eagle_worker_v2 import EagleDraftWorker, EAGLEWorkerV2
 +
 +
 +def runner(layers, quantization):
@@ -207,9 +209,15 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +    draft.token_to_kv_pool_allocator = target.token_to_kv_pool_allocator
 +    draft.model.lm_head.weight = target.model.lm_head.weight
 +    draft.model.model.embed_tokens.weight = target.model.model.embed_tokens.weight
++    facade = object.__new__(EAGLEWorkerV2)
++    facade._target_worker = NS(model_runner=target)
++    facade._draft_worker = object.__new__(EagleDraftWorker)
++    facade._draft_worker.draft_runner = draft
++    assert EAGLEWorkerV2.draft_worker is BaseSpecWorker.draft_worker
++    assert facade.draft_worker is facade._draft_worker
 +    return NS(
 +        tp_worker=NS(model_runner=target),
-+        draft_worker=NS(draft_runner=draft),
++        draft_worker=facade,
 +        spec_algorithm=NS(name="EAGLE", is_none=lambda: False),
 +    )
 +
@@ -272,9 +280,21 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +    assert obs.emit_xing_spec_startup_identity(s)["algorithm"] == "EAGLE3"
 +
 +
++def test_bf16_target_uses_actual_eagle_facade_property():
++    s = scheduler()
++    target = s.tp_worker.model_runner
++    target.model_config.quantization = None
++    target.model.quant_config = None
++    record = obs.emit_xing_spec_startup_identity(s)
++    assert record["target"]["model_quantization"] is None
++    assert record["target"]["quant_config_class"] is None
++    assert record["draft"]["model_quantization"] is None
++    assert record["sharing"]["kv_pool_same_object"] is False
++
++
 +def test_wrong_head_method_is_reported_without_changing_it():
 +    s = scheduler()
-+    head = s.draft_worker.draft_runner.model.lm_head
++    head = s.draft_worker.draft_worker.draft_runner.model.lm_head
 +    method = type("ModelOptFp4LinearMethod", (), {})()
 +    head.quant_method = method
 +    assert (
@@ -286,7 +306,7 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +
 +def test_independent_weights_not_misreported_as_shared():
 +    s = scheduler()
-+    draft = s.draft_worker.draft_runner
++    draft = s.draft_worker.draft_worker.draft_runner
 +    draft.model.lm_head.weight = draft.model.lm_head.weight.clone()
 +    draft.model.model.embed_tokens.weight = (
 +        draft.model.model.embed_tokens.weight.clone()
@@ -316,7 +336,7 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +        def dtype(self):
 +            raise ValueError("private sentinel not for logs")
 +
-+    s.draft_worker.draft_runner.model.lm_head.weight = Broken()
++    s.draft_worker.draft_worker.draft_runner.model.lm_head.weight = Broken()
 +    assert obs.emit_xing_spec_startup_identity(s) is None
 +    assert "error_type=ValueError" in caplog.text
 +    assert "private sentinel" not in caplog.text
@@ -371,9 +391,11 @@ index 0000000000000000000000000000000000000000..5cffc6c5563e00f60a15eb134c6ec79c
 +        None,
 +    )
 +    s.tp_worker.get_pad_input_ids_func = lambda: None
-+    draft.hicache_draft_plan = None
++    monkeypatch.setattr(
++        BaseSpecWorker, "hicache_draft_plan", property(lambda ignored: None)
++    )
 +    draft.prewarm_sampling = lambda: events.append("prewarm")
-+    draft._draft_model_runners = lambda: (draft.draft_runner,)
++    draft._draft_model_runners = lambda: (draft.draft_worker.draft_runner,)
 +
 +    def resize(**kwargs):
 +        events.append("resize")

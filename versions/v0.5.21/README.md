@@ -1,4 +1,4 @@
-The Xing runtime RC4 candidate adds the reviewed legacy profiler export I/O repair in step0058. CPU172passed/10CUDA-skipped and real Gloo3scenario/6rank cases pass on builder201; final-image and GPU gates remain separate. All57 previous patch bytes are preserved.
+The Xing runtime RC5.2 candidate fixes startup observation through the actual EAGLEWorkerV2 draft-worker property. Source14 affected cases pass on201; the prior installed image reproduces the original AttributeError. All58 earlier patch bytes remain unchanged, and the [59-step exact replay](RC52-SOURCE-VERIFICATION.json) reproduces the complete engine tree. Final-image and GPU/service gates remain separate.
 
 # SGLang 0.5.21 compatibility maintenance
 
