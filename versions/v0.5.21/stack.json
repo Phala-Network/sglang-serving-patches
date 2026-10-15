@@ -7,11 +7,11 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
-    "tree": "bd1076178d4f39d4f0be8e2328f9fda5f4ba35c0",
-    "branch": "codex/xing4-v0521-20261014"
+    "commit": "585d270714ced0c77656506f49f5c5b955791210",
+    "tree": "ed215c432384811c5afd2a4a895b83dfb262e6ab",
+    "branch": "codex/xing4-startup-rc51-20261015"
   },
-  "qualification": "Unified Xing request-static64/128 with reviewed legacy profiler export safety. Source172 passed/10 CUDA skipped on201, including13 focused profiler tests and8 full official40layer forwards; real Gloo3scenarios/6rank cases passed. Final-image/GPU/service gates separate. All published57 patch files unchanged.",
+  "qualification": "RC5 source13 affected metadata/startup CPU cases passed on201; retained RC4 unchanged172 passed/10 CUDA skipped and real Gloo3scenarios/6rank evidence; final-image/GPU/service gates separate. All58 published patch bytes preserved. RC5.1 formatting checks passed; normalized AST matches reviewed RC5.",
   "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
   "patches": [
     {
@@ -724,6 +724,18 @@
       "origin": {
         "reviewed_source_commit": "f64aa5469b9bc4e3f53c28a511dcd5dac55884b4",
         "scope": "Single legacy stop/cleanup, all-rank export failure reduction, fatal CUDA/runtime/communication propagation; v2 unchanged; 13 focused CPU tests and real two-process Gloo control/permission failures"
+      }
+    },
+    {
+      "id": "v0521-0059",
+      "path": "patches/models/xing4/0059-startup-spec-identity.patch",
+      "title": "Observe final Xing EAGLE pools, quant methods and weight sharing at startup",
+      "source_commit": "585d270714ced0c77656506f49f5c5b955791210",
+      "source_parent": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+      "result_tree": "ed215c432384811c5afd2a4a895b83dfb262e6ab",
+      "sha256": "32b7bbf7c4e4fe84fa68ed7f8319a99d4c937bf7802450065d19a7a204285b78",
+      "origin": {
+        "scope": "Startup-only metadata; no tensor values, transfer, numerical or backend changes; source13 affected CPU cases passed, RC4 unchanged172/Gloo retained"
       }
     }
   ],
