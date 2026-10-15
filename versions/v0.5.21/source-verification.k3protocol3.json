@@ -1,0 +1,23 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "2d50d344eeb256200d9d2142a6dfe5dd5be95c35",
+  "engine_tree": "e215b7f6d190c520ed1e75599fc7109510f1f8c3",
+  "patch_count": 21,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false,
+  "release_record": "versions/v0.5.21/releases/phala-v0.5.21-3-k3protocol3.json",
+  "unchanged_prefix_count": 19,
+  "new_source_exports": 2,
+  "protected_inputs": {
+    "series": "b9fd595ef356c2f1a7dd6d6b8d8b4c7239feff298d2c7adb0ae0a26239cb0bf3",
+    "manifest.json": "9463030c766a94cfb44db3e7ad72a1d13b4cc017a11b1e860360099fc5fe1523",
+    "versions/v0.5.21/stack.json": "200652f1504e99de95400e63e093fb773e7dea2d8c2f22c973a5c4be0197253d",
+    "versions/v0.5.21/series": "52ff7fcde83147b5b3b0550bc38bcabfa3b3036ca6c8b9bdf8ca4527580eae70",
+    "versions/v0.5.21/manifest.json": "dd614ebcb4f1ea1b78bb8ae80ec77f135ddfc3eba3f6584cb2a8af961a14e8bc"
+  },
+  "product_blobs_verified": 20
+}
