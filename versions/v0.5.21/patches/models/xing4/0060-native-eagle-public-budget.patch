@@ -1,0 +1,556 @@
+diff --git a/docker/xing4/README.md b/docker/xing4/README.md
+index 6ce22ec36bdea5d55b8b9fbe6904e36b1e226d40..0edf95513725ab6d337471b28ba922f2e208d438 100644
+--- a/docker/xing4/README.md
++++ b/docker/xing4/README.md
+@@ -32,6 +32,16 @@ budget, capacity and `reserved_tokens`. Explicit selection uses
+ `custom_params.yarn_factor` for Chat. Use
+ `chat_template_kwargs.spaces_between_special_tokens=false` for Chat decoding.
+ 
++Native Static64 EAGLE counts only input plus requested output toward262144.
++The fixed BF16-weight/E4M3-KV, TP1, page64, TRTLLM-MLA prefill/decode/draft,
++EAGLE3/topk1/draft4 recipe keeps eight internal lookahead slots for RoPE and
++attention index tables. Existing KV spare-page and request-row capacity cover
++this scratch. Intake rejects public overflow or insufficient empty-pool capacity
++without shrinking either input or requested output. This does not enable EAGLE
++for request-static dynamic YaRN. Prefill graph remains enabled by default.
++The real-path CPU regression is
++`test/registered/unit/managers/test_xing_native_eagle_public_budget.py`.
++
+ Static64 uses official unmodified model config and context262144. Static128
+ uses the JSON above without `request_static_factors`; it is a control, not a
+ request-static endpoint. Speculation, CP/DP/PP, LoRA, PD and offload are not
+diff --git a/docker/xing4/verify_cpu.sh b/docker/xing4/verify_cpu.sh
+index b509e8fe248da4902751d31b04a4982757b33183..d10bdf8d27ac2d42681d18f0dbf159b1e1cfb5d6 100644
+--- a/docker/xing4/verify_cpu.sh
++++ b/docker/xing4/verify_cpu.sh
+@@ -44,6 +44,7 @@ python -m pytest -q --junitxml="${JUNIT_XML:-/tmp/xing4-cpu.xml}" \
+   test/registered/unit/configs/test_xing_request_static_yarn_policy.py \
+   test/registered/unit/model_executor/test_xing_request_static_yarn_torch.py \
+   test/registered/unit/managers/test_xing_request_static_yarn_lifecycle.py \
++  test/registered/unit/managers/test_xing_native_eagle_public_budget.py \
+   test/registered/unit/configs/test_request_static_yarn_policy.py \
+   test/registered/unit/model_executor/test_request_static_yarn_torch.py \
+   test/registered/unit/managers/test_request_static_yarn_admission_reject.py \
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index 9a7c3f106510bf0caab1471876af2151f927902a..4d0c2d45ff1e7ce0d2f7a0c790d81be0e789ee8d 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -465,6 +465,7 @@ class ModelConfig:
+         self.is_draft_model = is_draft_model
+         self.is_draft_quantization_explicit = is_draft_quantization_explicit
+         self.speculative_algorithm = speculative_algorithm
++        self.xing_eagle_context_headroom = 0
+         self.model_impl = model_impl
+         self.sampling_defaults = sampling_defaults
+         self.quantize_and_serve = quantize_and_serve
+@@ -805,7 +806,7 @@ class ModelConfig:
+             if is_draft_model
+             else cfg.decrypted_config_file
+         )
+-        return ModelConfig(
++        model_config = ModelConfig(
+             model_path=model_path or cfg.model_path,
+             trust_remote_code=cfg.trust_remote_code,
+             revision=model_revision or cfg.revision,
+@@ -834,6 +835,46 @@ class ModelConfig:
+             speculative_algorithm=cfg.speculative_algorithm,
+             **kwargs,
+         )
++        rope = getattr(model_config.hf_text_config, "rope_scaling", None)
++        if (
++            getattr(model_config.hf_text_config, "model_type", None) == "xing4_0"
++            and model_config.request_static_yarn_config is None
++            and model_config.context_len == 262144
++            and model_config.dtype == torch.bfloat16
++            and model_config.quantization is None
++            and isinstance(rope, dict)
++            and rope.get("factor") == 64
++            and rope.get("original_max_position_embeddings") == 4096
++            and cfg.device == "cuda"
++            and cfg.kv_cache_dtype == "fp8_e4m3"
++            and cfg.page_size == 64
++            and cfg.attention_backend == "trtllm_mla"
++            and all(
++                backend in (None, "trtllm_mla")
++                for backend in (
++                    cfg.prefill_attention_backend,
++                    cfg.decode_attention_backend,
++                    cfg.speculative_draft_attention_backend,
++                )
++            )
++            and cfg.speculative_attention_mode == "prefill"
++            and (
++                cfg.tp_size, cfg.pp_size, cfg.dp_size, cfg.attn_cp_size, cfg.dcp_size
++            ) == (1, 1, 1, 1, 1)
++            and cfg.speculative_algorithm == "EAGLE"
++            and (
++                cfg.speculative_num_steps,
++                cfg.speculative_eagle_topk,
++                cfg.speculative_num_draft_tokens,
++            ) == (3, 1, 4)
++            and not cfg.speculative_adaptive
++            and not cfg.enable_multi_layer_eagle
++        ):
++            # Public context counts accepted input/output. Fixed EAGLE lookahead
++            # uses independent KV/req-row and RoPE-table storage; it is not input.
++            model_config.xing_eagle_context_headroom = 8
++            rope["_xing_eagle_rope_headroom"] = 8
++        return model_config
+ 
+     def _derive_multimodal_cuda_graph_support(self, enable_multimodal: bool) -> None:
+         """Declare graph capabilities before deriving shapes and validating config.
+diff --git a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+index 329223f8770085930f3a897ed22c0fe93f803354..0e3d1445d6e0a05bda9cf491ffac2f009bc9b416 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+@@ -229,7 +229,11 @@ class FlashInferMLAAttnBackend(AttentionBackend):
+         super().__init__()
+ 
+         # Parse constants
+-        self.max_context_len = model_runner.model_config.context_len
++        # Speculative lookahead extends internal index/block tables only.
++        # The public request context remains model_config.context_len.
++        self.max_context_len = model_runner.model_config.context_len + getattr(
++            model_runner.model_config, "xing_eagle_context_headroom", 0
++        )
+         self.device = model_runner.device
+         self.skip_prefill = skip_prefill
+         # Pool refs — captured at construction so they survive deletion of the
+diff --git a/python/sglang/srt/layers/rotary_embedding/factory.py b/python/sglang/srt/layers/rotary_embedding/factory.py
+index 752687342a737e449f76a4d6a0692c025e81c777..548b6294914e476f3670dc09c709aceb686836aa 100644
+--- a/python/sglang/srt/layers/rotary_embedding/factory.py
++++ b/python/sglang/srt/layers/rotary_embedding/factory.py
+@@ -397,6 +397,7 @@ def get_rope(
+                 is_neox_style,
+                 rope_scaling.get("request_static_factors", scaling_factor),
+                 dtype,
++                speculative_headroom=rope_scaling.get("_xing_eagle_rope_headroom", 0),
+                 **extra_kwargs,
+             )
+         elif scaling_type == "longrope":
+diff --git a/python/sglang/srt/layers/rotary_embedding/rope_variant.py b/python/sglang/srt/layers/rotary_embedding/rope_variant.py
+index 5e977dd586adade73a1d1767a6b29f02f4234cc6..ecda37f7713e021d96f3f8c17d2aa04019f14c13 100644
+--- a/python/sglang/srt/layers/rotary_embedding/rope_variant.py
++++ b/python/sglang/srt/layers/rotary_embedding/rope_variant.py
+@@ -355,6 +355,7 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
+         mscale: float = 1,
+         mscale_all_dim: float = 0,
+         device: Optional[str] = None,
++        speculative_headroom: int = 0,
+     ) -> None:
+         self.scaling_factors = (
+             tuple(scaling_factor)
+@@ -362,6 +363,11 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
+             else (scaling_factor,)
+         )
+         self.scaling_factor = self.scaling_factors[-1]
++        if type(speculative_headroom) is not int or speculative_headroom not in (0, 8):
++            raise ValueError("Xing EAGLE RoPE headroom must be zero or eight")
++        if speculative_headroom and len(self.scaling_factors) != 1:
++            raise ValueError("Xing EAGLE RoPE headroom currently requires a static profile")
++        self.speculative_headroom = speculative_headroom
+         self.scaling_factor_to_offset = {}
+         offset = 0
+         for factor in self.scaling_factors:
+@@ -442,7 +448,7 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
+             return torch.cat(tables, dim=0)
+         inv_freq = self._compute_inv_freq(self.scaling_factor)
+         t = torch.arange(
+-            self.max_position_embeddings * self.scaling_factor,
++            self.max_position_embeddings * self.scaling_factor + self.speculative_headroom,
+             device=self.device,
+             dtype=torch.float32,
+         )
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index f7417bb2760631fef3cc443a77188de79264e4c5..5273d888f743427e2a46849ee0324bcc9c003066 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2547,13 +2547,28 @@ class Scheduler(
+                 "position_kind", None,
+             ) == "mla"
+         )
++        native_eagle_headroom = getattr(
++            self.model_config, "xing_eagle_context_headroom", 0
++        )
++        preserve_public_budget = xing_yarn or bool(native_eagle_headroom)
+         max_new_tokens = (
+             req.sampling_params.max_new_tokens
+             if req.sampling_params.max_new_tokens is not None
+             else 1 << 30
+         )
+-        if xing_yarn:
+-            max_new_tokens = yarn_profile.budget - input_len
++        if native_eagle_headroom:
++            if req.sampling_params.max_new_tokens is None:
++                max_new_tokens = max(0, self.model_config.context_len - input_len)
++            if input_len + max_new_tokens > self.model_config.context_len:
++                req.set_finish_with_abort(
++                    "Requested input plus output budget exceeds public Xing context; "
++                    "the admitted budget is not clipped",
++                    status_code=HTTPStatus.BAD_REQUEST,
++                )
++                return
++        if preserve_public_budget:
++            if xing_yarn:
++                max_new_tokens = yarn_profile.budget - input_len
+             if (
+                 self.max_new_tokens_limit is not None
+                 and self.max_new_tokens_limit > 0
+@@ -2561,7 +2576,7 @@ class Scheduler(
+             ):
+                 req.set_finish_with_abort(
+                     "Requested output budget exceeds SGLANG_MAX_NEW_TOKENS_LIMIT; "
+-                    "request-static YaRN does not clip the admitted budget",
++                    "the runtime does not clip the admitted budget",
+                     status_code=HTTPStatus.BAD_REQUEST,
+                 )
+                 return
+@@ -2571,7 +2586,7 @@ class Scheduler(
+             max_new_tokens = min(max_new_tokens, self.max_new_tokens_limit)
+ 
+         # Keep this bound consistent with PrefillAdder's admission budget.
+-        if not xing_yarn:
++        if not preserve_public_budget:
+             max_new_tokens = max(
+                 0,
+                 min(max_new_tokens, self.max_req_len - input_len - 1),
+@@ -2590,15 +2605,20 @@ class Scheduler(
+             sliding_window_size=self.sliding_window_size,
+             chunk_size=self.chunked_prefill_size,
+         )
+-        if xing_yarn and (
+-            yarn_profile.budget + yarn_profile.reserved_tokens > token_capacity
++        public_budget = input_len + requested_new_tokens
++        reserved_tokens = yarn_profile.reserved_tokens if xing_yarn else 0
++        # Native page64 EAGLE needs eight speculative slots. The allocator's
++        # existing spare page/sentinel already covers the rounded decode tail;
++        # retain its result as an admission check instead of clipping output.
++        if preserve_public_budget and (
++            public_budget + reserved_tokens > token_capacity
+             or max_new_tokens is None
+             or max_new_tokens < requested_new_tokens
+         ):
+             req.set_finish_with_abort(
+                 "Requested input plus output budget does not fit the KV pool "
+-                "including independent page padding/headroom; request-static "
+-                "YaRN does not clip the admitted budget",
++                "including independent page padding/headroom; the runtime "
++                "does not clip the admitted budget",
+                 status_code=HTTPStatus.BAD_REQUEST,
+             )
+             return
+@@ -3108,8 +3128,8 @@ class Scheduler(
+         if (
+             getattr(getattr(self.model_config, "request_static_yarn_config", None),
+                     "position_kind", None) == "mla"
+-            and req.to_finish is not None
+-        ):
++            or getattr(self.model_config, "xing_eagle_context_headroom", 0)
++        ) and req.to_finish is not None:
+             self.retire_unadmitted_request(req)
+             return
+ 
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 402bcefb88702a5656c36ac8940cc48c82cb26f6..14fde152b568561d819cd06cd87ace4fdcfc80d5 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1304,14 +1304,19 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                     "encoder SWA replay cannot return cached prompt logprobs"
+                 )
+         _max_req_len = self.context_len
++        xing_eagle_public_budget = bool(
++            getattr(self.model_config, "xing_eagle_context_headroom", 0)
++        )
+         allow_auto_truncate = (
+             self.allow_auto_truncate
+             and getattr(self.model_config, "request_static_yarn_config", None) is None
++            and not xing_eagle_public_budget
+         )
+         input_token_num = len(input_ids) if input_ids is not None else 0
+-        input_token_num += self.num_reserved_tokens
++        if not xing_eagle_public_budget:
++            input_token_num += self.num_reserved_tokens
+ 
+-        # Validate input length
++        # Validate input length independently of native Xing EAGLE scratch.
+         if input_token_num >= self.context_len:
+             if allow_auto_truncate:
+                 logger.warning(
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index e4dad8d1e9003e8b12094913ef743aa102ff6641..593eb638fdb0bc7e42a2dc27264a2c4aced248be 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -549,7 +549,7 @@ class TpModelWorker(BaseTpWorker):
+         if getattr(
+             getattr(self.model_config, "request_static_yarn_config", None),
+             "position_kind", None,
+-        ) == "mla":
++        ) == "mla" or getattr(self.model_config, "xing_eagle_context_headroom", 0):
+             # Public RoPE capacity is independent of paged-KV headroom. Intake
+             # checks the raw budget and the allocator checks its own padding.
+             max_req_len = self.model_config.context_len
+diff --git a/test/registered/unit/managers/test_xing_native_eagle_public_budget.py b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e11e6a017d7657e9f3dd415a0ae0daaec64cab5
+--- /dev/null
++++ b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+@@ -0,0 +1,259 @@
++"""Execute native Xing EAGLE public-budget and scratch paths on CPU."""
++
++from array import array
++from contextlib import ExitStack
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import MagicMock, patch
++
++import pytest
++import torch
++
++from test_xing_request_static_yarn_lifecycle import intake
++from test_request_static_yarn_admission_reject import handle
++from sglang.srt.configs.model_config import ModelConfig
++from sglang.srt.managers.tokenizer_manager import TokenizerManager
++from sglang.srt.managers.tp_worker import TpModelWorker
++from sglang.srt.layers.rotary_embedding import get_rope
++from sglang.srt.mem_cache.allocation_sizing import (
++    get_alloc_reserve_per_decode,
++    get_req_to_token_extra_context_len,
++    page_aligned_decode_alloc_lens,
++)
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.speculative.spec_utils import draft_kv_indices_used_len
++
++
++def manager(enabled=True):
++    obj = object.__new__(TokenizerManager)
++    obj.context_len, obj.allow_auto_truncate, obj.validate_total_tokens = 262144, False, True
++    obj.num_reserved_tokens = 4
++    obj.model_config = NS(request_static_yarn_config=None, xing_eagle_context_headroom=8 if enabled else 0)
++    return obj
++
++
++def validate(obj, prompt, output):
++    req = NS(sampling_params={"max_new_tokens": output})
++    execution = NS(features=NS(enable_encoder_swa_bounded_replay=False))
++    with patch("sglang.srt.managers.tokenizer_manager.get_exec", return_value=execution):
++        obj._validate_token_budget(req, list(range(prompt)))
++    return req
++
++
++def native_intake(prompt, output, capacity=262336):
++    scheduler, recv, req = intake(prompt, output, pool_capacity=capacity)
++    scheduler.model_config.context_len = 262144
++    scheduler.model_config.request_static_yarn_config = None
++    scheduler.model_config.xing_eagle_context_headroom = 8
++    scheduler.max_req_len = scheduler.max_req_input_len = 262144
++    return scheduler, recv, req
++
++
++def test_exact_frozen_request_budget_does_not_count_four_draft_slots_as_input():
++    req = validate(manager(), 261888, 256)
++    assert req.sampling_params["max_new_tokens"] == 256
++    assert validate(manager(), 262143, 1).sampling_params["max_new_tokens"] == 1
++    with pytest.raises(ValueError, match="261889 tokens from the input"):
++        validate(manager(), 261889, 256)
++    with pytest.raises(ValueError):
++        validate(manager(enabled=False), 261888, 256)
++
++
++@pytest.mark.parametrize("output", [256, None])
++def test_real_scheduler_preserves_exact_public_budget_and_independent_reserve(output):
++    scheduler, recv, req = native_intake(261888, output)
++    handle(scheduler, recv, req)
++    assert not req.finished() and scheduler.waiting_queue == [req]
++    assert req.sampling_params.max_new_tokens == 256
++    assert req.rope_profile is None
++
++
++def test_public_overflow_and_insufficient_scratch_reject_without_clipping_then_recover():
++    for prompt, output, capacity in [(261889, 256, 262336), (261888, 256, 262208)]:
++        scheduler, recv, req = native_intake(prompt, output, capacity)
++        handle(scheduler, recv, req)
++        assert req.finished() and scheduler.waiting_queue == []
++        assert req.sampling_params.max_new_tokens == output
++        req.init_next_round_input.assert_not_called()
++    scheduler, recv, req = native_intake(16, 4)
++    handle(scheduler, recv, req)
++    assert not req.finished() and scheduler.waiting_queue == [req]
++    assert req.sampling_params.max_new_tokens == 4
++
++
++def test_real_worker_advertises_public_context_without_legacy_minus_one_or_five():
++    runner = NS(effective_logical_max_total_num_tokens=262336,
++        logical_max_total_num_tokens=262336, token_to_kv_pool_allocator=object(),
++        max_running_requests=512, forward_stream=None,
++        req_to_token_pool=NS(size=512, max_context_len=262215), token_to_kv_pool=NS(size=262336))
++    worker = NS(model_config=NS(context_len=262144, request_static_yarn_config=None,
++        xing_eagle_context_headroom=8), model_runner=runner, dllm_algorithm=None, random_seed=1, device="cuda")
++    with patch("sglang.srt.managers.tp_worker.page_interleave_shard_size", return_value=1), patch(
++        "sglang.srt.managers.tp_worker.get_schedule", return_value=NS(max_prefill_tokens=8192, max_queued_requests=None)):
++        assert TpModelWorker.get_worker_info(worker)[4:6] == (262144, 262144)
++        worker.model_config.xing_eagle_context_headroom = 0
++        assert TpModelWorker.get_worker_info(worker)[4:6] == (262143, 262138)
++
++
++@pytest.mark.parametrize("draft", [False, True])
++def test_real_server_args_model_config_enables_only_fixed_native_recipe(tmp_path, draft):
++    fixture = Path(__file__).parents[1] / "models/xing4_configs/bf16.json"
++    (tmp_path / "config.json").write_text(fixture.read_text())
++    args = ServerArgs(model_path=str(tmp_path), trust_remote_code=False,
++        context_length=262144, device="cuda", dtype="bfloat16", kv_cache_dtype="fp8_e4m3",
++        tp_size=1, page_size=64, attention_backend="trtllm_mla", speculative_algorithm="EAGLE",
++        speculative_num_steps=3, speculative_eagle_topk=1, speculative_num_draft_tokens=4,
++        speculative_attention_mode="prefill", chunked_prefill_size=8192, prefill_decode_interval=8)
++    model = ModelConfig.from_server_args(args, is_draft_model=draft)
++    assert model.xing_eagle_context_headroom == 8
++    assert model.context_len == 262144 and model.request_static_yarn_config is None
++    assert model.hf_text_config.rope_scaling["_xing_eagle_rope_headroom"] == 8
++    assert args.cuda_graph_backend_prefill != "disabled"
++    for field in ("prefill_attention_backend", "decode_attention_backend", "speculative_draft_attention_backend"):
++        setattr(args, field, "flashmla")
++        control = ModelConfig.from_server_args(args)
++        assert control.xing_eagle_context_headroom == 0
++        assert "_xing_eagle_rope_headroom" not in control.hf_text_config.rope_scaling
++        setattr(args, field, None)
++    args.page_size = 1
++    assert ModelConfig.from_server_args(args).xing_eagle_context_headroom == 0
++    args.page_size, args.speculative_eagle_topk = 64, 2
++    assert ModelConfig.from_server_args(args).xing_eagle_context_headroom == 0
++    args.speculative_eagle_topk, args.speculative_adaptive = 1, True
++    assert ModelConfig.from_server_args(args).xing_eagle_context_headroom == 0
++
++
++@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
++def test_real_rope_preserves_native_table_and_covers_last_speculative_step(dtype):
++    params = dict(rope_type="deepseek_yarn", factor=64, original_max_position_embeddings=4096,
++        beta_fast=32, beta_slow=1, mscale=1, mscale_all_dim=1)
++    kwargs = dict(head_size=64, rotary_dim=64, max_position=262144, base=10000,
++        is_neox_style=False, dtype=dtype)
++    native = get_rope(**kwargs, rope_scaling=params)
++    extended = get_rope(**kwargs, rope_scaling={**params, "_xing_eagle_rope_headroom": 8})
++    assert extended.cos_sin_cache.shape[0] == 262152
++    torch.testing.assert_close(extended.cos_sin_cache[:262144], native.cos_sin_cache, rtol=0, atol=0)
++    native._ensure_cos_sin_cache_length(262151)
++    positions = torch.tensor([262143, 262144, 262146, 262151])
++    q, k = torch.randn(4, 2, 64).to(dtype), torch.randn(4, 1, 64).to(dtype)
++    actual, reference = extended.forward_native(positions, q, k), native.forward_native(positions, q, k)
++    for result, expected in zip(actual, reference):
++        torch.testing.assert_close(result, expected, rtol=0, atol=0)
++
++
++def test_actual_allocator_rounding_and_final_accepted_run_fit_reserved_row_and_emitted_cap():
++    # Real page rounding at the final public context step: double-buffer8 is
++    # scratch, and row headroom8+page63 can hold the rounded allocation.
++    with patch("sglang.srt.mem_cache.allocation_sizing.get_spec", return_value=NS(
++        speculative_algorithm="EAGLE", speculative_num_steps=3, speculative_eagle_topk=1,
++    )), patch("sglang.srt.mem_cache.allocation_sizing.max_speculative_num_draft_tokens", return_value=4), patch(
++        "sglang.srt.mem_cache.allocation_sizing.get_schedule", return_value=NS(page_size=64)
++    ), patch("sglang.srt.mem_cache.allocation_sizing.get_parallel", return_value=NS(attn_dcp_size=1)):
++        reserve = get_alloc_reserve_per_decode()
++        row_headroom = get_req_to_token_extra_context_len()
++    assert reserve == 8 and row_headroom == 71
++    req = NS(kv=NS(kv_allocated_len=262144, kv_committed_len=262143))
++    cur, nxt, needed = page_aligned_decode_alloc_lens([req], reserve=reserve, page_size=64)
++    assert cur == [262144] and nxt == [262208] and needed == 64
++    assert nxt[0] <= 262144 + row_headroom
++    scheduler, recv, actual_req = native_intake(261888, 256)
++    handle(scheduler, recv, actual_req)
++    actual_req.output_ids = array("q", [19] * 259)
++    actual_req.reasoning_tokens = 259
++    actual_req.update_finish_state(new_accepted_len=4)
++    assert actual_req.finished_len == 256 and len(actual_req.output_ids_through_stop) == 256
++    assert actual_req.reasoning_tokens == 256
++    assert len(actual_req.output_ids) == 259  # owned scratch is retained for normal release
++
++
++@pytest.mark.parametrize("headroom", [0, 8])
++def test_real_backend_construction_and_graph_metadata_cover_native_tail(headroom):
++    from sglang.srt.layers.attention import flashinfer_mla_backend as fi
++    from sglang.srt.layers.attention import trtllm_mla_backend as trt
++    from sglang.srt.model_executor.forward_batch_info import ForwardMode
++
++    config = NS(context_len=262144, xing_eagle_context_headroom=headroom,
++        num_attention_heads=64, get_num_kv_heads=lambda size: 1, kv_lora_rank=512,
++        qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128, scaling=1.0)
++    runner = NS(model_config=config, device="cpu", page_size=64,
++        req_to_token_pool=NS(size=2, req_to_token=torch.zeros((2, 262215), dtype=torch.int32)),
++        token_to_kv_pool=object(), kv_index_translator=NS(is_translating=False),
++        dtype=torch.bfloat16, kv_cache_dtype=torch.float8_e4m3fn,
++        max_running_requests=2, is_draft_worker=False)
++    parallel = NS(attn_tp_size=1, attn_dcp_size=1, dcp_enabled=False)
++    schedule = NS(disable_chunked_prefix_cache=True, page_size=64)
++    zeros = torch.zeros
++
++    def cpu_zeros(*args, **kwargs):
++        # Exercise real Python buffer construction with CPU tensors. CUDA-only
++        # wrapper/kernel entry points are isolated below; no inference is run.
++        if kwargs.get("device") == "cuda":
++            kwargs["device"] = "cpu"
++        kwargs.pop("pin_memory", None)
++        return zeros(*args, **kwargs)
++
++    with ExitStack() as stack:
++        stack.enter_context(patch.object(torch, "zeros", side_effect=cpu_zeros))
++        for module in (fi, trt):
++            stack.enter_context(patch.object(module, "get_parallel", return_value=parallel))
++            stack.enter_context(patch.object(module, "get_schedule", return_value=schedule))
++            stack.enter_context(patch.object(module, "get_buffer", return_value=torch.empty(1)))
++        stack.enter_context(patch.object(fi, "get_cuda_graph_max_batch_size", side_effect=lambda size: size))
++        stack.enter_context(patch.object(fi, "get_disagg", return_value=NS(disaggregation_mode="null")))
++        stack.enter_context(patch.object(fi, "get_platform", return_value=NS(is_sm100=False)))
++        stack.enter_context(patch.object(fi, "BatchMLAPagedAttentionWrapper", create=True, return_value=MagicMock()))
++        stack.enter_context(patch.object(fi, "BatchPrefillWithRaggedKVCacheWrapper", create=True, return_value=MagicMock()))
++        stack.enter_context(patch.object(trt, "get_spec", return_value=NS(speculative_num_draft_tokens=4)))
++        stack.enter_context(patch.object(trt, "get_kv_shard_pool", return_value=None))
++        stack.enter_context(patch.object(trt, "make_persistent_multi_ctas_kv_counter_buffer", return_value=torch.empty(1)))
++        stack.enter_context(patch.object(trt, "can_use_set_mla_kv_concat_q_fp8", return_value=False))
++        stack.enter_context(patch.object(trt, "maybe_create_verify_mask", return_value=None))
++        backend = trt.TRTLLMMLABackend(runner)
++        backend.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
++        for mode in (ForwardMode.TARGET_VERIFY, ForwardMode.DRAFT_EXTEND_V2):
++            backend._init_cuda_graph_metadata(2, 8, mode, torch.tensor([262143, 16]), "cpu")
++            metadata = backend.forward_decode_metadata
++            assert metadata.max_seq_len_k == 262144 + headroom
++            assert metadata.block_kv_indices.shape[1] * 64 >= 262144 + headroom
++        draft = fi.FlashInferMLAMultiStepDraftBackend(runner, topk=1, speculative_num_steps=3)
++        draft.init_cuda_graph_state(max_bs=2, max_num_tokens=8)
++    assert config.context_len == 262144
++    assert backend.max_context_len == draft.max_context_len == 262144 + headroom
++    assert draft.cuda_graph_kv_indices.shape == (3, 2 * (262144 + headroom))
++    if headroom:
++        # Two last-step requests can still execute the entire draft/verify run.
++        required = draft_kv_indices_used_len(2 * 262143, topk=1, bs=2, num_steps=3)
++        assert required <= draft.cuda_graph_kv_indices.shape[1]
++        assert backend.forward_decode_metadata.block_kv_indices.shape[1] >= 4097
++
++
++def test_auto_truncate_cannot_shrink_native_public_input_or_output():
++    obj = manager()
++    obj.allow_auto_truncate = True
++    req = NS(sampling_params={"max_new_tokens": 256})
++    ids = list(range(261889))
++    execution = NS(features=NS(enable_encoder_swa_bounded_replay=False))
++    with patch("sglang.srt.managers.tokenizer_manager.get_exec", return_value=execution):
++        with pytest.raises(ValueError, match="261889 tokens from the input"):
++            obj._validate_token_budget(req, ids)
++    assert len(ids) == 261889 and req.sampling_params["max_new_tokens"] == 256
++
++
++@pytest.mark.parametrize("prompt,output,capacity,accepted", [
++    (262143, 1, 262272, True),
++    (262143, 1, 262208, False),
++    (261889, 255, 262272, True),
++])
++def test_allocator_spare_page_covers_tail_without_duplicate_scratch_reservation(
++    prompt, output, capacity, accepted
++):
++    scheduler, recv, req = native_intake(prompt, output, capacity)
++    handle(scheduler, recv, req)
++    assert req.sampling_params.max_new_tokens == output
++    assert (scheduler.waiting_queue == [req]) is accepted
++    assert req.finished() is not accepted
++    # Public C + eight lookahead slots fits the existing next physical page.
++    tail = NS(kv=NS(kv_allocated_len=262144, kv_committed_len=262143))
++    _, lengths, _ = page_aligned_decode_alloc_lens([tail], reserve=8, page_size=64)
++    if accepted:
++        assert lengths[0] <= capacity

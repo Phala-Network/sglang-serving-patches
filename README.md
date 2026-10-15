@@ -32,6 +32,13 @@ extends that selection with qualified JSON/reference/parser and stream-lifecycle
 fixes. Its 19-step exact replay preserves the previous 15 entries once and
 leaves the shared integration and GGUF selections unchanged.
 
+[Xing4 native EAGLE public context](versions/v0.5.21/NATIVE-EAGLE-PUBLIC-BUDGET.md)
+keeps speculative scratch outside public262144 in the fixed native recipe. Its
+60-step exact replay preserves the earlier59 patch bytes;16 dedicated and166
+affected CPU cases pass, with10 explicit CUDA skips. Image/GPU gates are separate.
+[Request-static 64/128](versions/v0.5.21/XING4-DYNAMIC-YARN.md) retains its own
+compatibility guard and continues to reject EAGLE.
+
 The phala-v0.5.21-7 source maps the unchanged phala-6 prefix plus three GGUF
 increments to complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
 Its original build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;

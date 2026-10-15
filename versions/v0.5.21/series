@@ -47,3 +47,14 @@ patches/build/0046-source-bound-yarn-runtime-packaging.patch
 patches/models/qwen/0047-qwen35-gguf-loader-vision-config.patch
 patches/models/qwen/0048-gguf-prefill-dense-1024.patch
 patches/build/0049-model894-yarn-packaging-and-config-regression.patch
+patches/models/xing4/0050-native-xing4-stable.patch
+patches/models/xing4/0051-official-xing-tokenizer-data-only.patch
+patches/models/xing4/0052-request-static-yarn-public-budget.patch
+patches/models/xing4/0053-zero-output-empty-pool-rejection.patch
+patches/common/0054-safe-scheduler-startup-diagnostics.patch
+patches/common/0055-startup-weight-shape-context.patch
+patches/models/xing4/0056-stable-decoder-construction.patch
+patches/models/xing4/0057-stable-forward-terminal-api.patch
+patches/common/0058-legacy-profiler-export-failure.patch
+patches/models/xing4/0059-startup-spec-identity.patch
+patches/models/xing4/0060-native-eagle-public-budget.patch

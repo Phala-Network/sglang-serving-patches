@@ -1,3 +1,7 @@
+The native Xing EAGLE budget repair keeps input/output within public262144 and supplies independent internal scratch. The [60-step exact replay](NATIVE-EAGLE-BUDGET-SOURCE-VERIFICATION.json) preserves all59 earlier patch bytes. Dedicated16/16 and affected166 CPU cases pass, with10 explicit CUDA skips. Final-image and GPU gates remain separate; see [the repair contract](NATIVE-EAGLE-PUBLIC-BUDGET.md).
+
+The Xing runtime RC5.2 candidate fixes startup observation through the actual EAGLEWorkerV2 draft-worker property. Source14 affected cases pass on201; the prior installed image reproduces the original AttributeError. All58 earlier patch bytes remain unchanged, and the [59-step exact replay](RC52-SOURCE-VERIFICATION.json) reproduces the complete engine tree. Final-image and GPU/service gates remain separate.
+
 # SGLang 0.5.21 compatibility maintenance
 
 The [K3 feedback repair](K3-PROTOCOL2.md) extends the unchanged 15-entry
@@ -12,11 +16,19 @@ The deployed mcfix3 [K3 protocol repair](K3-PROTOCOL1.md) preserves the canonica
 first eight patches and adds six qualified source commits plus exact-byte/image
 packaging. Its [release selection](releases/phala-v0.5.21-3-k3protocol1.json)
 and [series](series.k3protocol1) reuse existing patch paths; the current GGUF
-49-step `stack.json` and `series` below remain unchanged.
+49-step release remains frozen; the current canonical `stack.json` and `series`
+continue that prefix with Xing maintenance.
+
+Xing request-static MLA YaRN extends the same ordered stack at steps 0052/0053,
+shared startup diagnostics 0054/0055, stable construction 0056 and forward/terminal
+API repair 0057. All 56 earlier patch files are preserved. The 57-step replay
+matches complete engine `7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93`; source CPU checks
+on 201 report 159 passed and 10 explicit CUDA skips. Actual final-image and
+GPU/service acceptance remain separate gates. See
+[Xing source and image contract](XING4-DYNAMIC-YARN.md).
 
 The phala-v0.5.21-7 source adds three GGUF increments to the unchanged
-published phala-6 46-step prefix. The canonical 49-step [stack](stack.json),
-[series](series) and [source/image qualification](qualification.json) bind
+published phala-6 46-step prefix. The frozen49-step prefix and [source/image qualification](qualification.json) bind
 complete engine `c2ce5382dad45fd85e39f5d4e1d93165225eb34d`.
 The original tested build input is `90adf120aa19e683f95d8702c89e31fb1c3d4ab0`;
 subsequent metadata repair changes neither patch bytes nor series.
@@ -117,3 +129,11 @@ Caller IDs that independently reuse that parent/child naming convention remain
 ambiguous; this change does not introduce a complete ownership registry.
 
 Patch 0008 is normalized from its original mail-patch wrapper to the same full-index deterministic diff format as the remaining stack; its source commit and resulting tree are unchanged.
+
+Xing4 native support extends the same stack at steps 0050/0051: the frozen
+upstream PR39793 port and stable repairs, then the fixed official SentencePiece
+tokenizer installed/registered for data-only model mounts. The canonical
+51-step source replay matches the complete engine tree. Twenty focused CPU
+cases include both official tokenizer vocabularies and explicit environment
+authentication; GPU and final-image checks remain separate. The reproducible
+ordered patch-content digest is defined in [XING4-PATCH-CONTENT.json](XING4-PATCH-CONTENT.json).

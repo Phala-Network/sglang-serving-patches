@@ -1,0 +1,161 @@
+diff --git a/docker/xing4/verify_cpu.sh b/docker/xing4/verify_cpu.sh
+index 9382671eceb919a2e0f4c575a86aaf39a5c06d52..78614422bac790310073d1d90b8e44e584e94029 100644
+--- a/docker/xing4/verify_cpu.sh
++++ b/docker/xing4/verify_cpu.sh
+@@ -49,4 +49,5 @@ python -m pytest -q --junitxml="${JUNIT_XML:-/tmp/xing4-cpu.xml}" \
+   test/registered/unit/managers/test_request_static_yarn_admission_reject.py \
+   test/registered/unit/models/test_xing4_native.py \
+   test/registered/unit/models/test_xing4_tokenizer.py \
+-  test/registered/unit/models/test_xing4_runtime_auth.py
++  test/registered/unit/models/test_xing4_runtime_auth.py \
++  test/registered/unit/utils/test_startup_failure_diagnostics.py
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 1ab8c2823bcd0c4edbdce42c39317189bf5c5665..8a9198f90454f23c19a2eb93440d33d0dd09f823 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -378,12 +378,13 @@ from sglang.srt.utils.hf_transformers_utils import (
+ )
+ from sglang.srt.utils.msgspec_utils import msgspec_to_builtins
+ from sglang.srt.utils.numa_utils import get_numa_node_if_available, numa_bind_to_node
++from sglang.srt.utils.startup_diagnostics import scheduler_exception_diagnostic
+ from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+ from sglang.srt.utils.weight_versions import (
+     compute_weight_version_spans,
+     record_weight_version_events,
+ )
+-from sglang.utils import TypeBasedDispatcher, get_exception_traceback
++from sglang.utils import TypeBasedDispatcher
+ 
+ if is_mps():
+     CudaStreamContext = nullcontext
+@@ -6214,9 +6215,14 @@ def run_scheduler_process(
+         # Run the event loop (blocks until a ShutdownReq sets gracefully_exit)
+         scheduler.run_event_loop()
+ 
+-    except Exception:
+-        traceback = get_exception_traceback()
+-        logger.error('Scheduler hit an exception: <redacted>')
++    except Exception as error:
++        logger.error(
++            "SCHEDULER_FAILURE %s",
++            scheduler_exception_diagnostic(
++                error, startup=scheduler is None,
++                credentials=(server_args.api_key, server_args.admin_api_key),
++            ),
++        )
+         parent_process.send_signal(signal.SIGQUIT)
+         # Opt-in: SIGKILL the pgroup so sibling ranks don't spew thousands
+         # of NCCL/TCPStore tracebacks before they finally die.
+diff --git a/python/sglang/srt/utils/startup_diagnostics.py b/python/sglang/srt/utils/startup_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a70d8885564c6a7e670d1d401a06e8dcade90596
+--- /dev/null
++++ b/python/sglang/srt/utils/startup_diagnostics.py
+@@ -0,0 +1,53 @@
++"""Bounded fatal-worker diagnostics without traceback locals or request data."""
++
++import json
++import os
++from pathlib import Path
++import re
++
++_CREDENTIAL_ENVS = (
++    "TOKEN", "SGLANG_API_KEY", "SGLANG_ADMIN_API_KEY", "HF_TOKEN",
++    "HUGGING_FACE_HUB_TOKEN", "PHALA_CLOUD_API_KEY",
++)
++
++
++def scheduler_exception_diagnostic(error, *, startup, credentials=()):
++    """Only constructor failures may include a scrubbed exception message.
++
++    The event loop can carry private prompts/IDs in exception messages. Its
++    diagnostic records type and code locations only. Neither phase emits
++    frame locals, source lines, ServerArgs, request objects or environment.
++    """
++    secrets = [value for value in credentials if isinstance(value, str) and value]
++    secrets.extend(os.environ[name] for name in _CREDENTIAL_ENVS if os.environ.get(name))
++
++    def scrub(value):
++        for secret in sorted(set(secrets), key=len, reverse=True):
++            value = value.replace(secret, "<redacted>")
++        return re.sub(r"(?i)\bbearer\s+[^\s,;'\"]+", "Bearer <redacted>", value)
++
++    frames = []
++    tb = error.__traceback__
++    while tb is not None:
++        code = tb.tb_frame.f_code
++        # Paths identify code, never local variables or the source line.
++        filename = code.co_filename.replace("\\", "/")
++        filename = (
++            "sglang/" + filename.rsplit("/sglang/", 1)[1]
++            if "/sglang/" in filename else Path(filename).name
++        )
++        frames.append({"file": filename, "line": tb.tb_lineno, "function": code.co_name})
++        tb = tb.tb_next
++    diagnostic = {
++        "phase": "startup" if startup else "event_loop",
++        "exception_type": type(error).__module__ + "." + type(error).__name__,
++        "frames": frames[-24:],
++    }
++    if startup:
++        try:
++            message = scrub(str(error))
++        except Exception:
++            message = "<message unavailable>"
++        diagnostic["message"] = message[:1024]
++    # Also remove an exact credential from unusual code filenames/class names.
++    return scrub(json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")))
+diff --git a/test/registered/unit/utils/test_startup_failure_diagnostics.py b/test/registered/unit/utils/test_startup_failure_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..757fd0b9402a005c0d6a8cd776b14bbe194d64ad
+--- /dev/null
++++ b/test/registered/unit/utils/test_startup_failure_diagnostics.py
+@@ -0,0 +1,48 @@
++"""Fatal load errors remain diagnosable while credentials/locals stay private."""
++
++import json
++import logging
++
++from sglang.srt.utils.framework_log_privacy import FrameworkPrivacyFilter
++from sglang.srt.utils.startup_diagnostics import scheduler_exception_diagnostic
++
++
++def fail_loader(message):
++    private_prompt = "PRIVATE_FRAME_LOCAL_SENTINEL"
++    raise RuntimeError(message)
++
++
++def test_startup_keeps_failure_shape_and_code_locations_but_scrubs_secrets(monkeypatch):
++    secret = "synthetic-token-12345678901234567890"
++    api_key = "synthetic-api-09876543210987654321"
++    monkeypatch.setenv("TOKEN", secret)
++    try:
++        fail_loader(f"expected shape (4, 3584), got (1, 3584); {secret}; {api_key}; Bearer other-credential")
++    except RuntimeError as error:
++        rendered = scheduler_exception_diagnostic(error, startup=True, credentials=(api_key,))
++    assert secret not in rendered and api_key not in rendered
++    assert "other-credential" not in rendered and "PRIVATE_FRAME_LOCAL_SENTINEL" not in rendered
++    diagnostic = json.loads(rendered)
++    assert diagnostic["exception_type"] == "builtins.RuntimeError"
++    assert "expected shape (4, 3584), got (1, 3584)" in diagnostic["message"]
++    assert diagnostic["frames"][-1]["function"] == "fail_loader"
++    assert diagnostic["frames"][-1]["line"] > 0
++    assert set(diagnostic["frames"][-1]) == {"file", "line", "function"}
++
++
++def test_event_loop_omits_private_message_and_oversized_startup_is_bounded():
++    try:
++        fail_loader("PRIVATE_REQUEST_TEXT_SENTINEL" * 1000)
++    except RuntimeError as error:
++        runtime = json.loads(scheduler_exception_diagnostic(error, startup=False))
++        startup = json.loads(scheduler_exception_diagnostic(error, startup=True))
++    assert "message" not in runtime
++    assert "PRIVATE_REQUEST_TEXT_SENTINEL" not in json.dumps(runtime)
++    assert len(startup["message"]) == 1024
++
++
++def test_framework_privacy_does_not_mask_safe_worker_diagnostics():
++    record = logging.LogRecord("sglang.srt.managers.scheduler", logging.ERROR, __file__, 1,
++                               "SCHEDULER_FAILURE %s", ('{"exception_type":"builtins.KeyError"}',), None)
++    assert FrameworkPrivacyFilter().filter(record)
++    assert "builtins.KeyError" in record.getMessage()
