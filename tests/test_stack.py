@@ -169,6 +169,53 @@ class StackTests(unittest.TestCase):
         self.assertEqual(result["patch_count"], 2)
         self.assertEqual(before, self.source_snapshot())
 
+    def test_declared_source_range_verifies_and_rejects_wrong_ancestor(self):
+        data = STACK.git(
+            self.source,
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-renames",
+            self.base,
+            self.engine,
+            "--",
+        ).stdout
+        (self.root / "aggregate.patch").write_bytes(data)
+        entry = {
+            "id": "aggregate",
+            "path": "aggregate.patch",
+            "source_commit": self.engine,
+            "source_parent": self.frozen,
+            "source_range_base": self.base,
+            "result_tree": self.tree(self.engine),
+            "sha256": STACK.sha256(data),
+        }
+        document = {
+            "schema": "phala.sglang.unified-stack.v1",
+            "upstream": {"commit": self.base},
+            "engine": {"commit": self.engine, "tree": self.tree(self.engine)},
+            "patches": [entry],
+        }
+        stack_file = self.root / "stack.json"
+        stack_file.write_bytes(STACK.canonical(document))
+        before = self.source_snapshot()
+        result = STACK.verify(self.source, self.root)
+        self.assertEqual(result["engine_tree"], self.tree(self.engine))
+        self.assertEqual(result["patch_count"], 1)
+        self.assertEqual(before, self.source_snapshot())
+
+        # Keep the ordered-chain check satisfied so this valid but wrong
+        # ancestor must still fail the independent source-byte binding.
+        entry["source_range_base"] = self.frozen
+        document["upstream"]["commit"] = self.frozen
+        stack_file.write_bytes(STACK.canonical(document))
+        with self.assertRaisesRegex(
+            STACK.StackError, "Source-to-patch export differs"
+        ):
+            STACK.verify(self.source, self.root)
+        self.assertEqual(before, self.source_snapshot())
+
     def test_mail_header_change_with_updated_hash_still_fails_source_binding(self):
         entry, data = self.use_mail_patch()
         self.assertIn(b"Subject: [PATCH] fixture", data)

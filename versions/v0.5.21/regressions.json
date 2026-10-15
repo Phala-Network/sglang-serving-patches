@@ -210,6 +210,10 @@
       {
         "name": "test_xing_native_eagle_public_budget",
         "path": "test/registered/unit/managers/test_xing_native_eagle_public_budget.py"
+      },
+      {
+        "name": "test_xing_request_static_yarn_eagle",
+        "path": "test/registered/unit/model_executor/test_xing_request_static_yarn_eagle.py"
       }
     ],
     "gpu-fp8-pool": [
