@@ -1,0 +1,775 @@
+diff --git a/docker/phala/kimi-protocol3-ref3/Dockerfile b/docker/phala/kimi-protocol3-ref3/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..d80a7ea47109152d29c151d3633dcc19b0170e4c
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref3/Dockerfile
+@@ -0,0 +1,8 @@
++FROM ghcr.io/phala-network/sglang:v0.5.21-phala-3-k3protocol3-ref2@sha256:59cf8ba0a8d3aa45dd9592f3aa9de8264da9484d9bc524313ba7308c2be0fa04
++ARG ENGINE_REVISION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_REVISION}" \
++      org.opencontainers.image.version="v0.5.21-phala-3-k3protocol3-ref3" \
++      io.phala.sglang.revision="${ENGINE_REVISION}"
++COPY python/sglang/srt/function_call/kimik3_structural_tag.py /sgl-workspace/sglang/python/sglang/srt/function_call/kimik3_structural_tag.py
++COPY python/sglang/srt/constrained/json_schema_intersections.py /sgl-workspace/sglang/python/sglang/srt/constrained/json_schema_intersections.py
+diff --git a/python/sglang/srt/constrained/json_schema_intersections.py b/python/sglang/srt/constrained/json_schema_intersections.py
+index c612f7aadbed0bb5b1f44373bb137122874dc58d..75075acbdbd37e5a078097a30f54195a1c8aa9ce 100644
+--- a/python/sglang/srt/constrained/json_schema_intersections.py
++++ b/python/sglang/srt/constrained/json_schema_intersections.py
+@@ -69,7 +69,7 @@ def _possible_types(schema):
+ 
+ def intersect_ref_min_length(
+     schema: Union[bool, Dict[str, Any]], minimum: int, depth: int = 0,
+-    _budget=None, *, maximum=None, _types=None,
++    _budget=None, *, maximum=None, _types=None, _leaf_only=False,
+ ):
+     """Exact length intersection for leaf values and pure non-reference unions."""
+     if _budget is None:
+@@ -86,6 +86,19 @@ def intersect_ref_min_length(
+     if minimum == 0 and maximum is None and _types is None:
+         return schema
+     assertions = set(schema).difference(_SCHEMA_METADATA_KEYWORDS)
++    if assertions == {"allOf"}:
++        branches = schema["allOf"]
++        if isinstance(branches, list) and len(branches) == 1:
++            branch = branches[0]
++            # References/resources are already bound. Retain an inherited
++            # dialect when lifting the branch: normalization runs again and
++            # must still interpret any retained draft-specific assertions.
++            if isinstance(branch, dict) and "$schema" in schema:
++                branch = {"$schema": schema["$schema"], **branch}
++            return intersect_ref_min_length(
++                branch, minimum, depth + 1, _budget,
++                maximum=maximum, _types=_types, _leaf_only=True,
++            )
+     for keyword in ("anyOf", "oneOf"):
+         if assertions == {keyword} and isinstance(schema[keyword], list):
+             if keyword == "oneOf":
+@@ -100,7 +113,7 @@ def intersect_ref_min_length(
+             return dict(schema, **{keyword: [
+                 intersect_ref_min_length(
+                     branch, minimum, depth + 1, _budget,
+-                    maximum=maximum, _types=_types,
++                    maximum=maximum, _types=_types, _leaf_only=_leaf_only,
+                 )
+                 for branch in schema[keyword]
+             ]})
+@@ -114,11 +127,18 @@ def intersect_ref_min_length(
+         if not types:
+             return False
+         schema = dict(schema, type=types)
+-    if isinstance(types, list) and types and all(kind in _JSON_TYPES for kind in types) and "string" not in types:
++    allowed = {"type", "minLength", "maxLength", "pattern", "enum", "const"}
++    # Newly lowered wrappers use only the already proven length/finite leaves.
++    # Arbitrary non-string containers and numeric assertions need a separate
++    # value proof; the legacy non-wrapper passthrough is not such a proof.
++    if _leaf_only and assertions.difference(allowed):
++        raise ValueError("JSON Schema cannot prove this allOf $ref length intersection")
++    if (isinstance(types, list) and types
++            and all(kind in _JSON_TYPES for kind in types) and "string" not in types
++            and (not _leaf_only or not {"enum", "const"}.intersection(schema))):
+         if assertions.intersection({"allOf", "anyOf", "oneOf", "not", "$ref"}):
+             raise ValueError("JSON Schema cannot prove this $ref minLength intersection")
+         return schema
+-    allowed = {"type", "minLength", "maxLength", "pattern", "enum", "const"}
+     if assertions.difference(allowed):
+         raise ValueError("JSON Schema cannot prove this $ref minLength intersection")
+     result = dict(schema)
+diff --git a/python/sglang/srt/function_call/kimik3_structural_tag.py b/python/sglang/srt/function_call/kimik3_structural_tag.py
+index eb00057421a47dc0f3d7a360dc8dd1f969138f0a..70738ae5ab653bf327d86a97b5d21fea5a2cde18 100644
+--- a/python/sglang/srt/function_call/kimik3_structural_tag.py
++++ b/python/sglang/srt/function_call/kimik3_structural_tag.py
+@@ -717,18 +717,23 @@ def _strict_arguments_format(
+ 
+ 
+ 
+-def _checked_root_arguments_format(parameters, root_schema):
++def _checked_root_arguments_format(parameters, root_schema, *, prove_values=False):
+     if not isinstance(parameters, dict):
+         if parameters is False:
+             raise _EmptyRootLanguage("Kimi K3 root schema accepts no values")
+         raise ValueError("Kimi K3 tool parameters must be an object schema")
++    lowered = _lower_presence_conditional(parameters)
++    prove_values = prove_values or lowered is not parameters
++    parameters = lowered
+     if "not" in parameters or "oneOf" in parameters:
+-        return _root_logic_arguments_format(parameters, root_schema)
++        return _root_logic_arguments_format(parameters, root_schema, prove_values=prove_values)
+     unsupported = set(parameters).difference(_ROOT_SCHEMA_KEYWORDS)
+     if unsupported:
+         raise ValueError("Kimi K3 tool parameters have unsupported root schema keywords: " + repr(sorted(unsupported)))
+     if "object" not in _schema_types(parameters, root_schema):
+         raise ValueError("Kimi K3 tool parameters must be an object schema")
++    if prove_values:
++        return _finite_constrained_arguments_format(parameters, root_schema, prove_values=True)
+     return _strict_arguments_format(parameters, root_schema)
+ 
+ 
+@@ -748,7 +753,47 @@ def _presence_required(schema):
+     return names
+ 
+ 
+-def _root_logic_arguments_format(parameters, root_schema):
++def _lower_presence_conditional(parameters):
++    """Exact object implication: required(a) => required(b, ...) is a dependency.
++
++    Only the value-proven finite closed-object path consumes the result.
++    A multi-name trigger is a conjunction, so turning it into individual edges
++    would strengthen the schema. Value tests and else clauses need other logic.
++    """
++    if "if" not in parameters and "then" not in parameters and "else" not in parameters:
++        return parameters
++    if "if" not in parameters or "then" not in parameters or "else" in parameters:
++        raise ValueError("Kimi K3 conditional requires singleton required if/then without else")
++    trigger = _presence_required(parameters["if"])
++    targets = _presence_required(parameters["then"])
++    if trigger is None or len(trigger) != 1 or targets is None:
++        raise ValueError("Kimi K3 conditional requires singleton required if/then without else")
++    dependencies = parameters.get("dependentRequired", {})
++    if not isinstance(dependencies, dict) or not all(
++        isinstance(key, str) and isinstance(value, list)
++        and all(isinstance(target, str) for target in value)
++        for key, value in dependencies.items()
++    ):
++        raise ValueError("Kimi K3 dependentRequired must map names to string lists")
++    properties = parameters.get("properties", {})
++    edge_count = sum(len(value) for value in dependencies.values())
++    if (
++        (isinstance(properties, dict) and len(properties) > 64)
++        or len(dependencies) > 4096
++        or edge_count > 4096
++    ):
++        raise ValueError("presence_resource_limit: conditional at most 64 properties and 4096 dependency edges")
++    dependencies = {key: list(value) for key, value in dependencies.items()}
++    dependencies[trigger[0]] = list(dict.fromkeys(dependencies.get(trigger[0], []) + targets))
++    if sum(len(value) for value in dependencies.values()) > 4096:
++        raise ValueError("presence_resource_limit: conditional at most 4096 dependency edges")
++    return {
++        **{key: value for key, value in parameters.items() if key not in ("if", "then")},
++        "dependentRequired": dependencies,
++    }
++
++
++def _root_logic_arguments_format(parameters, root_schema, *, prove_values=False):
+     if "not" in parameters and "oneOf" in parameters:
+         raise ValueError("Kimi K3 multiple root logic groups are unsupported")
+     if "object" not in _schema_types(parameters, root_schema):
+@@ -757,7 +802,7 @@ def _root_logic_arguments_format(parameters, root_schema):
+         negated = parameters["not"]
+         base = {key: value for key, value in parameters.items() if key != "not"}
+         if negated is False:
+-            return _checked_root_arguments_format(base, root_schema)
++            return _checked_root_arguments_format(base, root_schema, prove_values=prove_values)
+         if negated is True:
+             raise _EmptyRootLanguage("Kimi K3 not:true accepts no object values")
+         if isinstance(negated, dict) and not set(negated).difference(_SCHEMA_METADATA_KEYWORDS, {"type"}):
+@@ -767,7 +812,7 @@ def _root_logic_arguments_format(parameters, root_schema):
+                 raise ValueError("Kimi K3 not type is invalid")
+             if "object" in types:
+                 raise _EmptyRootLanguage("Kimi K3 not object type accepts no object values")
+-            return _checked_root_arguments_format(base, root_schema)
++            return _checked_root_arguments_format(base, root_schema, prove_values=prove_values)
+         names = _presence_required(negated)
+         if names is None:
+             raise ValueError("Kimi K3 root not shape is unsupported")
+@@ -807,6 +852,7 @@ def _disjoint_root_branches_format(parameters, root_schema):
+     for branch in branches:
+         if not isinstance(branch, dict) or branch.get("type") != "object" or branch.get("additionalProperties") is not False:
+             raise ValueError("Kimi K3 oneOf branches must be complete closed objects")
++        branch = _lower_presence_conditional(branch)
+         if set(branch).difference(_ROOT_SCHEMA_KEYWORDS):
+             raise ValueError("Kimi K3 oneOf branch has unsupported root assertions")
+         if not isinstance(branch.get("properties", {}), dict):
+diff --git a/test/registered/unit/constrained/test_k3_presence_conditional.py b/test/registered/unit/constrained/test_k3_presence_conditional.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..acb3a6b1e6fbed418320b75952d618c70673432e
+--- /dev/null
++++ b/test/registered/unit/constrained/test_k3_presence_conditional.py
+@@ -0,0 +1,353 @@
++"""Synthetic presence conditionals through the real K3/native grammar path.
++
++No production schemas or inference are used. An independent JSON Schema oracle
++checks every presence subset/order; unsupported conditions must still refuse.
++"""
++import copy
++import itertools
++import json
++
++import pytest
++import xgrammar as xgr
++from jsonschema import Draft6Validator, Draft7Validator, Draft202012Validator
++from xgrammar.base import _core
++from xgrammar.structural_tag import StructuralTag, TagFormat
++
++from sglang.srt.entrypoints.openai.protocol import Tool
++from sglang.srt.function_call import kimik3_structural_tag as k3
++
++
++def conditional(trigger="a", targets=("b",)):
++    return {"if": {"required": [trigger]}, "then": {"required": list(targets)}}
++
++
++def closed(**changes):
++    return dict(
++        type="object", additionalProperties=False,
++        properties={key: {"type": "integer", "minimum": 1} for key in "cabd"},
++        **changes,
++    )
++
++
++def build(schema):
++    before = copy.deepcopy(schema)
++    result = k3._tool_arguments_format(Tool(type="function", function={
++        "name": "synthetic", "strict": True, "parameters": schema,
++    }))
++    assert schema == before
++    return result
++
++
++def compile_schema(schema):
++    return xgr.GrammarCompiler(
++        xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1), max_threads=1,
++    ).compile_structural_tag(StructuralTag(
++        format=TagFormat(begin="[", end="]", content=build(schema)),
++    ))
++
++
++def accepts(compiled, data):
++    pieces = ["["]
++    for key, value in data.items():
++        kind = (
++            "json-string" if isinstance(value, str) else
++            "null" if value is None else "boolean" if isinstance(value, bool) else
++            "object" if isinstance(value, dict) else "array" if isinstance(value, list)
++            else "number"
++        )
++        pieces.append(
++            f'<|open|>argument key="{key}" type="{kind}"<|sep|>'
++            + json.dumps(value, ensure_ascii=False)
++            + "<|close|>argument<|sep|>"
++        )
++    matcher = xgr.GrammarMatcher(compiled)
++    return matcher.accept_string("".join(pieces) + "]") and matcher.is_completed()
++
++
++@pytest.mark.parametrize("changes,condition", [
++    ({}, conditional()),
++    ({}, conditional("c", ("a", "b"))),
++    ({"dependentRequired": {"c": ["d"], "a": ["b"]}}, conditional("c", ("a", "b"))),
++    ({"dependentRequired": {"a": ["a", "c", "c"], "c": ["d"]}}, conditional()),
++    ({"dependentRequired": {"b": ["c"]}, "required": ["a"]}, conditional()),
++    ({}, conditional("a", ("a",))),
++    ({}, conditional("a", ())),
++    ({}, conditional("missing", ("a",))),
++    ({}, conditional("a", ("missing",))),
++    ({"minProperties": 1}, conditional()),
++    ({"not": {"required": ["a", "b"]}}, conditional()),
++    ({"oneOf": [{"required": ["a"]}, {"required": ["c"]}]}, conditional()),
++])
++def test_native_conditionals_preserve_all_presence_subsets_and_orders(changes, condition):
++    schema = closed(**changes, **condition)
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    for size in range(5):
++        for names in itertools.permutations("cabd", size):
++            value = dict.fromkeys(names, 1)
++            assert accepts(compiled, value) == oracle.is_valid(value), (schema, value)
++    assert not accepts(compiled, {"a": 1, "b": 0})
++    assert not accepts(compiled, {"a": 1, "b": "wrong"})
++    assert not accepts(compiled, {"a": 1, "b": 1, "extra": 1})
++
++
++@pytest.mark.parametrize("dialect,validator", [
++    ("http://json-schema.org/draft-06/schema#", Draft6Validator),
++    ("http://json-schema.org/draft-07/schema#", Draft7Validator),
++    ("https://json-schema.org/draft/2020-12/schema", Draft202012Validator),
++])
++def test_condition_type_annotations_and_selected_dialect(dialect, validator):
++    schema = closed(**conditional())
++    schema["$schema"] = dialect
++    schema["if"].update(type="object", description="synthetic trigger")
++    schema["then"].update(type="object", title="synthetic consequence")
++    compiled = compile_schema(schema)
++    oracle = validator(schema)
++    for value in [{}, {"a": 1}, {"b": 1}, {"a": 1, "b": 1}]:
++        assert accepts(compiled, value) == oracle.is_valid(value)
++
++
++def test_no_type_root_and_object_domain_boundary():
++    schema = closed(**conditional())
++    schema.pop("type")
++    # Tool arguments are always an object. JSON Schema's vacuous required
++    # behavior on a scalar does not add scalar outputs to the XTML protocol.
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    for value in [{}, {"a": 1}, {"b": 1}, {"a": 1, "b": 1}]:
++        assert accepts(compiled, value) == oracle.is_valid(value)
++    for kind in ["null", "string", "number", "boolean", "array"]:
++        with pytest.raises(ValueError, match="object schema"):
++            build(dict(schema, type=kind))
++
++
++def test_draft4_remains_unsupported_at_root_and_referenced_resource():
++    schema = closed(**conditional())
++    schema["$schema"] = "http://json-schema.org/draft-04/schema#"
++    with pytest.raises(ValueError, match="unsupported_schema_dialect"):
++        build(schema)
++    with pytest.raises(ValueError, match="unsupported_schema_dialect"):
++        build({"$ref": "#/$defs/Params", "$defs": {"Params": schema}})
++
++
++def test_resource_dialects_and_ref_rehoming_preserve_conditional_values():
++    target = closed(**conditional())
++    target["properties"]["b"] = {
++        "type": "object", "properties": {"inner": {"$ref": "#/$defs/Integer"}},
++        "required": ["inner"], "additionalProperties": False,
++    }
++    # A modern resource lifts a root ref and a descendant value ref. Lowering
++    # changes only root presence; extraction must preserve the value's scope.
++    schema = {"$ref": "#/$defs/Params", "$defs": {
++        "Params": target, "Integer": {"type": "integer", "minimum": 1},
++    }}
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    for value in [
++        {}, {"a": 1}, {"b": {"inner": 1}}, {"a": 1, "b": {"inner": 1}},
++        {"a": 1, "b": {"inner": 0}}, {"a": 1, "b": {}},
++        {"a": 1, "b": {"inner": 1, "extra": 1}},
++    ]:
++        assert accepts(compiled, value) == oracle.is_valid(value), value
++    # The referenced resource explicitly selects draft 7 under a modern root;
++    # its if/then remains active while a modern-only dependency is annotation.
++    target["$id"] = "https://synthetic.invalid/params"
++    target["$schema"] = "http://json-schema.org/draft-07/schema#"
++    target["dependentRequired"] = {"d": ["c"]}
++    target["properties"]["b"] = {"type": "integer", "minimum": 1}
++    compiled = compile_schema(schema)
++    for value in [{"d": 1}, {"a": 1}, {"a": 1, "b": 1}]:
++        assert accepts(compiled, value) == Draft202012Validator(schema).is_valid(value)
++
++
++def test_conditional_dependency_and_ref_length_wrapper_combine_without_weakening():
++    schema = closed(**conditional())
++    schema["properties"]["b"] = {
++        "$ref": "#/$defs/Text", "minLength": 2, "maxLength": 3,
++    }
++    schema["$defs"] = {
++        "Text": {"allOf": [{"type": "string", "maxLength": 4}]},
++    }
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    samples = [{}, {"a": 1}]
++    for text in ["", "a", "ab", "abc", "abcd", "甲乙", None, 3]:
++        samples.extend([{"b": text}, {"a": 1, "b": text}, {"b": text, "a": 1}])
++    for value in samples:
++        assert accepts(compiled, value) == oracle.is_valid(value), value
++
++
++def test_false_and_missing_consequences_are_never_dropped():
++    schema = closed(**conditional())
++    schema["properties"]["b"] = False
++    compiled = compile_schema(schema)
++    assert accepts(compiled, {"d": 1})
++    for value in [{"a": 1}, {"a": 1, "b": 1}, {"b": 1}]:
++        assert not accepts(compiled, value)
++    schema["required"] = ["a"]
++    with pytest.raises(ValueError, match="no values"):
++        build(schema)
++
++
++@pytest.mark.parametrize("wrapper", [{}, {"not": False}, {"not": {"type": "string"}}])
++def test_conditional_value_proof_cannot_be_bypassed_by_root_wrappers(wrapper):
++    schema = closed(**conditional(), **wrapper)
++    schema["properties"]["b"] = {"type": "integer", "multipleOf": 2}
++    with pytest.raises(ValueError, match="multipleOf|ignored"):
++        build(schema)
++    schema["properties"]["b"] = {"type": "string", "pattern": "^a", "minLength": 2}
++    with pytest.raises(ValueError, match="unsupported active"):
++        build(schema)
++
++
++def test_conditional_const_siblings_remain_assertions_in_actual_native_grammar():
++    schema = closed(**conditional())
++    schema["properties"]["b"] = {"type": "integer", "const": 2, "minimum": 2}
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    for value in [{}, {"a": 1}, {"b": 2}, {"a": 1, "b": 1}, {"a": 1, "b": 2}]:
++        assert accepts(compiled, value) == oracle.is_valid(value), value
++    schema["properties"]["b"]["const"] = 1
++    compiled = compile_schema(schema)
++    assert accepts(compiled, {"d": 1})
++    for value in [{"a": 1}, {"a": 1, "b": 1}, {"a": 1, "b": 2}, {"b": 1}]:
++        assert not accepts(compiled, value)
++    schema["required"] = ["a"]
++    with pytest.raises(ValueError, match="no values"):
++        build(schema)
++
++
++def test_ordinary_no_conditional_path_does_not_add_value_proof(monkeypatch):
++    from sglang.srt.function_call import kimik3_root_constraints as proof
++    original = proof.prove_value
++    calls = []
++
++    def counted(schema, root):
++        calls.append(schema)
++        return original(schema, root)
++
++    monkeypatch.setattr(proof, "prove_value", counted)
++    build(closed())
++    build(closed(dependentRequired={"a": ["b"]}))
++    build(closed(**{"not": False}))
++    assert calls == []
++    build(closed(**conditional()))
++    assert len(calls) == 4
++
++
++def branch(label, trigger="a", targets=("b",)):
++    result = closed(required=["kind"], **conditional(trigger, targets))
++    result["properties"]["kind"] = {"type": "string", "const": label}
++    return result
++
++
++def test_disjoint_oneof_branch_conditions_preserve_xor_and_siblings():
++    schema = {"type": "object", "oneOf": [
++        branch("left"), branch("right", "b", ("c",)),
++    ]}
++    compiled = compile_schema(schema)
++    oracle = Draft202012Validator(schema)
++    for label in ["left", "right", "unknown"]:
++        for size in range(4):
++            for names in itertools.combinations("cab", size):
++                for order in itertools.permutations(("kind", *names)):
++                    value = {key: label if key == "kind" else 1 for key in order}
++                    assert accepts(compiled, value) == oracle.is_valid(value), value
++    assert not accepts(compiled, {"kind": "left", "a": 1, "b": 0})
++    assert not accepts(compiled, {"kind": "right", "b": 1, "c": "wrong"})
++    with pytest.raises(ValueError, match="discriminator"):
++        build({"oneOf": [branch("same"), branch("same", "b", ("c",))]})
++
++
++def test_empty_conditional_branch_does_not_widen_oneof():
++    left = branch("left", targets=("missing",))
++    left["required"].append("a")
++    schema = {"oneOf": [left, branch("right")]}
++    compiled = compile_schema(schema)
++    assert accepts(compiled, {"kind": "right"})
++    assert not accepts(compiled, {"kind": "left", "a": 1})
++    assert not accepts(compiled, {"kind": "right", "a": 1})
++
++
++@pytest.mark.parametrize("condition", [
++    {"if": {"required": ["a", "b"]}, "then": {"required": ["c"]}},
++    {"if": {"required": []}, "then": {"required": ["b"]}},
++    {"if": {"properties": {"a": {"const": 1}}}, "then": {"required": ["b"]}},
++    {"if": {"required": ["a"]}, "then": {"properties": {"b": {"const": 1}}}},
++    {"if": {"required": ["a"]}, "then": True},
++    {"if": True, "then": {"required": ["b"]}},
++    {"if": {"required": ["a"]}, "then": {"required": ["b"]}, "else": {}},
++    {"if": {"required": ["a"]}},
++    {"then": {"required": ["b"]}},
++    {"else": {"required": ["b"]}},
++    {"if": {"type": "string", "required": ["a"]}, "then": {"required": ["b"]}},
++    {"if": {"required": ["a", "a"]}, "then": {"required": ["b"]}},
++    {"if": {"required": "a"}, "then": {"required": ["b"]}},
++    {"if": {"required": ["a"]}, "then": {"required": ["b", "b"]}},
++])
++def test_unproven_conditions_remain_explicit_refusals(condition):
++    with pytest.raises(ValueError, match="conditional|presence"):
++        build(closed(**condition))
++    left = branch("left")
++    left.pop("if")
++    left.pop("then")
++    left.update(condition)
++    with pytest.raises(ValueError, match="conditional|presence"):
++        build({"oneOf": [left, branch("right")]})
++
++
++@pytest.mark.parametrize("changes", [
++    {"additionalProperties": True},
++    {"maxProperties": 2},
++    {"dependentRequired": []},
++    {"dependentRequired": {"a": "c"}},
++    {"dependentRequired": {"a": [1]}},
++    {"patternProperties": {"^a": {"type": "integer"}}},
++])
++def test_unsupported_siblings_are_not_lost(changes):
++    schema = closed(**conditional())
++    schema.update(changes)
++    with pytest.raises(ValueError):
++        build(schema)
++
++
++def test_parent_oneof_intersection_and_native_capability_stay_guarded(monkeypatch):
++    with pytest.raises(ValueError, match="parent assertions"):
++        build({"oneOf": [branch("left"), branch("right")], **conditional()})
++    monkeypatch.delattr(_core, "SupportsUnorderedConstraintsV1")
++    with pytest.raises(ValueError, match="native unordered constraints"):
++        build(closed(**conditional()))
++
++
++def test_conditional_resource_limits_and_existing_edge_merge():
++    schema = closed(dependentRequired={"a": ["a", "c", "c"], "c": ["d"]}, **conditional())
++    before = copy.deepcopy(schema)
++    lowered = k3._lower_presence_conditional(schema)
++    assert lowered["dependentRequired"] == {"a": ["a", "c", "b"], "c": ["d"]}
++    assert schema == before
++    names = [f"p{i}" for i in range(64)]
++    schema = dict(
++        type="object", additionalProperties=False,
++        properties={key: {"type": "integer"} for key in names},
++        dependentRequired={key: list(names) for key in names},
++        **conditional("p0", ("p1",)),
++    )
++    assert len(build(schema).elements) == 64
++    compiled = compile_schema(schema)
++    assert accepts(compiled, {})
++    assert accepts(compiled, dict.fromkeys(names[::-1], 1))
++    assert not accepts(compiled, {"p0": 1})
++    schema["properties"]["p64"] = {"type": "integer"}
++    with pytest.raises(ValueError, match="resource_limit"):
++        build(schema)
++    del schema["properties"]["p64"]
++    schema["dependentRequired"]["p0"].append("missing")
++    with pytest.raises(ValueError, match="resource_limit"):
++        build(schema)
++    schema["dependentRequired"]["p0"] = names[1:]
++    schema["then"] = {"required": ["missing1", "missing2"]}
++    with pytest.raises(ValueError, match="resource_limit"):
++        build(schema)
++    schema = closed(**conditional(targets=tuple(f"p{i}" for i in range(65))))
++    with pytest.raises(ValueError, match="resource_limit"):
++        build(schema)
+diff --git a/test/registered/unit/constrained/test_ref_length_single_allof.py b/test/registered/unit/constrained/test_ref_length_single_allof.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2104cf4651633eb421b9ec83f7ab22dda32c0158
+--- /dev/null
++++ b/test/registered/unit/constrained/test_ref_length_single_allof.py
+@@ -0,0 +1,228 @@
++"""Synthetic transparent allOf/ref-length cases; no captured request schemas."""
++import copy
++import json
++
++import pytest
++import xgrammar as xgr
++from jsonschema import validators
++
++from sglang.srt.constrained.json_schema_intersections import intersect_ref_min_length
++from sglang.srt.constrained.json_schema_validation import (
++    _iter_subschemas,
++    normalize_json_schema_resources as normalize,
++    validate_xgrammar_json_schema,
++)
++
++
++VALUES = [None, True, 0, 1, 1.5, "", "a", "ab", "abc", "abcd", "abcde", "ABC", "甲乙", [], {}, {"child": "a"}, {"child": "abc"}, {"child": 1}]
++
++
++def wrap(branch, **metadata):
++    return {"allOf": [branch], **metadata}
++
++
++def reference(target, **siblings):
++    return {"$ref": "#/$defs/Value", "$defs": {"Value": target}, **siblings}
++
++
++def assert_oracle_native(schema, values=VALUES):
++    before = copy.deepcopy(schema)
++    normalized = normalize(schema)
++    assert schema == before
++    assert normalize(normalized) == normalized
++    oracle = validators.validator_for(schema)(schema)
++    normalized_oracle = validators.validator_for(normalized)(normalized)
++    validate_xgrammar_json_schema(normalized)
++    grammar = xgr.Grammar.from_json_schema(normalized, strict_mode=False)
++    compiled = xgr.GrammarCompiler(xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1)).compile_grammar(grammar)
++    for value in values:
++        expected = oracle.is_valid(value)
++        assert normalized_oracle.is_valid(value) == expected, value
++        matcher = xgr.GrammarMatcher(compiled)
++        actual = matcher.accept_string(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) and matcher.is_completed()
++        assert actual == expected, value
++    return normalized
++
++
++@pytest.mark.parametrize("target", [
++    wrap({"type": "string"}),
++    wrap({"type": "string", "pattern": "^[a-z]*$", "maxLength": 5}),
++    wrap({"type": ["string", "null"]}),
++    wrap({"enum": ["a", "abc", "abcd", None, 1]}),
++    wrap({"anyOf": [{"type": "string", "maxLength": 4}, {"type": "integer"}]}),
++    wrap({"oneOf": [{"type": "string"}, {"type": "null"}]}),
++    wrap(True),
++    wrap(wrap({"type": "string", "maxLength": 3}, title="inner"), title="outer", examples=[{"$ref": "literal data"}]),
++])
++def test_transparent_wrapper_oracle_and_native(target):
++    assert_oracle_native(reference(target, minLength=2, maxLength=4))
++
++
++@pytest.mark.parametrize("branch", [False, {"type": "string", "maxLength": 1}])
++def test_proven_empty_wrapper_is_not_a_generic_failure(branch):
++    schema = reference(wrap(branch), minLength=2)
++    normalized = normalize(schema)
++    assert normalize(normalized) == normalized
++    assert intersect_ref_min_length(wrap(branch), 2) is False
++    oracle = validators.validator_for(schema)(schema)
++    assert not any(oracle.is_valid(value) for value in VALUES)
++
++
++def test_nested_ref_constraints_remain_explicit_with_resource_scope():
++    # The inner fragment names the child resource's Leaf, not the root's Leaf.
++    schema = reference(wrap({
++        "type": "object", "properties": {"child": {"$ref": "#/$defs/Leaf"}},
++        "required": ["child"], "additionalProperties": False,
++    }, **{"$id": "child", "$defs": {"Leaf": {"type": "string", "minLength": 3}}}), minLength=2)
++    schema["$defs"]["Leaf"] = {"type": "integer"}
++    before = copy.deepcopy(schema)
++    oracle = validators.validator_for(schema)(schema)
++    assert oracle.is_valid({"child": "abc"}) and not oracle.is_valid({"child": 1})
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        normalize(schema)
++    assert schema == before
++
++
++def test_inherited_dialect_does_not_drop_active_assertions():
++    schema = reference(wrap({
++        "type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
++        "dependencies": {"a": ["b"]}, "additionalProperties": False,
++    }, **{"$schema": "http://json-schema.org/draft-07/schema#"}), minLength=2)
++    before = copy.deepcopy(schema)
++    oracle = validators.validator_for(schema)(schema)
++    assert oracle.is_valid({"a": 1, "b": 2}) and not oracle.is_valid({"a": 1})
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        normalize(schema)
++    assert schema == before
++
++
++def test_bound_resource_id_and_unused_definitions_are_safe():
++    target = wrap({"type": "string", "maxLength": 3}, **{
++        "$id": "child", "$schema": "http://json-schema.org/draft-07/schema#",
++        "definitions": {"unused": {"$ref": "#/definitions/missing"}},
++    })
++    normalized = assert_oracle_native(reference(target, minLength=2))
++    assert any(node.get("$schema") == "http://json-schema.org/draft-07/schema#" for node, _ in _iter_subschemas(normalized))
++
++
++def test_explicit_branch_dialect_overrides_wrapper_dialect():
++    schema = reference(wrap({
++        "$schema": "https://json-schema.org/draft/2020-12/schema",
++        "type": "string", "maxLength": 3,
++    }, **{"$schema": "http://json-schema.org/draft-07/schema#"}), minLength=2)
++    assert_oracle_native(schema)
++
++
++def test_legacy_ref_siblings_still_follow_the_legacy_dialect():
++    schema = {"$schema": "http://json-schema.org/draft-07/schema#", "$ref": "#/definitions/Value",
++              "minLength": 5, "definitions": {"Value": wrap({"type": "string", "maxLength": 3})}}
++    assert_oracle_native(schema)
++
++
++@pytest.mark.parametrize("target", [
++    {"allOf": []},
++    {"allOf": [{"type": "string"}, {"maxLength": 3}]},
++    {"allOf": [{"type": "string"}], "maxLength": 3},
++    {"allOf": [{"type": "string"}], "type": "string"},
++    wrap({"oneOf": [{"type": "string"}, {"type": "string", "pattern": "^a"}]}),
++    wrap({"type": "string", "format": "date"}),
++])
++def test_unproven_intersections_are_explicit(target):
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        normalize(reference(target, minLength=2))
++
++
++def test_direct_nested_ref_and_raw_resource_wrapper_are_not_silently_flattened():
++    schema = reference(wrap({"$ref": "#/$defs/Leaf"}, **{
++        "$id": "child", "$defs": {"Leaf": {"type": "string", "maxLength": 3}},
++    }), minLength=2)
++    schema["$defs"]["Leaf"] = {"type": "integer"}
++    oracle = validators.validator_for(schema)(schema)
++    assert oracle.is_valid("abc") and not oracle.is_valid("a")
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        normalize(schema)
++    # Direct callers must bind resources first; $id is not a harmless annotation.
++    with pytest.raises(ValueError):
++        intersect_ref_min_length(wrap({"type": "string"}, **{"$id": "child"}), 2)
++
++
++def test_wrapper_expansion_consumes_the_existing_depth_and_node_budgets():
++    target = {"type": "string"}
++    for _ in range(32):
++        target = wrap(target)
++    assert intersect_ref_min_length(target, 2)["minLength"] == 2
++    with pytest.raises(ValueError, match="depth limit"):
++        intersect_ref_min_length(wrap(target), 2)
++    with pytest.raises(ValueError, match="node limit"):
++        intersect_ref_min_length(wrap(wrap({"type": "string"})), 2, _budget=[2])
++
++
++def test_instance_literals_in_a_wrapped_finite_domain_are_not_schemas():
++    literal = {"$ref": "#/$defs/missing", "minLength": 99}
++    assert_oracle_native(reference(wrap({"const": literal}), minLength=2), [literal, {}, "ab", None])
++
++
++@pytest.mark.parametrize("target", [
++    wrap({"type": "string", "pattern": "^[a-z]*$", "maxLength": 3}),
++    wrap({"enum": ["a", "abc", None, 1]}),
++    wrap({"type": "integer", "const": 1}),
++])
++def test_actual_tool_path_uses_the_shared_wrapper_reducer(target):
++    from xgrammar.structural_tag import StructuralTag, TagFormat
++    from sglang.srt.entrypoints.openai.protocol import Tool
++    from sglang.srt.function_call.kimik3_structural_tag import _tool_arguments_format
++    schema = {"type": "object", "properties": {"v": {"$ref": "#/$defs/Value", "minLength": 2}},
++              "required": ["v"], "additionalProperties": False,
++              "$defs": {"Value": target}}
++    old = copy.deepcopy(schema)
++    tool = Tool(type="function", function={"name": "synthetic", "parameters": schema, "strict": True})
++    tag = StructuralTag(format=TagFormat(begin="[", end="]", content=_tool_arguments_format(tool)))
++    assert schema == old
++    compiled = xgr.GrammarCompiler(xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1)).compile_structural_tag(tag)
++    oracle = validators.validator_for(schema)(schema)
++    for value in ["", "a", "ab", "abc", "abcd", "ABC", "甲乙", 0, 1, 2, None, True]:
++        kind = "json-string" if isinstance(value, str) else "null" if value is None else "boolean" if isinstance(value, bool) else "number"
++        wire = f'[<|open|>argument key="v" type="{kind}"<|sep|>' + json.dumps(value, ensure_ascii=False) + '<|close|>argument<|sep|>]'
++        matcher = xgr.GrammarMatcher(compiled)
++        assert (matcher.accept_string(wire) and matcher.is_completed()) == oracle.is_valid({"v": value}), value
++
++
++@pytest.mark.parametrize("leaf", [
++    {"type": "integer", "multipleOf": 2},
++    {"type": "integer", "minimum": 0},
++    {"enum": [1, 2], "minimum": 2},
++    {"type": "string", "enum": ["ab"], "pattern": "^a"},
++    {"type": "string", "const": "abc", "pattern": "^a"},
++    {"type": "array", "items": {"type": "integer", "multipleOf": 2}},
++])
++def test_unproved_wrapper_values_refuse_in_normalizer_and_tool(leaf):
++    from sglang.srt.entrypoints.openai.protocol import Tool
++    from sglang.srt.function_call.kimik3_structural_tag import _tool_arguments_format
++    schema = reference(wrap(leaf), minLength=2)
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        normalize(schema)
++    parameters = {"type": "object", "properties": {"v": {"$ref": "#/$defs/Value", "minLength": 2}},
++                  "required": ["v"], "additionalProperties": False, "$defs": schema["$defs"]}
++    with pytest.raises(ValueError, match="unsupported_reference_intersection"):
++        _tool_arguments_format(Tool(type="function", function={"name": "synthetic", "strict": True, "parameters": parameters}))
++
++
++@pytest.mark.parametrize("leaf", [
++    {"type": "integer", "const": "abc"},
++    {"type": "integer", "enum": ["abc"]},
++    {"type": "string", "enum": [1, None]},
++    {"type": "null", "const": True},
++])
++def test_conflicting_finite_types_are_proven_empty_instead_of_native_const_precedence(leaf):
++    from sglang.srt.entrypoints.openai.protocol import Tool
++    from sglang.srt.function_call.kimik3_structural_tag import _tool_arguments_format
++    target = wrap(leaf)
++    schema = reference(target, minLength=2)
++    normalized = normalize(schema)
++    assert normalize(normalized) == normalized
++    assert intersect_ref_min_length(target, 2) is False
++    assert not any(validators.validator_for(schema)(schema).is_valid(value) for value in VALUES)
++    parameters = {"type": "object", "properties": {"v": {"$ref": "#/$defs/Value", "minLength": 2}},
++                  "required": ["v"], "additionalProperties": False, "$defs": schema["$defs"]}
++    with pytest.raises(ValueError, match="accepts no values"):
++        _tool_arguments_format(Tool(type="function", function={"name": "synthetic", "strict": True, "parameters": parameters}))
