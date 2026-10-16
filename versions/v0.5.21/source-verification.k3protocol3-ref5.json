@@ -1,0 +1,18 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "9d263bb062181b040edf85877607b2fc4e6cd9f3",
+  "engine_tree": "4a9c81d33bb59a9779719c2a93382302c88510a5",
+  "patch_count": 31,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false,
+  "native_delta_replay_passed": true,
+  "product_python_matches_ref4": true,
+  "native_dynamic_acceptance": "pending",
+  "formal_image_build_authorized": false,
+  "source_published": false,
+  "production_changed": false
+}
