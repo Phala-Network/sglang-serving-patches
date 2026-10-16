@@ -1,0 +1,510 @@
+diff --git a/python/sglang/srt/constrained/base_grammar_backend.py b/python/sglang/srt/constrained/base_grammar_backend.py
+index ccf68214cb6491ecebde47a99febd4562da756ab..46150be46867d49065b6675ac65195de62e5a0fd 100644
+--- a/python/sglang/srt/constrained/base_grammar_backend.py
++++ b/python/sglang/srt/constrained/base_grammar_backend.py
+@@ -249,6 +249,15 @@ class BaseGrammarBackend:
+         self._pending = {}
+         self._inflight = {}
+         self._pending_bytes = 0
++        self._budget_observations = {
++            "cache_lookup_hits": 0,
++            "cache_lookup_misses": 0,
++            "capacity_rejections": 0,
++            "compiles_started": 0,
++            "compiles_finished": 0,
++            "compile_queue_seconds": 0.0,
++            "compile_wall_seconds": 0.0,
++        }
+         self.cache_max_bytes = envs.SGLANG_GRAMMAR_CACHE_MAX_BYTES.get()
+         self.cache_max_entries = envs.SGLANG_GRAMMAR_CACHE_MAX_ENTRIES.get()
+         self.invalid_cache_max_bytes = envs.SGLANG_GRAMMAR_INVALID_CACHE_MAX_BYTES.get()
+@@ -287,6 +296,32 @@ class BaseGrammarBackend:
+         # The preserved PP cache has no byte accounting.
+         return self._cache_bytes if self.use_cache_budget else None
+ 
++    def budget_snapshot(self) -> dict:
++        """Fixed-size, nonblocking diagnostics; never traverse keys or ctxs.
++
++        Cache bytes are the existing approximate admission charge, not RSS.
++        Pending bytes cover input keys, not compiled results or live matchers.
++        Counters last for the backend lifetime, including cache resets.
++        """
++        if not self.use_cache_budget:
++            return {"available": False, "reason": "budget_disabled"}
++        if not self._cache_lock.acquire(blocking=False):
++            return {"available": False, "reason": "busy"}
++        try:
++            return {
++                "available": True,
++                "cache_generation": self._cache_generation,
++                "cache_entries": len(self.cache),
++                "approx_cache_bytes": self._cache_bytes,
++                "cache_limit_bytes": self.cache_max_bytes,
++                "pending_requests": len(self._pending),
++                "pending_input_bytes": self._pending_bytes,
++                "inflight_compiles": len(self._inflight),
++                **self._budget_observations,
++            }
++        finally:
++            self._cache_lock.release()
++
+     def _remove_cache_entry(self, key):
+         value = self.cache.pop(key, None)
+         weight = self._cache_weights.pop(key, 0)
+@@ -312,13 +347,24 @@ class BaseGrammarBackend:
+ 
+     def _run_compile(self, flight_key, key, require_reasoning):
+         with self._cache_lock:
+-            _, waiters = self._inflight[flight_key]
++            source, waiters = self._inflight[flight_key]
+             if all(
+                 waiter.cancelled() or self._pending.get(waiter, (0, True))[1]
+                 for waiter in waiters
+             ):
+                 return None
+-        return self._init_value_dispatch(key, require_reasoning)
++            self._budget_observations["compiles_started"] += 1
++            started = time.perf_counter()
++            self._budget_observations["compile_queue_seconds"] += (
++                started - source._grammar_submitted_at
++            )
++        try:
++            return self._init_value_dispatch(key, require_reasoning)
++        finally:
++            elapsed = time.perf_counter() - started
++            with self._cache_lock:
++                self._budget_observations["compiles_finished"] += 1
++                self._budget_observations["compile_wall_seconds"] += elapsed
+ 
+     def _complete_compile(self, flight_key, source):
+         with self._cache_lock:
+@@ -446,16 +492,19 @@ class BaseGrammarBackend:
+                 value = None
+             if value is not None:
+                 self.cache.move_to_end(cache_key)
++                self._budget_observations["cache_lookup_hits"] += 1
+         if value is not None:
+             copied_value = value.copy()
+             copied_value.maybe_init_reasoning(require_reasoning)
+             return copied_value, True
+         with self._cache_lock:
++            self._budget_observations["cache_lookup_misses"] += 1
+             weight = self._key_size_bytes(cache_key)
+             if (
+                 len(self._pending) >= self.max_pending_compiles
+                 or self._pending_bytes + weight > self.max_pending_bytes
+             ):
++                self._budget_observations["capacity_rejections"] += 1
+                 future = Future()
+                 future.set_result(
+                     InvalidGrammarObject(
+@@ -470,9 +519,11 @@ class BaseGrammarBackend:
+                 flight = self._inflight.get(flight_key)
+                 is_new = flight is None
+                 if is_new:
++                    submitted_at = time.perf_counter()
+                     source = self.executor.submit(
+                         self._run_compile, flight_key, key[:2], require_reasoning
+                     )
++                    source._grammar_submitted_at = submitted_at
+                     flight = self._inflight[flight_key] = (source, [])
+                 source, waiters = flight
+                 waiters.append(future)
+diff --git a/python/sglang/srt/entrypoints/openai/serving_base.py b/python/sglang/srt/entrypoints/openai/serving_base.py
+index 5cf361b06c8a7e31daf824b0e3c52ea789369556..0b0c5ce2d567b703380e70583d46331f7714025a 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_base.py
++++ b/python/sglang/srt/entrypoints/openai/serving_base.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import sys
+ import uuid
+ from abc import ABC, abstractmethod
+ from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
+@@ -27,6 +28,47 @@ if TYPE_CHECKING:
+ 
+ logger = logging.getLogger(__name__)
+ 
++_REJECTION_STAGES = frozenset(("validation", "conversion", "json_constraint", "stream", "nonstream", "response"))
++_REJECTION_SOURCES = {
++    "entrypoints/openai/serving_base.py": "serving_base",
++    "entrypoints/openai/serving_chat.py": "serving_chat",
++    "entrypoints/openai/serving_completions.py": "serving_completions",
++    "entrypoints/openai/serving_responses.py": "serving_responses",
++    "entrypoints/openai/protocol.py": "protocol",
++    "constrained/json_schema_validation.py": "schema_validation",
++    "function_call/kimik3_structural_tag.py": "k3_tool_constraint",
++    "managers/tokenizer_manager.py": "tokenizer_manager",
++    "sampling/sampling_params.py": "sampling_params",
++}
++_SRT_SOURCE_ROOT = __file__.replace("\\", "/").rsplit("/entrypoints/openai/", 1)[0] + "/"
++
++
++def _log_safe_request_rejection(stage, status_code, exc=None):
++    """Log fixed categories/code locations only, never request or exception text."""
++    stage = stage if stage in _REJECTION_STAGES else "unknown"
++    status = int(status_code) if isinstance(status_code, int) and not isinstance(status_code, bool) and 400 <= status_code <= 599 else 0
++    source, line = "unknown", 0
++    caller = sys._getframe(2)
++    filename = caller.f_code.co_filename.replace("\\", "/")
++    if filename.startswith(_SRT_SOURCE_ROOT):
++        label = _REJECTION_SOURCES.get(filename[len(_SRT_SOURCE_ROOT):])
++        if label is not None:
++            source, line = label, caller.f_lineno
++    del caller
++    tb = exc.__traceback__ if exc is not None else None
++    # Bounded walk; retain no frames, exception or request after this call.
++    for _ in range(32):
++        if tb is None:
++            break
++        filename = tb.tb_frame.f_code.co_filename.replace("\\", "/")
++        if filename.startswith(_SRT_SOURCE_ROOT):
++            label = _REJECTION_SOURCES.get(filename[len(_SRT_SOURCE_ROOT):])
++            if label is not None:
++                source, line = label, tb.tb_lineno
++        tb = tb.tb_next
++    logger.info("Request rejected: stage=%s status=%d source=%s line=%d", stage, status, source, line)
++
++
+ 
+ # Base class for specific endpoint handlers
+ class OpenAIServingBase(ABC):
+@@ -234,6 +276,7 @@ class OpenAIServingBase(ABC):
+         param: Optional[str] = None,
+     ) -> ORJSONResponse:
+         """Create an error response"""
++        _log_safe_request_rejection("response", status_code, sys.exc_info()[1])
+         # TODO: remove fastapi dependency in openai and move response handling to the entrypoint
+         error = ErrorResponse(
+             object="error",
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 7828a1ded4168abb68dd8f9dd52f208ac0e60f04..069694870aba0a754b43dd72151c090a1afad66c 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -5330,6 +5330,13 @@ class Scheduler(
+             draft_graph_memory_usage=draft_graph_memory_usage,
+         )
+         ret["memory_usage"] = memory_usage
++        grammar_backend = self.grammar_manager.grammar_backend
++        ret["grammar_budget"] = (
++            {"available": False, "reason": "backend_disabled"}
++            if grammar_backend is None
++            else grammar_backend.budget_snapshot()
++        )
++        ret["grammar_budget"]["tp_rank"] = get_parallel().tp_rank
+         ret["startup_time"] = self.startup_time
+         ret["effective_max_running_requests_per_dp"] = self.max_running_requests
+         # PD role switch: report this instance's role and the decode CUDA graph
+diff --git a/test/registered/unit/kimi_feedback/test_grammar_budget_observability.py b/test/registered/unit/kimi_feedback/test_grammar_budget_observability.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..79455efb0475d8e9d64023dd0d0fa62dce28ead9
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_grammar_budget_observability.py
+@@ -0,0 +1,97 @@
++"""Fixed-size observations must not change ownership, block, or expose schemas."""
++import responses_cpu_helpers
++import json
++import threading
++from unittest.mock import patch
++
++import pytest
++from test_grammar_cache_budget import Backend, backend
++from sglang.srt.constrained.base_grammar_backend import BaseGrammarBackend
++
++
++def test_singleflight_counts_compiles_not_waiters_and_reset_preserves_totals(backend):
++    secret = 'synthetic-private-schema'
++    key = ('json', secret)
++    backend.gate.clear()
++    futures = [backend.get_cached_or_future_value(key, False)[0] for _ in range(8)]
++    assert backend.entered.wait(2)
++    current = backend.budget_snapshot()
++    assert current['available'] and current['compiles_started'] == 1
++    assert current['compiles_finished'] == 0 and current['pending_requests'] == 8
++    assert current['cache_lookup_misses'] == 8
++    assert secret not in json.dumps(current)
++    backend.gate.set()
++    for future in futures:
++        value = future.result(2)
++        backend.set_cache(key, value.copy(), future=future)
++        backend.release_future(future)
++    value, hit = backend.get_cached_or_future_value(key, False)
++    assert hit
++    before = backend.budget_snapshot()
++    assert before['cache_lookup_hits'] == 1
++    assert before['compiles_started'] == before['compiles_finished'] == 1
++    assert before['pending_requests'] == before['inflight_compiles'] == 0
++    assert before['compile_wall_seconds'] >= 0 and before['compile_queue_seconds'] >= 0
++    assert before['cache_entries'] == 1 and before['approx_cache_bytes'] > 0
++    backend.reset()
++    after = backend.budget_snapshot()
++    assert after['cache_entries'] == after['approx_cache_bytes'] == 0
++    assert after['cache_generation'] == before['cache_generation'] + 1
++    for name in ('cache_lookup_hits','cache_lookup_misses','compiles_started','compiles_finished','compile_wall_seconds','compile_queue_seconds'):
++        assert after[name] == before[name]
++    assert value is not None
++
++
++def test_capacity_rejection_does_not_count_as_compile(backend):
++    backend.max_pending_bytes = 1
++    future, hit = backend.get_cached_or_future_value(('json', 'synthetic'), False)
++    assert not hit and future.result(2).status_code == 503
++    snapshot = backend.budget_snapshot()
++    assert snapshot['capacity_rejections'] == snapshot['cache_lookup_misses'] == 1
++    assert snapshot['compiles_started'] == snapshot['compiles_finished'] == 0
++    assert snapshot['pending_requests'] == 0
++
++
++def test_compile_exception_finishes_counter_without_changing_failure(backend):
++    future, hit = backend.get_cached_or_future_value(('json', 'internal'), False)
++    with pytest.raises(RuntimeError, match='synthetic compiler fault'):
++        future.result(2)
++    backend.release_future(future)
++    snapshot = backend.budget_snapshot()
++    assert snapshot['compiles_started'] == snapshot['compiles_finished'] == 1
++    assert snapshot['pending_requests'] == snapshot['inflight_compiles'] == 0
++
++
++def test_snapshot_does_not_wait_for_worker_lock(backend):
++    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
++    def hold():
++        with backend._cache_lock:
++            entered.set()
++            assert release.wait(3)
++    holder=threading.Thread(target=hold)
++    holder.start()
++    assert entered.wait(2)
++    rows=[]
++    def read():
++        rows.append(backend.budget_snapshot())
++        finished.set()
++    reader=threading.Thread(target=read)
++    reader.start()
++    try:
++        assert finished.wait(0.5), 'snapshot waited for a compile lock'
++        assert rows == [{'available':False,'reason':'busy'}]
++    finally:
++        release.set()
++        holder.join(2)
++        reader.join(2)
++    assert backend.budget_snapshot()['available']
++
++
++def test_preserved_pp_path_reports_unknown_without_creating_new_budget():
++    with patch('sglang.srt.constrained.base_grammar_backend.grammar_cache_budget_enabled', return_value=False):
++        backend=BaseGrammarBackend()
++    try:
++        assert backend.budget_snapshot()=={'available':False,'reason':'budget_disabled'}
++        assert not hasattr(backend,'_budget_observations')
++    finally:
++        backend.executor.shutdown(wait=True)
+diff --git a/test/registered/unit/kimi_feedback/test_safe_rejection_diagnostics.py b/test/registered/unit/kimi_feedback/test_safe_rejection_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..475973b0056307ebb0415005b13927dff06ea4df
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_safe_rejection_diagnostics.py
+@@ -0,0 +1,101 @@
++"""Synthetic diagnostics: original response preserved, no request text logged."""
++import responses_cpu_helpers
++import asyncio
++import json
++import logging
++from http import HTTPStatus
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++from fastapi import HTTPException
++from sglang.srt.entrypoints.openai import serving_base as base
++from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++
++PRIVATE = "synthetic-private-value\nFORGED-log-line"
++
++
++def serving():
++    obj = object.__new__(OpenAIServingChat)
++    obj.chat_encoding_spec = "kimi_k3"
++    obj.tokenizer_manager = SimpleNamespace(request_logger=SimpleNamespace(log_requests=False))
++    obj._validate_request = lambda req: None
++    obj._convert_to_internal_request = lambda req, raw: (SimpleNamespace(sampling_params={}), req)
++    async def ok(*args):
++        return "unchanged-success"
++    obj._handle_streaming_request = ok
++    obj._handle_non_streaming_request = ok
++    return obj
++
++
++@pytest.mark.parametrize("stream", [False, True])
++def test_success_never_calls_diagnostics(stream):
++    with patch.object(base, "_log_safe_request_rejection", side_effect=AssertionError("success logged")):
++        assert asyncio.run(serving().handle_request(SimpleNamespace(stream=stream), None)) == "unchanged-success"
++
++
++@pytest.mark.parametrize("stage", ["validation", "conversion", "json_constraint", "stream", "nonstream"])
++@pytest.mark.parametrize("kind", ["value", "http"])
++def test_error_has_one_safe_record_and_unchanged_response(stage, kind, caplog):
++    obj = serving()
++    exc = ValueError(PRIVATE) if kind == "value" else HTTPException(422, PRIVATE)
++    def fail(*args):
++        raise exc
++    async def async_fail(*args):
++        raise exc
++    if stage == "validation":
++        obj._validate_request = fail
++    elif stage == "conversion":
++        obj._convert_to_internal_request = fail
++    elif stage == "json_constraint":
++        obj._validate_active_json_constraint = fail
++    else:
++        setattr(obj, "_handle_streaming_request" if stage == "stream" else "_handle_non_streaming_request", async_fail)
++    with caplog.at_level(logging.INFO, logger=base.__name__):
++        result = asyncio.run(obj.handle_request(SimpleNamespace(stream=stage == "stream"), None))
++    assert result.status_code == (400 if kind == "value" else 422)
++    assert json.loads(result.body)["message"] == PRIVATE
++    records = [r.getMessage() for r in caplog.records if r.name == base.__name__]
++    assert len(records) == 1
++    assert "stage=response" in records[0]
++    assert "source=serving_base" in records[0]
++    assert PRIVATE not in records[0] and "FORGED" not in records[0]
++    assert "test_safe_rejection" not in records[0]
++
++
++def test_validation_return_logs_without_changing_payload(caplog):
++    obj = serving()
++    obj._validate_request = lambda req: PRIVATE
++    with caplog.at_level(logging.INFO, logger=base.__name__):
++        response = asyncio.run(obj.handle_request(SimpleNamespace(stream=False), None))
++    assert response.status_code == 400 and json.loads(response.body)["message"] == PRIVATE
++    assert len(caplog.records) == 1 and "stage=response" in caplog.text
++    assert PRIVATE not in caplog.text
++
++
++@pytest.mark.parametrize("status", [400, HTTPStatus.BAD_REQUEST, 503])
++def test_direct_error_uses_fixed_category(status, caplog):
++    with caplog.at_level(logging.INFO, logger=base.__name__):
++        response = serving().create_error_response(PRIVATE, status_code=status, param=PRIVATE)
++    assert response.status_code == status
++    assert len(caplog.records) == 1
++    assert f"stage=response status={int(status)} source=unknown line=0" in caplog.text
++    assert PRIVATE not in caplog.text
++
++
++def test_untrusted_diagnostic_fields_are_not_logged(caplog):
++    with caplog.at_level(logging.INFO, logger=base.__name__):
++        base._log_safe_request_rejection(PRIVATE, PRIVATE, ValueError(PRIVATE))
++    assert PRIVATE not in caplog.text
++    assert "stage=unknown status=0" in caplog.text
++
++
++def test_selected_schema_error_points_at_real_code(caplog):
++    obj = serving()
++    obj._convert_to_internal_request = lambda req, raw: (SimpleNamespace(sampling_params={"json_schema": json.dumps({"type":"array","uniqueItems":True})}), req)
++    with caplog.at_level(logging.INFO, logger=base.__name__):
++        response = asyncio.run(obj.handle_request(SimpleNamespace(stream=False), None))
++    assert response.status_code == 400
++    assert len(caplog.records) == 1
++    assert "stage=response status=400 source=serving_base line=" in caplog.text
++    assert "line=0" not in caplog.text
+diff --git a/test/registered/unit/kimi_feedback/test_scheduler_grammar_diagnostics.py b/test/registered/unit/kimi_feedback/test_scheduler_grammar_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e87b349e2e58e716ac350d73c792088cc8d1f60
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_scheduler_grammar_diagnostics.py
+@@ -0,0 +1,35 @@
++"""Execute the actual internal-state handler and serialization with CPU fixtures."""
++import responses_cpu_helpers
++import json
++import test_scheduler_internal_state_env_vars as env_tests
++from test_grammar_cache_budget import backend, SizedGrammar
++
++
++def state(backend=None, tp_rank=0, tp_size=1):
++    return env_tests.TestSchedulerInternalStateEnvVars()._get_internal_state(backend, tp_rank, tp_size)
++
++
++def test_actual_internal_state_preserves_capacity_and_exposes_only_numeric_budget(backend):
++    backend.set_cache(('json','synthetic-private-schema'),SizedGrammar(2048))
++    result=state(backend, tp_rank=3, tp_size=8)
++    snapshot=result['grammar_budget']
++    assert snapshot['available'] and snapshot['cache_entries']==1
++    assert snapshot['approx_cache_bytes']>=2048
++    assert snapshot['tp_rank']==3
++    assert 'synthetic-private-schema' not in json.dumps(snapshot)
++    assert result['effective_max_running_requests_per_dp']==8
++    assert result['memory_usage']['token_capacity']==100
++
++
++def test_disabled_backend_is_unknown_not_zero_capacity():
++    snapshot=state()['grammar_budget']
++    assert not snapshot['available'] and snapshot['reason']=='backend_disabled'
++    assert 'approx_cache_bytes' not in snapshot
++
++
++def test_busy_snapshot_is_serializable_without_fabricated_zero(backend,monkeypatch):
++    monkeypatch.setattr(backend,'budget_snapshot',lambda:{'available':False,'reason':'busy'})
++    snapshot=state(backend)['grammar_budget']
++    assert snapshot['reason']=='busy' and not snapshot['available']
++    assert 'approx_cache_bytes' not in snapshot
++    json.dumps(snapshot,allow_nan=False)
+diff --git a/test/registered/unit/managers/test_scheduler_internal_state_env_vars.py b/test/registered/unit/managers/test_scheduler_internal_state_env_vars.py
+index b03ad91374ff33abd52c4c5225d2798b53acb25c..4384bc92264d537204ae766320655dadb706f395 100644
+--- a/test/registered/unit/managers/test_scheduler_internal_state_env_vars.py
++++ b/test/registered/unit/managers/test_scheduler_internal_state_env_vars.py
+@@ -11,14 +11,15 @@ maybe_stub_sgl_kernel()
+ from sglang.srt.environ import envs
+ from sglang.srt.managers.io_struct import GetInternalStateReq
+ from sglang.srt.managers.scheduler import Scheduler
+-from sglang.srt.runtime_context import get_context
++from sglang.srt.runtime_context import get_context, get_parallel
+ 
+ register_cpu_ci(est_time=11, suite="base-a-test-cpu")
+ 
+ 
+ class TestSchedulerInternalStateEnvVars(unittest.TestCase):
+-    def _get_internal_state(self) -> dict:
++    def _get_internal_state(self, grammar_backend=None, tp_rank=0, tp_size=1) -> dict:
+         scheduler = Scheduler.__new__(Scheduler)
++        scheduler.grammar_manager = SimpleNamespace(grammar_backend=grammar_backend)
+         scheduler.metrics_reporter = SimpleNamespace(
+             last_gen_throughput=1.0,
+             spec_total_num_forward_ct=0,
+@@ -45,7 +46,7 @@ class TestSchedulerInternalStateEnvVars(unittest.TestCase):
+         # Set by maybe_init_rust_server in a real boot; None = no embedded Rust server.
+         scheduler.rust_server = None
+ 
+-        with get_context().override_server_args():
++        with get_context().override_server_args(tp_size=tp_size), get_parallel().override(tp_rank=tp_rank):
+             output = scheduler.get_internal_state(recv_req=GetInternalStateReq())
+ 
+         return output.internal_state
+diff --git a/test/registered/unit/managers/test_scheduler_internal_state_world_size.py b/test/registered/unit/managers/test_scheduler_internal_state_world_size.py
+index a36b6a27cabfabf9966e705c10d3ec5571e2a400..23d35b4899255723a0d8d3486ed39b8403750a0d 100644
+--- a/test/registered/unit/managers/test_scheduler_internal_state_world_size.py
++++ b/test/registered/unit/managers/test_scheduler_internal_state_world_size.py
+@@ -8,7 +8,7 @@ maybe_stub_sgl_kernel()
+ 
+ from sglang.srt.managers.io_struct import GetInternalStateReq
+ from sglang.srt.managers.scheduler import Scheduler
+-from sglang.srt.runtime_context import get_context
++from sglang.srt.runtime_context import get_context, get_parallel
+ from sglang.srt.server_args import compute_world_size
+ 
+ register_cpu_ci(est_time=12, suite="base-a-test-cpu")
+@@ -55,6 +55,7 @@ class TestComputeWorldSize(unittest.TestCase):
+ class TestSchedulerInternalStateWorldSize(unittest.TestCase):
+     def _get_internal_state(self, shape: dict) -> dict:
+         scheduler = Scheduler.__new__(Scheduler)
++        scheduler.grammar_manager = SimpleNamespace(grammar_backend=None)
+         scheduler.metrics_reporter = SimpleNamespace(
+             last_gen_throughput=1.0,
+             spec_total_num_forward_ct=0,
+@@ -81,7 +82,7 @@ class TestSchedulerInternalStateWorldSize(unittest.TestCase):
+         # Set by maybe_init_rust_server in a real boot; None = no embedded Rust server.
+         scheduler.rust_server = None
+ 
+-        with get_context().override_server_args(**shape):
++        with get_context().override_server_args(**shape), get_parallel().override(tp_rank=0):
+             output = scheduler.get_internal_state(recv_req=GetInternalStateReq())
+ 
+         return output.internal_state
