@@ -1,0 +1,293 @@
+diff --git a/docker/phala/kimi-protocol3-ref1/Dockerfile b/docker/phala/kimi-protocol3-ref1/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd77551e72c33854bc6f88391c372b4e8bb5781f
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref1/Dockerfile
+@@ -0,0 +1,8 @@
++FROM ghcr.io/phala-network/sglang:v0.5.21-phala-3-k3protocol3-stream1@sha256:118dee8b7ed9cc35cbd854bc315ff46b25fec7069a9a2b7b1e034816affe3d20
++ARG ENGINE_REVISION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_REVISION}" \
++      org.opencontainers.image.version="v0.5.21-phala-3-k3protocol3-ref1" \
++      io.phala.sglang.revision="${ENGINE_REVISION}"
++COPY python/sglang/srt/constrained/json_schema_intersections.py /sgl-workspace/sglang/python/sglang/srt/constrained/json_schema_intersections.py
++COPY python/sglang/srt/constrained/json_schema_validation.py /sgl-workspace/sglang/python/sglang/srt/constrained/json_schema_validation.py
+diff --git a/docker/phala/kimi-protocol3-ref1/README.md b/docker/phala/kimi-protocol3-ref1/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..81f43a37c5e0c460207d1b73308009445468f027
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref1/README.md
+@@ -0,0 +1,22 @@
++# Kimi reference and length constraints
++
++Maintenance candidate on the immutable protocol3-stream1 image. It retains the
++existing native libraries, loading mode, diagnostics and buffered tool stream
++progress fix. Only two installed Python schema-normalization files change.
++
++The bounded reference reducer now intersects minLength, maxLength and type along
++local reference chains, preserves nullable/non-string alternatives, and removes
++integer minLength=0 as a no-op. Its derived-definition cache includes every new
++constraint. Unsupported combinations still fail explicitly; this is not general
++JSON Schema intersection support. There is no added token-loop work or cache.
++
++Synthetic CPU reproduction: seven failures on the previous installed image.
++Candidate checks: 54 passed plus eight subtests, with independent jsonschema and
++native grammar agreement, actual Kimi json-string encoding, legacy dialects,
++reference chains, invalid inputs and immutability. Final image and production
++acceptance are separate gates; this evidence does not prove the exact customer
++schema or resolve all observed memory, image-fetch and transport failures.
++
++Build with this Dockerfile and ENGINE_REVISION set to the frozen source commit.
++Formal deployment must not use fastsafetensors. Only node 101 is authorized for
++this rollout; preserve the existing node credential and serving configuration.
+diff --git a/python/sglang/srt/constrained/json_schema_intersections.py b/python/sglang/srt/constrained/json_schema_intersections.py
+index 46fef4469c6ef04c0d286cfa2a6bf1c173441202..c612f7aadbed0bb5b1f44373bb137122874dc58d 100644
+--- a/python/sglang/srt/constrained/json_schema_intersections.py
++++ b/python/sglang/srt/constrained/json_schema_intersections.py
+@@ -1,4 +1,4 @@
+-"""Bounded exact ref/minLength intersections, after dialect/resource binding.
++"""Bounded exact ref/string-length intersections after dialect/resource binding.
+ 
+ Pure Python: no native compiler or validation-module dependency. Unsupported
+ intersections raise rather than approximate an assertion or an empty language.
+@@ -67,7 +67,10 @@ def _possible_types(schema):
+     return kinds
+ 
+ 
+-def intersect_ref_min_length(schema: Union[bool, Dict[str, Any]], minimum: int, depth: int = 0, _budget=None):
++def intersect_ref_min_length(
++    schema: Union[bool, Dict[str, Any]], minimum: int, depth: int = 0,
++    _budget=None, *, maximum=None, _types=None,
++):
+     """Exact length intersection for leaf values and pure non-reference unions."""
+     if _budget is None:
+         _budget = [10000]
+@@ -80,6 +83,8 @@ def intersect_ref_min_length(schema: Union[bool, Dict[str, Any]], minimum: int,
+         return False
+     if schema is True:
+         schema = {"type": list(_JSON_TYPES)}
++    if minimum == 0 and maximum is None and _types is None:
++        return schema
+     assertions = set(schema).difference(_SCHEMA_METADATA_KEYWORDS)
+     for keyword in ("anyOf", "oneOf"):
+         if assertions == {keyword} and isinstance(schema[keyword], list):
+@@ -93,11 +98,22 @@ def intersect_ref_min_length(schema: Union[bool, Dict[str, Any]], minimum: int,
+                         raise ValueError("JSON Schema cannot prove oneOf branches disjoint for minLength")
+                     seen_types.update(branch_types)
+             return dict(schema, **{keyword: [
+-                intersect_ref_min_length(branch, minimum, depth + 1, _budget)
++                intersect_ref_min_length(
++                    branch, minimum, depth + 1, _budget,
++                    maximum=maximum, _types=_types,
++                )
+                 for branch in schema[keyword]
+             ]})
+     schema_type = schema.get("type")
+     types = [schema_type] if isinstance(schema_type, str) else schema_type
++    if _types is not None:
++        current_types = set(types if types is not None else _JSON_TYPES)
++        if "number" in current_types:
++            current_types.add("integer")
++        types = [kind for kind in _JSON_TYPES if kind in current_types and kind in _types]
++        if not types:
++            return False
++        schema = dict(schema, type=types)
+     if isinstance(types, list) and types and all(kind in _JSON_TYPES for kind in types) and "string" not in types:
+         if assertions.intersection({"allOf", "anyOf", "oneOf", "not", "$ref"}):
+             raise ValueError("JSON Schema cannot prove this $ref minLength intersection")
+@@ -110,7 +126,8 @@ def intersect_ref_min_length(schema: Union[bool, Dict[str, Any]], minimum: int,
+         if bound in result and (type(result[bound]) is not int or result[bound] < 0):
+             raise ValueError("JSON Schema string lengths must be nonnegative integers")
+     minimum = max(minimum, result.get("minLength", 0))
+-    maximum = result.get("maxLength")
++    if "maxLength" in result:
++        maximum = result["maxLength"] if maximum is None else min(maximum, result["maxLength"])
+     if "enum" in result and "const" in result:
+         raise ValueError("JSON Schema cannot prove combined const/enum/minLength intersection")
+     if maximum is not None and minimum > maximum:
+@@ -139,6 +156,8 @@ def intersect_ref_min_length(schema: Union[bool, Dict[str, Any]], minimum: int,
+     if types is None:
+         result["type"] = list(_JSON_TYPES)
+     result["minLength"] = minimum
++    if maximum is not None:
++        result["maxLength"] = maximum
+     return result
+ 
+ 
+@@ -149,8 +168,12 @@ def normalize_ref_min_length(schema, iter_subschemas):
+     resource normalization once more to prune and canonically name definitions.
+     Instance-valued data is never traversed. The input is modified in place.
+     """
++    # minLength=0 asserts nothing. Remove only the exact integer, never False.
++    for node, _ in iter_subschemas(schema):
++        if type(node.get("minLength")) is int and node["minLength"] == 0:
++            del node["minLength"]
+     candidates = [node for node, _ in iter_subschemas(schema)
+-                  if "$ref" in node and "minLength" in node]
++                  if "$ref" in node and ("minLength" in node or "maxLength" in node)]
+     original_defs = schema.get("$defs", {})
+     derived = {}
+     cache = {}
+@@ -167,23 +190,42 @@ def normalize_ref_min_length(schema, iter_subschemas):
+     for candidate in candidates:
+         current = candidate
+         minimum = 0
++        maximum = None
++        types = None
+         seen = set()
+         while isinstance(current, dict) and "$ref" in current:
+             if id(current) in seen:
+                 raise ValueError("JSON Schema cyclic minLength reference")
+             seen.add(id(current))
+-            if set(current).difference(_SCHEMA_METADATA_KEYWORDS, {"$ref", "minLength"}):
++            if set(current).difference(_SCHEMA_METADATA_KEYWORDS, {"$ref", "minLength", "maxLength", "type"}):
+                 raise ValueError("JSON Schema unsupported ref siblings with minLength")
+             bound = current.get("minLength", 0)
+             if type(bound) is not int or bound < 0:
+                 raise ValueError("JSON Schema string lengths must be nonnegative integers")
+             minimum = max(minimum, bound)
++            if "maxLength" in current:
++                bound = current["maxLength"]
++                if type(bound) is not int or bound < 0:
++                    raise ValueError("JSON Schema string lengths must be nonnegative integers")
++                maximum = bound if maximum is None else min(maximum, bound)
++            if "type" in current:
++                kinds = current["type"]
++                kinds = [kinds] if isinstance(kinds, str) else kinds
++                if (not isinstance(kinds, list) or not kinds
++                        or any(kind not in _JSON_TYPES for kind in kinds)):
++                    raise ValueError("JSON Schema reference type is invalid")
++                kinds = set(kinds)
++                if "number" in kinds:
++                    kinds.add("integer")
++                types = kinds if types is None else types.intersection(kinds)
+             current = resolve(current["$ref"])
+-        key = (id(current), minimum)
++        key = (id(current), minimum, maximum, None if types is None else tuple(sorted(types)))
+         if key not in cache:
+             if len(derived) >= 10000:
+                 raise ValueError("JSON Schema minLength intersection resource limit")
+-            reduced = intersect_ref_min_length(current, minimum)
++            reduced = intersect_ref_min_length(
++                current, minimum, maximum=maximum, _types=types,
++            )
+             if isinstance(reduced, dict):
+                 reduced = {k: v for k, v in reduced.items() if k not in ("$defs", "definitions")}
+             name = "__sglang_min_length_" + str(len(derived))
+diff --git a/python/sglang/srt/constrained/json_schema_validation.py b/python/sglang/srt/constrained/json_schema_validation.py
+index e37b4c53b0af3fefff2eb773433ffb8d6d664ad5..dde34e5d807cae0e4d6b0647f6ce535e53647992 100644
+--- a/python/sglang/srt/constrained/json_schema_validation.py
++++ b/python/sglang/srt/constrained/json_schema_validation.py
+@@ -346,7 +346,7 @@ def normalize_json_schema_resources(schema: Any) -> Any:
+                 # pinned converter does not support. Empty dependencies is true.
+                 continue
+             if key == "$ref":
+-                needs_intersection |= not legacy_ref and "minLength" in node
++                needs_intersection |= not legacy_ref and ("minLength" in node or "maxLength" in node)
+                 referenced_resources.add(resource_uri)
+                 resolved = resolve_local_json_pointer(
+                     value,
+diff --git a/test/registered/unit/constrained/test_ref_length_siblings.py b/test/registered/unit/constrained/test_ref_length_siblings.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cdc59452cf31388f4522d8db8c852c80a02c1454
+--- /dev/null
++++ b/test/registered/unit/constrained/test_ref_length_siblings.py
+@@ -0,0 +1,98 @@
++"""Synthetic reference siblings: validation oracle and installed native grammar."""
++import copy
++import json
++
++import pytest
++import xgrammar as xgr
++from jsonschema import Draft202012Validator
++from sglang.srt.constrained.json_schema_validation import normalize_json_schema_resources
++
++
++CASES = [
++    ({"type": "string"}, {"minLength": 2, "maxLength": 3}),
++    ({"type": ["string", "null"]}, {"minLength": 2, "type": "string"}),
++    ({"type": "string", "maxLength": 5}, {"minLength": 2, "maxLength": 3, "type": "string"}),
++    ({"anyOf": [{"type": "string"}, {"type": "null"}]}, {"minLength": 2, "maxLength": 3}),
++    ({"enum": ["a", "abc", "abcd", None, 1]}, {"minLength": 2, "maxLength": 3}),
++    ({"type": "object", "additionalProperties": False}, {"minLength": 0, "type": "object"}),
++    ({"type": "string", "pattern": "^[a-z]+$"}, {"minLength": 0}),
++    ({"type": "string"}, {"minLength": 0, "maxLength": 3}),
++    ({"type": "string", "minLength": 2}, {"maxLength": 3}),
++    ({"type": ["string", "null"]}, {"minLength": 3, "maxLength": 2}),
++    ({"type": ["string", "null"]}, {"minLength": 2, "type": ["string", "null"]}),
++    ({"type": "number"}, {"minLength": 2, "type": "integer"}),
++    ({"const": "abc"}, {"minLength": 2, "maxLength": 3}),
++    ({"type": "string", "pattern": "^[a-z]+$"}, {"minLength": 2, "maxLength": 3}),
++    ({"oneOf": [{"type": "string"}, {"type": "null"}]}, {"minLength": 2, "maxLength": 3}),
++]
++
++
++@pytest.mark.parametrize("target,siblings", CASES)
++def test_native_reference_siblings(target, siblings):
++    schema = {"$ref": "#/$defs/S", "$defs": {"S": target}, **siblings}
++    old = copy.deepcopy(schema)
++    normalized = normalize_json_schema_resources(schema)
++    assert schema == old
++    assert normalize_json_schema_resources(normalized) == normalized
++    grammar = xgr.Grammar.from_json_schema(normalized, strict_mode=False)
++    compiled = xgr.GrammarCompiler(xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1)).compile_grammar(grammar)
++    oracle = Draft202012Validator(schema)
++    for value in [None, True, 0, 1, 1.5, "", "a", "ab", "abc", "abcd", "abcde", "ABC", "é", "你好", [], {}]:
++        matcher = xgr.GrammarMatcher(compiled)
++        actual = matcher.accept_string(json.dumps(value, ensure_ascii=False)) and matcher.is_completed()
++        assert actual == oracle.is_valid(value), (target, siblings, value)
++
++
++@pytest.mark.parametrize("siblings", [
++    {"minLength": False}, {"minLength": -1}, {"minLength": 1.5},
++    {"maxLength": True}, {"maxLength": -1}, {"maxLength": 1.5},
++    {"minLength": 2, "type": []}, {"minLength": 2, "type": ["invalid"]},
++    {"minLength": 2, "pattern": "^a"},
++])
++def test_invalid_or_unproved_ref_siblings_remain_explicit(siblings):
++    schema = {"$ref": "#/$defs/S", "$defs": {"S": {"type": "string"}}, **siblings}
++    with pytest.raises(ValueError):
++        normalize_json_schema_resources(schema)
++
++
++def test_chain_bounds_and_derived_cache_identity():
++    schema = {"type": "object", "properties": {
++        "a": {"$ref": "#/$defs/B", "minLength": 2, "maxLength": 3},
++        "b": {"$ref": "#/$defs/B", "minLength": 2, "maxLength": 4},
++        "c": {"$ref": "#/$defs/B", "minLength": 2, "maxLength": 3},
++    }, "$defs": {
++        "A": {"type": ["string", "null"], "maxLength": 5},
++        "B": {"$ref": "#/$defs/A", "minLength": 1, "type": "string"},
++    }}
++    normalized = normalize_json_schema_resources(schema)
++    properties = normalized["properties"]
++    assert properties["a"] == properties["c"]
++    assert properties["a"] != properties["b"]
++    assert len(normalized["$defs"]) == 2
++    oracle = Draft202012Validator(schema)
++    grammar = xgr.Grammar.from_json_schema(normalized, strict_mode=False)
++    compiled = xgr.GrammarCompiler(xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1)).compile_grammar(grammar)
++    for a in ["a", "ab", "abc", "abcd", None]:
++        for b in ["a", "ab", "abc", "abcd", "abcde", None]:
++            value = {"a": a, "b": b, "c": "ab"}
++            matcher = xgr.GrammarMatcher(compiled)
++            assert (matcher.accept_string(json.dumps(value)) and matcher.is_completed()) == oracle.is_valid(value)
++
++
++def test_actual_k3_tool_path_preserves_length_siblings():
++    from sglang.srt.entrypoints.openai.protocol import Tool
++    from sglang.srt.function_call.kimik3_structural_tag import _tool_arguments_format
++    from xgrammar.structural_tag import StructuralTag, TagFormat
++    schema = {"type": "object", "properties": {
++        "value": {"$ref": "#/$defs/S", "type": "string", "minLength": 2, "maxLength": 3},
++    }, "required": ["value"], "additionalProperties": False,
++        "$defs": {"S": {"type": ["string", "null"]}}}
++    tool = Tool(type="function", function={"name": "synthetic", "parameters": schema, "strict": True})
++    tag = StructuralTag(format=TagFormat(begin="[", end="]", content=_tool_arguments_format(tool)))
++    compiled = xgr.GrammarCompiler(xgr.TokenizerInfo(["x", "EOS"], stop_token_ids=1)).compile_structural_tag(tag)
++    for value in ["", "a", "ab", "abc", "abcd", "你好", "éé"]:
++        wire = '[<|open|>argument key="value" type="json-string"<|sep|>' + json.dumps(value, ensure_ascii=False) + '<|close|>argument<|sep|>]'
++        matcher = xgr.GrammarMatcher(compiled)
++        assert (matcher.accept_string(wire) and matcher.is_completed()) == (2 <= len(value) <= 3)
++    matcher = xgr.GrammarMatcher(compiled)
++    assert not matcher.accept_string('[<|open|>argument key="value" type="string"<|sep|>ab<|close|>argument<|sep|>]')
