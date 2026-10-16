@@ -1,0 +1,7 @@
+# Kimi buffered tool stream progress
+
+During Kimi Chat tool generation, the parser may buffer a complete call before emitting data. This release emits a fixed SSE comment at most once every15 seconds after the first model event, only when completion tokens advance and no data event has been emitted. A stalled generator sends no comment. It preserves schema constraints, payloads, usage, finish reasons, pre-header error status and cancellation cleanup; no timer task or early success response is added.
+
+Source:63e41c5337bf5082b57a269524038b978758f7e8. One product file changed (23 added lines); native libraries, dependencies and loading mode inherit the immutable observe1 base. Officialv0.5.21 +26 patches replay exactly; prior25 patches unchanged. Final installed-image103 tests and direct HF/SGLang CLI pass without product overlays. Baseline CPU regressions fail in3 targeted cases. The prior runtime's actual synthetic long tool request had72.5 seconds of silence while generation continued; this does not prove the cause of historical125-second gateway errors or candidate production benefit.
+
+User-authorized maintenance branch release; shared engine main remains unchanged. Only node101 is authorized for deployment. Source/image publication is not production acceptance or a claim to resolve all schema, memory, transport, SSD or HA issues. Formal production loading excludes fastsafetensors.
