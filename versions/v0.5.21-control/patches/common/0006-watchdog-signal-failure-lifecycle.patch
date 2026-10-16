@@ -1,0 +1,824 @@
+diff --git a/python/sglang/srt/entrypoints/engine.py b/python/sglang/srt/entrypoints/engine.py
+index 4df818233..b2a325fa8 100644
+--- a/python/sglang/srt/entrypoints/engine.py
++++ b/python/sglang/srt/entrypoints/engine.py
+@@ -150,6 +150,10 @@ from sglang.srt.utils.network import (
+ )
+ from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+ from sglang.srt.utils.watchdog import SubprocessWatchdog
++from sglang.srt.utils.engine_failure import (
++    create_engine_failure_state,
++    mark_engine_failed,
++)
+ from sglang.srt.weight_cache.daemon import spawn_weight_cache_daemon
+ from sglang.srt.weight_cache.protocol import (
+     cleanup_stale_daemon_files,
+@@ -1120,6 +1124,7 @@ class Engine(EngineScoreMixin, EngineBase):
+             # Allocate ports for inter-process communications
+             if port_args is None:
+                 port_args = PortArgs.init_new(server_args)
++            port_args.engine_failure_path = create_engine_failure_state()
+             logger.info(f"server_args={server_args.resolved_dict()}")
+ 
+             # Start the engine info bootstrap server if per-rank info is needed.
+@@ -1229,7 +1234,9 @@ class Engine(EngineScoreMixin, EngineBase):
+             processes = list(scheduler_procs or [])
+             names = [f"scheduler_{i}" for i in range(len(processes))]
+             subprocess_watchdog = SubprocessWatchdog(
+-                processes=processes, process_names=names
++                processes=processes,
++                process_names=names,
++                on_failure=lambda: mark_engine_failed(port_args.engine_failure_path),
+             )
+             subprocess_watchdog.start()
+ 
+@@ -1281,7 +1288,9 @@ class Engine(EngineScoreMixin, EngineBase):
+             processes.extend(detoken_procs)
+             names.extend(detoken_names)
+             subprocess_watchdog = SubprocessWatchdog(
+-                processes=processes, process_names=names
++                processes=processes,
++                process_names=names,
++                on_failure=lambda: mark_engine_failed(port_args.engine_failure_path),
+             )
+             subprocess_watchdog.start()
+             startup_complete = True
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 857a3fbc2..fe6c9fb91 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -706,6 +706,9 @@ async def health_generate(request: Request) -> Response:
+     If the server is not running anything, this request will be run, so we know whether the server is healthy.
+     """
+ 
++    if _global_state.tokenizer_manager.is_engine_failed():
++        return Response(status_code=503)
++
+     if _global_state.tokenizer_manager.gracefully_exit:
+         logger.info("Health check request received during shutdown. Returning 503.")
+         return Response(status_code=503)
+@@ -2813,8 +2816,11 @@ def _setup_and_run_http_server(
+             else:
+                 from sglang.srt.utils.framework_log_privacy import configure_framework_log_privacy
+                 configure_framework_log_privacy()
+-                uvicorn.run(
++                from sglang.srt.utils.uvicorn_supervisor import run_multi_worker_server
++
++                run_multi_worker_server(
+                     "sglang.srt.entrypoints.http_server:app",
++                    engine_failure_path=port_args.engine_failure_path,
+                     host=get_serving().host,
+                     port=get_serving().port,
+                     root_path=get_serving().fastapi_root_path,
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 1a980ae26..3e980c92f 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -467,6 +467,7 @@ class Scheduler(
+         # Prefill tokens processed so far; used as the aging axis for the HRRN scheduling policy. Reqs snapshot this at waiting_queue entry.
+         self.processed_tokens_counter: int = 0
+         self.cur_batch_for_debug: Optional[ScheduleBatch] = None
++        self.engine_failure_path = port_args.engine_failure_path
+         self.init_soft_watchdog()
+ 
+         # Parse args
+diff --git a/python/sglang/srt/managers/scheduler_components/invariant_checker.py b/python/sglang/srt/managers/scheduler_components/invariant_checker.py
+index 9c902651c..fe5046628 100644
+--- a/python/sglang/srt/managers/scheduler_components/invariant_checker.py
++++ b/python/sglang/srt/managers/scheduler_components/invariant_checker.py
+@@ -534,6 +534,8 @@ class SchedulerInvariantChecker:
+ def create_scheduler_watchdog(
+     scheduler: Scheduler, watchdog_timeout: float, soft: bool = False
+ ) -> WatchdogRaw:
++    from sglang.srt.utils.engine_failure import mark_engine_failed
++
+     def dump_info() -> str:
+         if scheduler.is_initializing:
+             return ""
+@@ -554,4 +556,5 @@ def create_scheduler_watchdog(
+         watchdog_timeout=watchdog_timeout,
+         soft=soft,
+         dump_info=dump_info,
++        on_failure=lambda: mark_engine_failed(scheduler.engine_failure_path),
+     )
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index eb74ca022..209bada31 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -486,6 +486,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+     ):
+         # Parse args
+         self.server_args = server_args
++        self.engine_failure_path = port_args.engine_failure_path
+         assert_published(server_args, role="tokenizer")
+         self.startup_time: Optional[Dict[str, Any]] = None
+         self.elastic_worker_count = get_parallel().dp_size
+@@ -679,8 +680,14 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             not self.is_pause
+             and not self.gracefully_exit
+             and self.server_status == ServerStatus.Up
++            and not self.is_engine_failed()
+         )
+ 
++    def is_engine_failed(self) -> bool:
++        from sglang.srt.utils.engine_failure import engine_has_failed
++
++        return engine_has_failed(getattr(self, "engine_failure_path", None))
++
+     def init_request_logging_and_dumping(self):
+         # TODO: Refactor and organize the log export code.
+         # Request logging
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index a49b23009..9c0819173 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -667,6 +667,9 @@ class PortArgs:
+     # derive the /dev/shm path for load snapshots.
+     instance_id: str = ""
+ 
++    # Created once by the launcher, then shared with every child/HTTP worker.
++    engine_failure_path: str | None = None
++
+     @staticmethod
+     def init_new(
+         server_args: ServerArgs,
+diff --git a/python/sglang/srt/utils/engine_failure.py b/python/sglang/srt/utils/engine_failure.py
+new file mode 100644
+index 000000000..4778322fa
+--- /dev/null
++++ b/python/sglang/srt/utils/engine_failure.py
+@@ -0,0 +1,46 @@
++"""A terminal failure latch shared by one engine's spawned processes."""
++
++import atexit
++import os
++import tempfile
++from typing import Optional
++
++
++def _remove_state(path: str) -> None:
++    try:
++        os.unlink(path)
++    except FileNotFoundError:
++        pass
++
++
++def create_engine_failure_state() -> str:
++    # Create before spawning. Only the launcher creates a generation; readers
++    # must never create or reset a missing state file.
++    fd, path = tempfile.mkstemp(prefix="sglang-engine-state-")
++    try:
++        os.write(fd, b"0")
++    finally:
++        os.close(fd)
++    atexit.register(_remove_state, path)
++    return path
++
++
++def mark_engine_failed(path: Optional[str]) -> None:
++    if path is None:
++        return
++    fd = os.open(path, os.O_WRONLY)
++    try:
++        os.write(fd, b"1")
++    finally:
++        os.close(fd)
++
++
++def engine_has_failed(path: Optional[str]) -> bool:
++    if path is None:
++        return False
++    try:
++        with open(path, "rb") as state:
++            return state.read(2) != b"0"
++    except OSError:
++        # A removed, unreadable or corrupt latch cannot advertise readiness.
++        return True
+diff --git a/python/sglang/srt/utils/uvicorn_supervisor.py b/python/sglang/srt/utils/uvicorn_supervisor.py
+new file mode 100644
+index 000000000..ddaefb239
+--- /dev/null
++++ b/python/sglang/srt/utils/uvicorn_supervisor.py
+@@ -0,0 +1,43 @@
++"""Keep SGLang's fatal SIGQUIT handler when Uvicorn starts HTTP workers."""
++
++import signal
++
++import uvicorn
++from sglang.srt.utils.engine_failure import mark_engine_failed
++from uvicorn.supervisors import Multiprocess
++
++
++class SGLangMultiprocess(Multiprocess):
++    def __init__(self, *args, engine_failure_path=None, **kwargs):
++        self._engine_sigquit_handler = signal.getsignal(signal.SIGQUIT)
++        self._engine_failure_path = engine_failure_path
++        super().__init__(*args, **kwargs)
++        # Uvicorn 0.54 registers QUIT but has no handle_quit. SGLang owns
++        # this fatal child-to-parent signal; TERM/INT remain Uvicorn-owned.
++        signal.signal(signal.SIGQUIT, self._handle_engine_sigquit)
++
++    def _handle_engine_sigquit(self, signum, frame):
++        try:
++            mark_engine_failed(self._engine_failure_path)
++        finally:
++            handler = self._engine_sigquit_handler
++            if callable(handler):
++                handler(signum, frame)
++            else:
++                signal.signal(signal.SIGQUIT, handler)
++                signal.raise_signal(signal.SIGQUIT)
++
++    def handle_quit(self):
++        # Also cover a QUIT queued during the constructor's registration gap.
++        self._handle_engine_sigquit(signal.SIGQUIT, None)
++
++
++def run_multi_worker_server(app: str, *, engine_failure_path=None, **kwargs) -> None:
++    config = uvicorn.Config(app, **kwargs)
++    sock = config.bind_socket()
++    try:
++        SGLangMultiprocess(
++            config, sockets=[sock], engine_failure_path=engine_failure_path
++        ).run()
++    finally:
++        sock.close()
+diff --git a/python/sglang/srt/utils/watchdog.py b/python/sglang/srt/utils/watchdog.py
+index 70df32b5d..4afa82d04 100644
+--- a/python/sglang/srt/utils/watchdog.py
++++ b/python/sglang/srt/utils/watchdog.py
+@@ -16,6 +16,8 @@ from sglang.srt.utils.cudacore_pyspy_dump_utils import pyspy_dump_schedulers
+ 
+ logger = logging.getLogger(__name__)
+ 
++HARD_WATCHDOG_GRACE_SECONDS = 5.0
++
+ 
+ class Watchdog:
+     @staticmethod
+@@ -109,6 +111,7 @@ class WatchdogRaw:
+         watchdog_timeout: float,
+         soft: bool = False,
+         dump_info: Optional[Callable[[], str]] = None,
++        on_failure: Optional[Callable[[], None]] = None,
+     ):
+         self.debug_name = debug_name
+         self.get_counter = get_counter
+@@ -116,6 +119,7 @@ class WatchdogRaw:
+         self.watchdog_timeout = watchdog_timeout
+         self.soft = soft
+         self.dump_info = dump_info
++        self.on_failure = on_failure
+ 
+         self.parent_process = psutil.Process().parent()
+         t = threading.Thread(target=self._watchdog_thread, daemon=True)
+@@ -133,23 +137,29 @@ class WatchdogRaw:
+     def _watchdog_once(self):
+         watchdog_last_counter = 0
+         watchdog_last_time = time.perf_counter()
++        was_active = True
+ 
+         while True:
+             current = time.perf_counter()
+             if self.is_active():
+                 current_counter = self.get_counter()
+-                if watchdog_last_counter == current_counter:
++                if was_active and watchdog_last_counter == current_counter:
+                     if current > watchdog_last_time + self.watchdog_timeout:
+                         break
+                 else:
+                     watchdog_last_counter = current_counter
+                     watchdog_last_time = current
++                was_active = True
++            else:
++                # Idle time is not evidence of stalled model execution. Arm a
++                # fresh timeout when work resumes without a completed forward.
++                was_active = False
++                watchdog_last_time = current
+             time.sleep(self.watchdog_timeout / 2)
+ 
+-        if self.dump_info is not None and (info_msg := self.dump_info()):
+-            logger.error(f"{self.debug_name} debug info:\n{info_msg}")
++        self._handle_timeout()
+ 
+-        pyspy_dump_schedulers()
++    def _handle_timeout(self):
+         logger.error(
+             f"{self.debug_name} watchdog timeout "
+             f"({self.watchdog_timeout=}, {self.soft=})"
+@@ -157,10 +167,49 @@ class WatchdogRaw:
+         print(file=sys.stderr, flush=True)
+         print(file=sys.stdout, flush=True)
+ 
+-        if not self.soft:
+-            # Wait for some time so that the parent process can print the error.
+-            time.sleep(5)
++        if self.soft:
++            # Diagnostics must never prevent a hard watchdog from terminating.
++            if self.dump_info is not None and (info_msg := self.dump_info()):
++                logger.error(f"{self.debug_name} debug info:\n{info_msg}")
++            pyspy_dump_schedulers()
++            return
++
++        if self.on_failure is not None:
++            try:
++                self.on_failure()
++            except Exception:
++                logger.exception("Failed to publish terminal engine failure")
++        try:
++            # Keep process identities while the parent still exists. Its exit
++            # reparents children, so a later tree walk cannot find the siblings.
++            descendants = self.parent_process.children(recursive=True)
++        except psutil.Error:
++            descendants = []
++        try:
+             self.parent_process.send_signal(signal.SIGQUIT)
++            self.parent_process.wait(timeout=HARD_WATCHDOG_GRACE_SECONDS)
++        except psutil.NoSuchProcess:
++            pass
++        except psutil.Error:
++            logger.exception("Parent did not exit after watchdog SIGQUIT")
++
++        self._terminate_engine(descendants)
++
++    def _terminate_engine(self, descendants):
++        # Also runs after a parent exits without cleaning up, or was already
++        # gone. A fatal scheduler must never return to its stalled event loop.
++        try:
++            for process in [*descendants, self.parent_process]:
++                if process.pid == os.getpid():
++                    continue
++                try:
++                    process.kill()
++                except psutil.NoSuchProcess:
++                    pass
++                except psutil.Error:
++                    logger.exception("Failed to kill a failed engine process")
++        finally:
++            os._exit(1)
+ 
+ 
+ class SubprocessWatchdog:
+@@ -179,10 +228,12 @@ class SubprocessWatchdog:
+         processes: List[Process],
+         process_names: Optional[List[str]] = None,
+         interval: float = 1.0,
++        on_failure: Optional[Callable[[], None]] = None,
+     ):
+         self._processes = processes
+         self._names = process_names or [f"process_{i}" for i in range(len(processes))]
+         self._interval = interval
++        self._on_failure = on_failure
+         self._stop_event = threading.Event()
+         self._thread: Optional[threading.Thread] = None
+ 
+@@ -218,6 +269,10 @@ class SubprocessWatchdog:
+                 f"with exit code {proc.exitcode}. "
+                 f"Triggering SIGQUIT for cleanup..."
+             )
+-            os.kill(os.getpid(), signal.SIGQUIT)
++            try:
++                if self._on_failure is not None:
++                    self._on_failure()
++            finally:
++                os.kill(os.getpid(), signal.SIGQUIT)
+             return True
+         return False
+diff --git a/test/registered/unit/utils/engine_failure_fixture.py b/test/registered/unit/utils/engine_failure_fixture.py
+new file mode 100644
+index 000000000..c01be9741
+--- /dev/null
++++ b/test/registered/unit/utils/engine_failure_fixture.py
+@@ -0,0 +1,91 @@
++"""A real four-worker server using SGLang's readiness and fatal lifecycle."""
++
++import argparse
++import json
++import multiprocessing as mp
++import os
++import signal
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++from fastapi import FastAPI
++from sglang.srt.entrypoints import http_server
++from sglang.srt.managers.tokenizer_manager import ServerStatus, TokenizerManager
++from sglang.srt.utils.common import kill_process_tree
++from sglang.srt.utils.engine_failure import mark_engine_failed
++from sglang.srt.utils.uvicorn_supervisor import run_multi_worker_server
++from sglang.srt.utils.watchdog import WatchdogRaw
++
++state_path = os.environ["SGLANG_TEST_ENGINE_STATE"]
++manager = TokenizerManager.__new__(TokenizerManager)
++manager.engine_failure_path = state_path
++manager.is_pause = False
++manager.gracefully_exit = False
++manager.server_status = ServerStatus.Up
++http_server.set_global_state(SimpleNamespace(tokenizer_manager=manager))
++app = FastAPI()
++app.get("/ready")(http_server.ready)
++app.get("/health")(http_server.health_generate)
++
++
++@app.middleware("http")
++async def identify_worker(request, call_next):
++    response = await call_next(request)
++    response.headers["X-Worker-Pid"] = str(os.getpid())
++    return response
++
++
++def scheduler():
++    def publish_and_wait():
++        mark_engine_failed(state_path)
++        # Test barrier: inspect every HTTP worker before allowing real SIGQUIT.
++        while not Path(state_path + ".release").exists():
++            time.sleep(0.01)
++
++    WatchdogRaw(
++        debug_name="FixtureScheduler",
++        get_counter=lambda: 0,
++        is_active=lambda: Path(state_path + ".trigger").exists(),
++        watchdog_timeout=0.5,
++        on_failure=publish_and_wait,
++        dump_info=lambda: (_ for _ in ()).throw(AssertionError("hard diagnostic")),
++    )
++    while True:
++        time.sleep(0.05)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--port", type=int, required=True)
++    parser.add_argument("--original", action="store_true")
++    parser.add_argument("--ignore-quit", action="store_true")
++    parser.add_argument("--exit-on-quit", action="store_true")
++    args = parser.parse_args()
++    mp.set_start_method("spawn", force=True)
++    if args.exit_on_quit:
++        signal.signal(signal.SIGQUIT, lambda *_: os._exit(0))
++    elif args.ignore_quit:
++        signal.signal(signal.SIGQUIT, lambda *_: None)
++    else:
++        signal.signal(signal.SIGQUIT, lambda *_: kill_process_tree(os.getpid()))
++    child = mp.Process(target=scheduler)
++    child.start()
++    Path(state_path + ".pids").write_text(
++        json.dumps({"parent": os.getpid(), "scheduler": child.pid})
++    )
++    kwargs = dict(
++        host="127.0.0.1", port=args.port, workers=4, loop="asyncio", log_level="warning"
++    )
++    module = "engine_failure_fixture:app"
++    if args.original:
++        import uvicorn
++
++        uvicorn.run(module, **kwargs)
++    else:
++        run_multi_worker_server(module, engine_failure_path=state_path, **kwargs)
++    kill_process_tree(os.getpid(), include_parent=False, wait_timeout=10)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/test/registered/unit/utils/test_engine_failure.py b/test/registered/unit/utils/test_engine_failure.py
+new file mode 100644
+index 000000000..a69f4467c
+--- /dev/null
++++ b/test/registered/unit/utils/test_engine_failure.py
+@@ -0,0 +1,128 @@
++"""CPU regressions for per-launch failure propagation and watchdog ordering."""
++
++import os
++import signal
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++from sglang.srt.utils import watchdog as watchdog_module
++from sglang.srt.utils.engine_failure import (
++    create_engine_failure_state,
++    engine_has_failed,
++    mark_engine_failed,
++)
++from sglang.srt.utils.watchdog import SubprocessWatchdog, WatchdogRaw
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++class TestEngineFailure(unittest.TestCase):
++    def test_latch_is_terminal_and_generations_are_isolated(self):
++        first = create_engine_failure_state()
++        second = create_engine_failure_state()
++        self.addCleanup(Path(first).unlink, missing_ok=True)
++        self.addCleanup(Path(second).unlink, missing_ok=True)
++        self.assertNotEqual(first, second)
++        self.assertFalse(engine_has_failed(first))
++        mark_engine_failed(first)
++        mark_engine_failed(first)
++        self.assertTrue(engine_has_failed(first))
++        self.assertFalse(engine_has_failed(second))
++
++    def test_missing_corrupt_and_unreadable_state_fail_closed(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = str(Path(directory) / "state")
++            self.assertTrue(engine_has_failed(path))
++            for payload in (b"", b"00", b"garbage", b"1"):
++                Path(path).write_bytes(payload)
++                self.assertTrue(engine_has_failed(path))
++            with patch("builtins.open", side_effect=PermissionError):
++                self.assertTrue(engine_has_failed(path))
++
++    def test_mark_never_recreates_a_missing_generation(self):
++        with tempfile.TemporaryDirectory() as directory:
++            path = str(Path(directory) / "removed")
++            with self.assertRaises(FileNotFoundError):
++                mark_engine_failed(path)
++            self.assertFalse(Path(path).exists())
++
++
++class TestFailureOrdering(unittest.TestCase):
++    @staticmethod
++    def raw(*, soft=False):
++        raw = WatchdogRaw.__new__(WatchdogRaw)
++        raw.debug_name = "Scheduler"
++        raw.get_counter = lambda: 0
++        raw.is_active = lambda: True
++        raw.watchdog_timeout = 1.0
++        raw.soft = soft
++        raw.dump_info = MagicMock()
++        raw.parent_process = MagicMock()
++        raw.on_failure = MagicMock()
++        raw._terminate_engine = MagicMock()
++        return raw
++
++    def test_hard_marks_before_signal_and_never_runs_diagnostics(self):
++        raw = self.raw()
++        order = []
++        raw.on_failure.side_effect = lambda: order.append("mark")
++        raw.parent_process.send_signal.side_effect = lambda _: order.append("signal")
++        with patch.object(watchdog_module, "pyspy_dump_schedulers") as dump:
++            raw._handle_timeout()
++        self.assertEqual(order, ["mark", "signal"])
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++        raw.parent_process.wait.assert_called_once_with(
++            timeout=watchdog_module.HARD_WATCHDOG_GRACE_SECONDS
++        )
++        raw.dump_info.assert_not_called()
++        dump.assert_not_called()
++        raw._terminate_engine.assert_called_once_with(
++            raw.parent_process.children.return_value
++        )
++
++    def test_failed_publication_does_not_suppress_fatal_signal(self):
++        raw = self.raw()
++        raw.on_failure.side_effect = OSError("unwritable state")
++        raw._handle_timeout()
++        raw.parent_process.send_signal.assert_called_once_with(signal.SIGQUIT)
++
++    def test_soft_timeout_never_marks_or_signals(self):
++        raw = self.raw(soft=True)
++        with patch.object(watchdog_module, "pyspy_dump_schedulers"):
++            raw._handle_timeout()
++        raw.on_failure.assert_not_called()
++        raw.parent_process.send_signal.assert_not_called()
++
++    def test_idle_then_busy_receives_a_fresh_timeout(self):
++        raw = self.raw()
++        raw.is_active = MagicMock(side_effect=[False, False, True, True, True])
++        with (
++            patch.object(
++                watchdog_module.time,
++                "perf_counter",
++                side_effect=[0, 0, 100, 101, 102, 103],
++            ),
++            patch.object(watchdog_module.time, "sleep"),
++            patch.object(raw, "_handle_timeout") as timeout,
++        ):
++            raw._watchdog_once()
++        self.assertEqual(raw.is_active.call_count, 5)
++        timeout.assert_called_once_with()
++
++    def test_child_crash_is_published_before_signal(self):
++        process = MagicMock(pid=1, exitcode=1)
++        process.is_alive.return_value = False
++        order = []
++        watchdog = SubprocessWatchdog(
++            [process], on_failure=lambda: order.append("mark")
++        )
++        with patch.object(os, "kill", side_effect=lambda *_: order.append("signal")):
++            self.assertTrue(watchdog._check_processes())
++        self.assertEqual(order, ["mark", "signal"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/utils/test_engine_failure_multiprocess.py b/test/registered/unit/utils/test_engine_failure_multiprocess.py
+new file mode 100644
+index 000000000..90968df9f
+--- /dev/null
++++ b/test/registered/unit/utils/test_engine_failure_multiprocess.py
+@@ -0,0 +1,201 @@
++"""Linux CPU integration: real Uvicorn 0.54, four workers and child watchdog."""
++
++import json
++import os
++import signal
++import socket
++import subprocess
++import sys
++import time
++import unittest
++from pathlib import Path
++
++import psutil
++import requests
++import uvicorn
++from sglang.srt.utils.engine_failure import create_engine_failure_state
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=90, suite="base-a-test-cpu")
++
++
++@unittest.skipUnless(sys.platform == "linux", "requires real POSIX signals")
++class TestEngineMultiprocess(unittest.TestCase):
++    def start_server(self, *options):
++        self.state = create_engine_failure_state()
++        self.addCleanup(self.remove_files)
++        self.log = open(self.state + ".log", "w+")
++        self.addCleanup(self.log.close)
++        with socket.socket() as sock:
++            sock.bind(("127.0.0.1", 0))
++            port = sock.getsockname()[1]
++        self.url = f"http://127.0.0.1:{port}"
++        fixture_dir = str(Path(__file__).parent)
++        env = dict(
++            os.environ,
++            SGLANG_TEST_ENGINE_STATE=self.state,
++            PYTHONPATH=fixture_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
++        )
++        self.process = subprocess.Popen(
++            [
++                sys.executable,
++                str(Path(__file__).with_name("engine_failure_fixture.py")),
++                "--port",
++                str(port),
++                *options,
++            ],
++            env=env,
++            stdout=self.log,
++            stderr=subprocess.STDOUT,
++        )
++        self.addCleanup(self.stop_server)
++        self.worker_pids = self.wait_all_workers(200, timeout=90)
++        self.child_pids = {
++            child.pid
++            for child in psutil.Process(self.process.pid).children(recursive=True)
++        }
++        self.children = psutil.Process(self.process.pid).children(recursive=True)
++        self.assertEqual(len(self.worker_pids), 4)
++        print(
++            json.dumps(
++                {
++                    "phase": "four_workers_ready",
++                    "parent": self.process.pid,
++                    "workers": sorted(self.worker_pids),
++                    "tree": sorted(self.child_pids),
++                    "uvicorn": uvicorn.__version__,
++                }
++            ),
++            flush=True,
++        )
++
++    def remove_files(self):
++        for suffix in ("", ".trigger", ".release", ".pids", ".log"):
++            Path(self.state + suffix).unlink(missing_ok=True)
++
++    def stop_server(self):
++        for child in getattr(self, "children", []):
++            try:
++                child.kill()
++            except psutil.NoSuchProcess:
++                pass
++        if self.process.poll() is None:
++            process = psutil.Process(self.process.pid)
++            children = process.children(recursive=True)
++            for child in children:
++                try:
++                    child.kill()
++                except psutil.NoSuchProcess:
++                    pass
++            process.kill()
++            self.process.wait(timeout=10)
++
++    def wait_all_workers(self, status, *, path="/ready", timeout=10):
++        seen = set()
++        deadline = time.monotonic() + timeout
++        while time.monotonic() < deadline:
++            if self.process.poll() is not None:
++                self.log.flush()
++                self.fail(Path(self.state + ".log").read_text()[-6000:])
++            try:
++                response = requests.get(
++                    self.url + path, headers={"Connection": "close"}, timeout=1
++                )
++                if response.status_code == status:
++                    seen.add(int(response.headers["X-Worker-Pid"]))
++                else:
++                    self.assertEqual(response.status_code, status)
++                if len(seen) == 4:
++                    return seen
++            except requests.RequestException:
++                time.sleep(0.05)
++        self.fail(f"Only observed workers {seen} for {path} status={status}")
++
++    def assert_tree_exits(self, timeout):
++        self.process.wait(timeout=timeout)
++        deadline = time.monotonic() + 10
++        alive = set(self.child_pids)
++        while alive and time.monotonic() < deadline:
++            alive = {
++                pid
++                for pid in alive
++                if psutil.pid_exists(pid)
++                and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
++            }
++            if alive:
++                time.sleep(0.05)
++        self.assertFalse(alive, f"Surviving engine processes: {alive}")
++        print(
++            json.dumps(
++                {"phase": "engine_tree_exited", "exit_code": self.process.returncode}
++            ),
++            flush=True,
++        )
++
++    def test_original_uvicorn_discards_sigquit_negative_control(self):
++        if uvicorn.__version__ != "0.54.0":
++            self.skipTest("negative control targets the incident's Uvicorn version")
++        self.start_server("--original")
++        os.kill(self.process.pid, signal.SIGQUIT)
++        time.sleep(1)
++        self.assertIsNone(self.process.poll())
++        self.assertEqual(self.wait_all_workers(200), self.worker_pids)
++        os.kill(self.process.pid, signal.SIGTERM)
++        self.assert_tree_exits(15)
++
++    def run_fault(self, *options):
++        self.start_server(*options)
++        # More than two active-timeout intervals of idle must remain healthy.
++        time.sleep(1.2)
++        self.assertEqual(self.wait_all_workers(200), self.worker_pids)
++        Path(self.state + ".trigger").touch()
++        deadline = time.monotonic() + 5
++        while Path(self.state).read_bytes() != b"1" and time.monotonic() < deadline:
++            time.sleep(0.02)
++        self.assertEqual(Path(self.state).read_bytes(), b"1")
++        self.assertEqual(self.wait_all_workers(503), self.worker_pids)
++        self.assertEqual(self.wait_all_workers(503, path="/health"), self.worker_pids)
++        print(
++            json.dumps(
++                {
++                    "phase": "all_workers_unready_before_signal",
++                    "workers": sorted(self.worker_pids),
++                    "ready": 503,
++                    "health": 503,
++                }
++            ),
++            flush=True,
++        )
++        Path(self.state + ".release").touch()
++        self.assert_tree_exits(10)
++
++    def test_hard_timeout_marks_all_workers_then_cleans_entire_tree(self):
++        self.run_fault()
++
++    def test_unresponsive_parent_has_bounded_tree_cleanup(self):
++        self.run_fault("--ignore-quit")
++
++    def test_parent_exiting_without_cleanup_does_not_orphan_engine(self):
++        self.run_fault("--exit-on-quit")
++
++    def test_scheduler_exits_if_parent_was_already_gone(self):
++        self.start_server()
++        scheduler_pid = json.loads(Path(self.state + ".pids").read_text())["scheduler"]
++        self.process.kill()
++        self.process.wait(timeout=5)
++        Path(self.state + ".release").touch()
++        Path(self.state + ".trigger").touch()
++        deadline = time.monotonic() + 5
++        while time.monotonic() < deadline:
++            try:
++                active = psutil.Process(scheduler_pid).status() != psutil.STATUS_ZOMBIE
++            except psutil.NoSuchProcess:
++                active = False
++            if not active:
++                break
++            time.sleep(0.05)
++        self.assertFalse(active, "scheduler survived its already-exited parent")
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1,9 +1,9 @@
 {
   "base": "e00930c5489053f26d86b179cee0d087f846acbb",
   "control_commit": "012ed3d59501626b9c990f0404f052e31a263e91",
-  "engine_commit": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
-  "engine_tree": "4062bc6aa660b844e8d297b1469fbfe04fe927bb",
-  "runtime_tree_without_phala": "ed2392ab5f05295751feeabf9594e897403c6ddc",
+  "engine_commit": "52ffefa675bc4a447bf7649b1a482eb8df99a48b",
+  "engine_tree": "42615aebc4360497263f7ee2f8d9df10d5beb579",
+  "runtime_tree_without_phala": "0e999c59b0696df9c771c1f22993263ab64f61d9",
   "control_runtime_tree_without_phala": "fdb9abc0cdc1f0f551ae0f8e0e62690b7aaaeb38",
   "packaging_metadata": {
     "commit": "012ed3d59501626b9c990f0404f052e31a263e91",
@@ -35,17 +35,39 @@
       "parent": "3a693c66f5578879b8b859ed3fc193fe6638d057",
       "commit": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
       "sha256": "2c48222762f9ca436dcebdac0727993db56ea9b536baa6e32af84637cb549022"
+    },
+    {
+      "path": "patches/common/0006-watchdog-signal-failure-lifecycle.patch",
+      "parent": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
+      "commit": "347f7bc5b8de30279b147e42ef1efb97162d7100",
+      "sha256": "20dd5f723c035c8ace1f53afa1beafed9b2514c8d641a75b3dff54e9dc7bcc43"
+    },
+    {
+      "path": "patches/models/deepseek/0003-dspark-accept-result-ownership.patch",
+      "parent": "347f7bc5b8de30279b147e42ef1efb97162d7100",
+      "commit": "45537de2f7167ae9a6756d8299c4275202c2f3c4",
+      "sha256": "d368cb1d41d123e9540fb2c92187f7103fe54acadf77703b7f8a291af467901c"
+    },
+    {
+      "path": "patches/common/0007-watchdog-repair-packaging.patch",
+      "parent": "45537de2f7167ae9a6756d8299c4275202c2f3c4",
+      "commit": "52ffefa675bc4a447bf7649b1a482eb8df99a48b",
+      "sha256": "02e4c7ac5e33d0539592fdc85c8deed63f7481f9a9d581cd9a81ea4f5fbf5777"
     }
   ],
   "upstream_pr": "https://github.com/sgl-project/sglang/pull/42987",
   "upstream_merge": "46c2585faa4fcb6fa8febf4d2d4534a7cf33da79",
   "embedded_governor": "not selected; existing external PIG unchanged",
-  "scope": "Frozen 0.5.21 maintenance: retained-token reasoning usage, DSPARK AUTO folded sampling, and prefetch I/O failure containment with stale-operation identity guards. External PIG unchanged. No universal recovery promise for layout-lease invariant failures; GPU acceptance recorded separately.",
+  "scope": "Frozen accepted 0.5.21 maintenance: retained-token reasoning usage, DSPARK AUTO folded sampling, prefetch I/O failure containment, cross-worker terminal readiness and bounded fatal watchdog cleanup, and owned DSPARK accept results. External PIG and native dependencies unchanged. Original GPU stall trigger and target GPU acceptance remain separate.",
   "series": "series",
   "source_components": {
     "control": "012ed3d59501626b9c990f0404f052e31a263e91",
     "usage": "4e814984a08e29c1dc19da00c3560909532c000f",
     "dspark": "63f53d18d3d5d7dbfee189c0ed8e2ac10c05407f",
-    "prefetch_io_repair": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c"
-  }
+    "prefetch_io_repair": "53c8f4e63f11887a398b727dd6bc30dbe4aad73c",
+    "watchdog_failure_lifecycle": "347f7bc5b8de30279b147e42ef1efb97162d7100",
+    "dspark_accept_ownership": "45537de2f7167ae9a6756d8299c4275202c2f3c4",
+    "watchdog_packaging": "52ffefa675bc4a447bf7649b1a482eb8df99a48b"
+  },
+  "source_tag": "v0.5.21-phala-watchdog-dspark-fix-20261016"
 }
