@@ -1,0 +1,1002 @@
+diff --git a/docker/phala/kimi-protocol3-ref4/Dockerfile b/docker/phala/kimi-protocol3-ref4/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..590f9191b25d15682eabf6042335e8a8bfcab0cb
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref4/Dockerfile
+@@ -0,0 +1,11 @@
++FROM ghcr.io/phala-network/sglang:v0.5.21-phala-3-k3protocol3-ref3@sha256:b05b00447d4b2fcc8e99f48e862917bafefcabf27fe3d90105a98ed218a87054
++ARG ENGINE_REVISION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_REVISION}" \
++      org.opencontainers.image.version="v0.5.21-phala-3-k3protocol3-ref4" \
++      io.phala.sglang.revision="${ENGINE_REVISION}"
++COPY python/sglang/srt/function_call/function_call_parser.py /sgl-workspace/sglang/python/sglang/srt/function_call/function_call_parser.py
++COPY python/sglang/srt/function_call/kimik3_constraint_diagnostics.py /sgl-workspace/sglang/python/sglang/srt/function_call/kimik3_constraint_diagnostics.py
++COPY python/sglang/srt/constrained/base_grammar_backend.py /sgl-workspace/sglang/python/sglang/srt/constrained/base_grammar_backend.py
++COPY python/sglang/srt/constrained/reasoner_grammar_backend.py /sgl-workspace/sglang/python/sglang/srt/constrained/reasoner_grammar_backend.py
++COPY python/sglang/srt/constrained/xgrammar_backend.py /sgl-workspace/sglang/python/sglang/srt/constrained/xgrammar_backend.py
+diff --git a/python/sglang/srt/constrained/base_grammar_backend.py b/python/sglang/srt/constrained/base_grammar_backend.py
+index 46150be46867d49065b6675ac65195de62e5a0fd..cc825a5c0b9ef5b809e9937cc02241989fb3649b 100644
+--- a/python/sglang/srt/constrained/base_grammar_backend.py
++++ b/python/sglang/srt/constrained/base_grammar_backend.py
+@@ -21,6 +21,7 @@ import threading
+ import time
+ from collections import OrderedDict
+ from concurrent.futures import Future, ThreadPoolExecutor
++from contextlib import nullcontext
+ from dataclasses import dataclass, field
+ from typing import Dict, List, NamedTuple, Optional, Tuple
+ 
+@@ -345,30 +346,50 @@ class BaseGrammarBackend:
+             else:
+                 self._pending[future] = (entry[0], True)
+ 
++    def _compile_context(self):
++        """Reserve backend compilation admission before checking live waiters."""
++        return nullcontext()
++
+     def _run_compile(self, flight_key, key, require_reasoning):
+         with self._cache_lock:
+-            source, waiters = self._inflight[flight_key]
++            _, waiters = self._inflight[flight_key]
+             if all(
+                 waiter.cancelled() or self._pending.get(waiter, (0, True))[1]
+                 for waiter in waiters
+             ):
++                del self._inflight[flight_key]
+                 return None
+-            self._budget_observations["compiles_started"] += 1
+-            started = time.perf_counter()
+-            self._budget_observations["compile_queue_seconds"] += (
+-                started - source._grammar_submitted_at
+-            )
++        started = None
+         try:
+-            return self._init_value_dispatch(key, require_reasoning)
++            with self._compile_context():
++                with self._cache_lock:
++                    source, waiters = self._inflight[flight_key]
++                    if all(
++                        waiter.cancelled() or self._pending.get(waiter, (0, True))[1]
++                        for waiter in waiters
++                    ):
++                        del self._inflight[flight_key]
++                        return None
++                    self._budget_observations["compiles_started"] += 1
++                    started = time.perf_counter()
++                    self._budget_observations["compile_queue_seconds"] += (
++                        started - source._grammar_submitted_at
++                    )
++                return self._init_value_dispatch(key, require_reasoning)
+         finally:
+-            elapsed = time.perf_counter() - started
+-            with self._cache_lock:
+-                self._budget_observations["compiles_finished"] += 1
+-                self._budget_observations["compile_wall_seconds"] += elapsed
++            if started is not None:
++                elapsed = time.perf_counter() - started
++                with self._cache_lock:
++                    self._budget_observations["compiles_finished"] += 1
++                    self._budget_observations["compile_wall_seconds"] += elapsed
+ 
+     def _complete_compile(self, flight_key, source):
+         with self._cache_lock:
+-            _, waiters = self._inflight.pop(flight_key)
++            waiters = source._grammar_waiters
++            del source._grammar_waiters
++            flight = self._inflight.get(flight_key)
++            if flight is not None and flight[0] is source:
++                self._inflight.pop(flight_key)
+             for future in waiters:
+                 if future.cancelled():
+                     self._release_abandoned_compile(future)
+@@ -525,6 +546,7 @@ class BaseGrammarBackend:
+                     )
+                     source._grammar_submitted_at = submitted_at
+                     flight = self._inflight[flight_key] = (source, [])
++                    source._grammar_waiters = flight[1]
+                 source, waiters = flight
+                 waiters.append(future)
+                 future._grammar_source = source
+diff --git a/python/sglang/srt/constrained/reasoner_grammar_backend.py b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+index 4f4eb7ac17a8bdc5b2070a14570f045c7ae707dd..d3e5cd39ce018b39b863787374a6a8e4e03dc302 100644
+--- a/python/sglang/srt/constrained/reasoner_grammar_backend.py
++++ b/python/sglang/srt/constrained/reasoner_grammar_backend.py
+@@ -520,6 +520,9 @@ class ReasonerGrammarBackend(BaseGrammarBackend):
+             return (*key[:2], bool(require_reasoning))
+         return key[:2]
+ 
++    def _compile_context(self):
++        return self.grammar_backend._compile_context()
++
+     def reset(self):
+         super().reset()
+         if self.use_cache_budget:
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+index 9f7916188280eee90707ab908e8d0605c411fee9..1f26bb84b9a8a4429b44cb78f57a989be42b435d 100644
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -17,6 +17,8 @@ import dataclasses
+ import json
+ import logging
+ import sys
++import threading
++from contextlib import contextmanager
+ from typing import Dict, List, Optional, Tuple, Union
+ 
+ import torch
+@@ -278,6 +280,10 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+                 )
+ 
+         if self.use_cache_budget:
++            self._compile_condition = threading.Condition()
++            self._compile_local = threading.local()
++            self._active_native_compiles = 0
++            self._native_clear_pending = False
+             native_limit = envs.SGLANG_XGRAMMAR_CACHE_MAX_BYTES.get()
+             native_threads = envs.SGLANG_XGRAMMAR_MAX_THREADS.get()
+             if native_limit < 0 or native_threads < 1:
+@@ -296,16 +302,52 @@ class XGrammarGrammarBackend(BaseGrammarBackend):
+         self.any_whitespace = any_whitespace
+         self.max_whitespace_cnt = max_whitespace_cnt
+ 
+-    def _compile(self, compile_fn, *args, **kwargs):
++    @contextmanager
++    def _compile_context(self):
++        if not self.use_cache_budget or getattr(self._compile_local, "active", False):
++            yield
++            return
++        with self._compile_condition:
++            while self._native_clear_pending:
++                self._compile_condition.wait()
++            self._active_native_compiles += 1
++        self._compile_local.active = True
++        self._compile_local.native_called = False
++        self._compile_local.native_failed = False
+         try:
+-            return compile_fn(*args, **kwargs)
++            yield
+         finally:
+-            # Python owns the bounded hot cache. Native LRU byte accounting does
+-            # not include failed futures or all auxiliary caches. Clear those
+-            # after each cold compile, including failures; existing ctx owners
+-            # and matchers remain valid. XGrammar's caches support concurrent clear.
++            failed = sys.exc_info()[0] is not None or self._compile_local.native_failed
++            self._compile_local.active = False
++            with self._compile_condition:
++                self._active_native_compiles -= 1
++                # Return completed peers promptly, but drain this batch before
++                # admitting more native work. Failed native futures carry zero
++                # cache charge, so an endless overlap must not defer cleanup.
++                self._native_clear_pending |= self._compile_local.native_called
++                if self._active_native_compiles == 0 and self._native_clear_pending:
++                    try:
++                        self.grammar_compiler.clear_cache()
++                    except BaseException as exc:
++                        if not failed:
++                            raise
++                        logger.error(
++                            "XGrammar cache cleanup failed (%s)", type(exc).__name__
++                        )
++                    finally:
++                        self._native_clear_pending = False
++                        self._compile_condition.notify_all()
++
++    def _compile(self, compile_fn, *args, **kwargs):
++        with self._compile_context():
+             if self.use_cache_budget:
+-                self.grammar_compiler.clear_cache()
++                self._compile_local.native_called = True
++            try:
++                return compile_fn(*args, **kwargs)
++            except BaseException:
++                if self.use_cache_budget:
++                    self._compile_local.native_failed = True
++                raise
+ 
+     @staticmethod
+     def _compiler_error(exc):
+diff --git a/python/sglang/srt/function_call/function_call_parser.py b/python/sglang/srt/function_call/function_call_parser.py
+index 3184ac7dc3e3ef9ce127e6b645f744d23138c3bb..d2c3af53178ad1620d553a8ad2e3b790f402dc7b 100644
+--- a/python/sglang/srt/function_call/function_call_parser.py
++++ b/python/sglang/srt/function_call/function_call_parser.py
+@@ -384,4 +384,19 @@ class FunctionCallParser:
+                 return ("json_schema", json_schema)
+         except Exception as e:
+             logger.error(f"Error getting structure constraint: {e}")
++            if isinstance(self.detector, KimiK3Detector):
++                try:
++                    from sglang.srt.function_call.kimik3_constraint_diagnostics import (
++                        constraint_failure_summary,
++                    )
++
++                    logger.error(
++                        "Kimi constraint failure metadata: %s",
++                        constraint_failure_summary(
++                            self.tools, tool_choice, self.tool_strict_level
++                        ),
++                    )
++                except Exception:
++                    # Diagnostics must not change the original rejection path.
++                    logger.error("Kimi constraint failure metadata unavailable")
+             return None
+diff --git a/python/sglang/srt/function_call/kimik3_constraint_diagnostics.py b/python/sglang/srt/function_call/kimik3_constraint_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb2f9ab40ea08d821687748874c2ff58368ae0e8
+--- /dev/null
++++ b/python/sglang/srt/function_call/kimik3_constraint_diagnostics.py
+@@ -0,0 +1,74 @@
++"""Bounded keyword counts for rejected constraints, never request/schema text."""
++
++_KEYWORDS = (
++    "$ref",
++    "type",
++    "properties",
++    "required",
++    "additionalProperties",
++    "allOf",
++    "anyOf",
++    "oneOf",
++    "not",
++    "if",
++    "then",
++    "else",
++    "dependentRequired",
++    "dependentSchemas",
++    "dependencies",
++    "unevaluatedProperties",
++    "patternProperties",
++    "propertyNames",
++    "minProperties",
++    "maxProperties",
++)
++
++
++def constraint_failure_summary(tools, tool_choice, server_level):
++    """Describe original request declarations, before server-forced strictness.
++
++    Keyword counts concern raw roots/direct oneOf branches only, not resolved
++    references. No names, descriptions, values, refs, or exception text escape.
++    This is failure-path diagnostics, not a validation or admission policy.
++    """
++    named = not isinstance(tool_choice, str)
++    name = tool_choice.function.name if named else None
++    root_counts = {key: 0 for key in _KEYWORDS}
++    branch_counts = {key: 0 for key in _KEYWORDS}
++    selected = strict = branches_seen = 0
++    truncated = len(tools) > 64
++    for tool in tools[:64]:
++        if named and tool.function.name != name:
++            continue
++        selected += 1
++        strict += int(tool.function.strict is True)
++        schema = tool.function.parameters
++        if not isinstance(schema, dict):
++            continue
++        for key in _KEYWORDS:
++            root_counts[key] += int(key in schema)
++        branches = schema.get("oneOf")
++        if not isinstance(branches, list):
++            continue
++        truncated |= len(branches) > 8
++        for branch in branches[:8]:
++            branches_seen += 1
++            if isinstance(branch, dict):
++                for key in _KEYWORDS:
++                    branch_counts[key] += int(key in branch)
++    return {
++        "choice": (
++            "named"
++            if named
++            else (
++                tool_choice if tool_choice in ("auto", "required", "none") else "other"
++            )
++        ),
++        "server_level": int(server_level),
++        "selected_tools_observed": selected,
++        "explicit_strict_observed": strict,
++        "oneof_branches_observed": branches_seen,
++        "root_keywords": {k: v for k, v in root_counts.items() if v},
++        "oneof_branch_keywords": {k: v for k, v in branch_counts.items() if v},
++        "truncated": bool(truncated),
++    }
+diff --git a/test/registered/unit/kimi_feedback/test_constraint_failure_diagnostics.py b/test/registered/unit/kimi_feedback/test_constraint_failure_diagnostics.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1ee9b7c56c59d586c31d75d1a86a0a37df1c50c
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_constraint_failure_diagnostics.py
+@@ -0,0 +1,138 @@
++"""Privacy and boundedness checks; no tokenizer or live requests required."""
++
++import copy
++import json
++from types import SimpleNamespace as NS
++
++from sglang.srt.function_call.kimik3_constraint_diagnostics import (
++    constraint_failure_summary,
++)
++
++
++def tool(name="private_tool", strict=False, schema=None):
++    return NS(function=NS(name=name, strict=strict, parameters=schema))
++
++
++def test_counts_original_strict_without_echoing_schema_or_mutating_inputs():
++    schema = {
++        "oneOf": [
++            {
++                "type": "object",
++                "if": {"properties": {"private_field": {"const": "private_value"}}},
++            }
++        ],
++        "description": "private_description",
++        "$ref": "#/private_reference",
++    }
++    original = copy.deepcopy(schema)
++    out = constraint_failure_summary(
++        [tool(schema=schema), tool(strict=True)], "auto", 2
++    )
++    assert out["explicit_strict_observed"] == 1
++    assert out["selected_tools_observed"] == 2
++    assert out["root_keywords"] == {"$ref": 1, "oneOf": 1}
++    assert out["oneof_branch_keywords"] == {"type": 1, "if": 1}
++    assert "private" not in json.dumps(out)
++    assert schema == original
++
++
++def test_named_choice_counts_only_selected_original_tool():
++    out = constraint_failure_summary(
++        [tool("private_a", True), tool("private_b", False)],
++        NS(function=NS(name="private_b")),
++        2,
++    )
++    assert out["choice"] == "named"
++    assert out["selected_tools_observed"] == 1
++    assert out["explicit_strict_observed"] == 0
++    assert "private" not in json.dumps(out)
++
++
++def test_diagnostic_bounds_are_reported_without_changing_admission():
++    out = constraint_failure_summary(
++        [tool(schema={"oneOf": [{}] * 100})] * 100, "required", 2
++    )
++    assert out["truncated"]
++    assert out["selected_tools_observed"] == 64
++    assert out["oneof_branches_observed"] == 512
++
++
++def test_boolean_schema_and_unknown_choice_do_not_escape_values():
++    out = constraint_failure_summary(
++        [tool(schema=True), tool(schema=None)], "private_choice", 0
++    )
++    assert out["choice"] == "other"
++    assert out["root_keywords"] == {}
++    assert not out["truncated"]
++    assert "private" not in json.dumps(out)
++
++
++def make_parser(monkeypatch):
++    from sglang.srt.entrypoints.openai.protocol import Tool
++    from sglang.srt.function_call.function_call_parser import FunctionCallParser
++
++    monkeypatch.setenv("SGLANG_TOOL_STRICT_LEVEL", "2")
++    request_tool = Tool.model_validate(
++        {
++            "type": "function",
++            "function": {
++                "name": "private_tool",
++                "strict": False,
++                "parameters": {"type": "object", "properties": {}},
++            },
++        }
++    )
++    return FunctionCallParser([request_tool], "kimi_k3")
++
++
++def test_parser_failure_reports_original_strict_and_preserves_failure(
++    monkeypatch, caplog
++):
++    parser = make_parser(monkeypatch)
++
++    def fail(**kwargs):
++        assert kwargs["tools"][0].function.strict is True
++        raise ValueError("synthetic failure")
++
++    monkeypatch.setattr(parser.detector, "get_structural_tag", fail)
++    assert parser.get_structure_constraint("required") is None
++    messages = [
++        r.getMessage()
++        for r in caplog.records
++        if r.msg.startswith("Kimi constraint failure")
++    ]
++    assert len(messages) == 1
++    assert "'explicit_strict_observed': 0" in messages[0]
++    assert "'server_level': 2" in messages[0]
++    assert "private" not in messages[0]
++    assert parser.tools[0].function.strict is False
++
++
++def test_parser_success_adds_no_failure_diagnostics(monkeypatch, caplog):
++    parser = make_parser(monkeypatch)
++    assert parser.get_structure_constraint("required") is not None
++    assert not [
++        r for r in caplog.records if str(r.msg).startswith("Kimi constraint failure")
++    ]
++
++
++def test_diagnostic_failure_never_changes_rejection(monkeypatch, caplog):
++    from sglang.srt.function_call import kimik3_constraint_diagnostics as diagnostics
++
++    parser = make_parser(monkeypatch)
++
++    def fail(**kwargs):
++        raise ValueError("synthetic failure")
++
++    def diagnostic_fail(*args):
++        raise RuntimeError("private diagnostic content")
++
++    monkeypatch.setattr(parser.detector, "get_structural_tag", fail)
++    monkeypatch.setattr(diagnostics, "constraint_failure_summary", diagnostic_fail)
++    assert parser.get_structure_constraint("required") is None
++    messages = [
++        r.getMessage()
++        for r in caplog.records
++        if str(r.msg).startswith("Kimi constraint failure")
++    ]
++    assert messages == ["Kimi constraint failure metadata unavailable"]
+diff --git a/test/registered/unit/kimi_feedback/test_grammar_compile_clear.py b/test/registered/unit/kimi_feedback/test_grammar_compile_clear.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4da6631e29c778bd28e16b2fc051700f28ad8567
+--- /dev/null
++++ b/test/registered/unit/kimi_feedback/test_grammar_compile_clear.py
+@@ -0,0 +1,550 @@
++"""Cold compile results must not wait for unrelated native cache cleanup."""
++
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from types import SimpleNamespace
++
++import pytest
++
++from sglang.srt.constrained.base_grammar_backend import (
++    BaseGrammarBackend,
++    BaseGrammarObject,
++    InvalidGrammarObject,
++)
++from sglang.srt.constrained.grammar_manager import GrammarManager
++from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarBackend
++from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
++
++
++class StopCompile(BaseException):
++    pass
++
++
++class ObservedCondition(threading.Condition):
++    def __init__(self):
++        super().__init__()
++        self.wait_entered = threading.Event()
++
++    def wait(self, timeout=None):
++        self.wait_entered.set()
++        return super().wait(timeout)
++
++
++class Value(BaseGrammarObject):
++    def __init__(self, key):
++        super().__init__()
++        self.key = key
++
++    def copy(self):
++        return Value(self.key)
++
++
++class Compiler:
++    """A gated native cache, including zero-charge failed-future ownership."""
++
++    def __init__(self):
++        self.condition = threading.Condition()
++        self.active = set()
++        self.completed = set()
++        self.failed = set()
++        self.entered = {}
++        self.clear_calls = 0
++        self.clear_entered = threading.Event()
++        self.clear_gate = threading.Event()
++        self.clear_gate.set()
++        self.clear_error = None
++
++    def event(self, key):
++        with self.condition:
++            return self.entered.setdefault(key, threading.Event())
++
++    def compile(self, key, gate=None, error=None):
++        with self.condition:
++            self.active.add(key)
++            self.event(key).set()
++        try:
++            if gate is not None:
++                assert gate.wait(5), "fixture compiler was not released"
++            if error is not None:
++                raise error
++            return key
++        finally:
++            with self.condition:
++                self.active.remove(key)
++                self.completed.add(key)
++                if error is not None:
++                    self.failed.add(key)
++                self.condition.notify_all()
++
++    def clear_cache(self):
++        # The production native LRU waits for in-flight futures during clear.
++        with self.condition:
++            self.clear_calls += 1
++            self.clear_entered.set()
++            assert self.condition.wait_for(lambda: not self.active, timeout=5)
++        assert self.clear_gate.wait(5), "fixture clear was not released"
++        with self.condition:
++            if self.clear_error is not None:
++                error, self.clear_error = self.clear_error, None
++                raise error
++            self.completed.clear()
++            self.failed.clear()
++
++
++@pytest.fixture
++def backend():
++    obj = object.__new__(XGrammarGrammarBackend)
++    obj.use_cache_budget = True
++    obj._compile_condition = ObservedCondition()
++    obj._compile_local = threading.local()
++    obj._active_native_compiles = 0
++    obj._native_clear_pending = False
++    obj.grammar_compiler = Compiler()
++    obj.any_whitespace = True
++    obj.max_whitespace_cnt = None
++    return obj
++
++
++@pytest.fixture
++def async_backend(backend, monkeypatch):
++    monkeypatch.setenv("SGLANG_GRAMMAR_COMPILER_WORKERS", "2")
++    BaseGrammarBackend.__init__(backend)
++    backend.gates = {}
++
++    def dispatch(key):
++        return Value(
++            backend._compile(
++                backend.grammar_compiler.compile, key, backend.gates.get(key)
++            )
++        )
++
++    backend.dispatch_regex = backend.dispatch_ebnf = dispatch
++    yield backend
++    for gate in backend.gates.values():
++        gate.set()
++    backend.grammar_compiler.clear_gate.set()
++    backend.executor.shutdown(wait=True, cancel_futures=True)
++
++
++def test_short_result_returns_while_unrelated_compile_is_active(backend):
++    compiler = backend.grammar_compiler
++    gate = threading.Event()
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        slow = pool.submit(backend._compile, compiler.compile, "slow", gate)
++        assert compiler.event("slow").wait(2)
++        fast = pool.submit(backend._compile, compiler.compile, "fast")
++        try:
++            assert fast.result(0.5) == "fast"
++            assert not slow.done()
++            assert not compiler.clear_calls
++        finally:
++            gate.set()
++        assert slow.result(2) == "slow"
++    assert compiler.clear_calls == 1
++    assert not compiler.completed and not compiler.failed
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++
++
++def test_new_cold_work_waits_for_cleanup_instead_of_growing_failed_cache(backend):
++    compiler = backend.grammar_compiler
++    gate = threading.Event()
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        slow = pool.submit(backend._compile, compiler.compile, "slow", gate)
++        assert compiler.event("slow").wait(2)
++        failed = pool.submit(
++            backend._compile, compiler.compile, "bad-first", None, RuntimeError("fixture")
++        )
++        try:
++            with pytest.raises(RuntimeError, match="fixture"):
++                failed.result(0.5)
++            later = pool.submit(
++                backend._compile, compiler.compile, "bad-next", None, RuntimeError("fixture")
++            )
++            assert not compiler.event("bad-next").wait(0.1)
++            assert compiler.failed == {"bad-first"}
++            assert not later.done()
++        finally:
++            gate.set()
++        assert slow.result(2) == "slow"
++        with pytest.raises(RuntimeError, match="fixture"):
++            later.result(2)
++    assert not compiler.completed and not compiler.failed
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++
++
++def test_new_compile_cannot_enter_during_last_clear(backend):
++    compiler = backend.grammar_compiler
++    compiler.clear_gate.clear()
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        first = pool.submit(backend._compile, compiler.compile, "first")
++        assert compiler.clear_entered.wait(2)
++        second = pool.submit(backend._compile, compiler.compile, "second")
++        try:
++            assert not compiler.event("second").wait(0.1)
++        finally:
++            compiler.clear_gate.set()
++        assert first.result(2) == "first"
++        assert second.result(2) == "second"
++    assert compiler.clear_calls == 2 and not compiler.completed
++
++
++@pytest.mark.parametrize("error_type", [RuntimeError, StopCompile])
++def test_compile_exceptions_always_release_cleanup_state(backend, error_type):
++    compiler = backend.grammar_compiler
++    with pytest.raises(error_type):
++        backend._compile(compiler.compile, "bad", None, error_type("fixture"))
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++    assert not compiler.completed and not compiler.failed
++    assert backend._compile(compiler.compile, "next") == "next"
++
++
++@pytest.mark.parametrize("error_type", [RuntimeError, StopCompile])
++def test_clear_exception_wakes_next_compile_and_does_not_close_gate(backend, error_type):
++    compiler = backend.grammar_compiler
++    gate = threading.Event()
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        slow = pool.submit(backend._compile, compiler.compile, "slow", gate)
++        assert compiler.event("slow").wait(2)
++        first = pool.submit(backend._compile, compiler.compile, "first")
++        assert first.result(0.5) == "first"
++        compiler.clear_error = error_type("clear fixture")
++        later = pool.submit(backend._compile, compiler.compile, "later")
++        try:
++            assert not compiler.event("later").wait(0.1)
++        finally:
++            gate.set()
++        with pytest.raises(error_type, match="clear fixture"):
++            slow.result(2)
++        assert later.result(2) == "later"
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++    assert not compiler.completed and not compiler.failed
++
++
++def test_legacy_nonbudget_compile_has_no_cleanup_gate():
++    obj = object.__new__(XGrammarGrammarBackend)
++    obj.use_cache_budget = False
++    assert obj._compile(lambda: "legacy") == "legacy"
++
++
++@pytest.mark.parametrize("compile_error", [RuntimeError, StopCompile])
++@pytest.mark.parametrize("clear_error", [RuntimeError, StopCompile])
++def test_cleanup_error_preserves_original_compile_failure(
++    backend, compile_error, clear_error
++):
++    compiler = backend.grammar_compiler
++    compiler.clear_error = clear_error("cleanup fixture")
++    with pytest.raises(compile_error, match="compile fixture"):
++        backend._compile(compiler.compile, "bad", None, compile_error("compile fixture"))
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++    assert backend._compile(compiler.compile, "next") == "next"
++    assert not compiler.completed and not compiler.failed
++
++
++def test_reservation_without_native_work_does_not_close_gate(backend):
++    compiler = backend.grammar_compiler
++    gate = threading.Event()
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        slow = pool.submit(backend._compile, compiler.compile, "slow", gate)
++        assert compiler.event("slow").wait(2)
++        try:
++            with backend._compile_context():
++                pass
++            assert not backend._native_clear_pending and not compiler.clear_calls
++            fast = pool.submit(backend._compile, compiler.compile, "fast")
++            assert fast.result(0.5) == "fast"
++        finally:
++            gate.set()
++        assert slow.result(2) == "slow"
++    assert compiler.clear_calls == 1
++
++
++@pytest.mark.parametrize("use_reasoner", [False, True])
++@pytest.mark.parametrize("keep_one_waiter", [False, True])
++def test_gate_wait_rechecks_live_singleflight_waiters(
++    async_backend, use_reasoner, keep_one_waiter
++):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    outer = backend
++    key_type = "regex"
++    if use_reasoner:
++        outer = object.__new__(ReasonerGrammarBackend)
++        BaseGrammarBackend.__init__(outer)
++        outer.grammar_backend = backend
++        outer._kimik3_json_tokenizer = None
++        key_type = "full_assistant_ebnf"
++    gate = backend.gates["slow"] = threading.Event()
++    try:
++        slow, _ = outer.get_cached_or_future_value((key_type, "slow"), False)
++        assert compiler.event("slow").wait(2)
++        fast, _ = outer.get_cached_or_future_value((key_type, "fast"), False)
++        assert fast.result(0.5).key == "fast"
++        outer.release_future(fast)
++        first, _ = outer.get_cached_or_future_value((key_type, "later"), False)
++        assert backend._compile_condition.wait_entered.wait(2)
++        second, _ = outer.get_cached_or_future_value((key_type, "later"), False)
++        assert first._grammar_source is second._grammar_source
++        first.cancel()
++        outer.release_future(first)
++        if not keep_one_waiter:
++            second.cancel()
++            outer.release_future(second)
++        snapshot = outer.budget_snapshot()
++        assert snapshot["compiles_started"] == 2
++        assert snapshot["compiles_finished"] == 1
++        assert not compiler.event("later").is_set()
++        gate.set()
++        slow._grammar_source.result(2)
++        first._grammar_source.result(2)
++        outer.release_future(slow)
++        if keep_one_waiter:
++            assert second.result(2).key == "later"
++            outer.release_future(second)
++        outer.executor.shutdown(wait=True)
++        assert compiler.event("later").is_set() == keep_one_waiter
++        snapshot = outer.budget_snapshot()
++        assert snapshot["compiles_started"] == snapshot["compiles_finished"] == (
++            3 if keep_one_waiter else 2
++        )
++        assert snapshot["pending_requests"] == snapshot["inflight_compiles"] == 0
++        assert compiler.clear_calls == (2 if keep_one_waiter else 1)
++        assert not backend._active_native_compiles and not backend._native_clear_pending
++    finally:
++        gate.set()
++        if use_reasoner:
++            outer.executor.shutdown(wait=True, cancel_futures=True)
++
++
++def test_direct_dispatch_and_async_worker_share_cleanup_admission(async_backend):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    gate = backend.gates["slow"] = threading.Event()
++    slow, _ = backend.get_cached_or_future_value(("regex", "slow"), False)
++    assert compiler.event("slow").wait(2)
++    try:
++        assert backend.dispatch_regex("direct").key == "direct"
++        later, _ = backend.get_cached_or_future_value(("regex", "later"), False)
++        assert backend._compile_condition.wait_entered.wait(2)
++        assert not compiler.event("later").is_set()
++    finally:
++        gate.set()
++    assert slow.result(2).key == "slow"
++    assert later.result(2).key == "later"
++    backend.release_future(slow)
++    backend.release_future(later)
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++
++
++def test_already_abandoned_queue_item_skips_closed_gate_immediately(async_backend):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    slow_gate = backend.gates["slow"] = threading.Event()
++    dequeued = threading.Event()
++    worker_gate = threading.Event()
++
++    def hold_worker():
++        dequeued.set()
++        assert worker_gate.wait(5)
++
++    try:
++        slow, _ = backend.get_cached_or_future_value(("regex", "slow"), False)
++        assert compiler.event("slow").wait(2)
++        fast, _ = backend.get_cached_or_future_value(("regex", "fast"), False)
++        assert fast.result(0.5).key == "fast"
++        backend.release_future(fast)
++        held_worker = backend.executor.submit(hold_worker)
++        assert dequeued.wait(2)
++        abandoned, _ = backend.get_cached_or_future_value(("regex", "abandoned"), False)
++        assert abandoned.cancel()
++        backend.release_future(abandoned)
++        worker_gate.set()
++        held_worker.result(0.5)
++        assert abandoned._grammar_source.result(0.5) is None
++        # A marker on the only available worker also waits for source callbacks.
++        backend.executor.submit(lambda: None).result(0.5)
++        assert not backend._compile_condition.wait_entered.is_set()
++        assert not compiler.event("abandoned").is_set() and not compiler.clear_calls
++        snapshot = backend.budget_snapshot()
++        assert snapshot["pending_requests"] == snapshot["inflight_compiles"] == 1
++        assert snapshot["compiles_started"] == 2
++    finally:
++        worker_gate.set()
++        slow_gate.set()
++    slow.result(2)
++    backend.release_future(slow)
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++
++
++def test_reset_during_active_compile_and_admission_wait_does_not_deadlock(async_backend):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    gate = backend.gates["slow"] = threading.Event()
++    slow, _ = backend.get_cached_or_future_value(("regex", "slow"), False)
++    assert compiler.event("slow").wait(2)
++    fast, _ = backend.get_cached_or_future_value(("regex", "fast"), False)
++    assert fast.result(0.5).key == "fast"
++    backend.release_future(fast)
++    abandoned, _ = backend.get_cached_or_future_value(("regex", "abandoned"), False)
++    assert backend._compile_condition.wait_entered.wait(2)
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        reset = pool.submit(backend.reset)
++        try:
++            assert compiler.clear_entered.wait(2)
++            new, _ = backend.get_cached_or_future_value(("regex", "new-generation"), False)
++        finally:
++            gate.set()
++        reset.result(2)
++    slow._grammar_source.result(2)
++    abandoned._grammar_source.result(2)
++    assert new.result(2).key == "new-generation"
++    backend.release_future(new)
++    backend.executor.shutdown(wait=True)
++    assert not compiler.event("abandoned").is_set()
++    snapshot = backend.budget_snapshot()
++    assert snapshot["cache_generation"] == 1
++    assert snapshot["pending_requests"] == snapshot["inflight_compiles"] == 0
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++    assert not compiler.completed and not compiler.failed
++
++
++@pytest.mark.parametrize("kind", ["json", "structural_tag"])
++def test_cleanup_runtime_error_becomes_manager_500_and_next_request_recovers(
++    async_backend, kind
++):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    compiler.compile_json_schema = lambda **kwargs: compiler.compile("json")
++    compiler.compile_structural_tag = lambda *args: compiler.compile("tag")
++    backend._from_context = lambda ctx, key, stats: Value(key)
++    key = (
++        kind,
++        "{}" if kind == "json" else '{"format":{"type":"json_schema","json_schema":{}}}',
++    )
++    compiler.clear_error = RuntimeError("cleanup fixture")
++    failed, _ = backend.get_cached_or_future_value(key, False)
++    with pytest.raises(RuntimeError, match="cleanup fixture"):
++        failed.result(2)
++    value = GrammarManager._future_grammar_error(failed)
++    assert isinstance(value, InvalidGrammarObject)
++    assert value.status_code == 500 and value.error_type == "internal_server_error"
++    backend.set_cache(key, value, future=failed)
++    assert not backend.cache
++    manager = object.__new__(GrammarManager)
++    manager.grammar_backend = backend
++    manager._release_request_future(SimpleNamespace(grammar=failed))
++    following, _ = backend.get_cached_or_future_value(key, False)
++    assert isinstance(following.result(2), Value)
++    manager._release_request_future(SimpleNamespace(grammar=following))
++    snapshot = backend.budget_snapshot()
++    assert snapshot["pending_requests"] == snapshot["inflight_compiles"] == 0
++    assert not backend._active_native_compiles and not backend._native_clear_pending
++
++
++def test_handled_native_failure_is_not_replaced_by_outer_cleanup_failure(async_backend):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    compiler.compile_json_schema = lambda **kwargs: compiler.compile(
++        "json", error=RuntimeError("native fixture")
++    )
++    compiler.clear_error = RuntimeError("cleanup fixture")
++    failed, _ = backend.get_cached_or_future_value(("json", "{}"), False)
++    value = failed.result(2)
++    assert isinstance(value, InvalidGrammarObject)
++    assert value.error_message == "Grammar compiler failed (RuntimeError)"
++    backend.release_future(failed)
++    assert not backend._pending and not backend._inflight
++    assert backend._compile(lambda: "next") == "next"
++
++
++@pytest.mark.parametrize("skip_stage", ["before_gate", "after_gate"])
++@pytest.mark.parametrize("new_compile_fails", [False, True])
++def test_late_join_gets_new_flight_and_old_callback_preserves_its_owner(
++    async_backend, skip_stage, new_compile_fails
++):
++    backend = async_backend
++    compiler = backend.grammar_compiler
++    skipped = threading.Event()
++    old_return_gate = threading.Event()
++    new_native_gate = backend.gates["shared"] = threading.Event()
++    worker_gates = [threading.Event(), threading.Event()]
++    worker_entered = [threading.Event(), threading.Event()]
++    slow_gate = backend.gates["slow"] = threading.Event()
++    original_run = backend._run_compile
++    first = [True]
++
++    def run(flight_key, key, reasoning):
++        is_first = key[1] == "shared" and first[0]
++        if is_first:
++            first[0] = False
++        value = original_run(flight_key, key, reasoning)
++        if is_first:
++            assert value is None
++            skipped.set()
++            assert old_return_gate.wait(5)
++        return value
++
++    def hold_worker(index):
++        worker_entered[index].set()
++        assert worker_gates[index].wait(5)
++
++    def dispatch(key):
++        error = RuntimeError("new compile fixture") if key == "shared" and new_compile_fails else None
++        return Value(backend._compile(compiler.compile, key, backend.gates.get(key), error))
++
++    backend._run_compile = run
++    backend.dispatch_regex = dispatch
++    try:
++        if skip_stage == "before_gate":
++            blockers = [backend.executor.submit(hold_worker, index) for index in range(2)]
++            assert all(event.wait(2) for event in worker_entered)
++        else:
++            slow, _ = backend.get_cached_or_future_value(("regex", "slow"), False)
++            assert compiler.event("slow").wait(2)
++            fast, _ = backend.get_cached_or_future_value(("regex", "fast"), False)
++            assert fast.result(0.5).key == "fast"
++            backend.release_future(fast)
++        old, _ = backend.get_cached_or_future_value(("regex", "shared"), False)
++        if skip_stage == "after_gate":
++            assert backend._compile_condition.wait_entered.wait(2)
++        old.cancel()
++        backend.release_future(old)
++        if skip_stage == "before_gate":
++            for gate in worker_gates:
++                gate.set()
++            for blocker in blockers:
++                blocker.result(2)
++        else:
++            slow_gate.set()
++            slow.result(2)
++            backend.release_future(slow)
++        assert skipped.wait(2)
++        new, _ = backend.get_cached_or_future_value(("regex", "shared"), False)
++        assert new._grammar_source is not old._grammar_source
++        assert compiler.event("shared").wait(2)
++        old_return_gate.set()
++        assert old._grammar_source.result(2) is None
++        backend.executor.submit(lambda: None).result(2)
++        flight = backend._inflight[new._grammar_flight_key]
++        assert flight[0] is new._grammar_source and not new.done()
++        assert old not in backend._pending
++        assert not hasattr(old._grammar_source, "_grammar_waiters")
++        new_native_gate.set()
++        if new_compile_fails:
++            with pytest.raises(RuntimeError, match="new compile fixture"):
++                new.result(2)
++        else:
++            assert new.result(2).key == "shared"
++        backend.release_future(new)
++        backend.executor.shutdown(wait=True)
++        snapshot = backend.budget_snapshot()
++        assert snapshot["pending_requests"] == snapshot["inflight_compiles"] == 0
++        assert snapshot["compiles_started"] == snapshot["compiles_finished"] == (
++            1 if skip_stage == "before_gate" else 3
++        )
++        assert not hasattr(new._grammar_source, "_grammar_waiters")
++    finally:
++        old_return_gate.set()
++        new_native_gate.set()
++        slow_gate.set()
++        for gate in worker_gates:
++            gate.set()

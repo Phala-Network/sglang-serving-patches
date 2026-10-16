@@ -1,0 +1,59 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "25e599af56f659ea8cd5720169b64c554a686299",
+  "engine_tree": "b679b24f7ea3866fec0d3d93150ec15bee607019",
+  "patch_count": 30,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false,
+  "production_deployed": false,
+  "source_published": false,
+  "unchanged_prefix_count": 29,
+  "prefix_artifact_repairs": [
+    {
+      "path": "patches/common/k3protocol3-stream1-63e41c5337bf.patch",
+      "artifact_sha256": "c2119444ce65b70064109100a3bd0121b8dbfc84844d3d4f3678f6a483be9cf7",
+      "expected_sha256": "cccd605dba3c8f7aac018d6adc2748db50c10ba079cecedbb95c1d00e7f1b514",
+      "canonical_path": "C:\\Users\\zozyo\\Downloads\\phala\\phala-models-compose\\phala-models-compose\\tmp\\kimi-ref3-watch-20261016\\release\\canonical-prefix\\k3protocol3-stream1-63e41c5337bf.patch",
+      "source_commit": "63e41c5337bf5082b57a269524038b978758f7e8",
+      "source_parent": "8f1984dc6a69c58db776d809d6cead1582aa9034",
+      "patch_repository_base": "e12e73168b223835d0c81c2f068222890f5f8606",
+      "reason": "Published text-normalized patch lost CR bytes present in exact source export"
+    },
+    {
+      "path": "patches/common/k3protocol3-ref1-9a3608768dae.patch",
+      "artifact_sha256": "326818410fe4a640fda5391b07f1aabfaa42e44f0c43e9ae4e77ba454e338e2c",
+      "expected_sha256": "921bd7a53dee9b42b30358760719da9dd86c57adcce947cab84e2c3a2fb3eec7",
+      "canonical_path": "C:\\Users\\zozyo\\Downloads\\phala\\phala-models-compose\\phala-models-compose\\tmp\\kimi-ref3-watch-20261016\\release\\canonical-prefix\\k3protocol3-ref1-9a3608768dae.patch",
+      "source_commit": "9a3608768dae9dae2f5b1fb0b83136a209ea5db7",
+      "source_parent": "63e41c5337bf5082b57a269524038b978758f7e8",
+      "patch_repository_base": "e12e73168b223835d0c81c2f068222890f5f8606",
+      "reason": "Published text-normalized patch lost CR bytes present in exact source export"
+    },
+    {
+      "path": "patches/common/k3protocol3-ref2-edcee8c69831.patch",
+      "artifact_sha256": "3dae76f74b3d142b27c58ccd0a0c46912c8c960ad8ea4e0c67b1b4134de00813",
+      "expected_sha256": "23077aed4be67500bc1fa94bba7524c64121844db34267bb070038d4b3043cb9",
+      "canonical_path": "C:\\Users\\zozyo\\Downloads\\phala\\phala-models-compose\\phala-models-compose\\tmp\\kimi-ref3-watch-20261016\\release\\canonical-prefix\\k3protocol3-ref2-edcee8c69831.patch",
+      "source_commit": "edcee8c698318ef12910aca3b2571097637d79cd",
+      "source_parent": "9a3608768dae9dae2f5b1fb0b83136a209ea5db7",
+      "patch_repository_base": "e12e73168b223835d0c81c2f068222890f5f8606",
+      "reason": "Published text-normalized patch lost CR bytes present in exact source export"
+    },
+    {
+      "path": "patches/common/k3protocol3-ref3-23345268e1da.patch",
+      "artifact_sha256": "525c39ce5d514afdddb0d9c0e16204cd1ae19ad99dbef48979cf7bfd511e3021",
+      "expected_sha256": "d16c04d96e930bf4ea134f5f05f95cbacb8e1023a759c1e3f03e0e11852e69fd",
+      "canonical_path": "C:\\Users\\zozyo\\Downloads\\phala\\phala-models-compose\\phala-models-compose\\tmp\\kimi-ref3-watch-20261016\\release\\canonical-prefix\\k3protocol3-ref3-23345268e1da.patch",
+      "source_commit": "23345268e1da773c46a451a1c0d5bb17e9c5965d",
+      "source_parent": "edcee8c698318ef12910aca3b2571097637d79cd",
+      "patch_repository_base": "e12e73168b223835d0c81c2f068222890f5f8606",
+      "reason": "Published text-normalized patch lost CR bytes present in exact source export",
+      "discovery": "Final publication staged-blob gate; all 30 entries checked in one pass"
+    }
+  ],
+  "publication_index_repair_notes": "Fourth historical artifact discovered from remote HEAD/index; canonical bytes equal the already-replayed manifest input. CPU/source/build unchanged."
+}
