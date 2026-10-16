@@ -1,0 +1,113 @@
+diff --git a/docker/phala/kimi-protocol3-ref2/Dockerfile b/docker/phala/kimi-protocol3-ref2/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..79a1d52025b76a1106bf34853d47fd2dc84cd4c0
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref2/Dockerfile
+@@ -0,0 +1,7 @@
++FROM ghcr.io/phala-network/sglang:v0.5.21-phala-3-k3protocol3-ref1@sha256:0a89ec2a3644f7787eac6838b23adc80880d7b8a51735d0d44604bde72ed087c
++ARG ENGINE_REVISION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${ENGINE_REVISION}" \
++      org.opencontainers.image.version="v0.5.21-phala-3-k3protocol3-ref2" \
++      io.phala.sglang.revision="${ENGINE_REVISION}"
++COPY python/sglang/srt/function_call/kimik3_structural_tag.py /sgl-workspace/sglang/python/sglang/srt/function_call/kimik3_structural_tag.py
+diff --git a/docker/phala/kimi-protocol3-ref2/README.md b/docker/phala/kimi-protocol3-ref2/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa124f2427fae330802c739cf0167c98b0c815c8
+--- /dev/null
++++ b/docker/phala/kimi-protocol3-ref2/README.md
+@@ -0,0 +1,19 @@
++# Kimi shared-reference rebinding repair
++
++Immutable extension of protocol3-ref1, retaining its length/type intersection
++and buffered tool-progress fixes. This adds a visited-node set to argument
++reference rebinding. Union type restriction may reuse nested dictionaries from
++the same target; deepcopy preserves those aliases. Rebinding a shared node a
++second time tried to resolve its new document-local pointer against the old
++root and rejected a valid Schema. Each shared node is now rebound once without
++removing union branches or weakening value constraints.
++
++Two synthetic repeated-union cases failed on installed ref1 at the same source
++location seen in production. Candidate CPU verification passed 112 tests plus
++eight subtests, including object/array targets, single-branch controls, native
++grammar/independent validation agreement, existing reference and dialect tests.
++Exact customer inputs were not exported or replayed. Final-image and node101
++acceptance remain distinct; memory stability and all request failures are not
++declared resolved. No dependency, native library or token-loop changes.
++
++Only 101 is authorized for rollout. Formal loading excludes fastsafetensors.
+diff --git a/python/sglang/srt/function_call/kimik3_structural_tag.py b/python/sglang/srt/function_call/kimik3_structural_tag.py
+index e8a15489d50cce6c6d6062c022a08bc8df1e8a4d..eb00057421a47dc0f3d7a360dc8dd1f969138f0a 100644
+--- a/python/sglang/srt/function_call/kimik3_structural_tag.py
++++ b/python/sglang/srt/function_call/kimik3_structural_tag.py
+@@ -258,6 +258,7 @@ def _with_root_definitions(
+     result = copy.deepcopy(schema)
+     definitions = result.setdefault("$defs", {})
+     targets: Dict[int, str] = {}
++    rebound_nodes: Set[int] = set()
+     pending = [result]
+     next_id = 0
+     while pending:
+@@ -268,6 +269,12 @@ def _with_root_definitions(
+         for node, _ in nodes:
+             if "$ref" not in node:
+                 continue
++            # Union type restriction may share a target's nested dictionaries.
++            # deepcopy preserves those aliases; a rewritten pointer belongs to
++            # this extracted document and must not be resolved in the old root.
++            if id(node) in rebound_nodes:
++                continue
++            rebound_nodes.add(id(node))
+             ref = node["$ref"]
+             target = _resolve_local_ref(ref, root_schema) if isinstance(ref, str) else None
+             if target is None:
+diff --git a/test/registered/unit/constrained/test_k3_ref_rehome_alias.py b/test/registered/unit/constrained/test_k3_ref_rehome_alias.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0e0717c35ef49488b72bfc9548907cc7b1ffacf8
+--- /dev/null
++++ b/test/registered/unit/constrained/test_k3_ref_rehome_alias.py
+@@ -0,0 +1,44 @@
++"""A shared target expanded into union branches must be rebound only once."""
++import copy
++import json
++import pytest
++import xgrammar as xgr
++from jsonschema import Draft202012Validator
++from sglang.srt.entrypoints.openai.protocol import Tool
++from sglang.srt.function_call.kimik3_structural_tag import _tool_arguments_format
++from xgrammar.structural_tag import StructuralTag, TagFormat
++
++
++@pytest.mark.parametrize('branches',[1,2,3])
++def test_repeated_union_target_with_nested_reference(branches):
++    schema={'type':'object','properties':{'payload':{'anyOf':[{'$ref':'#/$defs/A'} for _ in range(branches)]}},
++            'required':['payload'],'additionalProperties':False,'$defs':{
++                'A':{'type':'object','properties':{'value':{'$ref':'#/$defs/B'}},'required':['value'],'additionalProperties':False},
++                'B':{'type':'integer','minimum':2,'maximum':5}}}
++    original=copy.deepcopy(schema)
++    tool=Tool(type='function',function={'name':'synthetic','parameters':schema,'strict':True})
++    tag=StructuralTag(format=TagFormat(begin='[',end=']',content=_tool_arguments_format(tool)))
++    assert schema==original
++    compiled=xgr.GrammarCompiler(xgr.TokenizerInfo(['x','EOS'],stop_token_ids=1)).compile_structural_tag(tag)
++    oracle=Draft202012Validator(schema)
++    for value in [{'value':2},{'value':5},{'value':1},{'value':6},{'value':'2'},{}, {'value':3,'extra':1}]:
++        wire='[<|open|>argument key="payload" type="object"<|sep|>'+json.dumps(value)+'<|close|>argument<|sep|>]'
++        matcher=xgr.GrammarMatcher(compiled)
++        assert (matcher.accept_string(wire) and matcher.is_completed())==oracle.is_valid({'payload':value})
++
++
++def test_repeated_array_target_keeps_nested_constraints():
++    schema={'type':'object','properties':{'payload':{'anyOf':[{'$ref':'#/$defs/A'},{'$ref':'#/$defs/A'}]}},
++            'required':['payload'],'additionalProperties':False,'$defs':{
++                'A':{'type':'array','items':{'$ref':'#/$defs/B'},'minItems':1,'maxItems':2},
++                'B':{'type':'integer','minimum':2,'maximum':5}}}
++    original=copy.deepcopy(schema)
++    tool=Tool(type='function',function={'name':'synthetic','parameters':schema,'strict':True})
++    tag=StructuralTag(format=TagFormat(begin='[',end=']',content=_tool_arguments_format(tool)))
++    assert schema==original
++    compiled=xgr.GrammarCompiler(xgr.TokenizerInfo(['x','EOS'],stop_token_ids=1)).compile_structural_tag(tag)
++    oracle=Draft202012Validator(schema)
++    for value in [[],[2],[2,5],[1],[6],['2'],[2,3,4]]:
++        wire='[<|open|>argument key="payload" type="array"<|sep|>'+json.dumps(value)+'<|close|>argument<|sep|>]'
++        matcher=xgr.GrammarMatcher(compiled)
++        assert (matcher.accept_string(wire) and matcher.is_completed())==oracle.is_valid({'payload':value})

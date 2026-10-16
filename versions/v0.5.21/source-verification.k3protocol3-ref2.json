@@ -1,0 +1,15 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "edcee8c698318ef12910aca3b2571097637d79cd",
+  "engine_tree": "84702ef32024f8756a134604d49fa4e7ea468d44",
+  "patch_count": 28,
+  "dependencies": {},
+  "component_origins": [],
+  "image_or_runtime_qualified": false,
+  "production_deployed": false,
+  "source_published": false,
+  "unchanged_prefix_count": 27
+}
