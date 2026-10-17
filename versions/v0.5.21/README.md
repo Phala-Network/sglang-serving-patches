@@ -141,3 +141,5 @@ ordered patch-content digest is defined in [XING4-PATCH-CONTENT.json](XING4-PATC
 Step0061 is the isolated [fixed-EAGLE dynamic YaRN source candidate](DYNAMIC-EAGLE.md); source/CPU and exact61-step replay only, no dynamic image/GPU acceptance.
 
 Step0062 repairs the actual [request-static startup dummy](DYNAMIC-EAGLE-STARTUP.md) only: CPU target red/green and default-None control; image and GPU acceptance remain separate.
+
+Native Xing production selection [phala-v0.5.21-xing4-native-20261017](releases/phala-v0.5.21-xing4-native-20261017.json) reuses the first60 canonical patches and adds the exact tool hotfix and pinned image packaging at0063/0064. Dynamic EAGLE0061/0062 are excluded; existing source selections are preserved. See [incremental exact-tree receipt](XING4-NATIVE-20261017-SOURCE-VERIFICATION.json).

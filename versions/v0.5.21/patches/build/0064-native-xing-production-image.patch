@@ -1,0 +1,51 @@
+diff --git a/docker/xing4/Dockerfile b/docker/xing4/Dockerfile
+index 894ad9d44bcf86e8790c0f1654318eab1c1140f2..b6792992675d3a2ea9314de3229c497e41a84c06 100644
+--- a/docker/xing4/Dockerfile
++++ b/docker/xing4/Dockerfile
+@@ -1,12 +1,14 @@
+-ARG BASE_IMAGE=ghcr.io/phala-network/sglang:phala-v0.5.21-7@sha256:6a74c66ab1c44d32d07d8f227fc5074a43a330251ea3e2b37ebe731a6178e5ee
++ARG BASE_IMAGE=ghcr.io/phala-network/sglang:phala-v0.5.21-xing4-yarn-rc5.2@sha256:69ee0bee39fae2711212d4f765c735c10738142da91e0f9bf4655bfd30a22c35
+ FROM ${BASE_IMAGE}
+ 
++ARG BASE_IMAGE
+ ARG ENGINE_COMMIT
+ ARG PATCHES_COMMIT
+ ARG RELEASE_VERSION
+ LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
+       org.opencontainers.image.revision="${ENGINE_COMMIT}" \
+       org.opencontainers.image.version="${RELEASE_VERSION}" \
++      org.phala.base-image="${BASE_IMAGE}" \
+       org.phala.serving-patches.revision="${PATCHES_COMMIT}" \
+       org.phala.base-engine.revision="c2ce5382dad45fd85e39f5d4e1d93165225eb34d" \
+       org.phala.upstream.revision="e00930c5489053f26d86b179cee0d087f846acbb"
+diff --git a/docker/xing4/README.md b/docker/xing4/README.md
+index 0edf95513725ab6d337471b28ba922f2e208d438..c3d52b6b0d3541a46bb61bbfd47cb6579c4d6b13 100644
+--- a/docker/xing4/README.md
++++ b/docker/xing4/README.md
+@@ -61,3 +61,14 @@ mocked at production-signature boundaries. They preserve official dimensions
+ and cover BF16/FP8 config, native/dynamic profiles and empty/nonempty rows.
+ The unified [ordered patch stack](https://github.com/Phala-Network/sglang-serving-patches/tree/codex/xing4-v0521-20261014/versions/v0.5.21)
+ preserves the published49-step prefix. No embedded Governor is selected.
++
++## Native Xing production image
++
++The fixed RC5.2 parent retains stable v0.5.21 dependencies, including
++`mooncake-transfer-engine-cuda13==0.3.13`. This recipe combines the exact
++Xing4 tool-streaming repair with the native Static64 EAGLE public-budget
++repair; request-static dynamic YaRN and kernel implementations are unchanged.
++The same resulting image serves SGLang, direct `hf download`, Mooncake
++`mooncake_master`, and `python -m mooncake.mooncake_store_service`.
++The existing committed-only exporter and wheel-RECORD installer remain the
++source of installed runtime bytes.
+diff --git a/docker/xing4/verify_cpu.sh b/docker/xing4/verify_cpu.sh
+index d10bdf8d27ac2d42681d18f0dbf159b1e1cfb5d6..4389e915a20c086095a20798e9c21ba5ad1c164b 100644
+--- a/docker/xing4/verify_cpu.sh
++++ b/docker/xing4/verify_cpu.sh
+@@ -41,6 +41,7 @@ PY
+ esac
+ cd "$root"
+ python -m pytest -q --junitxml="${JUNIT_XML:-/tmp/xing4-cpu.xml}" \
++  test/registered/unit/function_call/test_xing4_tool_streaming.py \
+   test/registered/unit/configs/test_xing_request_static_yarn_policy.py \
+   test/registered/unit/model_executor/test_xing_request_static_yarn_torch.py \
+   test/registered/unit/managers/test_xing_request_static_yarn_lifecycle.py \

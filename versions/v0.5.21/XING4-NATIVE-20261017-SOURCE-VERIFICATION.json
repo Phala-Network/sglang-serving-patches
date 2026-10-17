@@ -1,0 +1,29 @@
+{
+  "frozen_prefix_commit": "48e9fc7d56930660999dc108cb5ecddee5245715",
+  "frozen_prefix_tree": "8dbf789abe62afb0b39aba6f6d4a7c9511938e00",
+  "prefix_source_receipt": "NATIVE-EAGLE-BUDGET-SOURCE-VERIFICATION.json",
+  "unchanged_prefix_count": 60,
+  "incremental_replay": [
+    {
+      "patch": "patches/models/xing4/0063-tool-streaming-ordinals-and-string-values.patch",
+      "tree": "bdd8a9a422925dc73bd7ca71feb66815a3063ea0"
+    },
+    {
+      "patch": "patches/build/0064-native-xing-production-image.patch",
+      "tree": "0273a864e47d770ab8339567c45faec68d896124"
+    }
+  ],
+  "final_engine_commit": "c3056aef8fee505231a63d498ca48b8779301cf6",
+  "final_engine_tree": "0273a864e47d770ab8339567c45faec68d896124",
+  "dynamic_eagle_patches_0061_0062_selected": false,
+  "source_cpu": {
+    "scope": "test_xing4_tool_streaming.py plus test_xing_native_eagle_public_budget.py",
+    "passed": 29,
+    "subtests_passed": 1737,
+    "failed": 0,
+    "skipped": 0,
+    "gpu_used": false,
+    "log_sha256": "1ac1d41fdce7015c9fabb23fb92cc5a232115fb801653a10ab0ae17f2a499dae",
+    "junit_sha256": "e88c90be740c189183057aa3ebc7bd7b3475e75f136031278acd3653b2599c11"
+  }
+}
