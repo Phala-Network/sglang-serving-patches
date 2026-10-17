@@ -1,0 +1,831 @@
+{
+  "schema": "phala.sglang.unified-stack.v1",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.21",
+    "commit": "e00930c5489053f26d86b179cee0d087f846acbb"
+  },
+  "maintenance_ancestor": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+  "engine": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "commit": "b3e037ca52591d2c1013aa4625f6b2347cd746c8",
+    "tree": "9039f52d084810957a51afbed2c252e8139cd779",
+    "branch": "codex/xing4-budget-observer-20261018",
+    "tag": null
+  },
+  "series": "series.xing4-so-budget-observer-20261018",
+  "unchanged_canonical_prefix_count": 60,
+  "base_image": "ghcr.io/phala-network/sglang:phala-v0.5.21-xing4-native-20261017@sha256:1d374b1e1c7136a3e4af311536d340f3e24bfd4522b46fbfe921a397d100492a",
+  "embedded_governor": null,
+  "scope": "Local budget-observer-candidate image preparation only. No registry/source publication or runtime/production qualification.",
+  "patches": [
+    {
+      "id": "v0521-0001",
+      "path": "patches/common/0001-request-lifecycle.patch",
+      "title": "Fix stream, request-owner and health-probe cleanup",
+      "source_commit": "da3f3d730257db2d2e012f989db937689f039170",
+      "source_parent": "e00930c5489053f26d86b179cee0d087f846acbb",
+      "result_tree": "d886d53a8c983096fb534a392ff52db7774dfe9d",
+      "sha256": "d84e6b9696b38479bd4cbcb65b018a22c6a2caf084587490000d57ac411a4c47"
+    },
+    {
+      "id": "v0521-0002",
+      "path": "patches/common/0002-hybrid-storage.patch",
+      "title": "Preserve common hybrid restore endpoints and batch Mooncake operations",
+      "source_commit": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "source_parent": "da3f3d730257db2d2e012f989db937689f039170",
+      "result_tree": "24360137a1cd3caf4d2daa3b88e857e307d382bb",
+      "sha256": "757a5bbbfd92508027d93c985db8b3de05f5f2881be1592cc58607795d43039c"
+    },
+    {
+      "id": "v0521-0003",
+      "path": "patches/models/kimi/0003-tokenizer.patch",
+      "title": "Backport Kimi tokenizer fast path with ID equivalence regressions",
+      "source_commit": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "source_parent": "6dc41f3190b85875cb7ab63c029190ba60462a39",
+      "result_tree": "7f1dc3232abccd92e74ef0950e17c158e36352af",
+      "sha256": "6e82b587c3dddb9329f681ae008ee34b6ade39a2c72986c5a1904b28e1849825"
+    },
+    {
+      "id": "v0521-0004",
+      "path": "patches/models/kimi/0004-prefill-graphs.patch",
+      "title": "Gate prefill replay by sequence length and allow eager Kimi MLA",
+      "source_commit": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "source_parent": "a1c7fe5d61016660486667588a5ab62a4642e866",
+      "result_tree": "766c0c14a146a2da632a1293f497265778b9d40e",
+      "sha256": "3f1201a1e209ee72f3bbc2f51a8033695590aa7a07fd6b911ee730668522a76d"
+    },
+    {
+      "id": "v0521-0005",
+      "path": "patches/common/0005-fp8-prefix.patch",
+      "title": "Backport fused FP8 prefix commits with rounding-preserving fallbacks",
+      "source_commit": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "source_parent": "2a58df4018af8f1df56700db8c01e1b417543cc6",
+      "result_tree": "1fc56c6ec830f576cb157d98c4b7ee607bcb79f0",
+      "sha256": "782cb4ff7125535ec7bf926a3314ffcb36f2a0728b15f4dbc430ed0fb5be4781"
+    },
+    {
+      "id": "v0521-0006",
+      "path": "patches/common/0006-mamba-checkpoint-pressure.patch",
+      "title": "Keep running Mamba requests alive when optional checkpoints cannot allocate",
+      "source_commit": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+      "source_parent": "d028f8d3a88575cea89dc504e5b5c3a38b5ab247",
+      "result_tree": "ad6292d842a447fbab23b031e7b119b918bf9de5",
+      "sha256": "45435ffd8250d95ae8e4c1d52b106e2ddc6e50a8d88890cb3238f1300b2df56c"
+    },
+    {
+      "id": "v0521-0007",
+      "path": "patches/common/0007-mamba-live-admission.patch",
+      "title": "fix: backpressure and atomically allocate initial Mamba states",
+      "source_commit": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
+      "source_parent": "1be0db402dfe751d79faa4e64d0a79d2e5294da2",
+      "result_tree": "e3bafd61cc07e37a1bef569f57dcee64b1d31b19",
+      "sha256": "587a24998323d9a45d913cb7d358fe7490a91f25ecc133c5cb102ceba99fd1be"
+    },
+    {
+      "id": "v0521-0008",
+      "path": "patches/common/0008-mamba-load-back-reservation.patch",
+      "title": "fix: reserve batch Mamba states across HiCache load-back",
+      "source_commit": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "source_parent": "b9e5cc4de1c139318fe6c6a5deb680cb4daedf1c",
+      "result_tree": "36a796bbb3e61bc97dcb881d7e955d794f03e846",
+      "sha256": "1545d7a4906e317f13ce0baa1e0633317fb33452e6802ec8c796956f75eaab12"
+    },
+    {
+      "id": "v0521-0009",
+      "path": "patches/common/0009-correlate-internal-state-control-replies-and-clean-cancellation-state.patch",
+      "title": "Correlate internal-state control replies and clean cancellation state",
+      "source_commit": "f06027022f8d9081459228e1df0da591266f45aa",
+      "source_parent": "e9a40ece22f8539d434ccc138336019ddbf2e06c",
+      "result_tree": "0f44d47147f2b7528b32391941c1507fa129a84a",
+      "sha256": "f083fa008064ad8ca4909a090eefab296af6feb065bfb8083f178053cd2e56c2",
+      "ported_from": "8ed722ddb78c3a65e09aed72b60b83d8e382c000",
+      "origin": {
+        "commit": "fbd7f3c617461b0360f31fa519b3910be642377f",
+        "patch_path": "patches/common/0001-correlate-internal-state-control-replies-and-clean-cancellation-state.patch"
+      }
+    },
+    {
+      "id": "v0521-0010",
+      "path": "patches/common/0010-close-disconnected-generators-and-release-undispatched-or-aborted-mm-ownership.patch",
+      "title": "Close disconnected generators and release undispatched or aborted MM ownership",
+      "source_commit": "2710e271871d42801dc56400751f6310abad2b2b",
+      "source_parent": "f06027022f8d9081459228e1df0da591266f45aa",
+      "result_tree": "02243bbd53242c25196fa02b16754a1b48272ef9",
+      "sha256": "63b9a1865dc011b55efd0bf7091db9ea0c3899f17ae79445d92dbd8053f8591f",
+      "ported_from": "e7dde7ebd933645c120226b149992b74428273db",
+      "origin": {
+        "commit": "0bf1ed94ed6e16687de77c0d803ff5bd71367d37",
+        "patch_path": "patches/common/0002-close-disconnected-generators-and-release-undispatched-or-aborted-mm-ownership.patch"
+      }
+    },
+    {
+      "id": "v0521-0011",
+      "path": "patches/common/0011-skip-identity-grammar-masks-while-preserving-grammar-state-bookkeeping.patch",
+      "title": "Skip identity grammar masks while preserving grammar state bookkeeping",
+      "source_commit": "6027a3117491f3992932508296456002cd1f2c1a",
+      "source_parent": "2710e271871d42801dc56400751f6310abad2b2b",
+      "result_tree": "1f903a872b88bd590486c30112db236beb1b75c7",
+      "sha256": "662ccb9dd1b436d69cf35ec3c6164c4c18870fc69a185cc3a11cd0740c1df696",
+      "ported_from": "47da93263ff78871e0a85f6bd60524124b22440c",
+      "origin": {
+        "commit": "267fc3e0e9575df457c240aae1b39ea40688ee12",
+        "patch_path": "patches/common/0004-skip-identity-grammar-masks-while-preserving-grammar-state-bookkeeping.patch"
+      }
+    },
+    {
+      "id": "v0521-0012",
+      "path": "patches/common/0012-report-native-request-ownership-and-first-admission-queue-timing.patch",
+      "title": "Report native request ownership and first-admission queue timing",
+      "source_commit": "2c030383e20b94423f2d89065c7934c13d6de364",
+      "source_parent": "6027a3117491f3992932508296456002cd1f2c1a",
+      "result_tree": "05767e60b91ae5100fbf1876ed7bc2c377e744c0",
+      "sha256": "a72c309f0fa78a52041f3ef24a6f4f32fc75594805117ab048e5ca1365c8c1e5",
+      "ported_from": "21a8eb8c9645b6b9409780591ef626166b26987b",
+      "origin": {
+        "commit": "32857e6556b45a95af4611721fb72e0ccfdaf540",
+        "patch_path": "patches/common/0005-report-native-request-ownership-and-first-admission-queue-timing.patch"
+      }
+    },
+    {
+      "id": "v0521-0013",
+      "path": "patches/common/0013-register-only-logical-parents-before-parallel-sampling-expansion.patch",
+      "title": "Register only logical parents before parallel-sampling expansion",
+      "source_commit": "662fd6677ca1f0ec9535d997c1261970e5bf948a",
+      "source_parent": "2c030383e20b94423f2d89065c7934c13d6de364",
+      "result_tree": "a39763d1a9d586b931b158243c91efdd45529583",
+      "sha256": "48b45bf916dc7fbaf561c94660fcf2ba60f4e8a83f05f97f1d0cc0b922acadac",
+      "ported_from": "393b9341033245143caaf57b5bbb0573806f25b2",
+      "origin": {
+        "commit": "35fc03abe0b876de2bfaac18dff2a220b2f0a87d",
+        "patch_path": "patches/common/0006-register-only-logical-parents-before-parallel-sampling-expansion.patch"
+      }
+    },
+    {
+      "id": "v0521-0014",
+      "path": "patches/common/0014-resolve-opt-in-environment-credentials-and-redact-diagnostic-copies.patch",
+      "title": "Resolve opt-in environment credentials and redact diagnostic copies",
+      "source_commit": "4567f975d3d207f999466e078ed69052d7198f39",
+      "source_parent": "662fd6677ca1f0ec9535d997c1261970e5bf948a",
+      "result_tree": "6d770f414e8a9ed01e543d94b2a4c60fc20ada19",
+      "sha256": "0a7ca9c9c1ecf5d98860e4cd1b294a78af5d20addb84a74be41e571aaed581c6",
+      "ported_from": "c2faf30b37ddcbe15593ddc3807bf7e69783abf0",
+      "origin": {
+        "commit": "0750682477e0c0aebcc055fc748a3b682b172af7",
+        "patch_path": "patches/common/0007-resolve-opt-in-environment-credentials-and-redact-diagnostic-copies.patch"
+      }
+    },
+    {
+      "id": "v0521-0015",
+      "path": "patches/common/0015-normalize-nullable-optional-json-schema-keywords.patch",
+      "title": "Normalize nullable optional JSON Schema keywords",
+      "source_commit": "9cea17813b25404d9e9380201c278f8b2eed4cf6",
+      "source_parent": "4567f975d3d207f999466e078ed69052d7198f39",
+      "result_tree": "784f4a0874b09d4367ef0f5ba3d2af90032161e5",
+      "sha256": "207f5af70f0ca3d4b5c480695f33ace7ca2a644579331cc100286a6e23673c67",
+      "ported_from": "c728e5bc52c28b3941c929dfbc3eaea08394155d",
+      "origin": {
+        "commit": "6efe42ec6a59a521d0d54f8c3fcc9bd7e3134efc",
+        "patch_path": "patches/common/0008-normalize-nullable-optional-json-schema-keywords.patch"
+      }
+    },
+    {
+      "id": "v0521-0016",
+      "path": "patches/common/0016-provide-schema-valid-tool-argument-lookup-and-conservative-coercion.patch",
+      "title": "Provide schema-valid tool-argument lookup and conservative coercion",
+      "source_commit": "9e36fa2ee7e9dc2e00e93825133bd749393e1db5",
+      "source_parent": "9cea17813b25404d9e9380201c278f8b2eed4cf6",
+      "result_tree": "0ebc95abea9f16a3eb8be980afedd65e231408ed",
+      "sha256": "4f6d0a35a74f9f6a1baec041f5f7c20cae7b19759c5d7af58e8c83cedc4f0cae",
+      "ported_from": "76507991a53bba223bd53caacf259344dcc7b1e1",
+      "origin": {
+        "commit": "c19e475e65b7e6eb259bdc639a62d1c4c9d8a920",
+        "patch_path": "patches/common/0009-provide-schema-valid-tool-argument-lookup-and-conservative-coercion.patch"
+      }
+    },
+    {
+      "id": "v0521-0017",
+      "path": "patches/common/0017-validate-and-enforce-allowed-tool-subsets-throughout-chat-serving.patch",
+      "title": "Validate and enforce allowed-tool subsets throughout chat serving",
+      "source_commit": "45006bc54bf0a3bd0cde948b1ce426fc46ec8b53",
+      "source_parent": "9e36fa2ee7e9dc2e00e93825133bd749393e1db5",
+      "result_tree": "4e09450e7218e9b294cf436e2ef773b41f328ac2",
+      "sha256": "c18ab33919eae87a5db97e23bb1f4bd537cc9277b9053ce86d435bba5ef4a4ba",
+      "ported_from": "6c8b73742784cd8a1cfe03530d3b8b7b184f3e68",
+      "origin": {
+        "commit": "abdd4d766e024903cb4666fe2c919baaed1f4670",
+        "patch_path": "patches/common/0011-validate-and-enforce-allowed-tool-subsets-throughout-chat-serving.patch"
+      }
+    },
+    {
+      "id": "v0521-0018",
+      "path": "patches/common/0018-preserve-reasoning-visibility-controls-and-enforce-request-thinking-bounds.patch",
+      "title": "Preserve reasoning visibility controls and enforce request thinking bounds",
+      "source_commit": "dbdb5349cdcc51c0ec6105ee20d6f9c94c088b04",
+      "source_parent": "45006bc54bf0a3bd0cde948b1ce426fc46ec8b53",
+      "result_tree": "913c0fc797e9200e0e405bc40e2b270883a88064",
+      "sha256": "b9a34ee201d9c3e2a9390049f1fd1ae1c63f9e50431b9b98b5c7e844f69784b5",
+      "ported_from": "456e16a13ff5811305309d1477a07f1dd16bb93e",
+      "origin": {
+        "commit": "ffcf7799ff22f25a2970c7c420116b011ec38c67",
+        "patch_path": "patches/common/0012-preserve-reasoning-visibility-controls-and-enforce-request-thinking-bounds.patch"
+      }
+    },
+    {
+      "id": "v0521-0019",
+      "path": "patches/common/0019-drop-streaming-tool-deltas-that-precede-a-valid-function-name.patch",
+      "title": "Drop streaming tool deltas that precede a valid function name",
+      "source_commit": "8abc3e27bef1cb724cea9d4a5a7ebb055d0bc348",
+      "source_parent": "dbdb5349cdcc51c0ec6105ee20d6f9c94c088b04",
+      "result_tree": "cc1e8c5473bcaa337f9bb72ee39ddf831fb95569",
+      "sha256": "903affd50ef0ecfc9c079b33664819cd9ecb3379303ed4ad4ae8fe5c6c3720d8",
+      "ported_from": "931b5934188e4226c3bf878da8fa2a0fed5c9c88",
+      "origin": {
+        "commit": "f3418d51a0cd129a44bb8841f9623a6b3647d293",
+        "patch_path": "patches/common/0013-drop-streaming-tool-deltas-that-precede-a-valid-function-name.patch"
+      }
+    },
+    {
+      "id": "v0521-0020",
+      "path": "patches/common/0020-reject-excessive-text-budgets-before-decoding-media.patch",
+      "title": "Reject excessive text budgets before decoding media",
+      "source_commit": "129b1fafae7876e1eb8abf7a3995394d529d7432",
+      "source_parent": "8abc3e27bef1cb724cea9d4a5a7ebb055d0bc348",
+      "result_tree": "7c173f719abc5a566023efa514b70208d2b789c5",
+      "sha256": "68ea395bda8c4517755411ffb9ac66f5305a01a2e27012fe586588064e973d95",
+      "ported_from": "f760959d2ba2341924f7357682132b457bd290b5",
+      "origin": {
+        "commit": "cc703a7a7b4097b0581dbd13364ef2d9b4f6f2df",
+        "patch_path": "patches/common/0014-reject-excessive-text-budgets-before-decoding-media.patch"
+      }
+    },
+    {
+      "id": "v0521-0021",
+      "path": "patches/common/0021-keep-malformed-image-decode-errors-request-local-while-preserving-os-faults.patch",
+      "title": "Keep malformed image decode errors request-local while preserving OS faults",
+      "source_commit": "b3ca0627050c966578474f2c48c37b5da0c99f45",
+      "source_parent": "129b1fafae7876e1eb8abf7a3995394d529d7432",
+      "result_tree": "93bf926ea3ab410439df1273f3bec82df0b7c4d2",
+      "sha256": "4ff2bf100e132e14888ea72e6b9cc58215ee529c2baedbc2bed9c038fa869222",
+      "ported_from": "97fbe5bc6216ad03306d99c43fd23ffc069d00d5",
+      "origin": {
+        "commit": "6a673233e9f7bac86b130977a967bdb77926239a",
+        "patch_path": "patches/common/0015-keep-malformed-image-decode-errors-request-local-while-preserving-os-faults.patch"
+      }
+    },
+    {
+      "id": "v0521-0022",
+      "path": "patches/common/0022-bound-watchdog-diagnostics-and-recover-independently-of-diagnostic-success.patch",
+      "title": "Bound watchdog diagnostics and recover independently of diagnostic success",
+      "source_commit": "b20581719b7af276cf111c63a3524509bde6666a",
+      "source_parent": "b3ca0627050c966578474f2c48c37b5da0c99f45",
+      "result_tree": "b6d1652b3b07f3acfabc7845e153f2c8b205008c",
+      "sha256": "8d3220e2f65a26cc672e16a3d0b729660084dd1a47d14f27402b5962a05b694a",
+      "ported_from": "2b7f9c91f5d22697049bf5ac8e07131a26ed710f",
+      "origin": {
+        "commit": "fd778061bc05537c7797daf1a0ab9e4c66da6c95",
+        "patch_path": "patches/common/0016-bound-watchdog-diagnostics-and-recover-independently-of-diagnostic-success.patch"
+      }
+    },
+    {
+      "id": "v0521-0023",
+      "path": "patches/common/0023-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch",
+      "title": "Adapt Qwen3.5-family templates, effort bounds and tool history",
+      "source_commit": "9f5fa335ff1863706c72a31f9f6bda859d8a7681",
+      "source_parent": "b20581719b7af276cf111c63a3524509bde6666a",
+      "result_tree": "5f417bc28151dbe29f5d75f4f3cb5aa0779b3640",
+      "sha256": "3756334488818ab9ee1e90376b46600f2a573365c59b793a74768d65dd38f74a",
+      "ported_from": "af885b4a4febb94304fffc371d13aa19a3d72221",
+      "origin": {
+        "commit": "348b3066f561fcf9748bae2659327107f1002d18",
+        "patch_path": "patches/models/qwen/0017-adapt-qwen3-5-family-templates-effort-bounds-and-tool-history.patch"
+      }
+    },
+    {
+      "id": "v0521-0024",
+      "path": "patches/common/0024-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch",
+      "title": "Align Qwen3 Coder argument coercion and structural-tag repetition",
+      "source_commit": "e320b07daf2fd97c5f20a756a2a4b79da59c3f60",
+      "source_parent": "9f5fa335ff1863706c72a31f9f6bda859d8a7681",
+      "result_tree": "f2a8d92b112d978db1d66aedd143347960fd0397",
+      "sha256": "a4087ca9a6ade3a1bc08d519ca110b76139420b345b98d733b61d6d24af53d32",
+      "ported_from": "f78a9c90ea1a8a0b009a5f57a97310c5e13399f9",
+      "origin": {
+        "commit": "514fcaf8c5a605a58ebb2f9dc1cc743e4a79b836",
+        "patch_path": "patches/models/qwen/0018-align-qwen3-coder-argument-coercion-and-structural-tag-repetition.patch"
+      }
+    },
+    {
+      "id": "v0521-0025",
+      "path": "patches/common/0025-prevent-network-retrieval-during-tool-argument-schema-coercion.patch",
+      "title": "Prevent network retrieval during tool argument schema coercion",
+      "source_commit": "6e675ced27bb361d455c4ee088ce5255cb297d4f",
+      "source_parent": "e320b07daf2fd97c5f20a756a2a4b79da59c3f60",
+      "result_tree": "6e55d25637e9d119e4c9676c97826e1c018b86e6",
+      "sha256": "4f50a4df36aa2f7c0e83ef42eba1c8d4c745e9fd0018b01b125a934e5c0ff286",
+      "ported_from": "b5f5dec3b644db667dc7d466e16079ec6011c342",
+      "origin": {
+        "commit": "7884e393ddaee762b42e2c6015cf1ea5cc3c27a6",
+        "patch_path": "patches/common/0019-prevent-network-retrieval-during-tool-argument-schema-coercion.patch"
+      }
+    },
+    {
+      "id": "v0521-0026",
+      "path": "patches/common/0026-enforce-explicit-allowed-tools-subsets-at-response-emission.patch",
+      "title": "Enforce explicit allowed-tools subsets at response emission",
+      "source_commit": "6136280bb6ee1075174a027a01eb518f365dbeb5",
+      "source_parent": "6e675ced27bb361d455c4ee088ce5255cb297d4f",
+      "result_tree": "afc611bbf0b04b9f64adcffd6ebb695659dcf9e8",
+      "sha256": "3fb09d12c76b7f76fe6676722e60a092c57386ab8c3ef7f6b834b726fed38b85",
+      "ported_from": "93f9585142d4c63e27fde85c70f688a370feeb3d",
+      "origin": {
+        "commit": "3c76218a6f3c9621f0cc08af1bf325c7633429ce",
+        "patch_path": "patches/common/0020-enforce-explicit-allowed-tools-subsets-at-response-emission.patch"
+      }
+    },
+    {
+      "id": "v0521-0027",
+      "path": "patches/common/0027-cap-reported-reasoning-tokens-at-the-completed-output-length.patch",
+      "title": "Cap reported reasoning tokens at the completed output length",
+      "source_commit": "0ee2ae9a3169e547e33f7005a8567b05de4453bf",
+      "source_parent": "6136280bb6ee1075174a027a01eb518f365dbeb5",
+      "result_tree": "ad63cfc2a0869e0443b0b88de46204cb5d8c3a04",
+      "sha256": "a06cf2dfbae9d252dffecc13ca17827da27f6f91e0fcfb061487c5b7d973e511",
+      "ported_from": "90641578ac0619f302c2dba8db67aaf35958a5c8",
+      "origin": {
+        "commit": "1e645a80fb0eb09a5b071e056796de74835ecf94",
+        "patch_path": "patches/common/0022-cap-reported-reasoning-tokens-at-the-completed-output-length.patch"
+      }
+    },
+    {
+      "id": "v0521-0028",
+      "path": "patches/common/0028-refresh-an-idle-local-running-gauge-without-resetting-token-counters.patch",
+      "title": "Refresh an idle local running gauge without resetting token counters",
+      "source_commit": "728db6ef3ecb8424a53c341a4d3328e544b1f092",
+      "source_parent": "0ee2ae9a3169e547e33f7005a8567b05de4453bf",
+      "result_tree": "004cd2c2ef3e40e978ae2deb64bffbc6b4e7bde4",
+      "sha256": "2bcf2b14af5534c2f208f0c9f72c5cac207201009056fa1c2080ce6eb4102417",
+      "ported_from": "5bd25e9583c974ce9b64bb8d931d47b083b08764",
+      "origin": {
+        "commit": "e84bb2a5c817e67d641c660cf1b015ddd0ce3da1",
+        "patch_path": "patches/common/0024-refresh-an-idle-local-running-gauge-without-resetting-token-counters.patch"
+      }
+    },
+    {
+      "id": "v0521-0029",
+      "path": "patches/common/0029-fix-integrate-common-framework-privacy-and-health-probe-cleanup.patch",
+      "title": "fix: integrate common framework privacy and health probe cleanup",
+      "source_commit": "92e543896436461c6dd9fae05b87867cf9087ae8",
+      "source_parent": "728db6ef3ecb8424a53c341a4d3328e544b1f092",
+      "result_tree": "2deb1e3128ce7b6650a991e53f443da544fbd091",
+      "sha256": "94523853fede0f1f8fd73c282c64d45769799a4817d65865f34c3b92d29b28f8",
+      "ported_from": "50ef850a94f09e2f819753dbe997172a1a92b33a",
+      "origin": {
+        "commit": "ec46910f90c4c2c54b40f3b02ee7721260e7b729",
+        "patch_path": "patches/common/ec46910f90-framework-privacy-and-health-cleanup.patch"
+      }
+    },
+    {
+      "id": "v0521-0030",
+      "path": "patches/common/0030-adapt-reviewed-srt-diagnostic-privacy-migration-to-official-v0-5-21.patch",
+      "title": "Adapt reviewed SRT diagnostic privacy migration to official v0.5.21",
+      "source_commit": "c31fac05857676c848c9e8745cd58b6181ff62d4",
+      "source_parent": "92e543896436461c6dd9fae05b87867cf9087ae8",
+      "result_tree": "53fa0e8c8a7f718e22564e765575b8d27432a55f",
+      "sha256": "f400da4119d970437249e938b1c220a2f86f25878651f1aa02f1bcba8712e125",
+      "ported_from": "e5eb587031fbd48db5236c27f81298b6b6e010a9",
+      "origin": {
+        "commit": "5a3634cab912a98f2ecdacc24c29c05e3c09a09d",
+        "method": "reviewed AST transformer replayed on actual .5.21 source; nonlog equivalence verified"
+      }
+    },
+    {
+      "id": "v0521-0031",
+      "path": "patches/common/0031-fix-publish-qwen-tool-calls-only-after-complete-block-closure.patch",
+      "title": "fix: publish Qwen tool calls only after complete block closure",
+      "source_commit": "c9b227b7c338b77ce25e91f64d595a22967d1a3f",
+      "source_parent": "c31fac05857676c848c9e8745cd58b6181ff62d4",
+      "result_tree": "849f080080b76aedcb478e965f4cdae735a8507b",
+      "sha256": "8fd246c95b2c2c818174e64466b56d27c55eb8d453b28b7623654b5e01c71ec4",
+      "ported_from": "95f32c553a558dd8f326cd235f85aca4cbada4bb",
+      "origin": {
+        "commit": "447dfcb6dee95be0db682036b55804bd03724c8f",
+        "patch_path": "patches/models/qwen/447dfcb6de-complete-call-boundaries.patch"
+      }
+    },
+    {
+      "id": "v0521-0032",
+      "path": "patches/common/0032-fix-qwen-required-tool-grammar-with-pinned-xgrammar.patch",
+      "title": "Fix Qwen required tool grammar with pinned XGrammar",
+      "source_commit": "eba0e09efaa162015f9c2f80021e7fa71821fb0b",
+      "source_parent": "c9b227b7c338b77ce25e91f64d595a22967d1a3f",
+      "result_tree": "afe95f44a0c99225a40f01baeae9181d80294c56",
+      "sha256": "f1122c4557b03dca7004b831cbd5d2d27995c7b02ff57143d89d3f90b2ec735b",
+      "ported_from": "59d6deb3b67a624702ff5e18f9a28b887fefafa7",
+      "origin": {
+        "commit": "3fce29c8d6128b9164fac00ebd5ce4c182a3b0e6",
+        "patch_path": "patches/models/qwen/3fce29c8d6-fix-required-tool-grammar.patch"
+      }
+    },
+    {
+      "id": "v0521-0033",
+      "path": "patches/common/0033-expose-reasoning-usage-through-typed-standard-completion-details.patch",
+      "title": "Expose reasoning usage through typed standard completion details",
+      "source_commit": "e8c0969c1b8926e2cc0a01a74d8c5602a6450e21",
+      "source_parent": "eba0e09efaa162015f9c2f80021e7fa71821fb0b",
+      "result_tree": "641655dcaf6b46ad88f437dc2238a50069978427",
+      "sha256": "8a15d3db4bfc72550689a0997a3dbabd8477d7e43233c4ba0bf9c20f808f17d5",
+      "ported_from": "1af8833bd938dbdac8aa15a683eb90e233ec8ab8",
+      "origin": {
+        "commit": "89f583819b2f515bfde21762e885d88d3761bdd8",
+        "patch_path": "patches/common/89f583819b-expose-reasoning-usage-through-typed-standard-completion-details.patch"
+      }
+    },
+    {
+      "id": "v0521-0034",
+      "path": "patches/common/0034-fix-preserve-named-tool-local-schema-reference-roots.patch",
+      "title": "fix: preserve named-tool local schema reference roots",
+      "source_commit": "7c8b1edfebdc2124cd8e33f66a8465509dc1e717",
+      "source_parent": "e8c0969c1b8926e2cc0a01a74d8c5602a6450e21",
+      "result_tree": "37b9f471821b70b2f1e782a17b46718c79c265df",
+      "sha256": "be873d5cc1f58990205bccb7c064cb5bea09a5b89b9617db8289d06fbc03ae67",
+      "ported_from": "27abcd38dc1be99863eaaae7cfc0c5498d9ebaa2",
+      "origin": {
+        "commit": "d912c600bad54887952a0e5d4c96bf1a922294d3",
+        "patch_path": "patches/common/d912c600ba-named-tool-reference-roots.patch"
+      }
+    },
+    {
+      "id": "v0521-0035",
+      "path": "patches/common/0035-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch",
+      "title": "Restore llguidance reasoning callbacks and guarded pinned host masks",
+      "source_commit": "b0e986a6395cd4a55375a7d5710ce3d2f6e225cd",
+      "source_parent": "7c8b1edfebdc2124cd8e33f66a8465509dc1e717",
+      "result_tree": "e9bbcc0581bba559a93bf361c7477754959d535c",
+      "sha256": "dfc30ccf0c3416557e454f6c24d3cb7952989cb82bb1bad63bcda3f2708618c1",
+      "ported_from": "caaeab7a9609cd132d42624eafbbcd7bc4ac9e8d",
+      "origin": {
+        "commit": "87ace709c88e8fd362d83584c7a4dd6742fc1d8b",
+        "patch_path": "patches/common/87ace709c8-restore-llguidance-reasoning-callbacks-and-guarded-pinned-host-masks.patch"
+      }
+    },
+    {
+      "id": "v0521-0036",
+      "path": "patches/common/0036-backport-upstream-43029-committed-length-mamba-checkpoint-boundary.patch",
+      "title": "Backport upstream 43029 committed-length Mamba checkpoint boundary",
+      "source_commit": "ade709a9cf2010d092a4891088c6a1fd34ee463e",
+      "source_parent": "b0e986a6395cd4a55375a7d5710ce3d2f6e225cd",
+      "result_tree": "451ad868dd480b6c94822b280d400d162e2bd469",
+      "sha256": "aceb27c29cacc3e52a25d839152140d839ac6a97cc2fdf44e8b50be900645c32",
+      "ported_from": "5c31cb3a8a0e231e7c177169bf6ead9a4dcf3c56",
+      "origin": {
+        "url": "https://github.com/sgl-project/sglang/pull/43029",
+        "handoff_patch_sha256": "95f0308789efdf2d7c4e78835361eedfa5a2a74254a7ab4c554817a11ed41cc0"
+      }
+    },
+    {
+      "id": "v0521-0037",
+      "path": "patches/common/0037-keep-new-admission-diagnostics-private-and-remove-simulator-test-dependency.patch",
+      "title": "Keep new admission diagnostics private and remove simulator test dependency",
+      "source_commit": "c1b0bd3725da4d8c7d8984c4f66102bdd55971b3",
+      "source_parent": "ade709a9cf2010d092a4891088c6a1fd34ee463e",
+      "result_tree": "a9cf2b785afe62a0368ef594a861905408a50bb3",
+      "sha256": "b6ef3f83068a298551f0a16ad4e850b7cd914d0a19f79ac4ae49c312e96e892a",
+      "ported_from": "4d2409e4c69d8ba3ebf8cdf7833a11f36a50a4f4"
+    },
+    {
+      "id": "v0521-0038",
+      "path": "patches/common/0038-make-extracted-cpu-test-bindings-explicit-for-source-checks.patch",
+      "title": "Make extracted CPU test bindings explicit for source checks",
+      "source_commit": "78a947d381e0b8828d09b7786bc9d6f8c196575e",
+      "source_parent": "c1b0bd3725da4d8c7d8984c4f66102bdd55971b3",
+      "result_tree": "07271502bd6802a271953d8a0808ca428639ea51",
+      "sha256": "946a84a731469858ab90db103d876064277173670389836d7ba876ea877885df",
+      "ported_from": "36b94d6b954b64c92413a046bbcdc3a15e9bf3c0"
+    },
+    {
+      "id": "v0521-0039",
+      "path": "patches/common/0039-preserve-initial-sse-error-http-status-before-headers.patch",
+      "title": "Preserve initial SSE error HTTP status before headers",
+      "source_commit": "43d4cc55ead23cc6ffe5a16f2a720f2ff2f3d4ba",
+      "source_parent": "78a947d381e0b8828d09b7786bc9d6f8c196575e",
+      "result_tree": "12fa2b91617255eaf01c842eac5802507aa9298e",
+      "sha256": "e670541ad3e8990a0b388186e19b7d19ee27da771ad1c2dd021f279d243dc016",
+      "ported_from": "b07f2cf6f597c25cad58295bcf10a02961b15845",
+      "origin": {
+        "commit": "f172f7f6e2d3917c6f11491d0ef859ac76c2669d",
+        "scope": "serving_base + initial-stream regression only"
+      }
+    },
+    {
+      "id": "v0521-0040",
+      "path": "patches/common/0040-bind-handler-failure-cleanup-to-atomically-registered-request-states.patch",
+      "title": "Bind handler failure cleanup to atomically registered request states",
+      "source_commit": "540584349ab0e0c95a21ec8a17a47f79bd993a33",
+      "source_parent": "43d4cc55ead23cc6ffe5a16f2a720f2ff2f3d4ba",
+      "result_tree": "d0a9f6960f418292e946ad207a16e7c888fd8a4e",
+      "sha256": "8fcaadce0df95132519632acd1e834cd4aae8d9fdbddea142d09c235eca215b2",
+      "ported_from": "7e9c415be6362ed9d9c59c63d5d494080fc9c40b"
+    },
+    {
+      "id": "v0521-0041",
+      "path": "patches/common/0041-narrow-abort-targeting-to-named-requests-and-decimal-index-children.patch",
+      "title": "Narrow abort targeting to named requests and decimal-index children",
+      "source_commit": "3e4071bb6fe2a970255d1b187410abc1d0d00261",
+      "source_parent": "540584349ab0e0c95a21ec8a17a47f79bd993a33",
+      "result_tree": "c89d931a7ab67ff0f5670309e305829bf298c4b9",
+      "sha256": "05886db18b8fb1493e703976863eba4d4151bfe8c978e9f1255e7e8bfa9d7159",
+      "ported_from": "070787437e8ae9a5e4c46e89e02fe601c1f3443c",
+      "origin": {
+        "url": "https://github.com/sgl-project/sglang/pull/43476",
+        "commit": "2494e57d545007e3733a3d2e66556a558700b060",
+        "adaptation": "reject empty target and require ASCII decimal child suffix"
+      }
+    },
+    {
+      "id": "v0521-0042",
+      "path": "patches/common/0042-align-privacy-provenance-and-http-test-fixture-on-maintained-v0-5-21.patch",
+      "title": "Align privacy provenance and HTTP test fixture on maintained v0.5.21",
+      "source_commit": "1800fd59001164e77b709384e550529ba8636974",
+      "source_parent": "3e4071bb6fe2a970255d1b187410abc1d0d00261",
+      "result_tree": "5b714a05593357ebf2f8673c84681336b47789f9",
+      "sha256": "c9400050251124424f93f441357c11b01e7d5a71c767c9006279e87d669f1b6e"
+    },
+    {
+      "id": "v0521-0043",
+      "path": "patches/common/0043-recognize-declared-tool-calls-before-enforcing-allowed-output-subsets.patch",
+      "title": "Recognize declared tool calls before enforcing allowed output subsets",
+      "source_commit": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
+      "source_parent": "1800fd59001164e77b709384e550529ba8636974",
+      "result_tree": "f6139030514ba28b64415eb23ac59c6422a792a6",
+      "sha256": "c55dcef320171a421905e1643426bcc892e3ed51d9eca61d0a0184ab8f6e4b03"
+    },
+    {
+      "id": "v0521-0044",
+      "path": "patches/common/0044-preserve-qwen-xml-required-and-empty-schemas-with-official-xgrammar.patch",
+      "title": "Preserve Qwen XML required and empty schemas with official XGrammar",
+      "source_commit": "44784573caa022c155c1b07de66fdaf8e58caefd",
+      "source_parent": "3efd2ba5c126823b20fc167c5f628efe4adbf860",
+      "result_tree": "88f64d00bc235d277890c76918401d82bb86e032",
+      "sha256": "f88d3548fb5e5fd81568f8c3664bbd071affcfd7ec44c30c71e78144e440829f"
+    },
+    {
+      "id": "v0521-0045",
+      "path": "patches/models/qwen/0045-request-static-yarn-and-safe-rejection.patch",
+      "title": "Support request-static Qwen YaRN profiles with safe rejected-request retirement",
+      "source_commit": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "source_parent": "44784573caa022c155c1b07de66fdaf8e58caefd",
+      "result_tree": "e44b8c2b6d021367d516de2f827f593ff8ecdb65",
+      "sha256": "51a46551ef4ec75963798cb3f7477c25cdbbd38e697f065a760006b61274b333"
+    },
+    {
+      "id": "v0521-0046",
+      "path": "patches/build/0046-source-bound-yarn-runtime-packaging.patch",
+      "title": "Package qualified YaRN source with immutable base and verified wheel records",
+      "source_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "source_parent": "c92bc45d552dbaf53deecee723b74762f603d0c5",
+      "result_tree": "e2b0a760fae25aba3f3de666efaecd273ec5217d",
+      "sha256": "3f67c8f3126deda3b8f2c89e728bdaa1d28726210fb361d843164d331d6e950b"
+    },
+    {
+      "id": "v0521-0047",
+      "path": "patches/models/qwen/0047-qwen35-gguf-loader-vision-config.patch",
+      "title": "Adapt maintained Qwen GGUF vision loading to v0.5.21 with nested YaRN overrides",
+      "source_commit": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "source_parent": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "result_tree": "9802a7753b176b5d0629791851d02661fd066c47",
+      "sha256": "326f5f7757c0e2c0da469366fd37c4a0ec717fe372e0a1f6e7b2707762649082",
+      "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0048",
+      "path": "patches/models/qwen/0048-gguf-prefill-dense-1024.patch",
+      "title": "Limit transient GGUF dense GEMM to large prefill batches",
+      "source_commit": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "source_parent": "e9abbcf0b556019424d19f987816b5a9e7447d24",
+      "result_tree": "12b1b948af176aa84c1c73bc678cca41458d453a",
+      "sha256": "c5614d55b5f9a763da095a4661d35caebcc4c20b78580b2eca566094b3485158",
+      "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0049",
+      "path": "patches/build/0049-model894-yarn-packaging-and-config-regression.patch",
+      "title": "Package GGUF increments over immutable request-static YaRN release with config regression",
+      "source_commit": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "source_parent": "b0a9011be2759f7a9dbab46e5c070a0119269577",
+      "result_tree": "c3ac2ba255436604bb219d9fa798610d8697a542",
+      "sha256": "45a93c12f2300deb2aacda0564e162195210e4f48b14934cef4a56f229974b62",
+      "export_format": "git-format-patch"
+    },
+    {
+      "id": "v0521-0050",
+      "path": "patches/models/xing4/0050-native-xing4-stable.patch",
+      "title": "Support native Xing4 MLA mHC on stable v0.5.21 with source-bound image",
+      "source_commit": "57d3ef39034b14c75e532fce89fdffe83b77e172",
+      "source_parent": "c2ce5382dad45fd85e39f5d4e1d93165225eb34d",
+      "result_tree": "121a639593c8613f9435969b921479d32ea9e6cb",
+      "sha256": "c2ee25ac4701cfe25538fcb70be968c2655f536e9b456864825e3c5d27fe56f4",
+      "upstream_pr": "https://github.com/sgl-project/sglang/pull/39793",
+      "upstream_head": "aa737beda5878755dffe40836de014663ca2a106"
+    },
+    {
+      "id": "v0521-0051",
+      "path": "patches/models/xing4/0051-official-xing-tokenizer-data-only.patch",
+      "title": "Package official Xing SentencePiece tokenizer with data-only loading and env-auth regression",
+      "source_commit": "2c2f6fcf0f4870f235ce44ef1d403fdc5d5e35f4",
+      "source_parent": "57d3ef39034b14c75e532fce89fdffe83b77e172",
+      "result_tree": "c09ec7bba570672d5dc68e041d66063ecf4c0360",
+      "sha256": "6d1c30e84ec5a1c1244ebdfa54a4451351294c75c5b12f2ab17cf048af1dfce3",
+      "origin": {
+        "tokenizer_repository": "https://huggingface.co/XingChen-AGI/Xing4.0-29B-A4B",
+        "revision": "5f65c5895db48bc6144a467ecffe9c8a92e145e8",
+        "official_tokenizer_sha256": "4c18df574fad90ee3cadb25586d47b8b32c62c7239e76f246a1bfaedf177799f"
+      }
+    },
+    {
+      "id": "v0521-0052",
+      "path": "patches/models/xing4/0052-request-static-yarn-public-budget.patch",
+      "title": "Implement Xing request-static YaRN source integration",
+      "source_commit": "2b3cf0096c9ccc2562c784042afac3f22a10e22b",
+      "source_parent": "2c2f6fcf0f4870f235ce44ef1d403fdc5d5e35f4",
+      "result_tree": "478b624f8a0c4455634692716a80c126fad914c6",
+      "sha256": "b901d3a3bf6a21edf1361dcaf9d6af121aa570bd66c31e92cd2e5911cb646255",
+      "origin": {
+        "development_commit": "4f265885d9d4800c799220a27fbf53368be42b4a",
+        "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0053",
+      "path": "patches/models/xing4/0053-zero-output-empty-pool-rejection.patch",
+      "title": "Reject Xing zero-output requests beyond empty KV capacity",
+      "source_commit": "a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9",
+      "source_parent": "2b3cf0096c9ccc2562c784042afac3f22a10e22b",
+      "result_tree": "8882014544894c607cac4fb7dce480fe4aa4f306",
+      "sha256": "8dc6a5e33be02ef415d0abb9095c3498427105ec2b386268f4a71fb043096492",
+      "origin": {
+        "development_commit": "5cba9943c7b3bdb46c53c8f04214d83983b755df",
+        "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0054",
+      "path": "patches/common/0054-safe-scheduler-startup-diagnostics.patch",
+      "title": "Expose bounded credential-scrubbed scheduler startup failures",
+      "source_commit": "ed66cb0fc0120090780b476cf8ff0703c2b7d6f8",
+      "source_parent": "a05e5510c9836505b7a8e85c3afa40fd9e1bb3f9",
+      "result_tree": "896b4e84c75ae8b2af6f1394f1d0c02775923de5",
+      "sha256": "40d9cf1ea9bb915812f8b1d6ce9f8885b59db75a758bce7164425125eb57d222",
+      "origin": {
+        "development_commit": "ed66cb0fc0120090780b476cf8ff0703c2b7d6f8",
+        "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0055",
+      "path": "patches/common/0055-startup-weight-shape-context.patch",
+      "title": "Keep parameter name and tensor shapes for empty startup load assertions",
+      "source_commit": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
+      "source_parent": "ed66cb0fc0120090780b476cf8ff0703c2b7d6f8",
+      "result_tree": "62a2366644f75efe5db6ca409597a2496fdfe1ae",
+      "sha256": "aa6f12461403456bb875ccb7d4984f7210896cac617d4ab906a8e42460e8fb67",
+      "origin": {
+        "development_commit": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
+        "scope": "Xing request-static MLA 64/128, independent public budget and KV reserve; no executable model code"
+      }
+    },
+    {
+      "id": "v0521-0056",
+      "path": "patches/models/xing4/0056-stable-decoder-construction.patch",
+      "title": "Adapt Xing decoder construction to stable layer-boundary API",
+      "source_commit": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
+      "source_parent": "3fbff0a280fd4b6ebf8487903b86da993d24643a",
+      "result_tree": "a073c32a40ff18b92a87c1657893440b75e2ba08",
+      "sha256": "e97a9b3cbaebfba22fd88aaf87f46f2addfa02b4419071c016cfc2a0f182c10e",
+      "origin": {
+        "scope": "Actual GPU constructor ImportError repair: current dense helper, reduction enum and next_sparse; full official BF16/FP8 constructor red-green"
+      }
+    },
+    {
+      "id": "v0521-0057",
+      "path": "patches/models/xing4/0057-stable-forward-terminal-api.patch",
+      "title": "Adapt Xing forward and terminal normalization to stable APIs",
+      "source_commit": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
+      "source_parent": "8d58bc12e0f69203a012db7c8d8ee377f2554c2a",
+      "result_tree": "c6ec47142df3a4131455b504bd559fadff3f53f1",
+      "sha256": "f918ca46cb763d08ca7914e52a977ea08e80b2d49f6c406749e054944d76a95b",
+      "origin": {
+        "scope": "Actual dual-GPU prefill graph forward TypeError repair: stable MLA slice argument, boundary capture/property/postprocess, and terminal residual norm; full official40layer forward red-green with production-signature GPU compute mocks"
+      }
+    },
+    {
+      "id": "v0521-0058",
+      "path": "patches/common/0058-legacy-profiler-export-failure.patch",
+      "title": "Contain legacy profiler export I/O failures without hiding fatal errors",
+      "source_commit": "3796ead177e2c344da9e8ca026bf64f32de7f09e",
+      "source_parent": "7c19b8bbd723bcb26ba691a19b3e1a7e0cf07f93",
+      "result_tree": "bd1076178d4f39d4f0be8e2328f9fda5f4ba35c0",
+      "sha256": "f32a0429a70a173f4b4eb8d6a53617d9855896367161b66cccd89ccfb2e61fbb",
+      "origin": {
+        "reviewed_source_commit": "f64aa5469b9bc4e3f53c28a511dcd5dac55884b4",
+        "scope": "Single legacy stop/cleanup, all-rank export failure reduction, fatal CUDA/runtime/communication propagation; v2 unchanged; 13 focused CPU tests and real two-process Gloo control/permission failures"
+      }
+    },
+    {
+      "id": "v0521-0059",
+      "path": "patches/models/xing4/0059-startup-spec-identity.patch",
+      "title": "Observe final Xing EAGLE pools, quant methods and weight sharing at startup",
+      "source_commit": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
+      "source_parent": "585d270714ced0c77656506f49f5c5b955791210",
+      "result_tree": "95fcbbc4638d58ddee1c56cdb03dfece74cf087b",
+      "sha256": "874417b8a9693337b9ca256cd949cb7fa714fcfc08f4770487a16b6ca9088cf0",
+      "origin": {
+        "scope": "Startup-only metadata, actual EAGLE facade property; no tensor values, transfer, numerical, kernel, backend or dependency changes; source14 affected cases, retained RC4 unchanged172/Gloo evidence."
+      },
+      "source_range_base": "3796ead177e2c344da9e8ca026bf64f32de7f09e"
+    },
+    {
+      "id": "v0521-0060",
+      "path": "patches/models/xing4/0060-native-eagle-public-budget.patch",
+      "title": "Preserve native Xing EAGLE public context with independent scratch capacity",
+      "source_commit": "48e9fc7d56930660999dc108cb5ecddee5245715",
+      "source_parent": "5b32c5227da46c3db3f2569aab1d83f81f9d9080",
+      "result_tree": "8dbf789abe62afb0b39aba6f6d4a7c9511938e00",
+      "sha256": "a9602b7216eaa33ff5e5ede73cb371e588ce80ae3c9bde0f4d6f1d411992c607",
+      "origin": {
+        "scope": "Fixed native BF16/E4M3 TP1 page64 TRTMLA EAGLE3/1/4 public budget, internal RoPE/index tail; real CPU paths, no kernel changes"
+      }
+    },
+    {
+      "id": "v0521-0063",
+      "path": "patches/models/xing4/0063-tool-streaming-ordinals-and-string-values.patch",
+      "title": "Fix Xing4 streaming call ordinals and preserve string arguments",
+      "source_commit": "5f327460887e43ca2b3484e473f2ccb0e99db539",
+      "source_parent": "48e9fc7d56930660999dc108cb5ecddee5245715",
+      "result_tree": "bdd8a9a422925dc73bd7ca71feb66815a3063ea0",
+      "sha256": "cb659b1e6ba4552de8db9ea9057bdd5b8aefe9eab4c10dac624425284a6b9c66"
+    },
+    {
+      "id": "v0521-0064",
+      "path": "patches/build/0064-native-xing-production-image.patch",
+      "title": "Package native Xing tool and public-budget repairs on the immutable stable parent",
+      "source_commit": "c3056aef8fee505231a63d498ca48b8779301cf6",
+      "source_parent": "5f327460887e43ca2b3484e473f2ccb0e99db539",
+      "result_tree": "0273a864e47d770ab8339567c45faec68d896124",
+      "sha256": "e3e5c43273546e0ef9ec966d206afa83073dbf41d9680ba487824201f46b61fe"
+    },
+    {
+      "id": "v0521-0066",
+      "path": "patches/models/xing4/0066-mhc-reference-and-compact-prefill-cast.patch",
+      "title": "Retain official-math mHC reference and compact prefill FP8-to-BF16 cast",
+      "source_commit": "f859403e06f6dfe417dda9f8e4a3cfc07da0a55a",
+      "source_parent": "c3056aef8fee505231a63d498ca48b8779301cf6",
+      "result_tree": "b88b6b7d6c23ba5ed4b1798139fd7e78410d5a3d",
+      "sha256": "48ed81cce8deb2ea260bb5fc04fd1de8a5c86e0d01ce168c3b1bac0d9078af5d"
+    },
+    {
+      "id": "v0521-0067",
+      "path": "patches/common/0067-json-budget-close-before-eagle-verify.patch",
+      "title": "Add default-off guarded JSON budget closure with focused tests",
+      "source_commit": "bd7de0694b25b6bed444762dde26c2a661b61661",
+      "source_parent": "f859403e06f6dfe417dda9f8e4a3cfc07da0a55a",
+      "result_tree": "3bbfdf1f66bdb0b7e2a232701a35a84f04416d5c",
+      "sha256": "7866a09a93721aa5beb14dc9d416076fd582e964551df0b8e0c6bf6dc7535040"
+    },
+    {
+      "id": "v0521-0065",
+      "path": "patches/common/0065-openai-final-so-response-observer.patch",
+      "title": "Observe bounded final Structured Output results behind a default-off flag",
+      "source_commit": "4efc662f2702f6008d7d1ab346282c0af31fbb1b",
+      "source_parent": "c3056aef8fee505231a63d498ca48b8779301cf6",
+      "result_tree": "6c1c548b079ac92b39538e47343d51315f7f7307",
+      "sha256": "f825562561d05997c97f9a37d98c41c8672ae73fdb470d8c7438e502a57d6c24"
+    }
+  ],
+  "qualification": {
+    "source_replay": true,
+    "selected_patch_count": 65,
+    "replayed_full_tree": "9039f52d084810957a51afbed2c252e8139cd779",
+    "runtime_and_GPU": "unqualified",
+    "publication": "not authorized"
+  },
+  "local_candidate_version": "phala-v0.5.21-xing4-so-budget-observer-local-20261018",
+  "base_selection": {
+    "commit": "c0c6d075c81f017968fdcd25f8a967badc889c1e",
+    "series": "versions/v0.5.21/series.xing4-native-20261017",
+    "series_sha256": "1560f3f87748f7c30b9dceeae3f06e14b9b81042042ce6c4dba610f4cf8bb72c",
+    "manifest": "versions/v0.5.21/releases/phala-v0.5.21-xing4-native-20261017.json",
+    "manifest_sha256": "9cdf0d48c08a17a900bd3fe5589470385805a1524f5ab81067ebefb536c0ab93",
+    "patch_count": 62,
+    "engine_commit": "c3056aef8fee505231a63d498ca48b8779301cf6",
+    "engine_tree": "0273a864e47d770ab8339567c45faec68d896124"
+  },
+  "components": {
+    "embedded_governor": null,
+    "external_PIG": "unchanged; not rebuilt, not an engine source/ABI input",
+    "observer_source": "4efc662f2702f6008d7d1ab346282c0af31fbb1b",
+    "mhc_and_compact_cast_source": "f859403e06f6dfe417dda9f8e4a3cfc07da0a55a",
+    "json_budget_close_source": "bd7de0694b25b6bed444762dde26c2a661b61661",
+    "observer_integration_source": "b3e037ca52591d2c1013aa4625f6b2347cd746c8"
+  }
+}

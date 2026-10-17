@@ -1,0 +1,547 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 85d80bc2a1c96dcd992b0ee2922cdc5103165d3a..31a627a9f3cafdf64d1f82228b1935fc62a1b4d0 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import asyncio
+ import copy
+ import json
+ import logging
+@@ -74,6 +75,10 @@ from sglang.srt.entrypoints.openai.protocol import (
+     TopLogprob,
+ )
+ from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
++from sglang.srt.entrypoints.openai.so_response_observer import (
++    ObservedSOStream,
++    SOResponseObserver,
++)
+ from sglang.srt.entrypoints.openai.sse_utils import build_sse_content
+ from sglang.srt.entrypoints.openai.usage_processor import UsageProcessor
+ from sglang.srt.entrypoints.openai.utils import (
+@@ -333,6 +338,12 @@ class OpenAIServingChat(OpenAIServingBase):
+         template_manager: TemplateManager,
+     ):
+         super().__init__(tokenizer_manager)
++        self._so_response_metrics = None
++        if envs.SGLANG_ENABLE_OPENAI_SO_VALIDATION_METRICS.get():
++            collector = getattr(tokenizer_manager, "metrics_collector", None)
++            if collector is None or collector.openai_so_responses_total is None:
++                raise ValueError("SO validation metrics require --enable-metrics")
++            self._so_response_metrics = collector.observe_openai_so_response
+         self.template_manager = template_manager
+         self.tool_call_parser = self.tokenizer_manager.config_value("tool_call_parser")
+         self.reasoning_parser = self.tokenizer_manager.config_value("reasoning_parser")
+@@ -2207,6 +2218,37 @@ class OpenAIServingChat(OpenAIServingBase):
+             stop=stop,
+         )
+ 
++    async def handle_request(self, request, raw_request):
++        emit = self._so_response_metrics
++        if emit is None:
++            return await super().handle_request(request, raw_request)
++        try:
++            observer = SOResponseObserver.create(request, emit)
++        except Exception:
++            # Observer setup is metadata-only and must fail open. Preserve a
++            # request in the denominator even when observation cannot start.
++            try:
++                format = getattr(getattr(request, "response_format", None), "type", None)
++                if format in ("json_schema", "json_object"):
++                    emit(format, bool(request.stream), "unknown", "missing")
++            except Exception:
++                pass
++            return await super().handle_request(request, raw_request)
++        if observer is None:
++            return await super().handle_request(request, raw_request)
++        try:
++            response = await super().handle_request(request, raw_request)
++        except BaseException as exc:
++            observer.finish(
++                aborted=isinstance(exc, (asyncio.CancelledError, GeneratorExit))
++            )
++            raise
++        if isinstance(response, StreamingResponse):
++            response.body_iterator = ObservedSOStream(response.body_iterator, observer)
++        else:
++            observer.response(response)
++        return response
++
+     async def _handle_streaming_request(
+         self,
+         adapted_request: GenerateReqInput,
+diff --git a/python/sglang/srt/entrypoints/openai/so_response_observer.py b/python/sglang/srt/entrypoints/openai/so_response_observer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fbf83a7ee56ee8256ccc32d56402cf18b56a5e6
+--- /dev/null
++++ b/python/sglang/srt/entrypoints/openai/so_response_observer.py
+@@ -0,0 +1,400 @@
++"""Opt-in, bounded final OpenAI SO observations; never changes wire output."""
++
++import codecs
++import copy
++import io
++import json
++import math
++from contextvars import ContextVar
++
++from jsonschema import Draft202012Validator, validators
++from referencing import Registry
++from referencing.exceptions import NoSuchResource
++
++MAX_CONTENT_CHARS = 65536  # Total across all choices, not per choice.
++MAX_SCHEMA_CHARS = 16384
++MAX_NODES = 2048
++MAX_DEPTH = 32
++MAX_CHOICES = 8
++MAX_EVENTS = 8192
++MAX_FRAME_CHARS = 131072
++MAX_OPERATIONS = 8192
++
++FORMATS = frozenset(("json_schema", "json_object"))
++OUTCOMES = frozenset(
++    ("valid", "json_invalid", "schema_invalid", "truncated", "unknown", "aborted")
++)
++FINISHES = frozenset(("stop", "length", "tool_calls", "abort", "other", "missing", "mixed"))
++_budget = ContextVar("openai_so_validation_budget", default=None)
++
++
++class _Limit(Exception):
++    pass
++
++
++def _bounded(value, max_chars):
++    stack = [(value, 0)]
++    nodes = chars = 0
++    while stack:
++        item, depth = stack.pop()
++        nodes += 1
++        if nodes > MAX_NODES or depth > MAX_DEPTH:
++            raise _Limit()
++        if isinstance(item, str):
++            chars += len(item)
++        elif isinstance(item, dict):
++            if nodes + len(stack) + len(item) > MAX_NODES:
++                raise _Limit()
++            chars += sum(len(k) for k in item)
++            stack.extend((v, depth + 1) for v in item.values())
++        elif isinstance(item, list):
++            if nodes + len(stack) + len(item) > MAX_NODES:
++                raise _Limit()
++            stack.extend((v, depth + 1) for v in item)
++        elif isinstance(item, float) and not math.isfinite(item):
++            raise _Limit()
++        if chars > max_chars:
++            raise _Limit()
++
++
++# Regex, format, uniqueItems, dynamic refs and unevaluated* are deliberately
++# unknown. There is no thread timeout pretending to interrupt atomic validators.
++_CHILD_MAPS = frozenset(("properties", "$defs", "dependentSchemas"))
++_CHILD_LISTS = frozenset(("allOf", "anyOf", "oneOf", "prefixItems"))
++_CHILD_SINGLE = frozenset(
++    ("additionalProperties", "items", "not", "if", "then", "else", "propertyNames")
++)
++_SUPPORTED = (
++    _CHILD_MAPS | _CHILD_LISTS | _CHILD_SINGLE
++    | frozenset((
++        "$schema", "$ref", "type", "enum", "const", "required",
++        "minProperties", "maxProperties", "minItems", "maxItems",
++        "minLength", "maxLength", "minimum", "maximum",
++        "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "dependentRequired",
++        "title", "description", "$comment", "default", "examples",
++        "readOnly", "writeOnly", "deprecated",
++    ))
++)
++
++
++def _prepare_schema(schema):
++    _bounded(schema, MAX_SCHEMA_CHARS)
++    schema = copy.deepcopy(schema)
++    stack = [schema]
++    while stack:
++        item = stack.pop()
++        if isinstance(item, bool):
++            continue
++        if not isinstance(item, dict) or not set(item) <= _SUPPORTED:
++            raise _Limit()
++        if "$schema" in item and item["$schema"] not in (
++            "https://json-schema.org/draft/2020-12/schema",
++            "https://json-schema.org/draft/2020-12/schema#",
++        ):
++            raise _Limit()
++        # Keep jsonschema.evolve on the budgeted class. The only admitted
++        # dialect is the same Draft 2020-12; removing its annotation on this
++        # private copy changes no validation assertion or response byte.
++        item.pop("$schema", None)
++        ref = item.get("$ref")
++        if ref is not None and (
++            not isinstance(ref, str) or not (ref == "#" or ref.startswith("#/"))
++        ):
++            raise _Limit()
++        for key in _CHILD_MAPS & item.keys():
++            stack.extend(item[key].values())
++        for key in _CHILD_LISTS & item.keys():
++            stack.extend(item[key])
++        stack.extend(item[k] for k in _CHILD_SINGLE & item.keys())
++    Draft202012Validator.check_schema(schema)
++    return schema
++
++
++class _Work:
++    def __init__(self):
++        self.left = MAX_OPERATIONS
++        self.depth = 0
++
++    def charge(self, amount=1):
++        self.left -= amount
++        if self.left < 0 or self.depth > MAX_DEPTH:
++            raise _Limit()
++
++
++def _guard(original):
++    def check(validator, constraint, instance, schema):
++        work = _budget.get()
++        work.charge()
++        # Charge atomic collection scans too; no regex-bearing keyword is used.
++        if isinstance(constraint, (list, dict)):
++            work.charge(len(constraint))
++        if isinstance(instance, (list, dict)) and isinstance(constraint, (list, dict)):
++            work.charge(len(instance) * len(constraint))
++        work.depth += 1
++        try:
++            work.charge()
++            yield from original(validator, constraint, instance, schema)
++        finally:
++            work.depth -= 1
++    return check
++
++
++_Validator = validators.extend(
++    Draft202012Validator,
++    {name: _guard(fn) for name, fn in Draft202012Validator.VALIDATORS.items()},
++)
++
++
++def _deny_resource(uri):
++    raise NoSuchResource(ref=uri)
++
++
++def _reject_constant(value):
++    raise ValueError("Non-JSON numeric constant")
++
++
++class SOResponseObserver:
++    """One request, one fixed-label observation, no retained payload after finish."""
++
++    def __init__(self, request, emit):
++        self.format = request.response_format.type
++        self.streaming = bool(request.stream)
++        self.emit = emit
++        self.n = request.n
++        self.unknown = not (type(self.n) is int and 1 <= self.n <= MAX_CHOICES)
++        if self.unknown:
++            self.n = 0
++        self.schema = None
++        if self.format == "json_schema":
++            try:
++                self.schema = _prepare_schema(request.response_format.json_schema.schema_)
++            except Exception:
++                self.unknown = True
++        self.choices = {}
++        self.content_chars = 0
++        self.events = 0
++        self.chunks = 0
++        self.pending = ""
++        self.decoder = codecs.getincrementaldecoder("utf-8")()
++        self.data_lines = []
++        self.frame_chars = 0
++        self.event_type = ""
++        self.done = False
++        self.finished = False
++
++    @classmethod
++    def create(cls, request, emit):
++        response_format = getattr(request, "response_format", None)
++        if getattr(response_format, "type", None) not in FORMATS:
++            return None
++        return cls(request, emit)
++
++    def _choice(self, row, streaming):
++        index = row.get("index")
++        if type(index) is not int or not 0 <= index < min(self.n, MAX_CHOICES):
++            self.unknown = True
++            return
++        state = self.choices.setdefault(index, {"text": io.StringIO(), "finish": None})
++        message = row.get("delta" if streaming else "message") or {}
++        if not isinstance(message, dict):
++            self.unknown = True
++            return
++        content = message.get("content")
++        if message.get("tool_calls") or message.get("refusal"):
++            self.unknown = True
++        if content is not None:
++            if not isinstance(content, str) or state["finish"] is not None:
++                self.unknown = True
++            elif not self.unknown:
++                if self.content_chars + len(content) > MAX_CONTENT_CHARS:
++                    self.unknown = True
++                    self._clear_content()
++                else:
++                    self.content_chars += len(content)
++                    state["text"].write(content)
++        finish = row.get("finish_reason")
++        if finish is not None:
++            if state["finish"] is not None:
++                self.unknown = True
++            state["finish"] = finish if finish in FINISHES - {"mixed", "missing"} else "other"
++
++    def _clear_content(self):
++        for state in self.choices.values():
++            state["text"].close()
++            state["text"] = io.StringIO()
++
++    def response(self, response):
++        try:
++            choices = getattr(response, "choices", None)
++            if choices is None:
++                self.unknown = True
++            else:
++                for row in choices[:MAX_CHOICES + 1]:
++                    self._choice(
++                        {"index": row.index, "message": {
++                            "content": row.message.content,
++                            "tool_calls": row.message.tool_calls,
++                            "refusal": getattr(row.message, "refusal", None),
++                        }, "finish_reason": row.finish_reason},
++                        False,
++                    )
++                if len(choices) != self.n:
++                    self.unknown = True
++            self.done = True
++        except Exception:
++            self.unknown = True
++        self.finish()
++
++    def feed(self, chunk):
++        self.chunks += 1
++        if self.events > MAX_EVENTS or self.chunks > MAX_EVENTS:
++            self.unknown = True
++            self.pending = ""
++            self.data_lines.clear()
++            return
++        try:
++            if isinstance(chunk, bytes) and len(chunk) <= MAX_FRAME_CHARS:
++                chunk = self.decoder.decode(chunk)
++            if not isinstance(chunk, str) or len(chunk) > MAX_FRAME_CHARS:
++                self.unknown = True
++                return
++            self.pending += chunk
++            if len(self.pending) > MAX_FRAME_CHARS:
++                self.unknown = True
++                self.pending = ""
++                return
++            while "\n" in self.pending:
++                line, self.pending = self.pending.split("\n", 1)
++                line = line.removesuffix("\r")
++                if not line:
++                    self._event()
++                    if self.events > MAX_EVENTS:
++                        self.pending = ""
++                        return
++                elif line.startswith("data:"):
++                    value = line[5:].removeprefix(" ")
++                    self.frame_chars += len(value) + 1
++                    if self.frame_chars > MAX_FRAME_CHARS:
++                        self.unknown = True
++                        self.data_lines.clear()
++                    else:
++                        self.data_lines.append(value)
++                elif line.startswith("event:"):
++                    self.event_type = line[6:].strip()
++        except Exception:
++            self.unknown = True
++
++    def _event(self):
++        self.events += 1
++        data = "\n".join(self.data_lines)
++        event_type = self.event_type
++        self.data_lines.clear()
++        self.frame_chars = 0
++        self.event_type = ""
++        if self.events > MAX_EVENTS:
++            self.unknown = True
++            return
++        if not data or event_type not in ("", "message"):
++            return
++        if data == "[DONE]":
++            if self.done:
++                self.unknown = True
++            self.done = True
++            return
++        if self.done:
++            self.unknown = True
++            return
++        try:
++            obj = json.loads(data, parse_constant=_reject_constant)
++            if "error" in obj:
++                self.unknown = True
++            choices = obj.get("choices", [])
++            if not isinstance(choices, list) or len(choices) > MAX_CHOICES:
++                self.unknown = True
++                return
++            for row in choices:
++                self._choice(row, True)
++        except Exception:
++            self.unknown = True
++
++    def _validate(self, content):
++        try:
++            value = json.loads(content, parse_constant=_reject_constant)
++        except (ValueError, TypeError):
++            return "json_invalid"
++        except Exception:
++            return "unknown"
++        try:
++            _bounded(value, MAX_CONTENT_CHARS)
++            if self.format == "json_object":
++                return "valid" if isinstance(value, dict) else "schema_invalid"
++            token = _budget.set(_Work())
++            try:
++                validator = _Validator(self.schema, registry=Registry(retrieve=_deny_resource))
++                return "schema_invalid" if next(validator.iter_errors(value), None) else "valid"
++            finally:
++                _budget.reset(token)
++        except Exception:
++            return "unknown"
++
++    def finish(self, aborted=False):
++        if self.finished:
++            return
++        self.finished = True
++        finish_values = {s["finish"] or "missing" for s in self.choices.values()}
++        finish = next(iter(finish_values)) if len(finish_values) == 1 else (
++            "mixed" if finish_values else "missing"
++        )
++        if aborted or "abort" in finish_values:
++            outcome = "aborted"
++        elif "length" in finish_values:
++            outcome = "truncated"
++        elif self.unknown or self.decoder.getstate()[0] or not self.done or self.pending or self.data_lines or len(self.choices) != self.n or finish != "stop":
++            outcome = "unknown"
++        else:
++            try:
++                results = {self._validate(s["text"].getvalue()) for s in self.choices.values()}
++                outcome = next((v for v in ("unknown", "json_invalid", "schema_invalid") if v in results), "valid")
++            except Exception:
++                outcome = "unknown"
++        self._clear_content()
++        self.schema = None
++        self.pending = ""
++        self.data_lines.clear()
++        try:
++            self.emit(self.format, self.streaming, outcome, finish)
++        except Exception:
++            # Metrics emission must not turn successful serving into a failure.
++            pass
++
++
++class ObservedSOStream:
++    """Transparent owner whose aclose also handles a never-started body iterator."""
++
++    def __init__(self, source, observer):
++        self.source = source.__aiter__()
++        self.observer = observer
++
++    def __aiter__(self):
++        return self
++
++    async def __anext__(self):
++        try:
++            chunk = await self.source.__anext__()
++        except StopAsyncIteration:
++            self.observer.finish()
++            raise
++        except BaseException:
++            self.observer.finish(aborted=True)
++            raise
++        self.observer.feed(chunk)
++        return chunk
++
++    async def aclose(self):
++        try:
++            await self.source.aclose()
++        except BaseException:
++            self.observer.finish(aborted=True)
++            raise
++        finally:
++            self.observer.finish(aborted=not self.observer.done)
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index ec28ea579e94aabe7a045dd1a97c29866e38f513..235a593b89b7df275736f4fb204f8c558fff1b6b 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -469,6 +469,8 @@ class Envs:
+     SGLANG_OTLP_EXPORTER_MAX_EXPORT_BATCH_SIZE = EnvInt(64)
+     SGLANG_TRACE_ASYNC = EnvBool(False)
+     SGLANG_TRACE_ASYNC_FLUSH_THRESHOLD = EnvInt(100)
++    # Canary-only final OpenAI response validation; disabled by default.
++    SGLANG_ENABLE_OPENAI_SO_VALIDATION_METRICS = EnvBool(False)
+     SGLANG_ENABLE_METRICS_DEVICE_TIMER = EnvBool(False)
+     SGLANG_ENABLE_METRICS_DP_ATTENTION = EnvBool(False)
+     SGLANG_TRACE_LOGITS_E2E = EnvBool(False)
+diff --git a/python/sglang/srt/observability/metrics_collector.py b/python/sglang/srt/observability/metrics_collector.py
+index bab95302513a3de458215cd27e990ad8bac79fd6..66c959ecc867047b02696115779f88bb448bc5c9 100644
+--- a/python/sglang/srt/observability/metrics_collector.py
++++ b/python/sglang/srt/observability/metrics_collector.py
+@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Union
+ 
+ from sglang.srt.disaggregation.utils import DisaggregationMode
++from sglang.srt.environ import envs
+ from sglang.srt.model_executor.forward_batch_info import ForwardMode
+ from sglang.srt.observability.scheduler_stage_metrics import (
+     SCHEDULER_STAGE_CATEGORIES,
+@@ -1654,6 +1655,16 @@ class TokenizerMetricsCollector(_StatLoggerDIMixin):
+             labelnames=labels.keys(),
+         )
+ 
++        self.openai_so_responses_total = None
++        if envs.SGLANG_ENABLE_OPENAI_SO_VALIDATION_METRICS.get():
++            self.openai_so_responses_total = Counter(
++                name="sglang:openai_so_responses_total",
++                documentation="Final OpenAI response_format SO requests, once per "
++                "request. Unknown and aborted remain in the denominator; "
++                "this is not the grammar/tool processed counter.",
++                labelnames=("format", "streaming", "outcome", "finish"),
++            )
++
+         self.num_aborted_requests_total = Counter(
+             name="sglang:num_aborted_requests_total",
+             documentation="Number of requests aborted.",
+@@ -1759,6 +1770,25 @@ class TokenizerMetricsCollector(_StatLoggerDIMixin):
+             buckets=bucket_e2e_request_latency,
+         )
+ 
++    def observe_openai_so_response(self, format, streaming, outcome, finish):
++        if (
++            format not in ("json_schema", "json_object")
++            or outcome not in (
++                "valid", "json_invalid", "schema_invalid",
++                "truncated", "unknown", "aborted",
++            )
++            or finish not in (
++                "stop", "length", "tool_calls", "abort", "other", "missing", "mixed",
++            )
++        ):
++            raise ValueError("Invalid fixed SO observation label")
++        self.openai_so_responses_total.labels(
++            format=format,
++            streaming="true" if streaming else "false",
++            outcome=outcome,
++            finish=finish,
++        ).inc()
++
+     def emit_startup_time(self, startup_time: Mapping[str, Any]) -> None:
+         for phase in (
+             "load_weight",
