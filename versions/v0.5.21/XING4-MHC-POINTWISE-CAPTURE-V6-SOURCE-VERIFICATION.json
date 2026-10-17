@@ -1,0 +1,67 @@
+{
+  "schema": "phala.xing4.incremental-source-replay.v1",
+  "utc": "2026-10-17T20:01:33.770521+00:00",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.21",
+    "commit": "e00930c5489053f26d86b179cee0d087f846acbb"
+  },
+  "inherited_full_replay": {
+    "selection_commit": "a51ad9f5f57596e7ed2809e68d8d88d5a8d65877",
+    "engine_commit": "b3e037ca52591d2c1013aa4625f6b2347cd746c8",
+    "engine_tree": "9039f52d084810957a51afbed2c252e8139cd779",
+    "receipt": "versions/v0.5.21/XING4-SO-LOCAL-20261018-SOURCE-VERIFICATION.json",
+    "receipt_sha256": "1b8f19b57fd81d909c777316dcf16c320281a9007539d4a9224002deee32378d",
+    "unchanged_selected_patches": 65
+  },
+  "new_patch": {
+    "id": "v0521-0068",
+    "path": "patches/models/xing4/0068-mhc-reference-pointwise-capture.patch",
+    "title": "Compile mHC pointwise epsilon-add/divide only inside existing capture contexts",
+    "source_commit": "035fae71e993dcd6926c407ba5d5cfd3b232f518",
+    "source_parent": "b3e037ca52591d2c1013aa4625f6b2347cd746c8",
+    "result_tree": "6ecf8be779832f20faf5279e2cb272d3c7af5cdb",
+    "sha256": "55ceee009f111b3055584aab74315d581bc835088738d95535a4b5c354feefb7"
+  },
+  "new_patch_check": true,
+  "new_patch_index_apply": true,
+  "new_patch_result_tree": "6ecf8be779832f20faf5279e2cb272d3c7af5cdb",
+  "engine_commit": "035fae71e993dcd6926c407ba5d5cfd3b232f518",
+  "engine_tree": "6ecf8be779832f20faf5279e2cb272d3c7af5cdb",
+  "changed_runtime_files": {
+    "python/sglang/srt/environ.py": "e12a1bf52aaaaf8f67551fc8c3176c93547f06c11b0bcb87551789e4ec1e8490",
+    "python/sglang/srt/models/xing4_0.py": "26a692da9a5a38861f541899329bbe3b244405c2d76f7749ec05caf7ea0605ee"
+  },
+  "capture_support_unchanged": {
+    "model_executor/runner_utils/capture_mode.py": {
+      "sha256": "19bd6ebdaca5c8dc52e573e902765dcc8597cfbd1e89afd0661b8696863b3a76",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner_backend_utils/breakable_cuda_graph/context.py": {
+      "sha256": "b0a1dbd3dd93b821e5437973e774b469b1c5acd57c6c4757947bbcf50b436e32",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner/decode_cuda_graph_runner.py": {
+      "sha256": "d1f126e79e4a68e9c0ad0b8ad59861141348fb47782de036a25fcb13559e53fb",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner/prefill_cuda_graph_runner.py": {
+      "sha256": "b35ccba642c06c64dd38d11019cd98ca9d3865c404e2ef7625a2d28b9aca797f",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner/eager_runner.py": {
+      "sha256": "2c0431bd867eb0f9c921036476af98d184ef8a93b5af9296f320b4757ba2e95b",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner_backend/full_cuda_graph_backend.py": {
+      "sha256": "fcfca3c5d286a77594742fd05791fe5ad4c7fd46327ab7f126b2cdcf697b685d",
+      "fixed_base_identical": true
+    },
+    "model_executor/runner_backend/breakable_cuda_graph_backend.py": {
+      "sha256": "11a3db5e77e64c6f657a3ccc5dde5bb668eda01186ef06db014879a8a24ae8e8",
+      "fixed_base_identical": true
+    }
+  },
+  "V6_source_cpu_receipt_sha256": "6d737f9aa56984341edb26112ea054afa1a7261fb0312692b0ad177aff335ddf",
+  "limits": "V5 helper CUDA strict/numeric results inherited for unchanged math; actual V6 image GPU/JIT/graphs/E2E remain pending. Old failures retained."
+}
