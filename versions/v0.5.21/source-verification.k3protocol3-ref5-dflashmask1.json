@@ -1,0 +1,11 @@
+{
+  "status": "source-verified",
+  "upstream": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "engine_commit": "e77dff2b12ef22ac67b2ea2905e066cedb3f69c3",
+  "engine_tree": "a7fe9fbb9e3c78b245e7b4ece1facafb4fdd5578",
+  "patch_count": 32,
+  "all_intermediate_trees_verified": true,
+  "prior_31_patch_bytes_unchanged": true,
+  "method": "git read-tree in an isolated index; ordered git apply --cached and per-step git write-tree comparison",
+  "image_qualification": "Existing immutable image and installed 5-case check; see release receipt. No new runtime bytes built by this source-record repair."
+}

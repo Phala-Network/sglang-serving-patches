@@ -1,3 +1,5 @@
+The [Kimi ref5 DFlash mask release](K3-PROTOCOL3-REF5-DFLASHMASK1.md) completes its 32-step reproducible source record while preserving the existing maintenance prefix. Image digest and remaining limitations are in the linked release.
+
 The native Xing EAGLE budget repair keeps input/output within public262144 and supplies independent internal scratch. The [60-step exact replay](NATIVE-EAGLE-BUDGET-SOURCE-VERIFICATION.json) preserves all59 earlier patch bytes. Dedicated16/16 and affected166 CPU cases pass, with10 explicit CUDA skips. Final-image and GPU gates remain separate; see [the repair contract](NATIVE-EAGLE-PUBLIC-BUDGET.md).
 
 The Xing runtime RC5.2 candidate fixes startup observation through the actual EAGLEWorkerV2 draft-worker property. Source14 affected cases pass on201; the prior installed image reproduces the original AttributeError. All58 earlier patch bytes remain unchanged, and the [59-step exact replay](RC52-SOURCE-VERIFICATION.json) reproduces the complete engine tree. Final-image and GPU/service gates remain separate.
