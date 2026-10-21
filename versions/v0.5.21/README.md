@@ -1,4 +1,4 @@
-The [Kimi model-cache repair](K3-MODEL-CACHE.md) adds an opt-in coordinated checkpoint-cache release with34 final-image CPU checks; CUDA/TP8 cold-start acceptance remains separate.
+The [Kimi model-cache repair](K3-MODEL-CACHE.md) includes optional model-end and coordinated batch release; modelcache2 passes41 final-image CPU checks, while CUDA/TP8 cold-start acceptance remains separate.
 
 The [Kimi ref5 DFlash mask release](K3-PROTOCOL3-REF5-DFLASHMASK1.md) completes its 32-step reproducible source record while preserving the existing maintenance prefix. Image digest and remaining limitations are in the linked release.
 

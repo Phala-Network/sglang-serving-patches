@@ -1,0 +1,15 @@
+{
+  "source_commit": "641120b72496385fb24fcb76aecb51e2b2c781a4",
+  "source_tree": "914d430e463982f3628d12f1c6c93929457a6ac3",
+  "base_commit": "cebb7c6ce132ef1030b3dbb271862658257b7ac2",
+  "tag": "phala-v0.5.21-3-k3protocol3-ref5-modelcache2",
+  "branch": "codex/kimi-model-cache-20261021",
+  "upstream_commit": "e00930c5489053f26d86b179cee0d087f846acbb",
+  "patch_count": 34,
+  "all_intermediate_trees_match": true,
+  "new_patch": "patches/common/0034-coordinated-checkpoint-cache.patch",
+  "new_patch_sha256": "2eb160fe2cbe73d70a3c1da515036f6c161a8e23123f9e5f5b526b72ed7cbd6c",
+  "previous_33_patches_unchanged": true,
+  "maintenance_line_preserved": true,
+  "embedded_governor": "none; external PIG unchanged"
+}
