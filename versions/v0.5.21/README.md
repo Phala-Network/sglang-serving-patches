@@ -1,3 +1,5 @@
+The [Kimi model-cache repair](K3-MODEL-CACHE.md) adds an opt-in coordinated checkpoint-cache release with34 final-image CPU checks; CUDA/TP8 cold-start acceptance remains separate.
+
 The [Kimi ref5 DFlash mask release](K3-PROTOCOL3-REF5-DFLASHMASK1.md) completes its 32-step reproducible source record while preserving the existing maintenance prefix. Image digest and remaining limitations are in the linked release.
 
 The native Xing EAGLE budget repair keeps input/output within public262144 and supplies independent internal scratch. The [60-step exact replay](NATIVE-EAGLE-BUDGET-SOURCE-VERIFICATION.json) preserves all59 earlier patch bytes. Dedicated16/16 and affected166 CPU cases pass, with10 explicit CUDA skips. Final-image and GPU gates remain separate; see [the repair contract](NATIVE-EAGLE-PUBLIC-BUDGET.md).
