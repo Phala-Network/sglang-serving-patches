@@ -1,0 +1,69 @@
+{
+  "base_commit": "baa9befa381511cd4d56f83980951e5a45fffc6d",
+  "engine_commit": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
+  "engine_tree": "af69b818250468199e696d43b83b092eb0481c43",
+  "ordered_steps": [
+    {
+      "path": "patches/0001-Port-necessary-Xing4-serving-contracts-to-official-S.patch",
+      "engine_commit": "6ac303fb9761c385c8dd2fbace91ed8e9504d835",
+      "tree": "858e4dff3253b04e3b11c1a764dd20a14be2c6a0",
+      "sha256": "2f9b7f85ea88d7e3e83b5628ca54675aa4cbc02704bfe5ba1faae32339d7f1d2",
+      "source_parent": "baa9befa381511cd4d56f83980951e5a45fffc6d"
+    },
+    {
+      "path": "patches/0002-Preserve-native-public-budget-for-true-AR-and-messag.patch",
+      "engine_commit": "b5443d32d6af69af15e8859d1148ef9989814d03",
+      "tree": "83135ca9ffafb0efb54c95a8118c499c24d475c3",
+      "sha256": "870304c63b12d8e90eb00cc2ff824c6e37624b8a59aded9625c3febd5febab14",
+      "source_parent": "6ac303fb9761c385c8dd2fbace91ed8e9504d835"
+    },
+    {
+      "path": "patches/0003-Fix-Xing-mHC-stage-producer-ownership.patch",
+      "engine_commit": "3cfce688bffe5400df8bc3a26be1726c6fd1a632",
+      "tree": "d888c3a1f5414f66e699a3f836ecb7218a030176",
+      "sha256": "82d5272df4a0bd1b20f321cfa6a67e00795075fb170e32f4fe1f7340a228ad92",
+      "source_parent": "b5443d32d6af69af15e8859d1148ef9989814d03"
+    },
+    {
+      "path": "patches/0004-Restore-Xing-14336-mHC-dispatch.patch",
+      "engine_commit": "6f9e2fcc1efaa5d7c91611eeff4e2738340e7327",
+      "tree": "fdd77895fa83e332377066b7aaff1003ceecee0e",
+      "sha256": "ea5c69246c29329a7d6a413e666de0423890ac8b57ce7afd79dae9eaf0e461ee",
+      "source_parent": "3cfce688bffe5400df8bc3a26be1726c6fd1a632"
+    },
+    {
+      "path": "patches/0005-Wire-model-owned-target-MoE-stream.patch",
+      "engine_commit": "ad716ec9c22bcb51fff1367dfe2a1f12401ca5cf",
+      "tree": "6bcd2744fa9292d491ee95cf59f454c964f17a45",
+      "sha256": "212eb124553da93abf254a761a5b93ef8bfe7a4d76b58285b37941d2c254fd9a",
+      "ownership": "model/Xing",
+      "source_parent": "6f9e2fcc1efaa5d7c91611eeff4e2738340e7327"
+    },
+    {
+      "path": "patches/0006-Bind-release-version-and-MoE-qualification.patch",
+      "engine_commit": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
+      "tree": "af69b818250468199e696d43b83b092eb0481c43",
+      "sha256": "06ad653c988b2163a1be40b76efc7a48d2a47689f9c878f94b55c570833e0db4",
+      "ownership": "build",
+      "source_parent": "ad716ec9c22bcb51fff1367dfe2a1f12401ca5cf"
+    }
+  ],
+  "replay": "exact clean-index tree match at all six steps",
+  "xgrammar": {
+    "version": "0.2.7",
+    "wheel_sha256": "05cbf9fdbd294310190bc6509e655a43d8a6b374c97fc882fc681cb10facc611",
+    "native_sha256": "d09f3f5f702946bbf7c0ece4e0283c6b03e210e6fb7811a4544e5b55f2e2249c",
+    "patch_sha256": "dece48310cf8c1399e93d6c9218dba208589e8b4a60efbd804ca1d0e4368bc93",
+    "remaining_baseline_bounded_escape_failures": 41
+  },
+  "status": "frozen source; final image/GPU/publication gates remain",
+  "maintenance_branch": "codex/sglang-v0.5.22-maintenance",
+  "planned_source_tag": "phala-v0.5.22-xing4-altstream-20261022",
+  "scope": "One version-scoped official 0.5.22 ordered source export; no Governor selected; external PIG and shared Mooncake unchanged",
+  "preserved_prefix": {
+    "source_patch_commit": "ab77b738a69a1b93ba06973a9abc5736e642278e",
+    "steps": 4,
+    "bytes": "identical"
+  },
+  "ordering": "Step0001 couples the initial common serving migration with required Xing registration; retain its audited bytes. Steps0002-0004 depend on that migration. Step0005 changes only Xing MoE stream wiring and adds its CPU harness; step0006 packages it."
+}

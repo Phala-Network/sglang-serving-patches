@@ -1,0 +1,356 @@
+From b5443d32d6af69af15e8859d1148ef9989814d03 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 21 Oct 2026 15:34:30 +0000
+Subject: [PATCH 2/2] Preserve native public budget for true AR and
+ message-declared allowed tools
+
+---
+ python/sglang/srt/configs/model_config.py     | 33 +++++++----
+ .../srt/entrypoints/openai/serving_chat.py    |  4 +-
+ python/sglang/srt/managers/scheduler.py       |  4 +-
+ .../sglang/srt/managers/tokenizer_manager.py  | 10 ++--
+ python/sglang/srt/managers/tp_worker.py       |  2 +-
+ .../openai/test_allowed_tools_output.py       | 50 +++++++++++++++++
+ .../test_xing_native_eagle_public_budget.py   | 55 +++++++++++++------
+ 7 files changed, 118 insertions(+), 40 deletions(-)
+
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index eddfd9e69710095912c327a8cc9070f21b304ef5..235d99df1674b45b203e899b53c8a171c651a015 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -519,6 +519,7 @@ class ModelConfig:
+         self.is_draft_model = is_draft_model
+         self.is_draft_quantization_explicit = is_draft_quantization_explicit
+         self.speculative_algorithm = speculative_algorithm
++        self.xing_native_public_budget = False
+         self.xing_eagle_context_headroom = 0
+         self.model_impl = model_impl
+         self.sampling_defaults = sampling_defaults
+@@ -913,23 +914,31 @@ class ModelConfig:
+                     cfg.speculative_draft_attention_backend,
+                 )
+             )
+-            and cfg.speculative_attention_mode == "prefill"
+             and (
+                 cfg.tp_size, cfg.pp_size, cfg.dp_size, cfg.attn_cp_size, cfg.dcp_size
+             ) == (1, 1, 1, 1, 1)
+-            and cfg.speculative_algorithm == "EAGLE"
+             and (
+-                cfg.speculative_num_steps,
+-                cfg.speculative_eagle_topk,
+-                cfg.speculative_num_draft_tokens,
+-            ) in ((3, 1, 4), (1, 1, 2))
+-            and not cfg.speculative_adaptive
+-            and not cfg.enable_multi_layer_eagle
++                cfg.speculative_algorithm is None
++                or (
++                    cfg.speculative_algorithm == "EAGLE"
++                    and cfg.speculative_attention_mode == "prefill"
++                    and (
++                        cfg.speculative_num_steps,
++                        cfg.speculative_eagle_topk,
++                        cfg.speculative_num_draft_tokens,
++                    ) in ((3, 1, 4), (1, 1, 2))
++                    and not cfg.speculative_adaptive
++                    and not cfg.enable_multi_layer_eagle
++                )
++            )
+         ):
+-            # Public context counts accepted input/output. Fixed EAGLE lookahead
+-            # uses independent KV/req-row and RoPE-table storage; it is not input.
+-            model_config.xing_eagle_context_headroom = 8
+-            rope["_xing_eagle_rope_headroom"] = 8
++            # Public input/output admission is independent of draft lookahead.
++            # True AR has no speculative scratch; fixed EAGLE keeps its exact
++            # separate KV/req-row and RoPE-table allowance.
++            model_config.xing_native_public_budget = True
++            if cfg.speculative_algorithm == "EAGLE":
++                model_config.xing_eagle_context_headroom = 8
++                rope["_xing_eagle_rope_headroom"] = 8
+         return model_config
+ 
+     def _derive_multimodal_cuda_graph_support(self, enable_multimodal: bool) -> None:
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 023eb931ae6c4d5dceb4502f02a07d007e54a77d..17500ba759bbb7a71845c34bdb706de916bea861 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -2540,7 +2540,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 allowed_names = self._allowed_tool_names(request)
+                 # Recognize declared historical tools before enforcing the output
+                 # subset; filtering parser definitions would silently drop them.
+-                output_tools = request.tools if allowed_names is not None else effective_tools
++                output_tools = self._all_tools(request) if allowed_names is not None else effective_tools
+                 history_tool_calls_cnt = self._get_history_tool_calls_cnt(request)
+                 tool_calls, text, finish_reason = self._process_tool_calls(
+                     text,
+@@ -3192,7 +3192,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         held back waiting for a marker that can no longer arrive.
+         """
+         effective_tools = (
+-            request.tools
++            self._all_tools(request)
+             if self._allowed_tool_names(request) is not None
+             else self._effective_tools(request)
+         )
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 6ab079a3924aa2a5bbfd58a59e0cc7de52a53ada..d95694474abaa1153794729a2fbb037b014aaa62 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2585,7 +2585,7 @@ class Scheduler(
+     def init_req_max_new_tokens(self, req):
+         input_len = len(req.origin_input_ids)
+         preserve_public_budget = bool(
+-            getattr(self.model_config, "xing_eagle_context_headroom", 0)
++            getattr(self.model_config, "xing_native_public_budget", False)
+         )
+         max_new_tokens = (
+             req.sampling_params.max_new_tokens
+@@ -3172,7 +3172,7 @@ class Scheduler(
+ 
+         # initialize before returning
+         self.init_req_max_new_tokens(req)
+-        if getattr(self.model_config, "xing_eagle_context_headroom", 0) and req.to_finish is not None:
++        if getattr(self.model_config, "xing_native_public_budget", False) and req.to_finish is not None:
+             self._release_aborted_request(req)
+             return
+ 
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 41f14b3ba2eb1c5d1e02d02ad1da4bc435a1f68b..2c44c4706477925ce92f1cf12bcdb7f33ebddcdc 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1341,15 +1341,15 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+         self._validate_joint_schema_request(obj, input_ids)
+         _max_req_len = self.context_len
+         input_token_num = len(input_ids) if input_ids is not None else 0
+-        xing_eagle_public_budget = bool(
+-            getattr(self.model_config, "xing_eagle_context_headroom", 0)
++        xing_native_public_budget = bool(
++            getattr(self.model_config, "xing_native_public_budget", False)
+         )
+-        if not xing_eagle_public_budget:
++        if not xing_native_public_budget:
+             input_token_num += self.num_reserved_tokens
+ 
+         # Validate input length
+         if input_token_num >= self.context_len:
+-            if self.allow_auto_truncate and not xing_eagle_public_budget:
++            if self.allow_auto_truncate and not xing_native_public_budget:
+                 logger.warning(
+                     f"The input ({input_token_num} tokens) is longer than the "
+                     f"model's context length ({self.context_len} tokens). "
+@@ -1380,7 +1380,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+             and max_new_tokens is not None
+             and (max_new_tokens + input_token_num) > _max_req_len
+         ):
+-            if self.allow_auto_truncate and not xing_eagle_public_budget:
++            if self.allow_auto_truncate and not xing_native_public_budget:
+                 logger.warning(
+                     f"Requested token count ({input_token_num} input + {max_new_tokens} new) "
+                     f"exceeds the model's context length ({self.context_len} tokens). "
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 501f589ca675f8851457dbb8cb24bda48e02598c..c66e2b6c581c4b9e35aa6436378d27192420a01a 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -550,7 +550,7 @@ class TpModelWorker(BaseTpWorker):
+             self.model_config.context_len - 1,
+             kv_capacity - 1,
+         )
+-        if getattr(self.model_config, "xing_eagle_context_headroom", 0):
++        if getattr(self.model_config, "xing_native_public_budget", False):
+             max_req_len = self.model_config.context_len
+             max_req_input_len = max_req_len
+         else:
+diff --git a/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+index b8f1fe32e9dcbf744462b0c42002bf7c5780057f..1c9bf5f81c4203257a21cfb43bc225590923f5dc 100644
+--- a/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
++++ b/test/registered/unit/entrypoints/openai/test_allowed_tools_output.py
+@@ -236,5 +236,55 @@ class AllowedToolsOutputTest(unittest.IsolatedAsyncioTestCase):
+         self.assertNotIn("private", "".join(emitted))
+ 
+ 
++    def message_only_request(self, role, stream=False):
++        body = request(stream=stream).model_dump()
++        declared = body.pop("tools")
++        body["messages"].insert(0, {"role": role, "content": "Available tools", "tools": declared})
++        return ChatCompletionRequest(**body)
++
++    def test_message_only_allowed_nonstream_xing(self):
++        self.chat.tool_call_parser = "xing4_0"
++        for role in ("system", "developer"):
++            with self.subTest(role=role):
++                req = self.message_only_request(role)
++                text = '<tool_call>{"name":"get_weather","arguments":{"value":"ok"}}</tool_call>'
++                response = self.chat._build_chat_response(req, [result(text)], 0)
++                calls = response.choices[0].message.tool_calls
++                self.assertEqual([x.function.name for x in calls], ["get_weather"])
++                self.assertEqual(json.loads(calls[0].function.arguments), {"value": "ok"})
++                self.assertEqual(response.choices[0].finish_reason, "tool_calls")
++
++    def test_message_only_disallowed_nonstream_xing(self):
++        self.chat.tool_call_parser = "xing4_0"
++        for role in ("system", "developer"):
++            with self.subTest(role=role):
++                text = '<tool_call>{"name":"old_tool","arguments":{"value":"private"}}</tool_call>'
++                response = self.chat._build_chat_response(self.message_only_request(role), [result(text)], 0)
++                self.assertEqual(response.status_code, 500)
++                self.assertNotIn("private", response.body.decode())
++
++    async def test_message_only_allowed_stream_xing(self):
++        self.chat.tool_call_parser = "xing4_0"
++        for role in ("system", "developer"):
++            with self.subTest(role=role):
++                text = '<tool_call>{"name":"get_weather","arguments":{"value":"ok"}}</tool_call>'
++                chunks = await self.stream(self.message_only_request(role, stream=True), [result(text)])
++                choices = [c for chunk in chunks for c in chunk.get("choices", [])]
++                calls = [c for choice in choices for c in choice.get("delta", {}).get("tool_calls", [])]
++                self.assertEqual([c["function"]["name"] for c in calls if c["function"].get("name")], ["get_weather"])
++                self.assertFalse(any("error" in chunk for chunk in chunks))
++                self.assertNotIn("<tool_call>", json.dumps(chunks))
++
++    async def test_message_only_disallowed_stream_xing(self):
++        self.chat.tool_call_parser = "xing4_0"
++        for role in ("system", "developer"):
++            with self.subTest(role=role):
++                text = '<tool_call>{"name":"old_tool","arguments":{"value":"private"}}</tool_call>'
++                chunks = await self.stream(self.message_only_request(role, stream=True), [result(text)])
++                self.assertEqual([c["error"]["code"] for c in chunks if "error" in c], [500])
++                self.assertNotIn("private", json.dumps(chunks))
++                self.assertNotIn("old_tool", json.dumps(chunks))
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/test/registered/unit/managers/test_xing_native_eagle_public_budget.py b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+index 809173e6dd7aa3e2b151ca4ef9f4504d4a32f7f6..ffd660ac5f4f70f6fccb83d7dcbdb315cb7dbd4f 100644
+--- a/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
++++ b/test/registered/unit/managers/test_xing_native_eagle_public_budget.py
+@@ -1,4 +1,4 @@
+-"""Actual native 262144/Q2 admission and scratch checks, without 512K profiles."""
++"""Actual native 262144 AR/Q2 admission and scratch checks, without 512K profiles."""
+ from array import array
+ from types import MethodType, SimpleNamespace as NS
+ from unittest.mock import patch
+@@ -15,11 +15,11 @@ from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
+ from sglang.srt.sampling.sampling_params import SamplingParams
+ from sglang.srt.server_args import ServerArgs
+ 
+-def manager(enabled=True):
++def manager(enabled=True, headroom=8):
+     obj = object.__new__(TokenizerManager)
+     obj.context_len, obj.allow_auto_truncate, obj.validate_total_tokens = 262144, False, True
+     obj.num_reserved_tokens = 4
+-    obj.model_config = NS(request_static_yarn_config=None, xing_eagle_context_headroom=8 if enabled else 0)
++    obj.model_config = NS(request_static_yarn_config=None, xing_native_public_budget=enabled, xing_eagle_context_headroom=headroom if enabled else 0)
+     obj._validate_joint_schema_request = lambda *_: None
+     return obj
+ 
+@@ -30,30 +30,33 @@ def validate(obj, prompt, output):
+         obj._validate_one_request(req, list(range(prompt)))
+     return req
+ 
+-def test_exact_frozen_request_budget_does_not_count_four_draft_slots_as_input():
+-    req = validate(manager(), 261888, 256)
++@pytest.mark.parametrize("headroom", [0,8])
++def test_exact_frozen_request_budget_does_not_count_four_draft_slots_as_input(headroom):
++    req = validate(manager(headroom=headroom), 261888, 256)
+     assert req.sampling_params["max_new_tokens"] == 256
+-    assert validate(manager(), 262143, 1).sampling_params["max_new_tokens"] == 1
++    assert validate(manager(headroom=headroom), 262143, 1).sampling_params["max_new_tokens"] == 1
+     with pytest.raises(ValueError, match="261889 tokens from the input"):
+-        validate(manager(), 261889, 256)
++        validate(manager(headroom=headroom), 261889, 256)
+     with pytest.raises(ValueError):
+         validate(manager(enabled=False), 261888, 256)
+ 
+-def test_real_worker_advertises_public_context_without_legacy_minus_one_or_five():
++@pytest.mark.parametrize("headroom", [0,8])
++def test_real_worker_advertises_public_context_without_legacy_minus_one_or_five(headroom):
+     runner = NS(effective_logical_max_total_num_tokens=262336,
+         logical_max_total_num_tokens=262336, token_to_kv_pool_allocator=object(),
+         max_running_requests=512, forward_stream=None,
+         req_to_token_pool=NS(size=512, max_context_len=262215), token_to_kv_pool=NS(size=262336))
+     worker = NS(model_config=NS(context_len=262144, request_static_yarn_config=None,
+-        xing_eagle_context_headroom=8), model_runner=runner, dllm_algorithm=None, random_seed=1, device="cuda")
++        xing_native_public_budget=True, xing_eagle_context_headroom=headroom), model_runner=runner, dllm_algorithm=None, random_seed=1, device="cuda")
+     with patch("sglang.srt.managers.tp_worker.page_interleave_shard_size", return_value=1), patch(
+         "sglang.srt.managers.tp_worker.get_schedule", return_value=NS(max_prefill_tokens=8192, max_queued_requests=None)):
+         assert TpModelWorker.get_worker_info(worker)[4:6] == (262144, 262144)
+-        worker.model_config.xing_eagle_context_headroom = 0
++        worker.model_config.xing_native_public_budget = False
+         assert TpModelWorker.get_worker_info(worker)[4:6] == (262143, 262138)
+ 
+-def test_auto_truncate_cannot_shrink_native_public_input_or_output():
+-    obj = manager()
++@pytest.mark.parametrize("headroom", [0,8])
++def test_auto_truncate_cannot_shrink_native_public_input_or_output(headroom):
++    obj = manager(headroom=headroom)
+     obj.allow_auto_truncate = True
+     req = NS(sampling_params={"max_new_tokens": 256})
+     ids = list(range(261889))
+@@ -64,11 +67,11 @@ def test_auto_truncate_cannot_shrink_native_public_input_or_output():
+     assert len(ids) == 261889 and req.sampling_params["max_new_tokens"] == 256
+ 
+ 
+-def admission(prompt, output, capacity=262336, hard_limit=None):
++def admission(prompt, output, capacity=262336, hard_limit=None, headroom=8):
+     allocator = NS(page_size=64)
+     allocator.max_new_tokens_for_memory = MethodType(
+         BaseTokenToKVPoolAllocator.max_new_tokens_for_memory, allocator)
+-    scheduler = NS(model_config=NS(context_len=262144, xing_eagle_context_headroom=8),
++    scheduler = NS(model_config=NS(context_len=262144, xing_native_public_budget=True, xing_eagle_context_headroom=headroom),
+         max_req_len=262144, max_total_num_tokens=capacity, kv_shard_widening=1,
+         max_new_tokens_limit=hard_limit, page_size=64, sliding_window_size=None,
+         chunked_prefill_size=8192, token_to_kv_pool_allocator=allocator)
+@@ -81,13 +84,14 @@ def admission(prompt, output, capacity=262336, hard_limit=None):
+     return req
+ 
+ 
++@pytest.mark.parametrize("headroom", [0,8])
+ @pytest.mark.parametrize("prompt,output,capacity,accepted", [
+     (261888,256,262336,True), (261888,None,262336,True),
+     (261889,256,262336,False), (262143,1,262272,True),
+     (262143,1,262208,False), (261889,255,262272,True),
+ ])
+-def test_native_admission_preserves_budget_or_rejects(prompt, output, capacity, accepted):
+-    req = admission(prompt, output, capacity)
++def test_native_admission_preserves_budget_or_rejects(prompt, output, capacity, accepted, headroom):
++    req = admission(prompt, output, capacity, headroom=headroom)
+     assert (req.to_finish is None) is accepted
+     assert req.sampling_params.max_new_tokens == (262144-prompt if output is None else output)
+ 
+@@ -109,11 +113,11 @@ def test_real_model_config_native_q2_q4_only(tmp_path, steps, tokens, draft):
+         speculative_num_steps=steps, speculative_eagle_topk=1, speculative_num_draft_tokens=tokens,
+         speculative_attention_mode="prefill", chunked_prefill_size=8192)
+     model=ModelConfig.from_server_args(ServerArgs(**fields), is_draft_model=draft)
+-    assert model.context_len == 262144 and model.xing_eagle_context_headroom == 8
++    assert model.context_len == 262144 and model.xing_native_public_budget and model.xing_eagle_context_headroom == 8
+     assert model.hf_text_config.rope_scaling["_xing_eagle_rope_headroom"] == 8
+     for override in [{"page_size":1}, {"speculative_eagle_topk":2}, {"prefill_attention_backend":"flashmla"}]:
+         control=ModelConfig.from_server_args(ServerArgs(**{**fields,**override}))
+-        assert control.xing_eagle_context_headroom == 0
++        assert not control.xing_native_public_budget and control.xing_eagle_context_headroom == 0
+         assert "_xing_eagle_rope_headroom" not in control.hf_text_config.rope_scaling
+ 
+ 
+@@ -138,3 +142,18 @@ def test_speculative_finish_caps_reasoning_to_emitted_tokens():
+     req.update_finish_state(new_accepted_len=4)
+     assert req.finished_len == 2 and len(req.output_ids_through_stop) == 2
+     assert req.reasoning_tokens == 2 and len(req.output_ids) == 4
++
++
++def test_true_ar_native_budget_has_no_speculative_scratch(tmp_path):
++    fixture = Path(__file__).parents[1] / "models/xing4_configs/bf16.json"
++    (tmp_path/"config.json").write_text(fixture.read_text())
++    fields=dict(model_path=str(tmp_path), trust_remote_code=False, context_length=262144,
++        device="cuda", dtype="bfloat16", kv_cache_dtype="fp8_e4m3", tp_size=1,
++        page_size=64, attention_backend="trtllm_mla", speculative_algorithm=None,
++        chunked_prefill_size=8192)
++    model=ModelConfig.from_server_args(ServerArgs(**fields))
++    assert model.speculative_algorithm is None and model.xing_native_public_budget
++    assert model.context_len == 262144 and model.xing_eagle_context_headroom == 0
++    assert "_xing_eagle_rope_headroom" not in model.hf_text_config.rope_scaling
++    control=ModelConfig.from_server_args(ServerArgs(**{**fields,"page_size":1}))
++    assert not control.xing_native_public_budget and control.xing_eagle_context_headroom == 0
+-- 
+2.43.0
+

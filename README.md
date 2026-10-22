@@ -18,6 +18,10 @@ pinned versions of these projects.
 
 ## Version compatibility maintenance
 
+[Official 0.5.22 maintenance](versions/v0.5.22/README.md) preserves one six-step
+source-derived stack and the measured target MoE stream. Exact replay, source
+identity and qualification boundaries are recorded there.
+
 [Official 0.5.21 maintenance](versions/v0.5.21/README.md) records the ordered
 source-derived upgrade stack and its scoped validation. Shared 0.5.20 main
 integration below remains intact.

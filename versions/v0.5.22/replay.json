@@ -1,0 +1,64 @@
+{
+  "completed_utc": "2026-10-22T04:37:10.773811+00:00",
+  "base_commit": "baa9befa381511cd4d56f83980951e5a45fffc6d",
+  "method": "fresh temporary GIT_INDEX_FILE, read-tree pinned base, apply --cached --check, apply --cached, write-tree after every patch",
+  "engine_commit": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
+  "engine_tree": "af69b818250468199e696d43b83b092eb0481c43",
+  "steps": [
+    {
+      "path": "patches/0001-Port-necessary-Xing4-serving-contracts-to-official-S.patch",
+      "sha256": "2f9b7f85ea88d7e3e83b5628ca54675aa4cbc02704bfe5ba1faae32339d7f1d2",
+      "source_commit": "6ac303fb9761c385c8dd2fbace91ed8e9504d835",
+      "expected_tree": "858e4dff3253b04e3b11c1a764dd20a14be2c6a0",
+      "actual_tree": "858e4dff3253b04e3b11c1a764dd20a14be2c6a0",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    },
+    {
+      "path": "patches/0002-Preserve-native-public-budget-for-true-AR-and-messag.patch",
+      "sha256": "870304c63b12d8e90eb00cc2ff824c6e37624b8a59aded9625c3febd5febab14",
+      "source_commit": "b5443d32d6af69af15e8859d1148ef9989814d03",
+      "expected_tree": "83135ca9ffafb0efb54c95a8118c499c24d475c3",
+      "actual_tree": "83135ca9ffafb0efb54c95a8118c499c24d475c3",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    },
+    {
+      "path": "patches/0003-Fix-Xing-mHC-stage-producer-ownership.patch",
+      "sha256": "82d5272df4a0bd1b20f321cfa6a67e00795075fb170e32f4fe1f7340a228ad92",
+      "source_commit": "3cfce688bffe5400df8bc3a26be1726c6fd1a632",
+      "expected_tree": "d888c3a1f5414f66e699a3f836ecb7218a030176",
+      "actual_tree": "d888c3a1f5414f66e699a3f836ecb7218a030176",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    },
+    {
+      "path": "patches/0004-Restore-Xing-14336-mHC-dispatch.patch",
+      "sha256": "ea5c69246c29329a7d6a413e666de0423890ac8b57ce7afd79dae9eaf0e461ee",
+      "source_commit": "6f9e2fcc1efaa5d7c91611eeff4e2738340e7327",
+      "expected_tree": "fdd77895fa83e332377066b7aaff1003ceecee0e",
+      "actual_tree": "fdd77895fa83e332377066b7aaff1003ceecee0e",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    },
+    {
+      "path": "patches/0005-Wire-model-owned-target-MoE-stream.patch",
+      "sha256": "212eb124553da93abf254a761a5b93ef8bfe7a4d76b58285b37941d2c254fd9a",
+      "source_commit": "ad716ec9c22bcb51fff1367dfe2a1f12401ca5cf",
+      "expected_tree": "6bcd2744fa9292d491ee95cf59f454c964f17a45",
+      "actual_tree": "6bcd2744fa9292d491ee95cf59f454c964f17a45",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    },
+    {
+      "path": "patches/0006-Bind-release-version-and-MoE-qualification.patch",
+      "sha256": "06ad653c988b2163a1be40b76efc7a48d2a47689f9c878f94b55c570833e0db4",
+      "source_commit": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
+      "expected_tree": "af69b818250468199e696d43b83b092eb0481c43",
+      "actual_tree": "af69b818250468199e696d43b83b092eb0481c43",
+      "exact_match": true,
+      "git_apply_stderr": ""
+    }
+  ],
+  "runtime_source_worktree_clean": true
+}
