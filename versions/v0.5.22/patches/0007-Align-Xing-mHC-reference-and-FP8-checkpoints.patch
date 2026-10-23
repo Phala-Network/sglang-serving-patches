@@ -1,0 +1,652 @@
+From 26f6d9e1b7a50f6115bf6e363ff67953af2670a4 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Fri, 23 Oct 2026 03:06:55 +0000
+Subject: [PATCH] Align Xing mHC mixing with reference and preserve FP8
+ checkpoint scales
+
+---
+ docker/xing4-0522/probe_mhc_gpu.py            | 115 ++++++++++++++
+ docker/xing4-0522/qualify.py                  |   2 +-
+ python/sglang/kernels/ops/layernorm/mhc.py    |  71 ++++++---
+ python/sglang/srt/models/xing4_0.py           |  24 +--
+ .../unit/models/test_xing4_mhc_sinkhorn.py    | 141 ++++++++++++++++++
+ .../unit/models/test_xing4_moe_alt_stream.py  | 124 ---------------
+ 6 files changed, 319 insertions(+), 158 deletions(-)
+ create mode 100644 docker/xing4-0522/probe_mhc_gpu.py
+ create mode 100644 test/registered/unit/models/test_xing4_mhc_sinkhorn.py
+ delete mode 100644 test/registered/unit/models/test_xing4_moe_alt_stream.py
+
+diff --git a/docker/xing4-0522/probe_mhc_gpu.py b/docker/xing4-0522/probe_mhc_gpu.py
+new file mode 100644
+index 000000000..647eadbda
+--- /dev/null
++++ b/docker/xing4-0522/probe_mhc_gpu.py
+@@ -0,0 +1,115 @@
++"""Small final-image GPU qualification, no model data or serving traffic."""
++import hashlib
++import json
++from pathlib import Path
++import time
++
++import torch
++
++from sglang.srt.environ import envs
++from sglang.srt.runtime_context import publish
++from sglang.srt.server_args import ServerArgs
++
++envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.set(False)  # Actual Xing model hook.
++publish(ServerArgs(model_path="dummy", tp_size=1), role="scheduler")
++
++from sglang.kernels.ops.layernorm.mhc import mhc_pre_big_fuse_tilelang
++from sglang.srt.models.xing4_0 import mhc_pre, mhc_post
++
++
++def sinkhorn(mixes, scale, base):
++    logits = (mixes[:, 8:] * scale[2] + base[8:]).view(-1, 4, 4).clamp(-30, 30)
++    comb = torch.exp(logits - logits.amax(-1, keepdim=True))
++    for _ in range(20):
++        comb = comb / (comb.sum(-1, keepdim=True) + 1e-6)
++        comb = comb / (comb.sum(-2, keepdim=True) + 1e-6)
++    return comb
++
++
++def maxabs(a, b):
++    return float((a.float() - b.float()).abs().max())
++
++
++def main():
++    assert torch.cuda.is_available()
++    torch.manual_seed(20261023)
++    device = "cuda"
++    hidden = 3584
++    scale = torch.tensor([0.123456789, 0.618033989, 1.41421356], device=device)
++    base = torch.linspace(-1, 1, 24, device=device)
++    checks = []
++    # Isolate the changed mixing code from existing GEMM precision.
++    mixes = (torch.arange(3 * 24, device=device).view(3, 24).float().sin()
++        * torch.tensor([1.0, 20.0, 100.0], device=device)[:, None])
++    sqr = torch.full((1, 3), 4 * hidden, device=device, dtype=torch.float32)
++    residual = torch.randn(3, 4, hidden, device=device, dtype=torch.bfloat16)
++    post = torch.empty(3, 4, device=device)
++    comb = torch.empty(3, 16, device=device)
++    layer = torch.empty(3, hidden, device=device, dtype=torch.bfloat16)
++    mhc_pre_big_fuse_tilelang(mixes.unsqueeze(0), sqr, scale, base, residual,
++        post, comb, layer, hidden, 1e-6, 1e-6, 1e-6, 2.0, 20, 1, 4, 24,
++        xing_sinkhorn=True)
++    normalized = mixes * torch.rsqrt(sqr[0, :, None] / (4 * hidden) + 1e-6)
++    expected = sinkhorn(normalized, scale, base)
++    direct_error = maxabs(comb.view(3, 4, 4).transpose(-1, -2), expected)
++    assert direct_error <= 1e-5, direct_error
++    checks.append(dict(case="direct-normal-and-clamped", comb_maxabs=direct_error,
++        tolerance=1e-5, finite=bool(torch.isfinite(comb).all())))
++    assert checks[-1]["finite"]
++
++    fn = (torch.randn(24, 4 * hidden, device=device) * 0.002).float()
++    for tokens in [1, 32, 2048, 2049]:
++        started = time.monotonic()
++        residual = torch.randn(tokens, 4, hidden, device=device, dtype=torch.bfloat16)
++        result = mhc_pre(residual, fn, scale, base, 1e-6, 1e-6, 1e-6, 2.0, 20, 1, 8)
++        torch.cuda.synchronize()
++        post, comb, layer = result
++        flat = residual.float().view(tokens, -1)
++        # Exact fused precision contract: FP32 operands and reduction, BF16 output.
++        stats = torch.nn.functional.linear(flat, fn) * torch.rsqrt(flat.square().mean(-1, keepdim=True) + 1e-6)
++        expected_comb = sinkhorn(stats, scale, base)
++        expected_post = 2 * torch.sigmoid(stats[:, 4:8] * scale[1] + base[4:8])
++        pre = torch.sigmoid(stats[:, :4] * scale[0] + base[:4]) + 1e-6
++        expected_layer = (pre[..., None] * residual.float()).sum(1).bfloat16()
++        errors = dict(comb=maxabs(comb.transpose(-1, -2), expected_comb),
++            post=maxabs(post.squeeze(-1), expected_post), layer=maxabs(layer, expected_layer))
++        assert errors["comb"] <= 1e-4, (tokens, errors)
++        assert errors["post"] <= 1e-4, (tokens, errors)
++        assert errors["layer"] <= 0.03125, (tokens, errors)
++        assert comb.is_contiguous() and comb.shape == (tokens, 4, 4)
++        assert post.shape == (tokens, 4, 1) and layer.dtype == torch.bfloat16
++        x = torch.randn(tokens, hidden, device=device, dtype=torch.bfloat16)
++        actual_post = mhc_post(x, residual, post, comb)
++        # mhc_post accumulates FP32 and rounds once to BF16.
++        expected_output = (post.float() * x.float()[:, None, :]
++            + torch.matmul(comb.transpose(-1, -2), residual.float())).bfloat16()
++        post_error = maxabs(actual_post, expected_output)
++        assert post_error <= 0.0625, (tokens, post_error)
++        graph_equal = None
++        if tokens in (1, 2049):
++            torch.cuda.synchronize()
++            stream = torch.cuda.Stream()
++            stream.wait_stream(torch.cuda.current_stream())
++            with torch.cuda.stream(stream):
++                for _ in range(2):
++                    mhc_pre(residual, fn, scale, base, 1e-6, 1e-6, 1e-6, 2.0, 20, 1, 8)
++            torch.cuda.current_stream().wait_stream(stream)
++            graph = torch.cuda.CUDAGraph()
++            with torch.cuda.graph(graph):
++                captured = mhc_pre(residual, fn, scale, base, 1e-6, 1e-6, 1e-6, 2.0, 20, 1, 8)
++            graph.replay()
++            torch.cuda.synchronize()
++            graph_equal = all(torch.equal(a, b) for a, b in zip(captured, result))
++            assert graph_equal
++        checks.append(dict(case="splitk" if tokens <= 2048 else "large-prefill",
++            tokens=tokens, errors=errors, mhc_post_maxabs=post_error,
++            graph_equal=graph_equal, seconds=time.monotonic()-started))
++        print("XING4_MHC_GPU_PROGRESS=" + json.dumps(checks[-1]), flush=True)
++    source = Path('/opt/phala/candidate-source.json')
++    manifest = json.loads(source.read_text())
++    print("XING4_MHC_GPU_RECEIPT=" + json.dumps(dict(engine_commit=manifest['engine_commit'],
++        checks=checks, pass_all=True, scope="mHC kernel/layout/graphs; no model-quality or throughput claim")), flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docker/xing4-0522/qualify.py b/docker/xing4-0522/qualify.py
+index 86a19d8db..3fe66f02a 100644
+--- a/docker/xing4-0522/qualify.py
++++ b/docker/xing4-0522/qualify.py
+@@ -13,7 +13,7 @@ ROOT = Path("/sgl-workspace/sglang")
+ MANIFEST = Path("/opt/phala/candidate-source.json")
+ TESTS = [
+     "models/test_xing4_native.py",
+-    "models/test_xing4_moe_alt_stream.py",
++    "models/test_xing4_mhc_sinkhorn.py",
+     "models/test_xing4_runtime_auth.py",
+     "models/test_xing4_tokenizer.py",
+     "managers/test_xing_native_eagle_public_budget.py",
+diff --git a/python/sglang/kernels/ops/layernorm/mhc.py b/python/sglang/kernels/ops/layernorm/mhc.py
+index bc7c7035c..0c0ac5f6d 100644
+--- a/python/sglang/kernels/ops/layernorm/mhc.py
++++ b/python/sglang/kernels/ops/layernorm/mhc.py
+@@ -530,6 +530,7 @@ def mhc_pre_big_fuse_tilelang(
+     n_splits: int = 16,
+     hc_mult: int = 4,
+     gemm_last_dim: int = -1,
++    xing_sinkhorn: bool = False,
+ ):
+     num_tokens = T.dynamic("num_tokens")
+     hc_mult3 = hc_mult * (2 + hc_mult)
+@@ -576,36 +577,60 @@ def mhc_pre_big_fuse_tilelang(
+                     )
+                     * hc_post_mult_value
+                 )
+-            for j, k in T.Parallel(hc_mult, hc_mult):
+-                cm[j, k] = (
+-                    mixes_shared[j * hc_mult + k + hc_mult * 2] * hc_scale[2]
+-                    + hc_base[j * hc_mult + k + hc_mult * 2]
+-                )
+-
+-            row_sum = T.alloc_fragment(hc_mult, T.float32)
+-            col_sum = T.alloc_fragment(hc_mult, T.float32)
+-
+-            row_max = T.alloc_fragment(hc_mult, T.float32)
+-            T.reduce_max(cm, row_max, dim=1)
+-            for j, k in T.Parallel(hc_mult, hc_mult):
+-                cm[j, k] = T.exp(cm[j, k] - row_max[j])
+-            T.reduce_sum(cm, row_sum, dim=1)
+-            for j, k in T.Parallel(hc_mult, hc_mult):
+-                cm[j, k] = cm[j, k] / row_sum[j] + hc_sinkhorn_eps
++            if xing_sinkhorn:
++                # Xing reference uses clamped logits and complete row/column
++                # rounds. Store its transpose for mhc_post's input/output layout.
++                for j, k in T.Parallel(hc_mult, hc_mult):
++                    cm[j, k] = T.clamp(
++                        mixes_shared[k * hc_mult + j + hc_mult * 2] * hc_scale[2]
++                        + hc_base[k * hc_mult + j + hc_mult * 2],
++                        -30,
++                        30,
++                    )
++                row_sum = T.alloc_fragment(hc_mult, T.float32)
++                col_sum = T.alloc_fragment(hc_mult, T.float32)
++                col_max = T.alloc_fragment(hc_mult, T.float32)
++                T.reduce_max(cm, col_max, dim=0)
++                for j, k in T.Parallel(hc_mult, hc_mult):
++                    cm[j, k] = T.exp(cm[j, k] - col_max[k])
++                for _ in T.serial(sinkhorn_repeat):
++                    T.reduce_sum(cm, col_sum, dim=0)
++                    for j, k in T.Parallel(hc_mult, hc_mult):
++                        cm[j, k] = cm[j, k] / (col_sum[k] + hc_sinkhorn_eps)
++                    T.reduce_sum(cm, row_sum, dim=1)
++                    for j, k in T.Parallel(hc_mult, hc_mult):
++                        cm[j, k] = cm[j, k] / (row_sum[j] + hc_sinkhorn_eps)
++            else:
++                for j, k in T.Parallel(hc_mult, hc_mult):
++                    cm[j, k] = (
++                        mixes_shared[j * hc_mult + k + hc_mult * 2] * hc_scale[2]
++                        + hc_base[j * hc_mult + k + hc_mult * 2]
++                    )
+ 
+-            T.reduce_sum(cm, col_sum, dim=0)
+-            for j, k in T.Parallel(hc_mult, hc_mult):
+-                cm[j, k] = cm[j, k] / (col_sum[k] + hc_sinkhorn_eps)
++                row_sum = T.alloc_fragment(hc_mult, T.float32)
++                col_sum = T.alloc_fragment(hc_mult, T.float32)
+ 
+-            for _ in T.serial(sinkhorn_repeat - 1):
++                row_max = T.alloc_fragment(hc_mult, T.float32)
++                T.reduce_max(cm, row_max, dim=1)
++                for j, k in T.Parallel(hc_mult, hc_mult):
++                    cm[j, k] = T.exp(cm[j, k] - row_max[j])
+                 T.reduce_sum(cm, row_sum, dim=1)
+                 for j, k in T.Parallel(hc_mult, hc_mult):
+-                    cm[j, k] = cm[j, k] / (row_sum[j] + hc_sinkhorn_eps)
++                    cm[j, k] = cm[j, k] / row_sum[j] + hc_sinkhorn_eps
+ 
+                 T.reduce_sum(cm, col_sum, dim=0)
+                 for j, k in T.Parallel(hc_mult, hc_mult):
+                     cm[j, k] = cm[j, k] / (col_sum[k] + hc_sinkhorn_eps)
+ 
++                for _ in T.serial(sinkhorn_repeat - 1):
++                    T.reduce_sum(cm, row_sum, dim=1)
++                    for j, k in T.Parallel(hc_mult, hc_mult):
++                        cm[j, k] = cm[j, k] / (row_sum[j] + hc_sinkhorn_eps)
++
++                    T.reduce_sum(cm, col_sum, dim=0)
++                    for j, k in T.Parallel(hc_mult, hc_mult):
++                        cm[j, k] = cm[j, k] / (col_sum[k] + hc_sinkhorn_eps)
++
+             for j, k in T.Parallel(hc_mult, hc_mult):
+                 comb_mix[i, j * hc_mult + k] = cm[j, k]
+         else:
+@@ -1113,6 +1138,7 @@ def mhc_pre(
+     *,
+     norm_weight: torch.Tensor | None = None,
+     norm_eps: float | None = None,
++    xing_sinkhorn: bool = False,
+ ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+     assert residual.dtype == torch.bfloat16
+     assert fn.dtype == torch.float32
+@@ -1240,6 +1266,8 @@ def mhc_pre(
+             gemm_last_dim = hc_mult3
+             big_fuse_n_splits = n_splits
+ 
++    if xing_sinkhorn and norm_weight is not None:
++        raise ValueError("Xing mHC does not use the fused norm variant")
+     if norm_weight is not None:
+         assert norm_eps is not None, "norm_eps required when norm_weight is provided"
+         assert norm_weight.shape == (hidden_size,), (
+@@ -1292,6 +1320,7 @@ def mhc_pre(
+             big_fuse_n_splits,
+             hc_mult,
+             gemm_last_dim,
++            xing_sinkhorn=xing_sinkhorn,
+         )
+ 
+     post_mix = post_mix.view(*outer_shape, hc_mult, 1)
+diff --git a/python/sglang/srt/models/xing4_0.py b/python/sglang/srt/models/xing4_0.py
+index 1faaef463..ae1bbd73d 100644
+--- a/python/sglang/srt/models/xing4_0.py
++++ b/python/sglang/srt/models/xing4_0.py
+@@ -144,7 +144,7 @@ def _mhc_pre_xing_splitk(
+         partial_out, partial_sqrsum, hc_scale, hc_base, residual,
+         post_mix, comb_mix, layer_input, 3584, rms_eps, hc_pre_eps,
+         hc_sinkhorn_eps, hc_post_mult_value, sinkhorn_repeat,
+-        n_splits_pre, 4, 32,
++        n_splits_pre, 4, 32, xing_sinkhorn=True,
+     )
+     return (
+         post_mix.view(num_tokens, 4, 1),
+@@ -216,6 +216,7 @@ def mhc_pre(
+         sinkhorn_repeat=sinkhorn_repeat,
+         n_splits=n_splits,
+         n_splits_pre=n_splits_pre,
++        xing_sinkhorn=_is_cuda,
+     )
+ 
+ 
+@@ -363,9 +364,11 @@ def _mhc_reference_pre(
+     """
+     dtype = residual.dtype
+     if dtype != torch.bfloat16 or any(
+-        tensor.dtype != dtype for tensor in (fn, hc_scale, hc_base)
++        tensor.dtype != dtype for tensor in (fn, hc_base)
+     ):
+         raise ValueError("Xing mHC reference requires BF16 inputs and loaded operands")
++    if hc_scale.dtype not in (torch.bfloat16, torch.float32):
++        raise ValueError("Xing mHC scale must retain BF16 or FP32 checkpoint precision")
+     streams = residual.shape[1]
+     flat = residual.flatten(start_dim=1).float()
+     flat = flat * torch.rsqrt(flat.square().mean(-1, keepdim=True) + rms_eps)
+@@ -468,7 +471,7 @@ class mHCModule(nn.Module):
+         # (``attn_hc.hc_fn`` / ``attn_hc.hc_scale`` / ``attn_hc.hc_base``).
+         # These are exactly the fp32 op operands consumed by the fused kernels.
+         self.hc_fn = nn.Parameter(torch.empty(out_features, self.n * self.hidden_size))
+-        self.hc_scale = nn.Parameter(torch.empty(3))
++        self.hc_scale = nn.Parameter(torch.empty(3, dtype=torch.float32))
+         self.hc_base = nn.Parameter(torch.empty(out_features))
+ 
+         # fp32 op operands, filled by finalize() after weight loading.
+@@ -534,9 +537,9 @@ class mHCModule(nn.Module):
+             layer_input = torch.empty(
+                 0, C, dtype=torch.bfloat16, device=residual.device
+             )
+-            post_mix = torch.empty(0, n, dtype=torch.float32, device=residual.device)
++            post_mix = torch.empty(0, n, 1, dtype=torch.float32, device=residual.device)
+             comb_mix = torch.empty(
+-                0, n * n, dtype=torch.float32, device=residual.device
++                0, n, n, dtype=torch.float32, device=residual.device
+             )
+         else:
+             post_mix, comb_mix, layer_input = mhc_pre(
+@@ -554,7 +557,9 @@ class mHCModule(nn.Module):
+             )
+ 
+         aggregated = layer_input.view(S, B, C)
+-        comb_mix = comb_mix.transpose(-1, -2).contiguous()
++        # CUDA Xing kernels return the input/output layout consumed by mhc_post.
++        if not _is_cuda:
++            comb_mix = comb_mix.transpose(-1, -2).contiguous()
+         return aggregated, comb_mix, post_mix
+ 
+     def fused_h_res_h_post_bda_inference(
+@@ -630,7 +635,6 @@ class Xing4_0DecoderLayer(nn.Module):
+         moe_quant_config_override: QuantizationConfig | None = None,
+         prefix: str = "",
+         alt_stream: torch.cuda.Stream | None = None,
+-        moe_alt_stream: torch.cuda.Stream | None = None,
+     ) -> None:
+         super().__init__()
+         self.hidden_size = config.hidden_size
+@@ -690,7 +694,7 @@ class Xing4_0DecoderLayer(nn.Module):
+                 layer_id=self.layer_id,
+                 quant_config=moe_quant_config_override or quant_config,
+                 prefix=add_prefix("mlp", prefix),
+-                alt_stream=moe_alt_stream if moe_alt_stream is not None else alt_stream,
++                alt_stream=alt_stream,
+                 is_deepseek_v4=False,
+                 reduce_results=self.enable_mhc,
+             )
+@@ -1022,9 +1026,6 @@ class Xing4_0Model(nn.Module):
+         else:
+             self.embed_tokens = PPMissingLayer()
+ 
+-        # Reuse one target-only MoE stream across layers and graph captures.
+-        self.moe_alt_stream = torch.cuda.Stream() if _is_cuda else None
+-
+         self.layers, self.start_layer, self.end_layer = make_layers(
+             config.num_hidden_layers,
+             lambda idx, prefix: Xing4_0DecoderLayer(
+@@ -1032,7 +1033,6 @@ class Xing4_0Model(nn.Module):
+                 layer_id=idx,
+                 quant_config=quant_config,
+                 prefix=prefix,
+-                moe_alt_stream=self.moe_alt_stream,
+             ),
+             pp_rank=self.pp_group.rank_in_group,
+             pp_size=self.pp_group.world_size,
+diff --git a/test/registered/unit/models/test_xing4_mhc_sinkhorn.py b/test/registered/unit/models/test_xing4_mhc_sinkhorn.py
+new file mode 100644
+index 000000000..d7a37bf02
+--- /dev/null
++++ b/test/registered/unit/models/test_xing4_mhc_sinkhorn.py
+@@ -0,0 +1,141 @@
++"""Execute the real TileLang mixing block on CPU; GPU lowering is separate."""
++import ast
++import copy
++import itertools
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import torch
++from torch import nn
++
++ROOT = Path(__file__).resolve().parents[4]
++
++
++class TileLangCPU:
++    float32 = torch.float32
++    sigmoid = staticmethod(torch.sigmoid)
++    exp = staticmethod(torch.exp)
++    clamp = staticmethod(torch.clamp)
++    serial = staticmethod(range)
++
++    @staticmethod
++    def Parallel(*shape):
++        return range(shape[0]) if len(shape) == 1 else itertools.product(*(range(x) for x in shape))
++
++    @staticmethod
++    def alloc_fragment(shape, dtype):
++        return torch.empty(shape, dtype=dtype)
++
++    @staticmethod
++    def reduce_max(source, target, dim):
++        target.copy_(source.amax(dim=dim))
++
++    @staticmethod
++    def reduce_sum(source, target, dim):
++        target.copy_(source.sum(dim=dim))
++
++
++def real_mix_block(mixes, scale, base, *, xing):
++    source = ROOT / "python/sglang/kernels/ops/layernorm/mhc.py"
++    function = next(n for n in ast.parse(source.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "mhc_pre_big_fuse_tilelang")
++    block = next(n for n in ast.walk(function) if isinstance(n, ast.If) and "get_thread_binding" in ast.unparse(n.test))
++    body = ast.Module(body=copy.deepcopy(block.body), type_ignores=[])
++    namespace = dict(T=TileLangCPU, hc_mult=4, mixes_shared=mixes, hc_scale=scale,
++        hc_base=base, post_mix=torch.empty(1, 4), comb_mix=torch.empty(1, 16),
++        i=0, hc_post_mult_value=2.0, hc_sinkhorn_eps=1e-6,
++        sinkhorn_repeat=20, xing_sinkhorn=xing)
++    exec(compile(ast.fix_missing_locations(body), str(source), "exec"), namespace)
++    return namespace["post_mix"], namespace["comb_mix"].view(4, 4)
++
++
++def reference(mixes, scale, base):
++    # Pinned official HF c500d681 Xing4_0HyperConnection.forward.
++    logits = (mixes[8:] * scale[2] + base[8:]).view(4, 4).clamp(-30, 30)
++    comb = torch.exp(logits - logits.amax(-1, keepdim=True))
++    for _ in range(20):
++        comb = comb / (comb.sum(-1, keepdim=True) + 1e-6)
++        comb = comb / (comb.sum(-2, keepdim=True) + 1e-6)
++    return comb
++
++
++@pytest.mark.parametrize("magnitude", [0.0, 1.0, 15.0, 100.0])
++def test_actual_tilelang_xing_block_matches_official_reference(magnitude):
++    generator = torch.Generator().manual_seed(20261023)
++    mixes = torch.randn(24, generator=generator) * magnitude
++    scale = torch.tensor([0.125, 0.375, 1.125])
++    base = torch.randn(24, generator=generator) * magnitude
++    post, transposed = real_mix_block(mixes, scale, base, xing=True)
++    expected = reference(mixes, scale, base)
++    torch.testing.assert_close(transposed.T, expected, rtol=2e-6, atol=2e-6)
++    torch.testing.assert_close(post[0], 2 * torch.sigmoid(mixes[4:8] * scale[1] + base[4:8]))
++    assert torch.isfinite(transposed).all()
++
++
++def test_nonxing_default_block_retains_original_math():
++    mixes = torch.arange(24, dtype=torch.float32).sin() * 2
++    scale, base = torch.tensor([0.1, 0.2, 0.3]), torch.arange(24).float().cos()
++    _, actual = real_mix_block(mixes, scale, base, xing=False)
++    logits = (mixes[8:] * scale[2] + base[8:]).view(4, 4)
++    expected = torch.exp(logits - logits.amax(1, keepdim=True))
++    expected = expected / expected.sum(1, keepdim=True) + 1e-6
++    expected = expected / (expected.sum(0, keepdim=True) + 1e-6)
++    for _ in range(19):
++        expected = expected / (expected.sum(1, keepdim=True) + 1e-6)
++        expected = expected / (expected.sum(0, keepdim=True) + 1e-6)
++    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++
++
++@pytest.mark.parametrize("tokens", [0, 1, 32, 2048, 2049])
++def test_module_cuda_layout_and_empty_contract(tokens, monkeypatch):
++    from sglang.srt.models import xing4_0 as model
++    from sglang.srt.configs.xing4_0 import Xing4_0Config
++
++    monkeypatch.setattr(model, "_is_cuda", True)
++    module = model.mHCModule(Xing4_0Config(hidden_size=8), 0)
++    module._finalized = True
++    module.use_hf_reference = False
++    expected = torch.arange(tokens * 16, dtype=torch.float32).view(tokens, 4, 4)
++    def pre(**kwargs):
++        return torch.ones(tokens, 4, 1), expected, torch.zeros(tokens, 8, dtype=torch.bfloat16)
++    monkeypatch.setattr(model, "mhc_pre", pre)
++    aggregated, comb, post = module(torch.zeros(tokens, 1, 32, dtype=torch.bfloat16))
++    assert aggregated.shape == (tokens, 1, 8)
++    assert comb.shape == (tokens, 4, 4) and comb.is_contiguous()
++    assert post.shape == (tokens, 4, 1)
++    torch.testing.assert_close(comb, expected, rtol=0, atol=0)
++
++
++def test_fp8_checkpoint_scale_preserves_fp32_values():
++    from sglang.srt.models.xing4_0 import mHCModule, Xing4_0ForCausalLM
++    from sglang.srt.configs.xing4_0 import Xing4_0Config
++
++    class Harness(nn.Module):
++        load_weights = Xing4_0ForCausalLM.load_weights
++        def __init__(self):
++            super().__init__()
++            self.attn_hc = mHCModule(Xing4_0Config(hidden_size=8), 0)
++        def do_load_weights(self, weights):
++            assert not weights
++    original_dtype = torch.get_default_dtype()
++    try:
++        torch.set_default_dtype(torch.bfloat16)
++        owner = Harness()
++    finally:
++        torch.set_default_dtype(original_dtype)
++    scale = torch.tensor([0.123456789, 0.618033989, 1.41421356], dtype=torch.float32)
++    weights = [("attn_hc." + name, scale if name == "hc_scale" else torch.zeros_like(param))
++        for name, param in owner.attn_hc.named_parameters()]
++    owner.load_weights(weights)
++    assert owner.attn_hc.hc_scale.dtype == torch.float32
++    torch.testing.assert_close(owner.attn_hc.scale_fp32, scale, rtol=0, atol=0)
++
++
++def test_xing_default_target_has_no_dedicated_stream():
++    source = (ROOT / "python/sglang/srt/models/xing4_0.py").read_text()
++    tree = ast.parse(source)
++    constructor = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Xing4_0Model")
++    assert "torch.cuda.Stream" not in ast.unparse(constructor)
++    layer = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Xing4_0DecoderLayer")
++    init = next(n for n in layer.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
++    assert "moe_alt_stream" not in ast.unparse(init)
+diff --git a/test/registered/unit/models/test_xing4_moe_alt_stream.py b/test/registered/unit/models/test_xing4_moe_alt_stream.py
+deleted file mode 100644
+index 119bb57a6..000000000
+--- a/test/registered/unit/models/test_xing4_moe_alt_stream.py
++++ /dev/null
+@@ -1,124 +0,0 @@
+-"""CPU checks of actual Xing stream construction and upstream MoE dispatch.
+-
+-Only storage and GPU execution are substituted. These checks do not qualify
+-CUDA graph edges, numerical accuracy, response content, or throughput.
+-"""
+-
+-from __future__ import annotations
+-
+-import ast
+-import copy
+-import itertools
+-from pathlib import Path
+-import sys
+-from types import ModuleType, SimpleNamespace as NS
+-import unittest
+-from unittest.mock import patch
+-
+-
+-ROOT = Path(__file__).resolve().parents[4]
+-MODEL = ROOT / "python/sglang/srt/models/xing4_0.py"
+-DEEPSEEK = ROOT / "python/sglang/srt/models/deepseek_v2.py"
+-
+-
+-def method(source, class_name, method_name):
+-    cls = next(node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == class_name)
+-    return copy.deepcopy(next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == method_name))
+-
+-
+-def actual_class(name, methods, namespace):
+-    module = ast.Module(
+-        body=[
+-            ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
+-            ast.ClassDef(name=name, bases=[ast.Attribute(value=ast.Name(id="nn", ctx=ast.Load()), attr="Module", ctx=ast.Load())], keywords=[], body=methods, decorator_list=[]),
+-        ],
+-        type_ignores=[],
+-    )
+-    exec(compile(ast.fix_missing_locations(module), "<actual-source-methods>", "exec"), namespace)
+-    return namespace[name]
+-
+-
+-class StorageOnly:
+-    pass
+-
+-
+-class TestXingModelOwnedMoeStream(unittest.TestCase):
+-    def test_cpu_and_model_owned_stream_lifetime(self):
+-        source = MODEL.read_text()
+-        events = []
+-
+-        def stream():
+-            token = object()
+-            events.append(token)
+-            return token
+-
+-        def make_layers(count, factory, **kwargs):
+-            return [factory(i, f"{kwargs['prefix']}.{i}") for i in range(count)], 0, count
+-
+-        namespace = dict(
+-            nn=NS(Module=StorageOnly), torch=NS(cuda=NS(Stream=stream)),
+-            get_pp_group=lambda: NS(is_first_rank=True, is_last_rank=True, rank_in_group=0, world_size=1),
+-            VocabParallelEmbedding=lambda *args, **kwargs: object(), PPMissingLayer=object,
+-            make_layers=make_layers, Xing4_0DecoderLayer=lambda *args, **kwargs: NS(**kwargs),
+-            add_prefix=lambda name, prefix: f"{prefix}.{name}" if prefix else name,
+-            RMSNorm=lambda *args, **kwargs: object(), _is_cuda=False,
+-        )
+-        cls = actual_class("Xing4_0Model", [method(source, "Xing4_0Model", "__init__")], namespace)
+-        config = NS(vocab_size=128, hidden_size=3584, num_hidden_layers=40, rms_norm_eps=1e-6, hc_mult=4)
+-        cpu = cls(config)
+-        self.assertIsNone(cpu.moe_alt_stream)
+-        self.assertEqual(len(events), 0)
+-        namespace["_is_cuda"] = True
+-        first, second = cls(config), cls(config)
+-        self.assertEqual(len(events), 2)
+-        self.assertIsNot(first.moe_alt_stream, second.moe_alt_stream)
+-        self.assertTrue(all(layer.moe_alt_stream is first.moe_alt_stream for layer in first.layers))
+-        self.assertTrue(all(layer.moe_alt_stream is second.moe_alt_stream for layer in second.layers))
+-        self.assertEqual(source.count("torch.cuda.Stream()"), 1)
+-
+-    def test_attention_stream_and_legacy_moe_fallback(self):
+-        constructor = method(MODEL.read_text(), "Xing4_0DecoderLayer", "__init__")
+-
+-        def named_call(name):
+-            return next(node for node in ast.walk(constructor) if isinstance(node, ast.Call) and ((isinstance(node.func, ast.Name) and node.func.id == name) or (isinstance(node.func, ast.Attribute) and node.func.attr == name)))
+-
+-        attention = next(arg.value for arg in named_call("DeepseekV2AttentionMLA").keywords if arg.arg == "alt_stream")
+-        moe = next(arg.value for arg in named_call("DeepseekV2MoE").keywords if arg.arg == "alt_stream")
+-        legacy, dedicated = object(), object()
+-        for old, new in itertools.product((None, legacy), (None, dedicated)):
+-            namespace = {"alt_stream": old, "moe_alt_stream": new}
+-            self.assertIs(eval(compile(ast.Expression(attention), "<attention-arg>", "eval"), namespace), old)
+-            self.assertIs(eval(compile(ast.Expression(moe), "<moe-arg>", "eval"), namespace), new if new is not None else old)
+-
+-    def test_existing_upstream_dispatch_boundaries(self):
+-        fake_mega = ModuleType("sglang.srt.layers.moe.mega_moe")
+-        fake_mega.should_use_mega_moe = lambda *args: False
+-        fake_mega.forward_mega_moe = lambda *args, **kwargs: "mega"
+-        state = dict(capture=False, bcg=False)
+-        namespace = dict(
+-            nn=NS(Module=StorageOnly), _enable_pcg_dsv2_dual_stream=False,
+-            _is_hip=False, get_is_capture_mode=lambda: state["capture"],
+-            is_in_breakable_cuda_graph=lambda: state["bcg"],
+-        )
+-        source = DEEPSEEK.read_text()
+-        cls = actual_class("DispatchProbe", [method(source, "DeepseekV2MoE", "_can_dual_stream_graph"), method(source, "DeepseekV2MoE", "forward")], namespace)
+-        probe = cls()
+-        probe.gate = NS(e_score_correction_bias_vl=None)
+-        probe._enable_a2a_moe = False
+-        probe.forward_normal_dual_stream = lambda *args, **kwargs: "dual"
+-        probe.forward_normal = lambda *args, **kwargs: "serial"
+-        probe.forward_deepep = lambda *args, **kwargs: "a2a"
+-        cases = itertools.product((0, 1, 2, 4, 6, 8, 16, 32, 256), (0, 1), (False, True), (False, True), (False, True))
+-        with patch.dict(sys.modules, {fake_mega.__name__: fake_mega}):
+-            for rows, fused, capture, bcg, has_stream in cases:
+-                with self.subTest(rows=rows, fused=fused, capture=capture, bcg=bcg, has_stream=has_stream):
+-                    probe.alt_stream = object() if has_stream else None
+-                    probe.num_fused_shared_experts = fused
+-                    state.update(capture=capture, bcg=bcg)
+-                    selected = probe.forward(NS(shape=(rows, 3584)))
+-                    expected = "dual" if rows > 0 and fused == 0 and capture and not bcg and has_stream else "serial"
+-                    self.assertEqual(selected, expected)
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+-- 
+2.43.0
+
