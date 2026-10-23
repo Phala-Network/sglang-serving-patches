@@ -1,0 +1,29 @@
+{
+  "status": "source-verified",
+  "scope": "source-only",
+  "active_selector": "unified-v0520-governor-r6",
+  "upstream": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "engine_commit": "460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
+  "engine_tree": "d093000351737a9e49348f1cb8036c37de0e7433",
+  "patch_count": 166,
+  "dependencies": {
+    "xgrammar": {
+      "version": "0.2.6+phala.union1",
+      "patch_sha256": "c6a4defdfe0967056e144351ff2027132c3fa4cb79026c862bff0306e946e26b",
+      "native_source_replay_and_build": "not-run-by-this-command"
+    }
+  },
+  "component_origins": [
+    {
+      "patch": "integrations/governor/0031-integrate-frozen-governor-v0-1-1-hooks-into-complete-engine-source.patch",
+      "origin": {
+        "repository": "https://github.com/Phala-Network/phala-inference-governor",
+        "commit": "631a53919c62e10c57e7b960bc4d443f39818276",
+        "path": "patches/sglang/v0.5.20/0001-governor-hooks.patch",
+        "sha256": "ebf6d2a2e8ef4c9a2c768803cbaf50eda7fc580ae0c888b9aff85297ef34b1a6"
+      },
+      "origin_repository_readback": "not-run-by-this-command"
+    }
+  ],
+  "image_or_runtime_qualified": false
+}

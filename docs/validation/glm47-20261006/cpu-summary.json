@@ -1,0 +1,22 @@
+{
+  "source_pr": "https://github.com/Phala-Network/sglang/pull/122",
+  "source_commit": "460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
+  "source_tree": "d093000351737a9e49348f1cb8036c37de0e7433",
+  "base_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
+  "passed": 570,
+  "subtests_passed": 1491,
+  "failed": 3,
+  "baseline_failures_reproduced": 3,
+  "dependencies": {
+    "xgrammar": "0.2.7",
+    "llguidance": "1.9.1",
+    "torch": "2.13.0+cu130"
+  },
+  "scope": "Maintained Python source copied into a disposable CPU-only r4 container; pytest starts in a fresh interpreter. Not a built unified v0.5.20 image or its pinned native dependency acceptance.",
+  "uncompressed_artifact_sha256": {
+    "maintained-cpu.log": "c4287f07add4a10ad3a9b872abf9048788b21ba426fcf7d692b33fec457782ae",
+    "maintained-cpu.xml": "d0b9c7fdcfb5f04254a8c7ce872a82e0ef2f62909608e9fe7c72359ef2185111",
+    "unchanged-base-cpu.log": "2c4599b3e1bf81531d188086fd7b26a54b7c46f48fc0179737e960d76092d90a",
+    "unchanged-base-cpu.xml": "86457442995aa9388954eef9b798c3eb045d9cc7aaf4a4c0b1f0f6138dcd05f3"
+  }
+}

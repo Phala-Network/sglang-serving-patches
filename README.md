@@ -65,8 +65,11 @@ tree. Installed-image and real dynamic GPU/512K/quality gates remain separate.
 
 Use the [unified maintenance entry point](docs/UNIFIED_MAINTENANCE.md),
 `python scripts/stack.py`, rather than assembling model profiles.
-The active selector binds engine `ce7a79563954a2cb2b2850b9869b7a7192d7d78b`, tree
-`027b8478bd37052c8206b61b49a907a9082ec724`: 31 protected steps plus 131 successor patches.
+The active selector binds engine `460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108`, tree
+`d093000351737a9e49348f1cb8036c37de0e7433`: 31 protected steps plus 135 successor patches.
+The latest four source increments repair GLM47 required-call grammar, active-tool
+scoping and template-aware reasoning, and cover buffered calls across stream
+chunks. See the [source and deployment validation record](docs/GLM47_PARSER_VALIDATION_20261006.md).
 P11 adds packed-mask token filtering for strict GLM reasoning; real deployment
 tokenizer and startup grammar-factory CPU checks pass. P10 preserves default-modern JSON Schema no-ops and reference targets. Explicit
 legacy/unknown dialects remain native without new normalization. P9 selected llguidance by default, preserves Kimi tokenizer/trailer behavior and
