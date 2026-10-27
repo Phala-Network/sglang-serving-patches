@@ -1,0 +1,49 @@
+{
+  "schema": "phala.sglang.incremental-release.v1",
+  "upstream": {
+    "repository": "https://github.com/sgl-project/sglang",
+    "tag": "v0.5.21",
+    "commit": "e00930c5489053f26d86b179cee0d087f846acbb"
+  },
+  "engine": {
+    "repository": "https://github.com/Phala-Network/sglang",
+    "commit": "d03c6975c0bb94c267e946c21c4b970954b60259",
+    "tree": "b8f30b6b0afb4ea2f4d5c5c666266db78ceb7ce7",
+    "branch": "codex/redpill-qwen-hrrn-priority-20261027",
+    "tag": "phala-v0.5.21-10"
+  },
+  "frozen_base_stack": {
+    "repository": "https://github.com/Phala-Network/sglang-serving-patches",
+    "commit": "ffeedda55c5d4bdf66b80210ccbbe74a6f54e077",
+    "path": "versions/v0.5.21/stack.json",
+    "engine_commit": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+    "patch_count": 46
+  },
+  "patches_added": [
+    {
+      "path": "versions/v0.5.21/patches/common/hrrn-priority-tiers.patch",
+      "source_commit": "53b8ee1e27ddf5a9cf0f3563ee902a1bae935881",
+      "source_parent": "80afb70020aad5ce1135fcbb00864c0d761c8413",
+      "result_tree": "7f014c567adcb77bad1474330993de7e774514f0",
+      "sha256": "60399e360a23d561fd4efa8737436942443501b8b862cb3218b82171ac3366eb"
+    },
+    {
+      "path": "versions/v0.5.21/patches/common/overlayfs-package-metadata-move.patch",
+      "source_commit": "d03c6975c0bb94c267e946c21c4b970954b60259",
+      "source_parent": "53b8ee1e27ddf5a9cf0f3563ee902a1bae935881",
+      "result_tree": "b8f30b6b0afb4ea2f4d5c5c666266db78ceb7ce7",
+      "sha256": "5e982ca95f6be57540d481fc4f5003517e6cdb2b1cffaefa674e0de66cb26200"
+    }
+  ],
+  "replay": {
+    "path": "versions/v0.5.21/source-verification.phala-v0.5.21-10.json",
+    "patch_count": 48,
+    "exact_tree": true
+  },
+  "compatibility_exception": "https://github.com/Phala-Network/sglang/releases/tag/phala-v0.5.21-6",
+  "components": {
+    "embedded_governor": false,
+    "native_dependencies": "unchanged from immutable phala-v0.5.21-5"
+  },
+  "scope": "Retain qualified ordinary Qwen YaRN and BF16 operation; add HRRN numeric priority tiers and priority-preserving large-queue fallback. Final-image and service acceptance remain separate. Repair build-only dist-info relocation on OverlayFS without changing runtime module bytes."
+}
