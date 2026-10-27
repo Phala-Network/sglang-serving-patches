@@ -8,6 +8,13 @@ The Xing runtime RC5.2 candidate fixes startup observation through the actual EA
 
 # SGLang 0.5.21 compatibility maintenance
 
+The [phala-v0.5.21-9 incremental release](releases/phala-v0.5.21-9.json)
+retains the frozen phala-v0.5.21-6 46-step source stack and appends one shared
+HRRN priority/fallback and packaging delta. Its
+[exact 47-step replay](source-verification.phala-v0.5.21-9.json) reproduces
+the complete engine tree. Existing canonical GGUF and Kimi/Xing records retain
+their separate scope; no patch set is copied for the ordinary Qwen release.
+
 The [K3 feedback repair](K3-PROTOCOL2.md) extends the unchanged 15-entry
 protocol1 selection with four source-derived increments. Its
 [release selection](releases/phala-v0.5.21-3-k3protocol2.json) and

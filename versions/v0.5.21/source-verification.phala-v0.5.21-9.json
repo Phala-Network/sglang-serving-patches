@@ -1,0 +1,12 @@
+{
+  "engine_commit": "53b8ee1e27ddf5a9cf0f3563ee902a1bae935881",
+  "engine_tree": "7f014c567adcb77bad1474330993de7e774514f0",
+  "reproduced_tree": "7f014c567adcb77bad1474330993de7e774514f0",
+  "base_patches_commit": "ffeedda55c5d4bdf66b80210ccbbe74a6f54e077",
+  "base_patch_count": 46,
+  "additional_patch_count": 1,
+  "patch_count": 47,
+  "all_patch_hashes_verified": true,
+  "all_intermediate_trees_verified": true,
+  "pass": true
+}
