@@ -1,4 +1,4 @@
-# Necessary Xing4 migration ledger
+# Official 0.5.22 compatibility ledger
 
 The candidate starts at official SGLang v0.5.22; it does not apply the old 71-patch selection.
 
@@ -29,3 +29,11 @@ Step0005 exports the exact previously measured model bytes (`97322c395840df07188
 Step0006 only binds the release IMAGE_VERSION build argument and includes that harness in the installed-image CPU qualifier. No dependency, Governor, kernel, interval, global prefix, varlen, DualGemm or graph8192 change is selected. The production recipe retains graph2048; prior numerical/content failures and final-image/GPU checks remain separate.
 
 The .22 stack is a real compatibility maintenance exception: shared engine main retains its .20 consumers and only links to this complete .22 engine. Main-entrypoint and actual engine/tag commits are distinct identities.
+
+## Preserved baseline and common repairs
+
+Steps0007 and0008 were already in the ordered series: mHC reference/FP8 checkpoint alignment, followed by the isolated single-rank GPU probe context. Their patch bytes and source commits are retained. Metadata previously stopped at step0006; the current manifest and actual clean-index replay now include all eight existing steps and the two additions.
+
+Step0009 is a common reasoner repair: an existing inner grammar owns allocation, movement and application of its vocabulary mask, so its wrapper no longer eagerly reads unsupported backend hooks. The grammar-less strict-thinking path retains its hooks and llguidance strict filtering remains unsupported.
+
+Step0010 is a common OpenAI adapter repair: the existing preferred numeric sampling parameters apply only when a request omits a field or supplies its nullable value as null. Explicit numeric values, including one and zero, retain priority. Boolean defaults, native merge behavior, budgets, choice count and response schema are unchanged. Real chat/template/tokenization and completion regressions cover the contract. The opt-in service setting `repetition_penalty=1.05` is a deployment choice, not a new engine default or a change to the pinned model snapshot. The source-owned incremental image recipe packages exactly these two repairs and their regression tests above the frozen existing image.

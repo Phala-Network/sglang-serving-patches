@@ -6,3 +6,5 @@ patches/0005-Wire-model-owned-target-MoE-stream.patch
 patches/0006-Bind-release-version-and-MoE-qualification.patch
 patches/0007-Align-Xing-mHC-reference-and-FP8-checkpoints.patch
 patches/0008-Initialize-isolated-mHC-GPU-probe-context.patch
+patches/common/0009-Avoid-eager-backend-mask-hooks-for-inner-grammars.patch
+patches/common/0010-Honor-preferred-numeric-OpenAI-sampling-defaults.patch

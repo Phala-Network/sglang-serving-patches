@@ -1,7 +1,7 @@
 {
   "base_commit": "baa9befa381511cd4d56f83980951e5a45fffc6d",
-  "engine_commit": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
-  "engine_tree": "af69b818250468199e696d43b83b092eb0481c43",
+  "engine_commit": "584be3b90ee5cadad895c6c216d7d476836171c9",
+  "engine_tree": "840eafd6b367aa2aa8ef729f7af4b4945595cbf7",
   "ordered_steps": [
     {
       "path": "patches/0001-Port-necessary-Xing4-serving-contracts-to-official-S.patch",
@@ -46,9 +46,41 @@
       "sha256": "06ad653c988b2163a1be40b76efc7a48d2a47689f9c878f94b55c570833e0db4",
       "ownership": "build",
       "source_parent": "ad716ec9c22bcb51fff1367dfe2a1f12401ca5cf"
+    },
+    {
+      "path": "patches/0007-Align-Xing-mHC-reference-and-FP8-checkpoints.patch",
+      "engine_commit": "26f6d9e1b7a50f6115bf6e363ff67953af2670a4",
+      "tree": "39db1daf08606d93b61bc263371cd8471b47820d",
+      "sha256": "3b02f652474d4aa594d8d1a99d31c7813bd4557b39a7dae88e63386afd572b81",
+      "source_parent": "386bc8376cac5121fe93ccdb75954631a7a4e64c",
+      "ownership": "model/Xing"
+    },
+    {
+      "path": "patches/0008-Initialize-isolated-mHC-GPU-probe-context.patch",
+      "engine_commit": "bd1ecb0fc6e056b22e7d41ecbf2c81c40ff19403",
+      "tree": "225466cc00f58fc49e7165dbb92d28bff4550cba",
+      "sha256": "3ae8ce980d16e28b0c5c7c6cdcdbe7040f8a74ffb8615db120a8fcdcc0024139",
+      "source_parent": "26f6d9e1b7a50f6115bf6e363ff67953af2670a4",
+      "ownership": "model/Xing"
+    },
+    {
+      "path": "patches/common/0009-Avoid-eager-backend-mask-hooks-for-inner-grammars.patch",
+      "engine_commit": "4b2d415823b3dc7182c0ca0d92a2a2b3d9213882",
+      "tree": "a61127e89e3b0991ac1d3e1d1eb09478125e9c61",
+      "sha256": "41a53dfc98dc7509aa6a0531a49df0b5e4a075c905fe2e618ce8110204beb8a5",
+      "source_parent": "bd1ecb0fc6e056b22e7d41ecbf2c81c40ff19403",
+      "ownership": "common"
+    },
+    {
+      "path": "patches/common/0010-Honor-preferred-numeric-OpenAI-sampling-defaults.patch",
+      "engine_commit": "584be3b90ee5cadad895c6c216d7d476836171c9",
+      "tree": "840eafd6b367aa2aa8ef729f7af4b4945595cbf7",
+      "sha256": "40d43dc91eb1c95e064f08f3aeda7de42f3b2f7c689150d24b513e1710f4053f",
+      "source_parent": "4b2d415823b3dc7182c0ca0d92a2a2b3d9213882",
+      "ownership": "common"
     }
   ],
-  "replay": "exact clean-index tree match at all six steps",
+  "replay": "exact clean-index tree match at all ten steps (original eight bytes preserved)",
   "xgrammar": {
     "version": "0.2.7",
     "wheel_sha256": "05cbf9fdbd294310190bc6509e655a43d8a6b374c97fc882fc681cb10facc611",
@@ -56,14 +88,14 @@
     "patch_sha256": "dece48310cf8c1399e93d6c9218dba208589e8b4a60efbd804ca1d0e4368bc93",
     "remaining_baseline_bounded_escape_failures": 41
   },
-  "status": "frozen source; final image/GPU/publication gates remain",
+  "status": "source CPU and development GPU checks passed; final image acceptance recorded in source Release",
   "maintenance_branch": "codex/sglang-v0.5.22-maintenance",
-  "planned_source_tag": "phala-v0.5.22-xing4-altstream-20261022",
+  "planned_source_tag": "phala-v0.5.22-grammar-sampling-20261028",
   "scope": "One version-scoped official 0.5.22 ordered source export; no Governor selected; external PIG and shared Mooncake unchanged",
   "preserved_prefix": {
-    "source_patch_commit": "ab77b738a69a1b93ba06973a9abc5736e642278e",
-    "steps": 4,
+    "source_patch_commit": "dd7c6728894212434591905879fb727beb7ce63d",
+    "steps": 8,
     "bytes": "identical"
   },
-  "ordering": "Step0001 couples the initial common serving migration with required Xing registration; retain its audited bytes. Steps0002-0004 depend on that migration. Step0005 changes only Xing MoE stream wiring and adds its CPU harness; step0006 packages it."
+  "ordering": "Steps0001-0008 retain the existing audited .22 baseline bytes. Step0009 fixes shared reasoner mask delegation. Step0010 fixes shared opt-in numeric OpenAI defaults and packages those repairs with regression tests; no model-specific branch or new default is added."
 }
