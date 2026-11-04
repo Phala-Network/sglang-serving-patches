@@ -1,0 +1,142 @@
+diff --git a/docker/phala/k31/Dockerfile b/docker/phala/k31/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b07a3ce0d6e13159bd3dc8c1c5153c4ed1505e0
+--- /dev/null
++++ b/docker/phala/k31/Dockerfile
+@@ -0,0 +1,16 @@
++# syntax=docker/dockerfile:1.7
++# Preserve the exact K3.1 native stack; install reviewed Python source at build time.
++FROM lmsysorg/sglang:dev-kimi-k31-pro@sha256:4a098ad7414702a2271296ac148854448d10710ec3554ac93b57ef194999305a
++ARG PHALA_ENGINE_REVISION
++ARG PHALA_RELEASE_VERSION
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${PHALA_ENGINE_REVISION}" \
++      org.opencontainers.image.version="${PHALA_RELEASE_VERSION}"
++WORKDIR /sgl-workspace/sglang
++# COPY preserves the official editable install's compiled Rust extension and
++# generated version module, which are absent from the Git source archive.
++COPY . /sgl-workspace/sglang/
++RUN test -n "$PHALA_ENGINE_REVISION" \
++    && rm -rf /sgl-workspace/sglang/.git \
++    && printf '%s\n' "$PHALA_ENGINE_REVISION" > /sgl-workspace/sglang/.k31-source-commit \
++    && python3 /opt/k31-image/verify_image.py
+diff --git a/docker/phala/k31/Dockerfile.dockerignore b/docker/phala/k31/Dockerfile.dockerignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..45f1eb104152f853ac1507e3adcc5ef05ae835b7
+--- /dev/null
++++ b/docker/phala/k31/Dockerfile.dockerignore
+@@ -0,0 +1,5 @@
++.git
++**/__pycache__
++**/.pytest_cache
++**/.ruff_cache
++**/*.pyc
+diff --git a/docker/phala/k31/README.md b/docker/phala/k31/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..538f79c62c9175f0a8d28a57aef955ddd3e8572a
+--- /dev/null
++++ b/docker/phala/k31/README.md
+@@ -0,0 +1,50 @@
++# Kimi K3.1 compatibility image
++
++The official K3.1 image contains a dedicated source snapshot and native
++extensions incompatible with the Phala 0.5.20 main runtime. This scoped variant
++preserves those dependencies. It does not upgrade other main consumers.
++
++- Official source: `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae` (image-exported Git bundle).
++- Its parent is public upstream `db0dfc72286e6322fb79762d4e2d568b438af66c`;
++  recover that history when importing the shallow image checkout.
++- Official amd64 base: `lmsysorg/sglang:dev-kimi-k31-pro@sha256:4a098ad7414702a2271296ac148854448d10710ec3554ac93b57ef194999305a`.
++- Upstream package metadata: `0.0.0.dev1+g41208373c.d20261104`; this is a developer
++  K3.1 image, not a claimed SGLang 0.5.21/0.5.22 release.
++- Native FlashMLA 96-head sparse decode/prefill packing, FlashInfer DynBlock,
++  Rust TreeCore, Prims-TS, DeepGEMM and Dynamo remain as supplied by the official image.
++- Mooncake CUDA13 `0.3.13.post1`, XGrammar `0.2.7` and FlashInfer `0.7.2` are retained.
++
++The only Python runtime repair requires exact object-byte counts before reporting
++a Mooncake cache restore as successful. Short, missing and oversized native
++results cannot expose partially restored hybrid pages. PUT behavior is retained.
++The source has native HRRN, metrics, readiness, Kimi protocol parsing and DFlash
++grammar-mask reset; the old protocol/ref2/ref3 patch stack is not applied.
++
++Build on the authorized CPU builder using a clean archive of the release commit:
++
++```sh
++docker build -f docker/phala/k31/Dockerfile \
++  --build-arg PHALA_ENGINE_REVISION=<complete-engine-commit> \
++  --build-arg PHALA_RELEASE_VERSION=<immutable-release-tag> \
++  -t ghcr.io/phala-network/sglang:<immutable-release-tag> .
++```
++
++No dependency installer runs during build or production startup. The complete
++tracked source replaces the Python tree at build time; existing compiled native
++extensions remain. Final-image qualification uses no source/executable mounts.
++Test the official image verifier, focused Mooncake/Kimi/DFlash regressions,
++`sglang serve --help`, and direct `hf --help` / `hf download --help` entrypoints.
++CPU checks do not establish GPU/model, shared KV, RoCE or production acceptance.
++
++Runtime requirements include device access to `/dev/infiniband`, unconfined NUMA
++allocation with the appropriate capabilities, fixed master control address,
++matching HCA names/subnets, and `MC_ENABLE_DEST_DEVICE_AFFINITY=1`. The last flag
++prevents normal same-topology transfers from choosing an unrelated peer HCA;
++it is not a guarantee that every failure/retry remains on the same subnet.
++The old `MC_RDMA_RAIL_GROUPS` switch is absent from this native package and must
++not be reported as enabled. Record actual dual-rail transfer evidence at rollout.
++
++The image may contain an upstream fastsafetensors package, but formal production
++loading explicitly uses the standard safetensors loader. No runtime source
++overlay, startup package install, strict-level2 override or dependency downgrade
++is part of this release.
+diff --git a/docker/phala/k31/qualify.py b/docker/phala/k31/qualify.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e47cf5cbb0dce9c5d3b45a641bd6fd79c79e9f63
+--- /dev/null
++++ b/docker/phala/k31/qualify.py
+@@ -0,0 +1,47 @@
++"""Focused installed-image CPU qualification; no model or source mounts."""
++
++import json
++import subprocess
++import time
++
++SUITES = [
++    "test/registered/unit/mem_cache/test_mooncake_read_completeness.py",
++    "test/registered/unit/mem_cache/test_mooncake_group_semantics.py",
++    "test/registered/unit/mem_cache/test_mooncake_store_config.py",
++    "test/registered/unit/parser/test_kimik3_reasoning_parser.py",
++    "test/registered/unit/function_call/test_kimik3_structural_tag.py",
++    "test/registered/unit/spec/test_dflash_logits.py",
++    "test/registered/unit/spec/test_dflash_model_config.py",
++]
++
++
++def main():
++    results = []
++    commands = [
++        ["python3", "/opt/k31-image/verify_image.py"],
++        ["python3", "-m", "pytest", "-q", "--tb=short", *SUITES],
++        ["sglang", "serve", "--help"],
++    ]
++    for command in commands:
++        started = time.monotonic()
++        proc = subprocess.run(
++            command,
++            text=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            timeout=180,
++        )
++        print(proc.stdout, flush=True)
++        results.append(
++            {
++                "command": command,
++                "exit": proc.returncode,
++                "seconds": round(time.monotonic() - started, 3),
++            }
++        )
++    print("QUALIFICATION=" + json.dumps(results), flush=True)
++    return int(any(row["exit"] for row in results))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

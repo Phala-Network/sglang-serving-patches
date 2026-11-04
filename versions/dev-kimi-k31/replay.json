@@ -1,0 +1,8 @@
+{
+  "method": "fresh Git index, apply each canonical source diff",
+  "all_intermediate_trees_match": true,
+  "base": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
+  "engine": "03cf254955c2606744c8eafc641822a93244c325",
+  "tree": "eebc8154f9c28742ae5c77067151a97fed49155b",
+  "steps": 2
+}
