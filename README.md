@@ -19,8 +19,9 @@ pinned versions of these projects.
 ## Version compatibility maintenance
 
 [Official Kimi K3.1 developer-image maintenance](versions/dev-kimi-k31/README.md)
-contains the scoped Mooncake read-completeness repair and fixed native-stack
-packaging. Its two-step source replay preserves the other versioned stacks.
+contains the scoped Mooncake read-completeness repair, packaged HF implementations,
+fixed native rail client and optional loader. Its ordered source replay preserves
+the other versioned stacks.
 
 [Official 0.5.22 maintenance](versions/v0.5.22/README.md) preserves one six-step
 source-derived stack and the measured target MoE stream. Exact replay, source

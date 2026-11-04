@@ -1,0 +1,386 @@
+diff --git a/docker/phala/k31/Dockerfile b/docker/phala/k31/Dockerfile
+index 8b07a3ce0d6e13159bd3dc8c1c5153c4ed1505e0..3985f693e976fc532227fac178528460f1a4f077 100644
+--- a/docker/phala/k31/Dockerfile
++++ b/docker/phala/k31/Dockerfile
+@@ -6,11 +6,22 @@ ARG PHALA_RELEASE_VERSION
+ LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
+       org.opencontainers.image.revision="${PHALA_ENGINE_REVISION}" \
+       org.opencontainers.image.version="${PHALA_RELEASE_VERSION}"
++LABEL io.phala.mooncake.source="https://github.com/Phala-Network/Mooncake" \
++      io.phala.mooncake.revision="467533b2e80a101dfabd4789ed5aa8ab251c24a6"
+ WORKDIR /sgl-workspace/sglang
+ # COPY preserves the official editable install's compiled Rust extension and
+ # generated version module, which are absent from the Git source archive.
+ COPY . /sgl-workspace/sglang/
++COPY --from=mooncake-client /cpu_smoke.py /opt/phala/mooncake-k31/cpu_smoke.py
++# The named context contains the immutable, CPU-qualified native artifact.
++# Its SHA256 and complete source identity are checked before extracting only
++# store.so, engine.so and private dependencies into the installed package.
++RUN --mount=type=bind,from=mooncake-client,source=/native-client.tar.gz,target=/opt/testdata/native-client.tar.gz,ro \
++    python3 docker/phala/k31/install_native.py /opt/testdata/native-client.tar.gz
++RUN python3 -m pip install --no-deps --no-cache-dir --require-hashes \
++    -r docker/phala/k31/fastsafetensors-requirements.txt
+ RUN test -n "$PHALA_ENGINE_REVISION" \
++    && mkdir -p /opt/testdata \
+     && rm -rf /sgl-workspace/sglang/.git \
+     && printf '%s\n' "$PHALA_ENGINE_REVISION" > /sgl-workspace/sglang/.k31-source-commit \
+     && python3 /opt/k31-image/verify_image.py
+diff --git a/docker/phala/k31/README.md b/docker/phala/k31/README.md
+index 538f79c62c9175f0a8d28a57aef955ddd3e8572a..821f1650c93c1ddcaef8cbc4d8c070e266e50ef1 100644
+--- a/docker/phala/k31/README.md
++++ b/docker/phala/k31/README.md
+@@ -2,7 +2,9 @@
+ 
+ The official K3.1 image contains a dedicated source snapshot and native
+ extensions incompatible with the Phala 0.5.20 main runtime. This scoped variant
+-preserves those dependencies. It does not upgrade other main consumers.
++preserves those dependencies, replacing only the Mooncake Store/Transfer
++Engine client modules and their private dependencies. Other main consumers
++keep their existing runtime.
+ 
+ - Official source: `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae` (image-exported Git bundle).
+ - Its parent is public upstream `db0dfc72286e6322fb79762d4e2d568b438af66c`;
+@@ -12,39 +14,70 @@ preserves those dependencies. It does not upgrade other main consumers.
+   K3.1 image, not a claimed SGLang 0.5.21/0.5.22 release.
+ - Native FlashMLA 96-head sparse decode/prefill packing, FlashInfer DynBlock,
+   Rust TreeCore, Prims-TS, DeepGEMM and Dynamo remain as supplied by the official image.
+-- Mooncake CUDA13 `0.3.13.post1`, XGrammar `0.2.7` and FlashInfer `0.7.2` are retained.
++- Mooncake CUDA13 `0.3.13.post1` retains its API with the opt-in GID rail-group repair.
++  Its fixed source/artifact identities are in [native-client.json](native-client.json).
++  Official torch, EP, PG, allocator and helper modules remain unchanged.
++- XGrammar `0.2.7` and FlashInfer `0.7.2` remain as supplied.
+ 
+-The only Python runtime repair requires exact object-byte counts before reporting
++The cache-read repair requires exact object-byte counts before reporting
+ a Mooncake cache restore as successful. Short, missing and oversized native
+ results cannot expose partially restored hybrid pages. PUT behavior is retained.
+ The source has native HRRN, metrics, readiness, Kimi protocol parsing and DFlash
+ grammar-mask reset; the old protocol/ref2/ref3 patch stack is not applied.
+ 
++K3.1 tokenizer and processor implementations are packaged with SGLang and selected
++explicitly for the K3 model type. Model checkpoint directories supply metadata
++and BPE data; their `auto_map` entries do not execute checkpoint Python, including
++when the caller sets `trust_remote_code=True`. The package records the original
++HF revision and per-file identities.
++
+ Build on the authorized CPU builder using a clean archive of the release commit:
+ 
+ ```sh
+-docker build -f docker/phala/k31/Dockerfile \
++docker buildx build --load -f docker/phala/k31/Dockerfile \
++  --build-context mooncake-client=<frozen-native-input-directory> \
+   --build-arg PHALA_ENGINE_REVISION=<complete-engine-commit> \
+   --build-arg PHALA_RELEASE_VERSION=<immutable-release-tag> \
+   -t ghcr.io/phala-network/sglang:<immutable-release-tag> .
+ ```
+ 
+-No dependency installer runs during build or production startup. The complete
+-tracked source replaces the Python tree at build time; existing compiled native
+-extensions remain. Final-image qualification uses no source/executable mounts.
++The named native input contains `native-client.tar.gz` and `cpu_smoke.py` from
++the fixed Mooncake source. Build the artifact with that source's
++`phala/k31/Dockerfile.builder`, or use the published artifact with the recorded
++SHA256. The build checks archive/source/harness identities, installs only
++`store.so`, `engine.so` and private libraries, and verifies that every other
++official Mooncake native module remains byte-identical.
++
++The complete tracked SGLang source replaces its Python tree at build time.
++Production startup performs no dependency installation. Final-image
++qualification uses no source/executable mounts or runtime package installation.
+ Test the official image verifier, focused Mooncake/Kimi/DFlash regressions,
++the installed native P2P/TCP bytes and registered CPU pointer batch API,
+ `sglang serve --help`, and direct `hf --help` / `hf download --help` entrypoints.
++Set `KIMI_K31_TEST_DATA` to the pinned data-only target/draft fixture for
++`qualify.py`; this is required for actual config/tokenizer/processor selection,
++UTF-8/XTML and image-preprocessing checks with checkpoint code execution blocked.
++The native build also executes the 26 actual worker-policy CPU regressions.
+ CPU checks do not establish GPU/model, shared KV, RoCE or production acceptance.
+ 
+ Runtime requirements include device access to `/dev/infiniband`, unconfined NUMA
+ allocation with the appropriate capabilities, fixed master control address,
+-matching HCA names/subnets, and `MC_ENABLE_DEST_DEVICE_AFFINITY=1`. The last flag
+-prevents normal same-topology transfers from choosing an unrelated peer HCA;
+-it is not a guarantee that every failure/retry remains on the same subnet.
+-The old `MC_RDMA_RAIL_GROUPS` switch is absent from this native package and must
+-not be reported as enabled. Record actual dual-rail transfer evidence at rollout.
+-
+-The image may contain an upstream fastsafetensors package, but formal production
+-loading explicitly uses the standard safetensors loader. No runtime source
+-overlay, startup package install, strict-level2 override or dependency downgrade
+-is part of this release.
++matching HCA names/subnets, `MC_ENABLE_DEST_DEVICE_AFFINITY=1`, and the opt-in
++`MC_RDMA_RAIL_GROUPS=10.80.20.0/24;10.80.21.0/24`. Explicit GID groups constrain
++first selection, retry and local handoff, including providers with different
++HCA names. Unknown GIDs fail closed. `MC_ENABLE_HCA_PEER_AFFINITY` is not used
++for CPU KV buffers. Record actual dual-rail transfer evidence at rollout.
++
++The fixed official base ships torch 2.14.1 but only older PG bindings; importing
++`mooncake.pg` reports that existing version mismatch. The original PG files
++are retained and this Store client does not use them.
++
++`fastsafetensors` 0.5.0 is installed from its fixed CPython 3.12 Linux wheel with
++SHA256 validation and `--no-deps`; the other installed package versions and the
++official base's existing dependency-check warnings remain unchanged. Final-image
++qualification checks imports, SGLang bindings, CLI parsing and CPU nogds tensor
++round trips. GPU loading requires a separate hardware smoke test. Standard
++`--load-format safetensors` remains available; the optional nogds path is
++`--load-format fastsafetensors --model-loader-extra-config '{"enable_gds":false}'`.
++Production startup performs no source overlay, package install or dependency
++downgrade.
+diff --git a/docker/phala/k31/check_fastsafetensors.py b/docker/phala/k31/check_fastsafetensors.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e46e1201ff660deb94fb96a84d6f5c57fbf688f
+--- /dev/null
++++ b/docker/phala/k31/check_fastsafetensors.py
+@@ -0,0 +1,85 @@
++"""Check installed FSS packaging and CPU nogds behavior without model weights."""
++
++import gc
++import json
++import subprocess
++import tempfile
++from pathlib import Path
++
++
++def main():
++    import fastsafetensors
++    import torch
++    from fastsafetensors import SafeTensorsFileLoader, SingleGroup, cpp
++    from safetensors.torch import save_file
++
++    from sglang.srt.model_loader import weight_utils
++    from sglang.srt.server_args import prepare_server_args
++
++    assert fastsafetensors.__version__ == "0.5.0"
++    assert (SingleGroup().size(), SingleGroup().rank()) == (1, 0)
++    linked = subprocess.check_output(["ldd", cpp.__file__], text=True, timeout=20)
++    assert "not found" not in linked, linked
++    assert weight_utils.SafeTensorsFileLoader is SafeTensorsFileLoader
++    assert weight_utils.SingleGroup is SingleGroup
++    expected = {
++        "float": torch.arange(24, dtype=torch.float32).reshape(3, 8),
++        "bfloat": torch.arange(8, dtype=torch.bfloat16),
++        "integer": torch.tensor([0, 7, -4], dtype=torch.int64),
++        "empty": torch.empty(0),
++    }
++    with tempfile.TemporaryDirectory(prefix="fss-cpu-") as directory:
++        fixture = str(Path(directory) / "tiny.safetensors")
++        save_file(expected, fixture)
++        loader = SafeTensorsFileLoader(
++            SingleGroup(), torch.device("cpu"), nogds=True, set_numa=False
++        )
++        loader.add_filenames({0: [fixture]})
++        buffers = loader.copy_files_to_device()
++        actual = {key: buffers.get_tensor(key) for key in buffers.key_to_rank_lidx}
++        assert set(actual) == set(expected)
++        assert all(
++            actual[key].dtype == expected[key].dtype
++            and torch.equal(actual[key], expected[key])
++            for key in expected
++        )
++        buffers.close()
++        loader.close()
++        assert all(torch.equal(actual[key], expected[key]) for key in expected)
++        del actual, buffers, loader
++        gc.collect()
++    args = prepare_server_args(
++        [
++            "--model-path",
++            "/opt/testdata/nonexistent-model-packaging-only",
++            "--load-format",
++            "fastsafetensors",
++            "--model-loader-extra-config",
++            '{"enable_gds":false}',
++            "--schedule-policy",
++            "hrrn",
++        ]
++    )
++    assert args.load_format == "fastsafetensors"
++    config = args.model_loader_extra_config
++    if isinstance(config, str):
++        config = json.loads(config)
++    assert config["enable_gds"] is False and args.schedule_policy == "hrrn"
++    print(
++        json.dumps(
++            {
++                "passed": True,
++                "fastsafetensors": fastsafetensors.__version__,
++                "torch": torch.__version__,
++                "cuda": torch.version.cuda,
++                "cpu_nogds_roundtrip": sorted(expected),
++                "retained_after_close": True,
++                "sglang_binding": True,
++                "cuda_model_acceptance": False,
++            }
++        )
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docker/phala/k31/fastsafetensors-requirements.txt b/docker/phala/k31/fastsafetensors-requirements.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..b48a6ba3db0c92ce6634309b50d0f112a9d7b0e5
+--- /dev/null
++++ b/docker/phala/k31/fastsafetensors-requirements.txt
+@@ -0,0 +1,2 @@
++# CPython 3.12 / Linux x86_64 wheel; install without dependency resolution.
++fastsafetensors @ https://files.pythonhosted.org/packages/3a/e4/b3b9feac988f3b401789ab6e4f810487e2a844a5fc8dd3021e7a21f930ff/fastsafetensors-0.5.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl --hash=sha256:cf8085203d83abbf2ea37edfb4b007cf1de521ab1cd29b46935f611d68c80d7d
+diff --git a/docker/phala/k31/install_native.py b/docker/phala/k31/install_native.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a88505ebc8d50d9e44da072e01f0514c0c5fa8ee
+--- /dev/null
++++ b/docker/phala/k31/install_native.py
+@@ -0,0 +1,66 @@
++"""Install the frozen Mooncake client artifact without changing other modules."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import shutil
++import sys
++import sysconfig
++import tarfile
++from pathlib import Path, PurePosixPath
++
++archive = Path(sys.argv[1])
++inputs = json.loads(Path(__file__).with_name("native-client.json").read_text())
++assert hashlib.sha256(archive.read_bytes()).hexdigest() == inputs["artifact_sha256"]
++site = Path(sysconfig.get_path("purelib")) / "mooncake"
++assert (site / "store.so").is_file() and (site / "engine.so").is_file()
++original = {
++    path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++    for path in site.glob("*.so")
++    if path.name not in ("store.so", "engine.so")
++}
++with tarfile.open(archive, "r:gz") as handle:
++    manifest = json.load(handle.extractfile("native-manifest.json"))
++    assert manifest["source_commit"] == inputs["source_revision"]
++    assert manifest["replaced_modules"] == ["mooncake/store.so", "mooncake/engine.so"]
++    for member in handle.getmembers():
++        if member.isdir() or member.name == "native-manifest.json":
++            continue
++        path = PurePosixPath(member.name)
++        assert (
++            member.isfile() and path.parts[0] == "mooncake" and ".." not in path.parts
++        )
++        relative = PurePosixPath(*path.parts[1:])
++        assert str(relative) in ("store.so", "engine.so") or (
++            len(relative.parts) == 2 and relative.parts[0] == ".phala_k31_native"
++        ), member.name
++        target = site / str(relative)
++        target.parent.mkdir(parents=True, exist_ok=True)
++        with handle.extractfile(member) as source, target.open("wb") as destination:
++            shutil.copyfileobj(source, destination)
++        target.chmod(0o755)
++for name in ("store", "engine"):
++    expected = manifest["elf"]["mooncake/" + name + ".so"]["sha256"]
++    assert hashlib.sha256((site / (name + ".so")).read_bytes()).hexdigest() == expected
++after = {
++    path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++    for path in site.glob("*.so")
++    if path.name not in ("store.so", "engine.so")
++}
++assert after == original
++receipt = Path("/opt/phala/mooncake-k31")
++receipt.mkdir(parents=True, exist_ok=True)
++harness = receipt / "cpu_smoke.py"
++assert hashlib.sha256(harness.read_bytes()).hexdigest() == inputs["cpu_smoke_sha256"]
++(receipt / "native-manifest.json").write_text(json.dumps(manifest, indent=2))
++(receipt / "preserved-official-native.json").write_text(json.dumps(original, indent=2))
++print(
++    json.dumps(
++        {
++            "source": inputs["source_revision"],
++            "replaced": ["store.so", "engine.so"],
++            "preserved_official_native": len(original),
++        }
++    )
++)
+diff --git a/docker/phala/k31/native-client.json b/docker/phala/k31/native-client.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..65f92b64d218957ba14821b39baa6a97b946f1ac
+--- /dev/null
++++ b/docker/phala/k31/native-client.json
+@@ -0,0 +1,10 @@
++{
++  "source_repository": "https://github.com/Phala-Network/Mooncake",
++  "source_revision": "467533b2e80a101dfabd4789ed5aa8ab251c24a6",
++  "source_tag": "phala-v0.3.13.post1-k31-client-1",
++  "artifact_url": "https://github.com/Phala-Network/Mooncake/releases/download/phala-v0.3.13.post1-k31-client-1/native-client.tar.gz",
++  "artifact_sha256": "d29e00d21997f98658eba12be29ea402b8387d4ad991482fdd8f0d1d9cb5d2a4",
++  "artifact_bytes": 14076632,
++  "cpu_smoke_sha256": "d06a02df7ff1f7e144af0516b059851b9b5e66afc363d1a87fe079fa36c5b395",
++  "base_image": "lmsysorg/sglang:dev-kimi-k31-pro@sha256:4a098ad7414702a2271296ac148854448d10710ec3554ac93b57ef194999305a"
++}
+diff --git a/docker/phala/k31/qualify.py b/docker/phala/k31/qualify.py
+index e47cf5cbb0dce9c5d3b45a641bd6fd79c79e9f63..66be023155b082c49f3b740a32ab685069c14a21 100644
+--- a/docker/phala/k31/qualify.py
++++ b/docker/phala/k31/qualify.py
+@@ -1,8 +1,10 @@
+ """Focused installed-image CPU qualification; no model or source mounts."""
+ 
+ import json
++import os
+ import subprocess
+ import time
++from pathlib import Path
+ 
+ SUITES = [
+     "test/registered/unit/mem_cache/test_mooncake_read_completeness.py",
+@@ -13,13 +15,31 @@ SUITES = [
+     "test/registered/unit/spec/test_dflash_logits.py",
+     "test/registered/unit/spec/test_dflash_model_config.py",
+ ]
++HF_SUITE = "test/registered/unit/multimodal/test_kimi_k31_native_hf.py"
+ 
+ 
+ def main():
+     results = []
++    fixture = Path(os.environ["KIMI_K31_TEST_DATA"])
++    assert (fixture / "manifest.json").is_file(), "pinned HF data fixture is required"
++    root = Path("/opt/testdata/k31-qualification")
++    stub = root / "cpu-stubs"
++    stub.mkdir(parents=True, exist_ok=True)
++    (root / "tmp").mkdir(exist_ok=True)
++    (stub / "libcuda.so.1").symlink_to("/usr/local/cuda/lib64/stubs/libcuda.so")
++    env = dict(os.environ)
++    env["LD_LIBRARY_PATH"] = str(stub) + ":" + env.get("LD_LIBRARY_PATH", "")
++    env["TMPDIR"] = str(root / "tmp")
++    env["XDG_CACHE_HOME"] = str(root / "cache")
++    env["HF_MODULES_CACHE"] = str(root / "hf-modules")
++    env["PYTHONDONTWRITEBYTECODE"] = "1"
++    env["GLOG_logtostderr"] = "1"
+     commands = [
+         ["python3", "/opt/k31-image/verify_image.py"],
+         ["python3", "-m", "pytest", "-q", "--tb=short", *SUITES],
++        ["python3", "-m", "pytest", "-q", "-s", "--tb=short", HF_SUITE],
++        ["python3", "-B", "/opt/phala/mooncake-k31/cpu_smoke.py", str(root)],
++        ["python3", "-B", "docker/phala/k31/check_fastsafetensors.py"],
+         ["sglang", "serve", "--help"],
+     ]
+     for command in commands:
+@@ -30,6 +50,7 @@ def main():
+             stdout=subprocess.PIPE,
+             stderr=subprocess.STDOUT,
+             timeout=180,
++            env=env,
+         )
+         print(proc.stdout, flush=True)
+         results.append(
+diff --git a/test/registered/unit/mem_cache/test_mooncake_read_completeness.py b/test/registered/unit/mem_cache/test_mooncake_read_completeness.py
+index ae726fcfb68d6ef5b6944d78bae4a09a6b7b6979..c1bb43ef0642f92ef0245bd359a0ade01855bf11 100644
+--- a/test/registered/unit/mem_cache/test_mooncake_read_completeness.py
++++ b/test/registered/unit/mem_cache/test_mooncake_read_completeness.py
+@@ -12,6 +12,10 @@ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import Any, List, Optional
+ 
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=2, suite="base-a-test-cpu")
++
+ 
+ def load_store_methods():
+     root = Path(__file__).resolve().parents[4]

@@ -1,2 +1,4 @@
 patches/common/0001.patch
 patches/build/0002.patch
+patches/models/kimi/0003.patch
+patches/build/0004.patch
