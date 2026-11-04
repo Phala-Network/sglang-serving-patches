@@ -7,8 +7,11 @@ upgrade and does not change their maintained patch stacks.
 Complete engine: [`254af1d9de5eb6baf68d72e961dcb3116969acfa`](https://github.com/Phala-Network/sglang/commit/254af1d9de5eb6baf68d72e961dcb3116969acfa).
 Source release: [`phala-dev-kimi-k31-2`](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-2),
 on the approved `codex/kimi-k31-pro-20261105` compatibility line.
-Image2 publication and final-image qualification are pending; the source Release
-will record its immutable image digest and qualification receipt.
+Published image:
+`ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62`.
+Final-image CPU qualification passes 150 tests and 11 subtests, all five HF
+cases with zero skips, the official verifier, native CPU APIs, the FSS loader
+gate and SGLang/HF CLI checks. The source Release records the detailed receipt.
 
 [series](series), [manifest](manifest.json) and [actual replay](replay.json)
 bind all four source-derived steps and their exact intermediate trees:
