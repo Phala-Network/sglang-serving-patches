@@ -1,56 +1,51 @@
 {
-  "method": "fresh Git index; canonical git diff --binary --full-index; apply --cached --check, apply --cached and write-tree after each patch",
-  "completed_utc": "2026-11-04T23:17:09.319343+00:00",
-  "all_intermediate_trees_match": true,
-  "all_canonical_source_bytes_match": true,
-  "base": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
-  "engine": "254af1d9de5eb6baf68d72e961dcb3116969acfa",
-  "tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
-  "steps": 4,
-  "replayed_steps": [
+  "passed": true,
+  "base_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
+  "engine_commit": "204565cce1d82988c4f7235c6113fe1883c0f467",
+  "engine_tree": "91b79deceac376c186949758889e8cba1004a3fa",
+  "steps": [
     {
       "path": "patches/common/0001.patch",
-      "sha256": "758a6f1a70b6542ebca9562a3b04ec447db3fbcd03af839e5db45c9bddaa6d91",
-      "bytes": 9141,
-      "canonical_source_bytes_match": true,
-      "expected_tree": "cf83aca8cda8ee184e158cf63ccc9531e2cf7ff0",
-      "actual_tree": "cf83aca8cda8ee184e158cf63ccc9531e2cf7ff0",
-      "exact_match": true,
-      "crlf_sequences": 0,
-      "git_apply_stderr": ""
+      "tree": "cf83aca8cda8ee184e158cf63ccc9531e2cf7ff0",
+      "matched": true
     },
     {
       "path": "patches/build/0002.patch",
-      "sha256": "068766496316329580d60f25bf8197403db0cf928483b67045ac4e29c6a659dc",
-      "bytes": 6635,
-      "canonical_source_bytes_match": true,
-      "expected_tree": "eebc8154f9c28742ae5c77067151a97fed49155b",
-      "actual_tree": "eebc8154f9c28742ae5c77067151a97fed49155b",
-      "exact_match": true,
-      "crlf_sequences": 0,
-      "git_apply_stderr": ""
+      "tree": "eebc8154f9c28742ae5c77067151a97fed49155b",
+      "matched": true
     },
     {
       "path": "patches/models/kimi/0003.patch",
-      "sha256": "986e2dea90602651c6a20eb8a395d94b96632ac62f3730fd3bcec266951e0676",
-      "bytes": 101640,
-      "canonical_source_bytes_match": true,
-      "expected_tree": "a13fcf3aba1aa83c8f1011368c1ec309485354f4",
-      "actual_tree": "a13fcf3aba1aa83c8f1011368c1ec309485354f4",
-      "exact_match": true,
-      "crlf_sequences": 0,
-      "git_apply_stderr": "<stdin>:36: trailing whitespace.\nbefore using the Software or its derivative works for any commercial purpose. \nwarning: 1 line adds whitespace errors.\n<stdin>:36: trailing whitespace.\nbefore using the Software or its derivative works for any commercial purpose. \nwarning: 1 line adds whitespace errors.\n"
+      "tree": "a13fcf3aba1aa83c8f1011368c1ec309485354f4",
+      "matched": true
     },
     {
       "path": "patches/build/0004.patch",
-      "sha256": "dfeff7fd4fcbe4567db3600fcc0264f572b42a3d9b19710366f564c045ea465b",
-      "bytes": 19141,
-      "canonical_source_bytes_match": true,
-      "expected_tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
-      "actual_tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
-      "exact_match": true,
-      "crlf_sequences": 0,
-      "git_apply_stderr": ""
+      "tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
+      "matched": true
+    },
+    {
+      "path": "patches/common/0005.patch",
+      "tree": "91f04c2bd2196e3887bb11dddcf6052b8bb380a7",
+      "matched": true
+    },
+    {
+      "path": "patches/common/0006.patch",
+      "tree": "05a45cdeec88dcb0b4427bd477ecb21e65e5b26c",
+      "matched": true
+    },
+    {
+      "path": "patches/common/0007.patch",
+      "tree": "c5c7da802a22a26861a0f77aff93c2ff833d8655",
+      "matched": true
+    },
+    {
+      "path": "patches/build/0008.patch",
+      "tree": "91b79deceac376c186949758889e8cba1004a3fa",
+      "matched": true
     }
-  ]
+  ],
+  "old_four_patch_bytes_preserved": true,
+  "governor": "not added; external PIG remains separate",
+  "gpu_tested": false
 }

@@ -4,8 +4,23 @@ This ordered source export uses the exact official developer image source
 `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae`. It is not a SGLang 0.5.21/0.5.22
 upgrade and does not change their maintained patch stacks.
 
-Complete engine: [`254af1d9de5eb6baf68d72e961dcb3116969acfa`](https://github.com/Phala-Network/sglang/commit/254af1d9de5eb6baf68d72e961dcb3116969acfa).
-Source release: [`phala-dev-kimi-k31-2`](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-2),
+Current repair source: [`204565cce1d82988c4f7235c6113fe1883c0f467`](https://github.com/Phala-Network/sglang/commit/204565cce1d82988c4f7235c6113fe1883c0f467),
+version `phala-dev-kimi-k31-3`. The eight-step export preserves all four image2
+patches byte for byte, then adds hybrid-SSM admission/COW retry, replay-aware
+HRRN cost, focused CPU regressions and the Python-only incremental image recipe.
+The changes adapt open upstream PRs [37612](https://github.com/sgl-project/sglang/pull/37612)
+and [44867](https://github.com/sgl-project/sglang/pull/44867); upstream approval or
+merger is not claimed. Native dependencies, Mooncake and external PIG stay fixed.
+
+The source-method gate passed 14 cases. Real-import CPU development checks passed
+12 cases and 10 subtests, with two explicit baseline-only comparisons skipped.
+Final installed-image publication evidence belongs to the
+[repair Release](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-3).
+CPU checks do not establish GPU/production acceptance or a unique cause of the
+2026-11-06 incident; full-budget/HOL and long-fill retry costs remain explicit.
+
+Image2 baseline engine: [`254af1d9de5eb6baf68d72e961dcb3116969acfa`](https://github.com/Phala-Network/sglang/commit/254af1d9de5eb6baf68d72e961dcb3116969acfa).
+Image2 source release: [`phala-dev-kimi-k31-2`](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-2),
 on the approved `codex/kimi-k31-pro-20261105` compatibility line.
 Published image:
 `ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62`.
@@ -14,7 +29,8 @@ cases with zero skips, the official verifier, native CPU APIs, the FSS loader
 gate and SGLang/HF CLI checks. The source Release records the detailed receipt.
 
 [series](series), [manifest](manifest.json) and [actual replay](replay.json)
-bind all four source-derived steps and their exact intermediate trees:
+bind all eight source-derived steps and their exact intermediate trees. The
+first four established the image2 baseline:
 
 1. Require complete object-byte counts for Mooncake restores, including missing
    and incomplete response lists.

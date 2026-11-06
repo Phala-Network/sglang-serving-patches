@@ -1,7 +1,7 @@
 {
   "base_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
-  "engine_commit": "254af1d9de5eb6baf68d72e961dcb3116969acfa",
-  "engine_tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
+  "engine_commit": "204565cce1d82988c4f7235c6113fe1883c0f467",
+  "engine_tree": "91b79deceac376c186949758889e8cba1004a3fa",
   "ordered_steps": [
     {
       "path": "patches/common/0001.patch",
@@ -34,14 +34,47 @@
       "tree": "86714f67cd66d0bc8399e485effd2bd12c4ada1e",
       "sha256": "dfeff7fd4fcbe4567db3600fcc0264f572b42a3d9b19710366f564c045ea465b",
       "ownership": "build"
+    },
+    {
+      "path": "patches/common/0005.patch",
+      "engine_commit": "c95e656e31939f9f1bbf81605d7aeaa82382e5f9",
+      "source_parent": "254af1d9de5eb6baf68d72e961dcb3116969acfa",
+      "tree": "91f04c2bd2196e3887bb11dddcf6052b8bb380a7",
+      "sha256": "4afb367a3ae27dec29c7e82e26b8e8ab47be4e90c4f2f2d2f2cfbb223b147aec",
+      "ownership": "common"
+    },
+    {
+      "path": "patches/common/0006.patch",
+      "engine_commit": "7e81a42f85cfa67e0b466c7a5738cdd7111976d6",
+      "source_parent": "c95e656e31939f9f1bbf81605d7aeaa82382e5f9",
+      "tree": "05a45cdeec88dcb0b4427bd477ecb21e65e5b26c",
+      "sha256": "25db2e21e3f8d3a6e6b4e013bc66a9b01eab7a7711e5f26b66605ccd505a89b4",
+      "ownership": "common"
+    },
+    {
+      "path": "patches/common/0007.patch",
+      "engine_commit": "0c3cbd348e88b557e05c0062ae3a66e853ab6408",
+      "source_parent": "7e81a42f85cfa67e0b466c7a5738cdd7111976d6",
+      "tree": "c5c7da802a22a26861a0f77aff93c2ff833d8655",
+      "sha256": "4e2731091f2690207d70d98ba6ab3bfb0211268a8ada30f7ab31cd4c05434c20",
+      "ownership": "common"
+    },
+    {
+      "path": "patches/build/0008.patch",
+      "engine_commit": "204565cce1d82988c4f7235c6113fe1883c0f467",
+      "source_parent": "0c3cbd348e88b557e05c0062ae3a66e853ab6408",
+      "tree": "91b79deceac376c186949758889e8cba1004a3fa",
+      "sha256": "86a84dfab14a2faf403179a14badcbaefe718458cbf259cb54f2f9f0333c4b10",
+      "ownership": "build"
     }
   ],
   "governor": "not added; external PIG is a separate component",
-  "release_version": "phala-dev-kimi-k31-2",
+  "release_version": "phala-dev-kimi-k31-3",
   "native": {
     "source_repository": "https://github.com/Phala-Network/Mooncake",
     "source_commit": "467533b2e80a101dfabd4789ed5aa8ab251c24a6",
     "source_tag": "phala-v0.3.13.post1-k31-client-1",
     "source_lock": "https://github.com/Phala-Network/sglang/blob/254af1d9de5eb6baf68d72e961dcb3116969acfa/docker/phala/k31/native-client.json"
-  }
+  },
+  "runtime_base_image": "ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62"
 }

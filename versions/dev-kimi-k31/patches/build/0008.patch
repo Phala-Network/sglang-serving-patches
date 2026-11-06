@@ -1,0 +1,367 @@
+diff --git a/docker/phala/k31/repair-20261106/Dockerfile b/docker/phala/k31/repair-20261106/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3f81516329736a271c38415b5a47cc048b3457d
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/Dockerfile
+@@ -0,0 +1,12 @@
++# syntax=docker/dockerfile:1.7
++# A Python-only layer over the accepted image2. No installers or native rebuild.
++FROM ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62
++ARG PHALA_ENGINE_REVISION
++ARG PHALA_RELEASE_VERSION=phala-dev-kimi-k31-3
++LABEL org.opencontainers.image.source="https://github.com/Phala-Network/sglang" \
++      org.opencontainers.image.revision="${PHALA_ENGINE_REVISION}" \
++      org.opencontainers.image.version="${PHALA_RELEASE_VERSION}" \
++      io.phala.repair.base="sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62"
++WORKDIR /sgl-workspace/sglang
++COPY rootfs/ /
++RUN PYTHONDONTWRITEBYTECODE=1 python3 -B /opt/phala/k31-repair/verify_installed.py
+diff --git a/docker/phala/k31/repair-20261106/README.md b/docker/phala/k31/repair-20261106/README.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..05064ba3ffefe022fe01b1d48e62295351a89f04
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/README.md
+@@ -0,0 +1,21 @@
++# K3.1 scheduler repair candidate preparation
++
++This recipe packages the frozen scheduler/COW repair and focused tests. It includes no production rollout; root owns the source handoff and deployment.
++
++The recipe extends accepted image2 by digest. Its sparse layer contains only root-frozen Python runtime changes, focused regression tests, the source marker and these qualification helpers. It never invokes pip, a native compiler or a model downloader. `prepare_context.py` rejects Python changes outside five reviewed scheduler/COW files and unexpected build/native/dependency edits.
++
++After root freezes a clean complete-source commit containing the repair and this recipe, stage that Git checkout and the existing data-only image2 HF fixture under `/opt/testdata/kimi-k31-usw3-repair-20261106` on CPU builder201. Then, once explicitly handed off, run:
++
++```sh
++python3 -B source/docker/phala/k31/repair-20261106/build_candidate.py \
++  --repo /opt/testdata/kimi-k31-usw3-repair-20261106/source \
++  --revision <root-frozen-40-character-commit> \
++  --fixture /opt/testdata/kimi-k31-usw3-repair-20261106/hf-fixture \
++  --run-dir /opt/testdata/kimi-k31-usw3-repair-20261106/attempt-1
++```
++
++The worker builds once using builder201's default Docker driver and fixed image2 layers, then checks the actual installed candidate without source/executable mounts or runtime installs. It adds the repair's committed CPU regressions to image2's existing native/HF/parser/spec/CLI qualification, compares package versions and pip-check results exactly with image2, and executes direct `hf --help` / `hf download --help` with network disabled. The source marker, OCI revision and changed source bytes must match the full frozen commit; the complete inherited layer prefix and runtime config must match image2.
++
++Results and logs stay in the attempt directory. Test containers are removed by exact owned identities. The worker snapshots existing build-cache IDs, then prunes only new IDs; it never runs a broad prune or removes the shared builder. A base pulled by this attempt is untagged afterward. The candidate image is retained by exact image ID for the owner to inspect, publish or remove. Final ownership transfer must clear that pending cleanup receipt.
++
++There is deliberately no registry publication function. The release owner must first verify an unused immutable tag, push the exact complete-source commit/tag, publish its GitHub Release, read both back, then publish the same qualified candidate bytes and read back the digest. Preserve the shared patches/Governor/full-engine provenance; Governor and Mooncake/native versions remain unchanged. CPU checks do not prove incident causality, GPU scheduling, production recovery or performance.
+diff --git a/docker/phala/k31/repair-20261106/build_candidate.py b/docker/phala/k31/repair-20261106/build_candidate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd3ff5853e65078c3d4a5f704e3f086ec46c19ac
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/build_candidate.py
+@@ -0,0 +1,165 @@
++"""Build once after root freezes source; qualify locally on 201. No publication code."""
++
++import argparse
++import datetime
++import json
++import os
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++TASK_ROOT = Path("/opt/testdata/kimi-k31-usw3-repair-20261106")
++TASK = "kimi-k31-usw3-repair-20261106"
++BASE = "ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62"
++VERSION = "phala-dev-kimi-k31-3"
++
++ENV_CHECK = r'''
++import importlib.metadata as md,json,subprocess,sys
++packages={d.metadata['Name'].lower().replace('_','-'):d.version for d in md.distributions() if d.metadata['Name']}
++p=subprocess.run([sys.executable,'-m','pip','check'],capture_output=True,text=True,timeout=120)
++print(json.dumps({'packages':packages,'pip_check':{'exit':p.returncode,'stdout':p.stdout,'stderr':p.stderr}}))
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--repo", required=True, type=Path)
++    parser.add_argument("--revision", required=True, help="Exact root-frozen commit; never infer HEAD")
++    parser.add_argument("--fixture", required=True, type=Path, help="Pinned image2 data-only HF fixture copied into this task root")
++    parser.add_argument("--run-dir", required=True, type=Path)
++    args = parser.parse_args()
++    assert sys.platform.startswith("linux") and os.uname().nodename == "phala-tdx-prod3", "authorized builder201 only"
++    task = TASK_ROOT.resolve()
++    repo, fixture, run_dir = args.repo.resolve(), args.fixture.resolve(), args.run_dir.resolve()
++    assert all(task in p.parents for p in [repo, fixture, run_dir]), "all task files must stay under the exact201 task root"
++    assert (fixture / "manifest.json").is_file()
++    fixture_files = [p for p in fixture.rglob("*") if p.is_file()]
++    assert fixture_files and not any(p.suffix in {".py", ".pyc", ".so", ".sh"} or p.is_symlink() for p in fixture_files)
++    assert not run_dir.exists(), "fresh attempt directory required"
++    run_dir.mkdir(parents=True)
++    run_id = run_dir.name
++    assert all(c.isalnum() or c == "-" for c in run_id)
++    builder = "default"
++    local_tag = "ghcr.io/phala-network/sglang:" + VERSION + "-candidate-" + run_id
++    steps, containers = [], []
++    iid, cache_before, base_owned, base_pulled = None, None, False, False
++    result = {"passed": False, "source_revision": args.revision, "base_image": BASE, "version": VERSION, "published": False}
++
++    def run(name, argv, timeout=120, check=True):
++        started = time.monotonic()
++        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
++        (run_dir / (name + ".log")).write_text(p.stdout + p.stderr)
++        steps.append({"step": name, "exit": p.returncode, "seconds": round(time.monotonic() - started, 3)})
++        (run_dir / "progress.json").write_text(json.dumps(steps, indent=2))
++        if check and p.returncode:
++            raise RuntimeError(name + " failed; inspect task log")
++        return p
++
++    def inspect(image):
++        return json.loads(subprocess.check_output(["docker", "image", "inspect", image], text=True))[0]
++
++    def cache_snapshot():
++        raw = subprocess.check_output(["docker", "buildx", "du", "--builder", builder, "--format", "json"], text=True).strip()
++        if not raw:
++            return set()
++        try:
++            rows = json.loads(raw)
++            rows = rows if isinstance(rows, list) else [rows]
++        except json.JSONDecodeError:
++            rows = [json.loads(line) for line in raw.splitlines()]
++        ids = {row.get("ID", row.get("Id")) for row in rows}
++        assert None not in ids, "unknown build-cache inventory format"
++        return ids
++
++    def cpu_container(name, image, command, *, entrypoint="python3", fixture_copy=False, timeout=900):
++        cname = TASK + "-" + run_id + "-" + name
++        assert subprocess.run(["docker", "container", "inspect", cname], capture_output=True).returncode != 0
++        argv = ["docker", "create", "--name", cname, "--label", "phala.task=" + TASK,
++                "--pull=never", "--runtime=runc", "--network=none", "--cpus=8", "--memory=16g", "--memory-swap=16g",
++                "--shm-size=1g", "--pids-limit=1024", "-e", "NVIDIA_VISIBLE_DEVICES=void", "-e", "CUDA_VISIBLE_DEVICES=0",
++                "-e", "OMP_NUM_THREADS=2", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HF_HUB_OFFLINE=1", "-e", "TRANSFORMERS_OFFLINE=1",
++                "-e", "KIMI_K31_TEST_DATA=/opt/testdata/k31-hf-fixture", "--entrypoint", entrypoint, image, *command]
++        run(name + "-create", argv)
++        containers.append(cname)
++        if fixture_copy:
++            run(name + "-fixture", ["docker", "cp", str(fixture), cname + ":/opt/testdata/k31-hf-fixture"])
++        config = json.loads(subprocess.check_output(["docker", "container", "inspect", cname], text=True))[0]
++        assert not config["Mounts"], "installed-image checks cannot have source/executable mounts"
++        run(name, ["docker", "start", "--attach", cname], timeout=timeout)
++        state = json.loads(subprocess.check_output(["docker", "container", "inspect", cname], text=True))[0]["State"]
++        assert state["Status"] == "exited" and state["ExitCode"] == 0, name
++        output = (run_dir / (name + ".log")).read_text()
++        run(name + "-remove", ["docker", "rm", cname])
++        containers.remove(cname)
++        return output
++
++    try:
++        run("prepare-context", [sys.executable, "-B", str(Path(__file__).with_name("prepare_context.py")),
++                                "--repo", str(repo), "--revision", args.revision, "--output", str(run_dir / "context")])
++        base_owned = subprocess.run(["docker", "image", "inspect", BASE], capture_output=True).returncode != 0
++        cache_before = cache_snapshot()
++        (run_dir / "preexisting-cache-ids.json").write_text(json.dumps(sorted(cache_before), indent=2))
++        run("build", ["docker", "buildx", "build", "--builder", builder, "--load", "--network=none", "--progress=plain",
++                      "--label", "phala.task=" + TASK, "--build-arg", "PHALA_ENGINE_REVISION=" + args.revision,
++                      "--build-arg", "PHALA_RELEASE_VERSION=" + VERSION, "--metadata-file", str(run_dir / "build-metadata.json"),
++                      "-t", local_tag, str(run_dir / "context")], timeout=1800)
++        candidate = inspect(local_tag)
++        iid = candidate["Id"]
++        # Reuse the daemon's fixed image2 and native layers. If the image reference
++        # was absent, register it using blobs already loaded with the candidate.
++        if base_owned:
++            run("pull-image2-reference", ["docker", "pull", BASE], timeout=1800)
++            base_pulled = True
++        base = inspect(BASE)
++        baseline_env = json.loads(cpu_container("baseline-env", BASE, ["-B", "-c", ENV_CHECK], timeout=180))
++        (run_dir / "baseline-environment.json").write_text(json.dumps(baseline_env, indent=2))
++        assert candidate["RootFS"]["Layers"][:len(base["RootFS"]["Layers"])] == base["RootFS"]["Layers"], "base native/dependency layers changed"
++        for field in ["Env", "Entrypoint", "Cmd", "User", "WorkingDir"]:
++            assert candidate["Config"].get(field) == base["Config"].get(field), field
++        labels = candidate["Config"]["Labels"]
++        assert labels["org.opencontainers.image.revision"] == args.revision
++        assert labels["org.opencontainers.image.version"] == VERSION
++        assert labels["org.opencontainers.image.source"] == "https://github.com/Phala-Network/sglang"
++        final_env = json.loads(cpu_container("final-env", iid, ["-B", "-c", ENV_CHECK], timeout=180))
++        (run_dir / "final-environment.json").write_text(json.dumps(final_env, indent=2))
++        assert baseline_env == final_env, "dependency versions or pip check differ from image2"
++        cpu_container("installed-cpu", iid, ["-B", "/opt/phala/k31-repair/qualify_installed.py"], fixture_copy=True)
++        cpu_container("hf-help", iid, ["--help"], entrypoint="hf")
++        cpu_container("hf-download-help", iid, ["download", "--help"], entrypoint="hf")
++        result.update({"passed": True, "image_id": iid, "local_candidate_tag": local_tag,
++                       "source_identity_passed": True, "inherited_layers_unchanged": True,
++                       "environment_and_pip_check_equal_to_image2": True, "installed_cpu_hf_native_cli_passed": True,
++                       "direct_hf_executable_passed": True, "source_mounts": False, "runtime_install": False,
++                       "gpu_tested": False, "base_present_before_attempt": not base_owned})
++    except Exception as exc:
++        result["error"] = str(exc)
++        raise
++    finally:
++        cleanup = []
++        for cname in containers:
++            raw = subprocess.run(["docker", "container", "inspect", cname], capture_output=True, text=True)
++            if raw.returncode == 0:
++                config = json.loads(raw.stdout)[0]
++                assert config["Config"]["Labels"].get("phala.task") == TASK
++                p = subprocess.run(["docker", "rm", "-f", config["Id"]], capture_output=True, text=True)
++                cleanup.append({"container_id": config["Id"], "exit": p.returncode})
++        if cache_before is not None:
++            added = sorted(cache_snapshot() - cache_before)
++            (run_dir / "task-cache-ids.json").write_text(json.dumps(added, indent=2))
++            for cache_id in added:
++                p = subprocess.run(["docker", "buildx", "prune", "--builder", builder, "--force", "--filter", "id=" + cache_id], capture_output=True, text=True)
++                cleanup.append({"task_cache_id": cache_id, "exit": p.returncode})
++        if base_pulled:
++            p = subprocess.run(["docker", "image", "rm", BASE], capture_output=True, text=True)
++            cleanup.append({"task_pulled_base": BASE, "exit": p.returncode})
++        result.update({"finished_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "steps": steps, "cleanup": cleanup})
++        result["cleanup_passed"] = all(row["exit"] == 0 for row in cleanup)
++        # Keep only the final candidate image for its owner to inspect/publish/remove by exact ID.
++        result["candidate_image_cleanup_pending_owner_handoff"] = iid
++        (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
++        print(json.dumps(result, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docker/phala/k31/repair-20261106/prepare_context.py b/docker/phala/k31/repair-20261106/prepare_context.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ae35e1a91f94ecaa9e91c12499466b408173a26
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/prepare_context.py
+@@ -0,0 +1,88 @@
++"""Export a frozen, committed Python-only delta; never build or publish an image."""
++
++import argparse
++import hashlib
++import json
++import re
++import subprocess
++from pathlib import Path
++
++BASE_REVISION = "254af1d9de5eb6baf68d72e961dcb3116969acfa"
++BASE_IMAGE = "ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62"
++TASK_ROOT = Path("/opt/testdata/kimi-k31-usw3-repair-20261106")
++RECIPE = "docker/phala/k31/repair-20261106"
++RUNTIME_ALLOWLIST = {
++    "python/sglang/srt/managers/scheduler.py",
++    "python/sglang/srt/managers/schedule_policy.py",
++    "python/sglang/srt/managers/schedule_batch.py",
++    "python/sglang/srt/mem_cache/base_prefix_cache.py",
++    "python/sglang/srt/mem_cache/unified_cache/components/mamba.py",
++}
++TEST_PREFIX = "test/registered/unit/managers/test_scheduler_hybrid_ssm_admission_"
++
++
++def git(repo, *args, binary=False):
++    data = subprocess.check_output(["git", "-C", str(repo), *args])
++    return data if binary else data.decode("utf-8").strip()
++
++
++def sha(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--repo", required=True, type=Path)
++    parser.add_argument("--revision", required=True, help="Root-frozen full source commit")
++    parser.add_argument("--output", required=True, type=Path)
++    args = parser.parse_args()
++    repo, output = args.repo.resolve(), args.output.resolve()
++    task = TASK_ROOT.resolve()
++    assert task in output.parents and task in repo.parents, "201 paths must stay in the exact task root"
++    assert re.fullmatch(r"[0-9a-f]{40}", args.revision), "full frozen commit required"
++    assert git(repo, "rev-parse", "HEAD") == args.revision, "checkout must match the frozen commit"
++    assert not git(repo, "status", "--porcelain"), "freeze a clean source checkout first"
++    subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", BASE_REVISION, args.revision], check=True)
++    changed = git(repo, "diff", "--name-only", BASE_REVISION, args.revision).splitlines()
++    runtime = sorted(p for p in changed if p.startswith("python/"))
++    tests = sorted(p for p in changed if p.startswith(TEST_PREFIX) and p.endswith(".py"))
++    assert runtime and set(runtime) <= RUNTIME_ALLOWLIST, runtime
++    assert tests, "the frozen candidate must contain its focused CPU regressions"
++    allowed = set(runtime + tests)
++    unexpected = [p for p in changed if p not in allowed and not p.startswith(RECIPE + "/") and not p.startswith("docs/")]
++    assert not unexpected, "review unexpected source/build/native changes: " + repr(unexpected)
++    assert not output.exists(), "use a fresh context; do not overwrite a previous attempt"
++    rootfs = output / "rootfs"
++    entries = []
++    for relative in runtime + tests:
++        data = git(repo, "show", args.revision + ":" + relative, binary=True)
++        compile(data, relative, "exec")
++        destination = rootfs / "sgl-workspace/sglang" / relative
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        destination.write_bytes(data)
++        entries.append({"path": relative, "sha256": sha(data), "bytes": len(data), "kind": "runtime" if relative in runtime else "test"})
++    marker = rootfs / "sgl-workspace/sglang/.k31-source-commit"
++    marker.write_text(args.revision + "\n", encoding="utf-8")
++    installed = rootfs / "opt/phala/k31-repair"
++    installed.mkdir(parents=True)
++    for name in ["verify_installed.py", "qualify_installed.py"]:
++        (installed / name).write_bytes(git(repo, "show", args.revision + ":" + RECIPE + "/" + name, binary=True))
++    manifest = {
++        "base_revision": BASE_REVISION,
++        "base_image": BASE_IMAGE,
++        "source_revision": args.revision,
++        "version": "phala-dev-kimi-k31-3",
++        "changed_runtime_paths": runtime,
++        "focused_tests": tests,
++        "files": entries,
++        "native_or_dependency_changes": False,
++        "source_mounts": False,
++    }
++    (installed / "inputs.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
++    (output / "Dockerfile").write_bytes(git(repo, "show", args.revision + ":" + RECIPE + "/Dockerfile", binary=True))
++    (output / "inputs.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(manifest, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docker/phala/k31/repair-20261106/qualify_installed.py b/docker/phala/k31/repair-20261106/qualify_installed.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf4061864fb05997e27e5aed2568a9ad65323edf
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/qualify_installed.py
+@@ -0,0 +1,23 @@
++"""Reuse image2's installed CPU/HF/native/CLI gates and add the frozen repair tests."""
++
++import json
++from pathlib import Path
++
++from verify_installed import main as verify
++
++
++def main():
++    verify()
++    root = Path("/sgl-workspace/sglang")
++    manifest = json.loads(Path("/opt/phala/k31-repair/inputs.json").read_text())
++    # Execute the inherited qualification harness with the installed candidate.
++    # Its CUDA-stub environment, pinned data-only HF fixture and native smoke stay intact.
++    harness = root / "docker/phala/k31/qualify.py"
++    namespace = {"__file__": str(harness), "__name__": "image2_qualification"}
++    exec(compile(harness.read_bytes(), str(harness), "exec"), namespace)
++    namespace["SUITES"] = list(manifest["focused_tests"]) + namespace["SUITES"]
++    return namespace["main"]()
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docker/phala/k31/repair-20261106/verify_installed.py b/docker/phala/k31/repair-20261106/verify_installed.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2852625dff8243afa1eab660f653af810fb2547
+--- /dev/null
++++ b/docker/phala/k31/repair-20261106/verify_installed.py
+@@ -0,0 +1,22 @@
++"""Verify installed runtime bytes and the complete-source identity without mounts."""
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++
++def main():
++    root = Path("/sgl-workspace/sglang")
++    manifest = json.loads(Path("/opt/phala/k31-repair/inputs.json").read_text())
++    assert (root / ".k31-source-commit").read_text().strip() == manifest["source_revision"]
++    assert Path(importlib.util.find_spec("sglang").origin).resolve().is_relative_to(root / "python/sglang")
++    for entry in manifest["files"]:
++        data = (root / entry["path"]).read_bytes()
++        assert len(data) == entry["bytes"] and hashlib.sha256(data).hexdigest() == entry["sha256"], entry["path"]
++        compile(data, entry["path"], "exec")
++    print(json.dumps({"passed": True, "source_revision": manifest["source_revision"], "installed_files": len(manifest["files"]), "runtime_paths": manifest["changed_runtime_paths"]}))
++
++
++if __name__ == "__main__":
++    main()

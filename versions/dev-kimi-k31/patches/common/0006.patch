@@ -1,0 +1,13 @@
+diff --git a/python/sglang/srt/managers/schedule_policy.py b/python/sglang/srt/managers/schedule_policy.py
+index b4a3357b97a50e0aab3be4c64f9f192aef0c4b7e..06787cb16d866630d7ebfcf40f28a2633f5affd8 100644
+--- a/python/sglang/srt/managers/schedule_policy.py
++++ b/python/sglang/srt/managers/schedule_policy.py
+@@ -464,7 +464,7 @@ class SchedulePolicy:
+     def _uncached_len(r: Req) -> int:
+         """Number of tokens that must actually be prefilled for this req
+         (all cache levels — device + host via hicache — counted as cached)."""
+-        return max(0, len(r.origin_input_ids) - r.num_matched_prefix_tokens)
++        return max(0, r.seqlen - r.num_matched_prefix_tokens)
+ 
+     @staticmethod
+     def _sort_by_hrrn(
