@@ -14,15 +14,19 @@ merger is not claimed. Native dependencies, Mooncake and external PIG stay fixed
 
 The source-method gate passed 14 cases. Real-import CPU development checks passed
 12 cases and 10 subtests, with two explicit baseline-only comparisons skipped.
-Final installed-image publication evidence belongs to the
-[repair Release](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-3).
+Published repair image:
+`ghcr.io/phala-network/sglang:phala-dev-kimi-k31-3@sha256:08acd79a162875bc9bfded2ff42cd526a8b0b4e1c4f96e32c1997b61246f226b`.
+Final installed-image qualification passes 162 CPU tests and 21 subtests, plus
+all five packaged-HF cases; SGLang serve, direct HF CLI, native CPU APIs and
+source identity pass. The [repair Release](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-3)
+records publication, inherited-layer/dependency checks and build-helper caveats.
 CPU checks do not establish GPU/production acceptance or a unique cause of the
 2026-11-06 incident; full-budget/HOL and long-fill retry costs remain explicit.
 
 Image2 baseline engine: [`254af1d9de5eb6baf68d72e961dcb3116969acfa`](https://github.com/Phala-Network/sglang/commit/254af1d9de5eb6baf68d72e961dcb3116969acfa).
 Image2 source release: [`phala-dev-kimi-k31-2`](https://github.com/Phala-Network/sglang/releases/tag/phala-dev-kimi-k31-2),
 on the approved `codex/kimi-k31-pro-20261105` compatibility line.
-Published image:
+Historical image2 baseline:
 `ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62`.
 Final-image CPU qualification passes 150 tests and 11 subtests, all five HF
 cases with zero skips, the official verifier, native CPU APIs, the FSS loader
