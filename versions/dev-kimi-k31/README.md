@@ -4,7 +4,41 @@ This ordered source export uses the exact official developer image source
 `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae`. It is not a SGLang 0.5.21/0.5.22
 upgrade and does not change their maintained patch stacks.
 
-Current repair source: [`204565cce1d82988c4f7235c6113fe1883c0f467`](https://github.com/Phala-Network/sglang/commit/204565cce1d82988c4f7235c6113fe1883c0f467),
+Current candidate source: [`308921ab7f196ce41e866b878aa6c8565a982033`](https://github.com/Phala-Network/sglang/commit/308921ab7f196ce41e866b878aa6c8565a982033),
+tree `c001d76ae187bdcb92be1dfd697edbbc1d0ad109`, version
+`phala-dev-kimi-k31-4`. The image4 build and final installed-image qualification
+are pending; no image4 digest or GPU/production acceptance is claimed here.
+The [frozen image4 recipe](https://github.com/Phala-Network/sglang/tree/308921ab7f196ce41e866b878aa6c8565a982033/docker/phala/k31/video-20261107)
+layers the reviewed Python delta over the qualified image3 digest below, retaining
+its native and Python dependencies, Mooncake client and external PIG boundary.
+
+The eleven-step export preserves the previous eight patch files byte for byte
+and appends these source-derived steps:
+
+| Step | Scope and source |
+| --- | --- |
+| 9, common | Preserve complete hybrid Mamba/SWA L3 hits when host capacity is short; copy Mamba temporal slots in chunks using a 64 MiB budget with at least one slot. Adapts [48421](https://github.com/sgl-project/sglang/pull/48421) and [47984](https://github.com/sgl-project/sglang/pull/47984); existing ReplaySSM/COW behavior remains. |
+| 10, Kimi | Add bounded `video_url` processing, temporal framing, ordered image/video input and visual owner batching, adapting [35325](https://github.com/sgl-project/sglang/pull/35325), [46077](https://github.com/sgl-project/sglang/pull/46077) and [46103](https://github.com/sgl-project/sglang/pull/46103). Clamp reported cached tokens to reported prompt tokens across streaming, non-streaming and usage headers, adapting [35863](https://github.com/sgl-project/sglang/pull/35863). |
+| 11, build | Package the frozen runtime and focused installed-image CPU/CLI/HF gates over image3, without installing or changing dependencies. |
+
+Video processing consumes the video stream and supports request `fps` and
+`max_frames`; it does not transcribe audio. The staging estimate is bounded by
+`SGLANG_K3_VIDEO_MAX_DECODE_BYTES` (default 4 GiB), with decoder calls and visual
+preprocessing grouped into at most four frames. This budget excludes codec
+internals, encoded uploads, embeddings, KV and GPU workspaces. Cancellation is
+checked between native decoder calls and frames; it cannot preempt an active
+native codec call. K3.1 video semantics, CUDA graphs, cross-rank behavior and
+production memory at full concurrency still require the final-image GPU gate.
+
+Real-import CPU development checks on the image3 source overlay passed all four
+serving/model files: **337 tests and 283 subtests, zero failures or skips**.
+The focused storage/Mamba CPU classes passed **3 tests and 10 subtests**.
+An initial full storage-file attempt had 233 failures, all from existing GPU
+fixtures reporting `No accelerator`; its 4 passes and 30 skips are retained in
+the execution record. These CPU results do not measure CUDA peak memory or
+qualify the final image. Exact ordered replay matches every intermediate tree.
+
+Historical image3 repair source: [`204565cce1d82988c4f7235c6113fe1883c0f467`](https://github.com/Phala-Network/sglang/commit/204565cce1d82988c4f7235c6113fe1883c0f467),
 version `phala-dev-kimi-k31-3`. The eight-step export preserves all four image2
 patches byte for byte, then adds hybrid-SSM admission/COW retry, replay-aware
 HRRN cost, focused CPU regressions and the Python-only incremental image recipe.
@@ -33,7 +67,7 @@ cases with zero skips, the official verifier, native CPU APIs, the FSS loader
 gate and SGLang/HF CLI checks. The source Release records the detailed receipt.
 
 [series](series), [manifest](manifest.json) and [actual replay](replay.json)
-bind all eight source-derived steps and their exact intermediate trees. The
+bind all eleven source-derived steps and their exact intermediate trees. The
 first four established the image2 baseline:
 
 1. Require complete object-byte counts for Mooncake restores, including missing

@@ -6,3 +6,6 @@ patches/common/0005.patch
 patches/common/0006.patch
 patches/common/0007.patch
 patches/build/0008.patch
+patches/common/0009.patch
+patches/models/kimi/0010.patch
+patches/build/0011.patch

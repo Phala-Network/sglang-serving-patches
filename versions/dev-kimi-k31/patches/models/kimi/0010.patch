@@ -1,0 +1,1993 @@
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index ae46c5cfefe878e406316cb710fa6ec44cdeed29..2d0a454537d977504592032b9472e97063fe57b8 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -668,6 +668,7 @@ class ChatCompletionMessageContentImagePart(BaseModel):
+ class ChatCompletionMessageContentVideoPart(BaseModel):
+     type: Literal["video_url"]
+     video_url: ChatCompletionMessageContentVideoURL
++    modalities: Optional[Literal["video"]] = "video"
+ 
+ 
+ class ChatCompletionMessageContentInputAudio(BaseModel):
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 98c1f4849c7f139e8ff7028d12ae89ffb9ef71f2..759adf8e68ec8da489f155516214a3f74222e984 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -701,7 +701,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         messages: list[dict[str, Any]],
+         request: ChatCompletionRequest,
+     ) -> tuple[list[dict[str, Any]], int, str | None]:
+-        image_count = 0
++        media_count = 0
+         for index, message in enumerate(messages):
+             content = message.get("content")
+             if isinstance(content, list):
+@@ -724,7 +724,16 @@ class OpenAIServingChat(OpenAIServingBase):
+                         if isinstance(image, str):
+                             image = {"url": image, "detail": part.get("detail")}
+                         parts.append({"type": "image_url", "image_url": image})
+-                        image_count += 1
++                        media_count += 1
++                    elif part_type == "video_url":
++                        video = part.get("video_url") or {}
++                        if isinstance(video, str):
++                            video = {"url": video}
++                        # K3's chat encoder only recognizes image parts. Emit one
++                        # structural media placeholder here; the multimodal
++                        # processor expands it into timestamped video chunks.
++                        parts.append({"type": "image_url", "image_url": video})
++                        media_count += 1
+                 message["content"] = parts
+             elif isinstance(content, str):
+                 message["content"] = neutralize_kimi_k3_image_placeholder(content)
+@@ -768,7 +777,7 @@ class OpenAIServingChat(OpenAIServingBase):
+             messages, assistant_prefix = self._handle_last_assistant_message(
+                 messages, request
+             )
+-        return messages, image_count, assistant_prefix
++        return messages, media_count, assistant_prefix
+ 
+     def _encode_messages(
+         self,
+@@ -792,7 +801,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 image_data=image_data,
+             )
+         if self.chat_encoding_spec == "kimi_k3":
+-            messages, image_count, assistant_prefix = self._prepare_kimi_k3_messages(
++            messages, media_count, assistant_prefix = self._prepare_kimi_k3_messages(
+                 messages, request
+             )
+             template_kwargs = dict(request.chat_template_kwargs or {})
+@@ -806,8 +815,8 @@ class OpenAIServingChat(OpenAIServingBase):
+                         f"chat_template_kwargs cannot set {key!r}; "
+                         "use the request fields instead."
+                     )
+-            if image_count:
+-                template_kwargs["image_prompts"] = ["<|media_pad|>"] * image_count
++            if media_count:
++                template_kwargs["image_prompts"] = ["<|media_pad|>"] * media_count
+ 
+             tiers = self._kimi_k3_effort_tiers()
+             effort = template_kwargs.get("thinking_effort")
+@@ -891,7 +900,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         if not get_serving().enable_cache_report:
+             return None
+         return PromptTokensDetails(
+-            cached_tokens=content["meta_info"].get("cached_tokens", 0)
++            cached_tokens=self._reported_cached_tokens(content["meta_info"])
+         )
+ 
+     def _reported_prompt_tokens(self, meta_info: dict[str, Any]) -> int:
+@@ -902,6 +911,14 @@ class OpenAIServingChat(OpenAIServingBase):
+             prompt_tokens = max(0, prompt_tokens - self._KIMI_K3_GENERATION_STUB_TOKENS)
+         return prompt_tokens
+ 
++    def _reported_cached_tokens(self, meta_info: dict[str, Any]) -> int:
++        cached_tokens = meta_info.get("cached_tokens", 0)
++        if self.chat_encoding_spec == "kimi_k3":
++            # Cache hits are a physical prefix length. Exclude only the part of
++            # K3's trailing generation stub that the cached prefix reaches.
++            cached_tokens = min(cached_tokens, self._reported_prompt_tokens(meta_info))
++        return cached_tokens
++
+     @staticmethod
+     def _sort_tool_message_run(
+         run: list[dict[str, Any]],
+@@ -2572,7 +2589,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         if self.chat_encoding_spec != "kimi_k3" or not prefix:
+             return {}
+         prompt = self._reported_prompt_tokens(meta_info)
+-        cached = meta_info.get("cached_tokens", 0) or 0
++        cached = self._reported_cached_tokens(meta_info) or 0
+         return {
+             f"{prefix}-Prompt-Tokens": str(prompt),
+             f"{prefix}-Cached-Tokens": str(cached),
+@@ -2693,7 +2710,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                 reasoning_tokens[index] = content["meta_info"].get(
+                     "reasoning_tokens", 0
+                 )
+-                cached_tokens[index] = content["meta_info"].get("cached_tokens", 0)
++                cached_tokens[index] = self._reported_cached_tokens(
++                    content["meta_info"]
++                )
+                 hidden_states[index] = content["meta_info"].get("hidden_states", None)
+                 routed_experts[index] = content["meta_info"].get("routed_experts", None)
+                 cached_tokens_details[index] = content["meta_info"].get(
+@@ -3140,6 +3159,9 @@ class OpenAIServingChat(OpenAIServingBase):
+                         "prompt_tokens": self._reported_prompt_tokens(
+                             item["meta_info"]
+                         ),
++                        "cached_tokens": self._reported_cached_tokens(
++                            item["meta_info"]
++                        ),
+                     },
+                 }
+                 for item in ret
+@@ -3524,6 +3546,7 @@ class OpenAIServingChat(OpenAIServingBase):
+         """
+         if self.chat_encoding_spec != "kimi_k3":
+             return usage
++        cached_tokens = min(int(cached_tokens or 0), usage.prompt_tokens)
+         usage.completion_tokens_details = CompletionTokensDetails(
+             reasoning_tokens=int(reasoning_tokens or 0)
+         )
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 643358083c6d97f121c20c24b96039755b3f2fd6..b6e0a4e21037328e5cb3b206f3b2f08f9028b821 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -1705,6 +1705,9 @@ class Envs:
+     SGLANG_IMAGE_MAX_PIXELS = EnvInt(16384 * 28 * 28)
+     SGLANG_RESIZE_RESAMPLE = EnvStr("")
+     SGLANG_MM_BUFFER_SIZE_MB = EnvInt(0)
++    # K3 video only: resized uint8 staging (including a duplicate) plus one
++    # source decode/resize chunk. Encoded uploads and final embeddings are extra.
++    SGLANG_K3_VIDEO_MAX_DECODE_BYTES = EnvInt(4 * 1024**3)
+     SGLANG_MM_PRECOMPUTE_HASH = EnvBool(False)
+     SGLANG_VIT_ENABLE_CUDA_GRAPH = EnvBool(False)
+     # Use the fully-vectorized ViT position-embedding interpolation (no per-image
+diff --git a/python/sglang/srt/models/kimi_k3.py b/python/sglang/srt/models/kimi_k3.py
+index 60586dae7166181caca23fd9cf984be5c5e8793c..f55263d8220b1baf237c27fad1ff1c596bd9a6e1 100644
+--- a/python/sglang/srt/models/kimi_k3.py
++++ b/python/sglang/srt/models/kimi_k3.py
+@@ -7,6 +7,7 @@
+ #   - Full-rank KDA gate (use_full_rank_gate)
+ 
+ import logging
++import math
+ import os
+ import re
+ from array import array
+@@ -4211,6 +4212,40 @@ class KimiK3ForConditionalGeneration(nn.Module):
+                             raise ValueError(
+                                 "Kimi-K3 deferred GPU preprocessing produced wrong grids"
+                             )
++                    elif backend == "gpu_video":
++                        from sglang.srt.multimodal.processors.kimi_k3 import (
++                            _gpu_preprocess_k3_visual_items,
++                            _KimiK3VisualItem,
++                        )
++
++                        image_scale, image_bias = normalization_tensors(
++                            first_config.image_mean,
++                            first_config.image_std,
++                            device,
++                        )
++                        visual_items = [
++                            _KimiK3VisualItem(
++                                media_type="video",
++                                frames=tuple(item.feature.unbind(0)),
++                                source_index=index,
++                                in_patch_limit=0,
++                            )
++                            for index, item in enumerate(group_items)
++                        ]
++                        pixel_values, produced_grids = _gpu_preprocess_k3_visual_items(
++                            visual_items,
++                            [entry.resize_config for entry in group_configs],
++                            image_scale,
++                            image_bias,
++                            self.vision_tower.patch_size,
++                            first_config.transparent_bg_config,
++                        )
++                        if not torch.equal(
++                            produced_grids.cpu(), grid_thws_host[global_indices]
++                        ):
++                            raise ValueError(
++                                "Kimi-K3 temporal preprocessing produced wrong grids"
++                            )
+                     elif backend == "cpu":
+                         from sglang.srt.multimodal.kimi_k3_image_processing import (
+                             materialize_kimi_k3_cpu_features,
+@@ -4255,6 +4290,47 @@ class KimiK3ForConditionalGeneration(nn.Module):
+                 features, device=device, dtype=target_dtype
+             )
+ 
++        encode_owned = None
++        if any(
++            getattr(
++                item.model_specific_data.get(DEFERRED_PREPROCESSING_KEY),
++                "backend",
++                None,
++            )
++            == "gpu_video"
++            for item in items
++        ):
++            from sglang.srt.multimodal.mm_utils import iter_frame_bounded_image_batches
++
++            # Video-only bound: one complete temporal chunk. Every rank checks
++            # the shared grid list before owner assignment or any collective.
++            max_frames = 4
++            if any(not 1 <= int(grid[0]) <= max_frames for grid in grid_thw_list):
++                raise ValueError("A temporal item does not fit the vision frame budget")
++
++            def encode_owned(indices):
++                outputs = []
++                for group in iter_frame_bounded_image_batches(
++                    indices, grid_thw_list, max_frames
++                ):
++                    pixels = materialize_item_features(group)
++                    grids = [grid_thw_list[index] for index in group]
++                    output = self.vision_tower(
++                        pixels,
++                        grid_hw=torch.tensor(grids, device=device),
++                        grid_thw_list=grids,
++                        max_seqlen=max(math.prod(grid) for grid in grids),
++                    )
++                    # Graph replay returns static storage. Take ownership before
++                    # another group of the same shape overwrites that buffer.
++                    outputs.append(
++                        torch.cat(output, dim=0)
++                        if isinstance(output, (list, tuple))
++                        else output.clone()
++                    )
++                    del pixels
++                return outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=0)
++
+         if self.use_data_parallel:
+             from sglang.srt.multimodal.mm_utils import run_dp_sharded_mrope_vision_model
+ 
+@@ -4268,12 +4344,18 @@ class KimiK3ForConditionalGeneration(nn.Module):
+                 # gather length must ignore t.
+                 pool_temporal_dimension=True,
+                 pass_grid_thw_list=True,
+-                load_local_pixel_values=materialize_item_features,
++                load_local_pixel_values=materialize_item_features
++                if encode_owned is None
++                else None,
++                encode_local_items=encode_owned,
+                 pixel_values_device=device,
+                 pixel_values_dtype=target_dtype,
+             )
+             return self.mm_projector(image_embeds)
+ 
++        if encode_owned is not None:
++            return self.mm_projector(encode_owned(list(range(len(items)))))
++
+         pixel_values = materialize_item_features(list(range(len(items))))
+         image_embeds = self.vision_tower(pixel_values, grid_thws_host.to(device))
+         return self.mm_projector(image_embeds)
+@@ -4335,6 +4417,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
+             language_model=self.language_model,
+             data_embedding_funcs={
+                 Modality.IMAGE: self.get_image_feature,
++                Modality.VIDEO: self.get_image_feature,
+             },
+             positions=positions,
+             pp_proxy_tensors=pp_proxy_tensors,
+diff --git a/python/sglang/srt/models/kimi_k3_vl.py b/python/sglang/srt/models/kimi_k3_vl.py
+index e77a86761aa883f8a0e8ee6fbb8fc3d4fe524058..0a6fe75a020a11d4c35df31fe3f0153eaf65f641 100644
+--- a/python/sglang/srt/models/kimi_k3_vl.py
++++ b/python/sglang/srt/models/kimi_k3_vl.py
+@@ -225,7 +225,7 @@ class Learnable2DInterpPosEmbDividedFixed(nn.Module):
+             else:
+                 pos_emb_3d = pos_emb_2d.unsqueeze(0).repeat(t, 1, 1) + self.time_weight[
+                     0:t
+-                ].to(pos_emb_2d.dtype)
++                ].to(device=pos_emb_2d.device, dtype=pos_emb_2d.dtype)
+ 
+             pos_embs.append(pos_emb_3d.reshape(-1, pos_emb_3d.shape[-1]))
+ 
+diff --git a/python/sglang/srt/multimodal/kimi_k3_image_processing.py b/python/sglang/srt/multimodal/kimi_k3_image_processing.py
+index d5800bfd42b589de1fca10dd5586c6066630caaf..027f96a7b46a7afed3ac27fc380aecf55380039f 100644
+--- a/python/sglang/srt/multimodal/kimi_k3_image_processing.py
++++ b/python/sglang/srt/multimodal/kimi_k3_image_processing.py
+@@ -19,7 +19,8 @@ class KimiK3DeferredPreprocessing:
+     is not mirrored here.
+     """
+ 
+-    backend: Literal["gpu", "cpu"]
++    # gpu_video carries raw TCHW uint8 frames, one complete temporal grid.
++    backend: Literal["gpu", "cpu", "gpu_video"]
+     image_mean: list[float]
+     image_std: list[float]
+     transparent_bg_config: Optional[dict]
+diff --git a/python/sglang/srt/multimodal/mm_utils.py b/python/sglang/srt/multimodal/mm_utils.py
+index 075d742f759bcbf0f1835257d772e81c45ee92f3..d7ebd61e624130b8d7664a6607c042e581e17343 100644
+--- a/python/sglang/srt/multimodal/mm_utils.py
++++ b/python/sglang/srt/multimodal/mm_utils.py
+@@ -33,7 +33,7 @@ import itertools
+ import math
+ import re
+ from io import BytesIO
+-from typing import Callable, Literal, Optional, Sequence
++from typing import Callable, Iterator, Literal, Optional, Sequence
+ 
+ import numpy as np
+ import pybase64
+@@ -563,6 +563,7 @@ def run_dp_sharded_mrope_vision_model(
+     pixel_values_device: Optional[torch.device] = None,
+     pixel_values_dtype: Optional[torch.dtype] = None,
+     pass_grid_thw_list: bool = False,
++    encode_local_items: Optional[Callable[[list[int]], torch.Tensor]] = None,
+ ):
+     """Run a vision model with data parallelism (DP) sharding.
+     The function will shard the input image tensor on the
+@@ -582,6 +583,9 @@ def run_dp_sharded_mrope_vision_model(
+         pool_temporal_dimension: Whether the vision model pools away the temporal
+                    grid dimension. Its output length is then h * w divided by
+                    the spatial merge area instead of t * h * w divided by it.
++        encode_local_items: Return packed embeddings for the assigned item indices,
++            owning both preprocessing and encoding. This permits bounded local
++            batches without gathering a full rank-local pixel buffer first.
+         pass_grid_thw_list: Forward the existing host grid list to the vision
+             model so graph-aware towers do not materialize it from a CUDA tensor.
+     Returns:
+@@ -598,8 +602,14 @@ def run_dp_sharded_mrope_vision_model(
+         ```
+ 
+     """
+-    if pixel_values is None and load_local_pixel_values is None:
+-        raise ValueError("pixel_values or load_local_pixel_values must be provided")
++    if (
++        pixel_values is None
++        and load_local_pixel_values is None
++        and encode_local_items is None
++    ):
++        raise ValueError(
++            "pixel values, a local loader or a local encoder must be provided"
++        )
+ 
+     input_device = (
+         pixel_values.device if pixel_values is not None else pixel_values_device
+@@ -612,6 +622,8 @@ def run_dp_sharded_mrope_vision_model(
+ 
+     tp_size = get_parallel().attn_tp_size
+     if tp_size == 1:
++        if encode_local_items is not None:
++            return encode_local_items(list(range(len(grid_thw_list))))
+         if pixel_values is None:
+             pixel_values = load_local_pixel_values(list(range(len(grid_thw_list))))
+         grid_thw = torch.tensor(
+@@ -671,7 +683,9 @@ def run_dp_sharded_mrope_vision_model(
+ 
+     # Get the pixel values for the local images based on the image_idxs_local
+     if len(image_idxs_local) > 0:
+-        if load_local_pixel_values is not None:
++        if encode_local_items is not None:
++            pixel_values_local = None
++        elif load_local_pixel_values is not None:
+             pixel_values_local = load_local_pixel_values(image_idxs_local)
+         else:
+             assert pixel_values is not None
+@@ -720,7 +734,9 @@ def run_dp_sharded_mrope_vision_model(
+     local_grid_thw_list = [grid_thw_list[i] for i in image_idxs_local]
+ 
+     # Run the vision model on the local pixel_values_local
+-    if packed_2d_rope:
++    if encode_local_items is not None and image_idxs_local:
++        image_embeds_local = encode_local_items(image_idxs_local)
++    elif packed_2d_rope:
+         if pixel_values_local is not None and pixel_values_local.shape[0] > 0:
+             # Packed MoonViT reads grid_thw as CPU shape metadata. Placing it
+             # on CUDA would make each .tolist() call synchronize with the host.
+@@ -887,3 +903,25 @@ def run_dp_presharded_mrope_vision_model(
+         start = rank * max_output_length
+         pieces.append(gathered[start : start + output_length])
+     return torch.cat(pieces, dim=0)
++
++
++def iter_frame_bounded_image_batches(
++    indices: Sequence[int], grid_thw_list: Sequence[Sequence[int]], max_frames: int
++) -> Iterator[list[int]]:
++    """Preserve whole temporal items and their order within a frame budget."""
++    if max_frames <= 0:
++        raise ValueError("max_frames must be positive")
++    group = []
++    frames = 0
++    for index in indices:
++        count = int(grid_thw_list[index][0])
++        if not 1 <= count <= max_frames:
++            raise ValueError("A temporal item does not fit the vision frame budget")
++        if group and frames + count > max_frames:
++            yield group
++            group = []
++            frames = 0
++        group.append(index)
++        frames += count
++    if group:
++        yield group
+diff --git a/python/sglang/srt/multimodal/processors/kimi_k3.py b/python/sglang/srt/multimodal/processors/kimi_k3.py
+index c48cdf03e76af8349021ff97aea90a15cb54c8f2..817cc1a2ee6ca7e8bc58b854a38fdf3aa485b3b5 100644
+--- a/python/sglang/srt/multimodal/processors/kimi_k3.py
++++ b/python/sglang/srt/multimodal/processors/kimi_k3.py
+@@ -8,10 +8,15 @@ images onto the checkpoint-configured background
+ at load time.
+ """
+ 
++import asyncio
+ import functools
++import hashlib
++import json
+ import math
+ import re
+-from typing import Dict, List, Optional, Union
++import threading
++from dataclasses import dataclass
++from typing import Any, Dict, List, Literal, Optional, Union
+ 
+ import numpy as np
+ import torch
+@@ -27,7 +32,11 @@ from sglang.srt.models.kimi_k3 import (
+     KimiK3ForConditionalGeneration,
+     KimiK31ForConditionalGeneration,
+ )
+-from sglang.srt.multimodal.cache import resolve_multimodal_item_hash, snapshot_media
++from sglang.srt.multimodal.cache import (
++    CONTENT_HASH_PREFIX,
++    resolve_multimodal_item_hash,
++    snapshot_media,
++)
+ from sglang.srt.multimodal.kimi_k3_image_processing import (
+     DEFERRED_PREPROCESSING_KEY,
+     KimiK3DeferredPreprocessing,
+@@ -64,12 +73,13 @@ from sglang.srt.multimodal.processors.kimi_k25 import (
+     _get_image_dimensions,
+     _gpu_preprocess_images,
+     _grid_thw_from_resize_config,
++    _resize_bicubic_if_needed,
+     navit_resize_config,
+ )
+ from sglang.srt.multimodal.transport.cuda_ipc import (
+     DEFER_CUDA_IPC_FEATURE_RECONSTRUCTION_KEY,
+ )
+-from sglang.srt.utils import is_cuda
++from sglang.srt.utils import VideoData, is_cuda
+ 
+ 
+ def _encode_k3_special_tokens(tokenizer, text: str) -> list[int]:
+@@ -81,6 +91,211 @@ def _encode_k3_special_tokens(tokenizer, text: str) -> list[int]:
+         return list(tokenizer.encode(text))
+ 
+ 
++@dataclass(frozen=True)
++class _KimiK3VisualItem:
++    """One MoonViT input grid derived from an image or a video chunk."""
++
++    media_type: Literal["image", "video"]
++    frames: tuple[Any, ...]
++    source_index: int
++    in_patch_limit: int
++    timestamp_text: str = ""
++    frame_indices: tuple[int, ...] = ()
++    fps: float = 0.0
++    source_size: tuple[int, int] = (0, 0)
++    resize_config: Optional[dict] = None
++
++    @property
++    def size(self) -> tuple[int, int]:
++        return _get_image_dimensions(self.frames[0])
++
++
++def _format_k3_timestamp(timestamp: float, mode: str) -> str:
++    total_seconds = max(0, int(timestamp))
++    milliseconds = int((max(0.0, timestamp) % 1) * 1000)
++    hours = (total_seconds // 3600) % 24
++    minutes = (total_seconds // 60) % 60
++    seconds = total_seconds % 60
++    if mode == "hh:mm:ss.fff":
++        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
++    if mode == "mm:ss.fff":
++        return f"{(total_seconds // 60) % 60:02d}:{seconds:02d}.{milliseconds:03d}"
++    if mode == "mm:ss":
++        return f"{(total_seconds // 60) % 60:02d}:{seconds:02d}"
++    raise ValueError(f"Invalid Kimi-K3 timestamp mode: {mode}")
++
++
++def _video_frame_to_chw(frame):
++    if isinstance(frame, np.ndarray):
++        frame = torch.from_numpy(frame)
++        if frame.ndim == 3 and frame.shape[-1] in (1, 3, 4):
++            return frame.permute(2, 0, 1).contiguous()
++    if isinstance(frame, torch.Tensor):
++        if frame.ndim != 3:
++            raise ValueError(f"Expected a 3D video frame, got shape {frame.shape}.")
++        if frame.shape[-1] in (1, 3, 4) and frame.shape[0] not in (1, 3, 4):
++            frame = frame.permute(2, 0, 1)
++        return frame.contiguous()
++    if isinstance(frame, Image.Image):
++        return frame
++    raise TypeError(f"Unsupported Kimi-K3 video frame type: {type(frame)}")
++
++
++def _plan_k3_video(
++    video,
++    media_proc_cfg: dict,
++    source_index: int,
++) -> dict:
++    total_frames = len(video)
++    if total_frames <= 0:
++        raise ValueError("Kimi-K3 video input must contain at least one frame.")
++
++    avg_fps = float(getattr(video, "avg_fps", 0) or 0)
++    if not math.isfinite(avg_fps) or avg_fps <= 0:
++        raise ValueError("Kimi-K3 video input must report a positive frame rate.")
++
++    sample_fps = float(media_proc_cfg.get("sample_fps", 8.0))
++    if not math.isfinite(sample_fps) or sample_fps <= 0:
++        raise ValueError("Kimi-K3 sample_fps must be finite and positive")
++    sample_fps = min(sample_fps, avg_fps)
++    sampled_nframes = max(round(total_frames * (sample_fps / avg_fps)), 1)
++    max_frames = media_proc_cfg.get("max_num_frames_each_video")
++    if max_frames is not None:
++        sampled_nframes = min(sampled_nframes, max(1, int(max_frames)))
++    sampled_nframes = min(sampled_nframes, total_frames)
++
++    temporal_merge = int(media_proc_cfg.get("temporal_merge_kernel_size", 4))
++    if temporal_merge < 1 or temporal_merge > 4:
++        raise ValueError("Kimi-K3 temporal_merge_kernel_size must be between 1 and 4.")
++
++    per_frame_limit = int(
++        media_proc_cfg.get("in_patch_limit_each_frame")
++        or media_proc_cfg["in_patch_limit"]
++    )
++    total_patch_limit = media_proc_cfg.get("in_patch_limit_video")
++    if total_patch_limit is not None:
++        per_frame_limit = min(
++            per_frame_limit,
++            max(1, round(int(total_patch_limit) / sampled_nframes)),
++        )
++
++    source_height, source_width = video.frame_shape
++    if source_height <= 0 or source_width <= 0:
++        raise ValueError("Kimi-K3 video must report positive frame dimensions")
++    resize = navit_resize_config(
++        source_width,
++        source_height,
++        int(media_proc_cfg["patch_size"]),
++        int(media_proc_cfg["merge_kernel_size"]),
++        per_frame_limit,
++        int(media_proc_cfg["patch_limit_on_one_side"]),
++        media_proc_cfg.get("fixed_output_tokens"),
++    )
++    retained = sampled_nframes * resize["new_height"] * resize["new_width"] * 4
++    # Decode one chunk of uint8, resize one frame in float32, then stage uint8.
++    scratch = (
++        min(temporal_merge, sampled_nframes) * source_height * source_width * 4
++        + source_height * source_width * 4 * 4
++        + resize["new_height"] * resize["new_width"] * 4 * 4
++    )
++    return {
++        "sampled_nframes": sampled_nframes,
++        "total_frames": total_frames,
++        "fps": avg_fps,
++        "temporal_merge": temporal_merge,
++        "per_frame_limit": per_frame_limit,
++        "resize": resize,
++        "source_size": (source_width, source_height),
++        "retained_bytes": retained,
++        "scratch_bytes": scratch,
++        "visual_tokens": math.ceil(sampled_nframes / temporal_merge)
++        * resize["num_tokens"],
++    }
++
++
++def _split_k3_video(
++    video,
++    media_proc_cfg: dict,
++    source_index: int,
++    *,
++    plan: Optional[dict] = None,
++    cancelled: Optional[threading.Event] = None,
++) -> list[_KimiK3VisualItem]:
++    plan = plan or _plan_k3_video(video, media_proc_cfg, source_index)
++    sampled_nframes = plan["sampled_nframes"]
++    temporal_merge = plan["temporal_merge"]
++    resize = plan["resize"]
++    timestamp_mode = media_proc_cfg.get("timestamp_mode", "hh:mm:ss.fff")
++    chunks = []
++    for start in range(0, sampled_nframes, temporal_merge):
++        if cancelled is not None and cancelled.is_set():
++            raise ValueError("Kimi-K3 video preprocessing cancelled")
++        # Exact round-to-even uniform sampling, generated one chunk at a time;
++        # untrusted frame counts never allocate a request-sized index array.
++        indices = []
++        for index in range(start, min(start + temporal_merge, sampled_nframes)):
++            denominator = sampled_nframes - 1
++            if denominator == 0:
++                indices.append(0)
++            else:
++                whole, remainder = divmod(
++                    (plan["total_frames"] - 1) * index, denominator
++                )
++                indices.append(
++                    whole
++                    + int(
++                        2 * remainder > denominator
++                        or (2 * remainder == denominator and whole % 2)
++                    )
++                )
++        try:
++            # One CPU decoder and at most one temporal chunk at a time. The
++            # tensor API can spawn up to sixteen extra decoder threads.
++            if hasattr(video, "get_frames_at"):
++                decoded_frames = video.get_frames_at(indices)
++            else:
++                decoded_frames = [video[index] for index in indices]
++        except (ImportError, MemoryError, torch.OutOfMemoryError):
++            raise
++        except RuntimeError as error:
++            raise ValueError(f"Could not decode Kimi-K3 video: {error}") from error
++        frames = []
++        for frame in decoded_frames:
++            if cancelled is not None and cancelled.is_set():
++                raise ValueError("Kimi-K3 video preprocessing cancelled")
++            frame = to_chw_uint8(_video_frame_to_chw(frame), device="cpu")
++            width, height = _get_image_dimensions(frame)
++            if (width, height) != plan["source_size"]:
++                raise ValueError("Kimi-K3 video frame shape differs from metadata")
++            target = (resize["new_height"], resize["new_width"])
++            if tuple(frame.shape[-2:]) != target:
++                frame = (
++                    _resize_bicubic_if_needed(frame.unsqueeze(0), *target)
++                    .squeeze(0)
++                    .to(torch.uint8)
++                )
++            frames.append(frame.contiguous())
++        del decoded_frames
++        if len(frames) != len(indices):
++            raise ValueError("Kimi-K3 video decoder did not return every sampled frame")
++        chunks.append(
++            _KimiK3VisualItem(
++                media_type="video",
++                frames=tuple(frames),
++                source_index=source_index,
++                in_patch_limit=plan["per_frame_limit"],
++                timestamp_text=_format_k3_timestamp(
++                    indices[0] / plan["fps"], timestamp_mode
++                ),
++                frame_indices=tuple(indices),
++                fps=plan["fps"],
++                source_size=plan["source_size"],
++                resize_config=plan["resize"],
++            )
++        )
++    return chunks
++
++
+ def _expand_k3_image_prompt_token_ids(
+     input_ids: Union[List[int], torch.Tensor],
+     image_token_id: int,
+@@ -130,6 +345,62 @@ def _expand_k3_image_prompt_token_ids(
+     return torch.tensor(output, dtype=torch.long).unsqueeze(0)
+ 
+ 
++def _expand_k3_visual_prompt_token_ids(
++    input_ids: Union[List[int], torch.Tensor],
++    image_token_id: int,
++    visual_items: list[_KimiK3VisualItem],
++    resize_configs: list[dict],
++    tokenizer,
++) -> torch.Tensor:
++    """Replace each source-media placeholder with its MoonViT grid(s)."""
++    if len(visual_items) != len(resize_configs):
++        raise ValueError("Expected one resize config for each Kimi-K3 visual item.")
++
++    if isinstance(input_ids, torch.Tensor):
++        input_ids = input_ids.detach().flatten().cpu().numpy()
++    input_ids = np.asarray(input_ids, dtype=np.int64)
++
++    groups: list[list[tuple[_KimiK3VisualItem, dict]]] = []
++    for item, config in zip(visual_items, resize_configs):
++        if item.source_index == len(groups):
++            groups.append([])
++        elif item.source_index != len(groups) - 1:
++            raise ValueError("Kimi-K3 visual items are not ordered by source media.")
++        groups[item.source_index].append((item, config))
++
++    placeholder_count = int(np.count_nonzero(input_ids == image_token_id))
++    if placeholder_count != len(groups):
++        raise ValueError(
++            f"Expected {len(groups)} visual placeholder token(s), "
++            f"found {placeholder_count}."
++        )
++
++    output = []
++    source_index = 0
++    for token_id in input_ids:
++        if token_id != image_token_id:
++            output.append(int(token_id))
++            continue
++
++        group = groups[source_index]
++        if group[0][0].media_type == "image" and len(group) != 1:
++            raise ValueError("A Kimi-K3 image source must produce exactly one grid.")
++        for item, config in group:
++            if item.media_type == "image":
++                width, height = item.size
++                media_prefix = f"<|media_begin|>image {width}x{height}<|media_content|>"
++            else:
++                media_prefix = (
++                    f"{item.timestamp_text}<|media_begin|>video<|media_content|>"
++                )
++            output.extend(_encode_k3_special_tokens(tokenizer, media_prefix))
++            output.extend([image_token_id] * int(config["num_tokens"]))
++            output.extend(_encode_k3_special_tokens(tokenizer, "<|media_end|>"))
++        source_index += 1
++
++    return torch.tensor(output, dtype=torch.long).unsqueeze(0)
++
++
+ def _expand_k3_image_prompt_text(
+     input_text: str,
+     image_token: str,
+@@ -171,6 +442,48 @@ def _k3_to_cuda_chw(image: Union[torch.Tensor, Image.Image]) -> torch.Tensor:
+     return image
+ 
+ 
++def _gpu_preprocess_k3_visual_items(
++    visual_items: list[_KimiK3VisualItem],
++    resize_configs: list[dict],
++    image_scale: torch.Tensor,
++    image_bias: torch.Tensor,
++    patch_size: int,
++    transparent_bg_config: Optional[dict],
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Preprocess image/video frames and restore each item's temporal grid."""
++    if len(visual_items) != len(resize_configs):
++        raise ValueError("Expected one resize config for each Kimi-K3 visual item.")
++
++    frames = []
++    frame_configs = []
++    for item, config in zip(visual_items, resize_configs):
++        frames.extend(item.frames)
++        frame_configs.extend([config] * len(item.frames))
++
++    pixel_values, frame_grids = _gpu_preprocess_images(
++        frames,
++        frame_configs,
++        image_scale,
++        image_bias,
++        patch_size,
++        to_chw=_k3_to_cuda_chw,
++        post_resize=lambda x: _fill_transparent_bg(x, transparent_bg_config),
++    )
++
++    grids = []
++    frame_index = 0
++    for item in visual_items:
++        item_grids = frame_grids[frame_index : frame_index + len(item.frames)]
++        frame_index += len(item.frames)
++        if len(item_grids) == 0 or not torch.all(item_grids[:, 0] == 1):
++            raise ValueError("Expected one spatial MoonViT grid per video frame.")
++        if not torch.all(item_grids[:, 1:] == item_grids[0, 1:]):
++            raise ValueError("Kimi-K3 video frames must share one spatial grid.")
++        grids.append((len(item.frames), *item_grids[0, 1:].tolist()))
++
++    return pixel_values, torch.tensor(grids, dtype=torch.int64)
++
++
+ class KimiK3GPUProcessorWrapper(KimiGPUProcessorWrapper):
+     def __init__(self, hf_processor, image_token, image_token_id, config):
+         self.preprocess_config = config
+@@ -391,6 +704,7 @@ class KimiK3ImageProcessor(
+     supports_mm_processor_concurrency = True
+     preserve_processor_input_ids = True
+     uses_wide_image_identity = True
++    video_preprocessing_device = "cpu"
+ 
+     def __init__(self, hf_config, server_args, _processor, *args, **kwargs):
+         mm_tokens = MultimodalSpecialTokens(
+@@ -411,6 +725,275 @@ class KimiK3ImageProcessor(
+         )
+         super().__init__(hf_config, server_args, processor, *args, **kwargs)
+         self.mm_tokens = mm_tokens
++        self.media_proc_cfg = dict(_processor.media_processor.media_proc_cfg)
++
++    @staticmethod
++    def _resolve_visual_modalities(request_obj, image_count, video_count):
++        modalities = []
++        for modality in getattr(request_obj, "modalities", None) or []:
++            if isinstance(modality, list):
++                modalities.extend(modality)
++            else:
++                modalities.append(modality)
++
++        if not modalities:
++            return ["image"] * image_count + ["video"] * video_count
++        if (
++            any(modality not in ("image", "video") for modality in modalities)
++            or modalities.count("image") != image_count
++            or modalities.count("video") != video_count
++        ):
++            raise ValueError(
++                "Kimi-K3 media order does not match the supplied image/video data."
++            )
++        return modalities
++
++    def _process_video_data_sync(
++        self, image_data, input_text, request_obj, cancelled=None
++    ):
++        """Decode CPU frames and stage raw items; no GPU preprocessing here.
++
++        This whole operation belongs to an IO worker, including decoder cleanup.
++        Cancellation of the awaiting request does not abandon an open decoder.
++        """
++        video_data = list(request_obj.video_data)
++        modalities = self._resolve_visual_modalities(
++            request_obj, len(image_data), len(video_data)
++        )
++        image_iter, video_iter = iter(image_data), iter(video_data)
++        visual_items, image_sources, records = [], {}, {}
++        retained_bytes = scratch_bytes = visual_tokens = 0
++        config = self._processor.preprocess_config
++        budget = envs.SGLANG_K3_VIDEO_MAX_DECODE_BYTES.get()
++        if budget <= 0:
++            raise ValueError("Kimi-K3 video decode byte budget must be positive")
++
++        def check_staging_budget():
++            if 2 * retained_bytes + scratch_bytes > budget:
++                raise ValueError(
++                    "Kimi-K3 video CPU staging exceeds the request decode byte budget; "
++                    "use a lower fps or max_frames"
++                )
++
++        try:
++            # Plan every source before decoding any video frame. The video patch
++            # budget is divided among sampled frames, so 4K sources can be held
++            # at their configured NaViT size rather than their original size.
++            for source_index, modality in enumerate(modalities):
++                if cancelled is not None and cancelled.is_set():
++                    raise ValueError("Kimi-K3 video preprocessing cancelled")
++                if modality == "image":
++                    source = self._load_single_item(
++                        next(image_iter), Modality.IMAGE, discard_alpha_channel=False
++                    )
++                    image_sources[source_index] = source
++                    width, height = _get_image_dimensions(
++                        unwrap_kimi_images([source])[0]
++                    )
++                    retained_bytes += width * height * 4
++                    resize = navit_resize_config(
++                        width,
++                        height,
++                        config.patch_size,
++                        config.merge_kernel_size,
++                        config.in_patch_limit,
++                        config.patch_limit_on_one_side,
++                        config.fixed_output_tokens,
++                    )
++                    visual_tokens += resize["num_tokens"]
++                    check_staging_budget()
++                    continue
++
++                data = next(video_iter)
++                media_config = dict(self.media_proc_cfg)
++                if isinstance(data, VideoData):
++                    options = data.preprocess_kwargs or {}
++                    unsupported = set(options) - {"fps", "max_frames"}
++                    if unsupported or data.max_long_side_pixel is not None:
++                        raise ValueError(
++                            "Kimi-K3 video supports fps and max_frames sampling options only"
++                        )
++                    for name, target in (
++                        ("fps", "sample_fps"),
++                        ("max_frames", "max_num_frames_each_video"),
++                    ):
++                        if name in options:
++                            value = options[name]
++                            if not math.isfinite(value) or value <= 0:
++                                raise ValueError(
++                                    f"Kimi-K3 video {name} must be positive"
++                                )
++                            media_config[target] = value
++                video = self._load_single_item(data, Modality.VIDEO)
++                records[source_index] = (video, media_config, None)
++                plan = _plan_k3_video(video, media_config, source_index)
++                records[source_index] = (video, media_config, plan)
++                retained_bytes += plan["retained_bytes"]
++                scratch_bytes = max(scratch_bytes, plan["scratch_bytes"])
++                visual_tokens += plan["visual_tokens"]
++                check_staging_budget()
++            original_ids = input_text
++            if isinstance(input_text, str):
++                original_ids = _encode_k3_special_tokens(self._tokenizer, input_text)
++            context_limit = getattr(
++                self.server_args, "context_length", None
++            ) or getattr(self.hf_config, "max_position_embeddings", None)
++            # A lower bound can reject impossible inputs before decode without
++            # guessing the tokenizer's timestamp/header length. The standard
++            # context check still validates the fully expanded prompt later.
++            if (
++                context_limit
++                and len(original_ids) - len(modalities) + visual_tokens > context_limit
++            ):
++                raise ValueError(
++                    "Kimi-K3 visual input exceeds the model context budget"
++                )
++
++            for source_index, modality in enumerate(modalities):
++                if modality == "image":
++                    image = unwrap_kimi_images([image_sources[source_index]])[0]
++                    visual_items.append(
++                        _KimiK3VisualItem(
++                            media_type="image",
++                            frames=(image,),
++                            source_index=source_index,
++                            in_patch_limit=int(self.media_proc_cfg["in_patch_limit"]),
++                        )
++                    )
++                else:
++                    video, media_config, plan = records[source_index]
++                    visual_items.extend(
++                        _split_k3_video(
++                            video,
++                            media_config,
++                            source_index,
++                            plan=plan,
++                            cancelled=cancelled,
++                        )
++                    )
++        finally:
++            for video, _, _ in records.values():
++                close = getattr(video, "close", None)
++                if close is not None:
++                    close()
++
++        resize_configs = []
++        config = self._processor.preprocess_config
++        for visual in visual_items:
++            if visual.media_type == "video":
++                resize_configs.append(visual.resize_config)
++                continue
++            width, height = visual.size
++            resize_configs.append(
++                navit_resize_config(
++                    width,
++                    height,
++                    config.patch_size,
++                    config.merge_kernel_size,
++                    visual.in_patch_limit,
++                    config.patch_limit_on_one_side,
++                    config.fixed_output_tokens,
++                )
++            )
++        original_ids = input_text
++        if isinstance(input_text, str):
++            original_ids = _encode_k3_special_tokens(self._tokenizer, input_text)
++        input_ids = _expand_k3_visual_prompt_token_ids(
++            original_ids,
++            self.mm_tokens.image_token_id,
++            visual_items,
++            resize_configs,
++            self._tokenizer,
++        ).flatten()
++        offsets = self.get_mm_items_offset(input_ids, self.mm_tokens.image_token_id)
++        if len(offsets) != len(visual_items):
++            raise ValueError("Expected one Kimi-K3 media span per visual grid")
++
++        items = []
++        for visual, resize, offset in zip(visual_items, resize_configs, offsets):
++            frames = [to_chw_uint8(frame, device="cpu") for frame in visual.frames]
++            shape = frames[0].shape
++            if any(frame.shape != shape for frame in frames):
++                raise ValueError("Kimi-K3 video frames must share one shape")
++            raw = (
++                torch.stack(frames).contiguous()
++                if visual.media_type == "video"
++                else frames[0].contiguous()
++            )
++            spatial_grid = _grid_thw_from_resize_config(resize, config.patch_size)
++            grid = (len(frames), *spatial_grid[1:])
++            item = MultimodalDataItem(
++                modality=Modality.VIDEO
++                if visual.media_type == "video"
++                else Modality.IMAGE,
++                feature=raw,
++                offsets=[offset],
++                model_specific_data={
++                    "image_grid_thw": torch.tensor([grid], dtype=torch.int64),
++                    DEFERRED_PREPROCESSING_KEY: KimiK3DeferredPreprocessing(
++                        backend="gpu_video" if visual.media_type == "video" else "gpu",
++                        image_mean=list(config.image_mean),
++                        image_std=list(config.image_std),
++                        transparent_bg_config=config.transparent_bg_config,
++                        resize_config=resize,
++                    ),
++                },
++            )
++            if visual.media_type == "image":
++                self.assign_kimi_image_identities(
++                    [item], [image_sources[visual.source_index]]
++                )
++            else:
++                # Full identity covers every frame byte and the temporal contract.
++                digest = hashlib.sha256()
++                digest.update(memoryview(raw.numpy()).cast("B"))
++                digest.update(
++                    json.dumps(
++                        {
++                            "shape": list(raw.shape),
++                            "dtype": str(raw.dtype),
++                            "source_index": visual.source_index,
++                            "indices": visual.frame_indices,
++                            "fps": visual.fps,
++                            "timestamp": visual.timestamp_text,
++                            "source_size": visual.source_size,
++                            "resize": resize,
++                            "processor": self._kimi_config_fingerprint(),
++                        },
++                        sort_keys=True,
++                    ).encode()
++                )
++                item.set_identity(
++                    kimi_image_identity(CONTENT_HASH_PREFIX + digest.hexdigest(), grid)
++                )
++            items.append(item)
++        self._precompute_hashes_before_cpu_transfer(items)
++        return MultimodalProcessorOutput(
++            input_ids=input_ids.tolist(),
++            mm_items=items,
++            im_token_id=self.mm_tokens.image_token_id,
++            video_token_id=self.mm_tokens.image_token_id,
++        )
++
++    async def _process_video_data_async(self, image_data, input_text, request_obj):
++        cancelled = threading.Event()
++        future = asyncio.get_running_loop().run_in_executor(
++            self.io_executor,
++            self._process_video_data_sync,
++            image_data,
++            input_text,
++            request_obj,
++            cancelled,
++        )
++        try:
++            return await asyncio.shield(future)
++        except asyncio.CancelledError:
++            cancelled.set()
++            # The worker owns decoder cleanup even if the client disconnects.
++            future.add_done_callback(
++                lambda done: done.exception() if not done.cancelled() else None
++            )
++            raise
+ 
+     def _should_defer_gpu_preprocessing(self, images) -> bool:
+         """
+@@ -738,10 +1321,37 @@ class KimiK3ImageProcessor(
+         *args,
+         **kwargs,
+     ):
+-        if request_obj.video_data or kwargs.get("audio_data"):
+-            raise ValueError("Kimi-K3 supports image input only")
++        if kwargs.get("audio_data") or getattr(request_obj, "audio_data", None):
++            raise ValueError(
++                "Kimi-K3 supports image and video input without audio only"
++            )
+         self.reject_caller_image_identity(image_data, request_obj)
+ 
++        video_data = list(getattr(request_obj, "video_data", None) or [])
++        if video_data:
++            self.reject_caller_image_identity(video_data, request_obj)
++            if any(self._is_preprocessed_input(item) for item in image_data or []):
++                raise ValueError(
++                    "Preprocessed images cannot be mixed with Kimi-K3 video"
++                )
++            expected = len(image_data or []) + len(video_data)
++            count = self.count_image_placeholders(
++                input_text, self.mm_tokens.image_token_id
++            )
++            if count is None:
++                count = input_text.count(self.mm_tokens.image_token)
++            if count != expected:
++                raise ValueError(
++                    "Kimi visual placeholders must map one-to-one to source media: "
++                    f"expected {expected}, found {count} token(s)"
++                )
++            self._resolve_visual_modalities(
++                request_obj, len(image_data or []), len(video_data)
++            )
++            return await self._process_video_data_async(
++                list(image_data or []), input_text, request_obj
++            )
++
+         expected_image_count = len(image_data or [])
+         placeholder_count = self.count_image_placeholders(
+             input_text, self.mm_tokens.image_token_id
+diff --git a/test/registered/unit/entrypoints/openai/test_serving_chat.py b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+index 116691cb86679070390f8a1e61ed16d3c02678a7..a16b36f59461e4cf92dc1e67044b9b14ff965a87 100644
+--- a/test/registered/unit/entrypoints/openai/test_serving_chat.py
++++ b/test/registered/unit/entrypoints/openai/test_serving_chat.py
+@@ -1939,7 +1939,7 @@ class ServingChatTestCase(CustomTestCase):
+                     "id": "chatcmpl-kimi-k3-usage",
+                     "prompt_tokens": 2075,
+                     "completion_tokens": 1,
+-                    "cached_tokens": 0,
++                    "cached_tokens": 2073,
+                     "image_tokens": 2035,
+                     "finish_reason": {"type": "stop", "matched": None},
+                     "weight_version": "default",
+@@ -1951,8 +1951,25 @@ class ServingChatTestCase(CustomTestCase):
+ 
+         self.assertEqual(response.usage.prompt_tokens, 2072)
+         self.assertEqual(response.usage.total_tokens, 2073)
++        self.assertEqual(response.usage.prompt_tokens_details.cached_tokens, 2072)
+         self.assertEqual(response.usage.prompt_tokens_details.image_tokens, 2035)
+ 
++    def test_reported_cached_tokens_preserves_prefixes_and_other_encodings(self):
++        for encoding, prompt, cached, expected in (
++            ("kimi_k3", 6210, 6000, 6000),
++            ("kimi_k3", 6210, 6208, 6207),
++            ("kimi_k3", 2, 1, 0),
++            (None, 6210, 6208, 6208),
++        ):
++            with self.subTest(encoding=encoding, prompt=prompt, cached=cached):
++                self.chat.chat_encoding_spec = encoding
++                self.assertEqual(
++                    self.chat._reported_cached_tokens(
++                        {"prompt_tokens": prompt, "cached_tokens": cached}
++                    ),
++                    expected,
++                )
++
+     def test_kimi_tool_call_keeps_default_reasoning(self):
+         self.template_manager.reasoning_config = ReasoningToggleConfig(
+             toggle_param="thinking", default_enabled=True
+@@ -2895,6 +2912,36 @@ class ServingChatTestCase(CustomTestCase):
+         self.assertEqual(result.prompt_ids, [7, 8, 9])
+         self.assertEqual(result.image_data[0].url, "image-1")
+ 
++    def test_kimi_k3_routes_video_through_one_structural_media_placeholder(self):
++        self.template_manager.chat_template_name = None
++        self.chat.chat_encoding_spec = "kimi_k3"
++        self.tm.model_config.is_multimodal = True
++        self.tm.tokenizer.apply_chat_template.return_value = [7, 99, 8]
++        request = ChatCompletionRequest(
++            model="x",
++            messages=[
++                {
++                    "role": "user",
++                    "content": [
++                        {
++                            "type": "video_url",
++                            "video_url": {"url": "https://example.com/video.mp4"},
++                        },
++                        {"type": "text", "text": "Describe it."},
++                    ],
++                }
++            ],
++        )
++
++        result = self.chat._process_messages(request, is_multimodal=True)
++
++        call = self.tm.tokenizer.apply_chat_template.call_args
++        self.assertEqual(call.kwargs["image_prompts"], ["<|media_pad|>"])
++        self.assertEqual(call.args[0][0]["content"][0]["type"], "image_url")
++        self.assertIsNone(result.image_data)
++        self.assertEqual(result.video_data, ["https://example.com/video.mp4"])
++        self.assertEqual(result.modalities, ["video"])
++
+     def test_kimi_k3_neutralizes_text_only_assistant_history(self):
+         self.template_manager.chat_template_name = None
+         self.chat.chat_encoding_spec = "kimi_k3"
+@@ -5433,7 +5480,9 @@ class ServingChatTestCase(CustomTestCase):
+                 choice_logprobs=None,
+                 finish_reason_type="stop",
+                 continuous_usage_stats=True,
+-                prompt_tokens={0: 10},
++                prompt_tokens={
++                    0: self.chat._reported_prompt_tokens(content["meta_info"])
++                },
+                 reasoning_tokens={0: 0},
+                 completion_tokens={0: 2},
+             ):
+@@ -5457,6 +5506,16 @@ class ServingChatTestCase(CustomTestCase):
+                     cached_tokens,
+                 )
+ 
++    def test_kimi_k3_continuous_usage_excludes_cached_generation_stub(self):
++        self.chat.chat_encoding_spec = "kimi_k3"
++        enter_override(
++            self, get_context().override_server_args(enable_cache_report=True)
++        )
++        usages = self._collect_continuous_usage(cached_tokens=8)
++        self.assertTrue(usages, "continuous_usage_stats attached no usage")
++        self.assertEqual(usages[0]["prompt_tokens"], 7)
++        self.assertEqual(usages[0]["prompt_tokens_details"]["cached_tokens"], 7)
++
+     def test_continuous_usage_omits_cached_tokens_when_report_disabled(self):
+         """With cache reporting off, continuous_usage_stats must not leak cached tokens."""
+         enter_override(
+@@ -6660,7 +6719,11 @@ class K3StreamSpecConformanceTestCase(unittest.TestCase):
+         with envs.SGLANG_USAGE_HEADER_PREFIX.override("X-Test-Usage"):
+             frames = self._frames(
+                 self._stream(
+-                    [self._event(finish={"type": "stop", "matched": None})],
++                    [
++                        self._event(
++                            finish={"type": "stop", "matched": None}, cached_tokens=8
++                        )
++                    ],
+                     req,
+                     usage_headers=headers,
+                 )
+@@ -6675,6 +6738,9 @@ class K3StreamSpecConformanceTestCase(unittest.TestCase):
+         )
+         # And the reported prompt count still excludes K3's generation stub.
+         self.assertEqual(usage["prompt_tokens"], 10 - self._STUB)
++        self.assertEqual(
++            usage["prompt_tokens_details"]["cached_tokens"], 10 - self._STUB
++        )
+ 
+     def test_usage_headers_are_off_without_a_prefix(self):
+         """No SGLANG_USAGE_HEADER_PREFIX: no usage headers are sent."""
+diff --git a/test/registered/unit/models/test_kimi_k25.py b/test/registered/unit/models/test_kimi_k25.py
+index 1a384929e19c9d6b3065b4fe232218437fcb4ad4..a1e3210e55f787cfa37ef55b32d0a08f60aca4cf 100644
+--- a/test/registered/unit/models/test_kimi_k25.py
++++ b/test/registered/unit/models/test_kimi_k25.py
+@@ -26,6 +26,7 @@ from sglang.srt.managers.schedule_batch import (
+     MultimodalProcessorOutput,
+ )
+ from sglang.srt.models.kimi_k3 import KimiK3ForConditionalGeneration
++from sglang.srt.models.kimi_k3_vl import Learnable2DInterpPosEmbDividedFixed
+ from sglang.srt.models.kimi_k25 import (
+     KimiK25ForConditionalGeneration,
+     mm_projection_auto,
+@@ -57,6 +58,10 @@ from sglang.srt.multimodal.processors.kimi_k3 import (
+     KimiK3ImageProcessor,
+     _expand_k3_image_prompt_text,
+     _expand_k3_image_prompt_token_ids,
++    _expand_k3_visual_prompt_token_ids,
++    _gpu_preprocess_k3_visual_items,
++    _KimiK3VisualItem,
++    _split_k3_video,
+ )
+ from sglang.srt.multimodal.processors.kimi_k25 import (
+     KimiGPUProcessorWrapper,
+@@ -585,16 +590,57 @@ def test_kimi_lazy_vmm_cache_hit_uses_proxy_consumer_count():
+     proxy.acknowledge_consumption.assert_called_once_with(2)
+ 
+ 
++def test_kimi_k3_temporal_position_embedding_follows_weight_device():
++    position_embedding = Learnable2DInterpPosEmbDividedFixed(
++        height=2,
++        width=2,
++        num_frames=2,
++        dim=4,
++    )
++    position_embedding.weight = nn.Parameter(position_embedding.weight.to("meta"))
++
++    output = position_embedding.position_embeddings(torch.tensor([[2, 2, 2]]))
++
++    assert output.device.type == "meta"
++
++
+ class _Tokenizer:
+     def encode(self, text, allowed_special=None):
+         tokens = {
+             "<|media_begin|>image 1536x1024<|media_content|>": [10, 11],
+             "<|media_begin|>image 1024x1536<|media_content|>": [12, 13],
++            "00:00:00.000<|media_begin|>video<|media_content|>": [20, 21],
++            "00:00:01.000<|media_begin|>video<|media_content|>": [22, 23],
+             "<|media_end|>": [14],
+         }
+         return tokens.get(text, [])
+ 
+ 
++class _FakeVideo:
++    def __init__(self, frame_count=10, fps=5.0):
++        self.frames = (
++            torch.arange(frame_count * 6 * 8 * 3)
++            .remainder(256)
++            .to(torch.uint8)
++            .reshape(frame_count, 6, 8, 3)
++        )
++        self.avg_fps = fps
++        self.frame_shape = (6, 8)
++        self.closed = False
++
++    def __len__(self):
++        return len(self.frames)
++
++    def get_frames_as_tensor(self, indices):
++        return self.frames[indices]
++
++    def get_frames_at(self, indices):
++        return self.frames[indices].numpy()
++
++    def close(self):
++        self.closed = True
++
++
+ class _HFProcessor:
+     def __init__(self):
+         self.tokenizer = _Tokenizer()
+@@ -730,6 +776,108 @@ def test_kimi_k3_expands_image_placeholders_with_original_dimensions():
+     assert actual.tolist() == [[1, 10, 11, 99, 99, 99, 14, 2, 12, 13, 99, 99, 14, 3]]
+ 
+ 
++def test_kimi_k3_expands_one_video_placeholder_into_timestamped_chunks():
++    image = Image.new("RGB", (1536, 1024))
++    frame = torch.zeros(3, 6, 8, dtype=torch.uint8)
++    visual_items = [
++        _KimiK3VisualItem("image", (image,), 0, 16384),
++        _KimiK3VisualItem("video", (frame,) * 4, 1, 8192, "00:00:00.000"),
++        _KimiK3VisualItem("video", (frame,) * 4, 1, 8192, "00:00:01.000"),
++    ]
++
++    actual = _expand_k3_visual_prompt_token_ids(
++        [1, 99, 2, 99, 3],
++        99,
++        visual_items,
++        [{"num_tokens": 3}, {"num_tokens": 2}, {"num_tokens": 2}],
++        _Tokenizer(),
++    )
++
++    assert actual.tolist() == [
++        [
++            1,
++            10,
++            11,
++            99,
++            99,
++            99,
++            14,
++            2,
++            20,
++            21,
++            99,
++            99,
++            14,
++            22,
++            23,
++            99,
++            99,
++            14,
++            3,
++        ]
++    ]
++
++
++def test_kimi_k3_samples_and_splits_video_into_four_frame_grids():
++    video = _FakeVideo(frame_count=10, fps=5.0)
++    config = {
++        "patch_size": 2,
++        "merge_kernel_size": 2,
++        "patch_limit_on_one_side": 512,
++        "fixed_output_tokens": None,
++        "sample_fps": 4,
++        "max_num_frames_each_video": None,
++        "temporal_merge_kernel_size": 4,
++        "in_patch_limit": 100,
++        "in_patch_limit_each_frame": 20,
++        "in_patch_limit_video": 80,
++        "timestamp_mode": "hh:mm:ss.fff",
++    }
++
++    chunks = _split_k3_video(video, config, source_index=0)
++
++    assert [len(chunk.frames) for chunk in chunks] == [4, 4]
++    assert [chunk.timestamp_text for chunk in chunks] == [
++        "00:00:00.000",
++        "00:00:01.000",
++    ]
++    assert all(chunk.in_patch_limit == 10 for chunk in chunks)
++    assert all(frame.shape == (3, 5, 7) for chunk in chunks for frame in chunk.frames)
++
++
++def test_kimi_k3_preprocess_preserves_temporal_grid_dimension():
++    frames = tuple(torch.full((3, 14, 14), i, dtype=torch.uint8) for i in range(4))
++    item = _KimiK3VisualItem(
++        "video",
++        frames,
++        source_index=0,
++        in_patch_limit=100,
++        timestamp_text="00:00:00.000",
++    )
++    resize_config = {
++        "new_height": 14,
++        "new_width": 14,
++        "pad_height": 14,
++        "pad_width": 14,
++    }
++
++    with patch(
++        "sglang.srt.multimodal.processors.kimi_k3._k3_to_cuda_chw",
++        side_effect=lambda frame: frame,
++    ):
++        pixel_values, grid_thw = _gpu_preprocess_k3_visual_items(
++            [item],
++            [resize_config],
++            torch.full((1, 3, 1, 1), 1 / 255),
++            torch.zeros(1, 3, 1, 1),
++            patch_size=14,
++            transparent_bg_config=None,
++        )
++
++    assert pixel_values.shape == (16, 3, 14, 14)
++    assert grid_thw.tolist() == [[4, 2, 2]]
++
++
+ def test_kimi_k3_cpu_prompt_uses_the_same_media_contract():
+     actual = _expand_k3_image_prompt_text(
+         "before<|media_pad|>between<|media_pad|>after",
+@@ -1471,7 +1619,7 @@ def test_kimi_k3_rejects_silently_dropped_images():
+     processor.mm_preprocess_cache = MultimodalPreprocessCache(0)
+     processor.load_mm_data = AsyncMock(return_value=SimpleNamespace(images=[object()]))
+ 
+-    with pytest.raises(ValueError, match="expected 2, loaded 1"):
++    with pytest.raises(ValueError, match=r"expected 2, loaded 1"):
+         asyncio.run(
+             processor.process_mm_data_async(
+                 image_data=["image-1", "image-2"],
+@@ -1510,6 +1658,57 @@ def test_kimi_k3_uses_token_ids_to_preserve_media_boundaries():
+     processor.load_mm_data.assert_not_awaited()
+ 
+ 
++def test_kimi_k3_loads_mixed_media_and_preserves_source_order():
++    processor = object.__new__(KimiK3ImageProcessor)
++    processor.mm_feature_transport = "cpu"
++    processor.mm_tokens = SimpleNamespace(
++        image_token="<|media_pad|>", image_token_id=99
++    )
++    processor.media_proc_cfg = {
++        "patch_size": 2,
++        "merge_kernel_size": 2,
++        "patch_limit_on_one_side": 512,
++        "fixed_output_tokens": None,
++        "sample_fps": 4,
++        "max_num_frames_each_video": None,
++        "temporal_merge_kernel_size": 4,
++        "in_patch_limit": 100,
++        "in_patch_limit_each_frame": 20,
++        "in_patch_limit_video": 80,
++        "timestamp_mode": "hh:mm:ss.fff",
++    }
++    video = _FakeVideo(frame_count=10, fps=5.0)
++    processor._processor = SimpleNamespace(
++        preprocess_config=_k3_preprocess_config(patch_size=2, in_patch_limit=100)
++    )
++    processor._tokenizer = _Tokenizer()
++    processor.processor_fingerprint = "mixed-video-test"
++    processor.server_args = SimpleNamespace(context_length=100000)
++    processor.hf_config = SimpleNamespace()
++    processor._precompute_hashes_before_cpu_transfer = Mock()
++    processor._load_single_item = Mock(side_effect=[video, Image.new("RGB", (8, 6))])
++    with ThreadPoolExecutor(max_workers=1) as executor:
++        processor.io_executor = executor
++        output = asyncio.run(
++            processor.process_mm_data_async(
++                image_data=["image-1"],
++                input_text=[1, 99, 2, 99, 3],
++                request_obj=SimpleNamespace(
++                    video_data=["video-1"], modalities=["video", "image"]
++                ),
++            )
++        )
++    assert [item.modality for item in output.mm_items] == [
++        Modality.VIDEO,
++        Modality.VIDEO,
++        Modality.IMAGE,
++    ]
++    assert [item.feature.shape[0] for item in output.mm_items[:2]] == [4, 4]
++    assert all(item.feature.device.type == "cpu" for item in output.mm_items)
++    assert all(item.identity is not None for item in output.mm_items)
++    assert video.closed
++
++
+ def test_kimi_k3_rejects_tokenized_placeholder_mismatch():
+     processor = object.__new__(KimiK3ImageProcessor)
+     processor.mm_tokens = SimpleNamespace(image_token_id=99)
+@@ -1529,25 +1728,18 @@ def test_kimi_k3_rejects_tokenized_placeholder_mismatch():
+     processor.load_mm_data.assert_not_awaited()
+ 
+ 
+-@pytest.mark.parametrize(
+-    ("request_obj", "extra_kwargs"),
+-    [
+-        (SimpleNamespace(video_data=["video"]), {}),
+-        (SimpleNamespace(video_data=None), {"audio_data": ["audio"]}),
+-    ],
+-)
+-def test_kimi_k3_rejects_unsupported_modalities(request_obj, extra_kwargs):
++def test_kimi_k3_rejects_audio_input():
+     processor = object.__new__(KimiK3ImageProcessor)
+     processor.mm_tokens = Mock()
+     processor.load_mm_data = AsyncMock()
+ 
+-    with pytest.raises(ValueError, match="supports image input only"):
++    with pytest.raises(ValueError, match=r"video input without audio only"):
+         asyncio.run(
+             processor.process_mm_data_async(
+                 image_data=[],
+                 input_text="prompt",
+-                request_obj=request_obj,
+-                **extra_kwargs,
++                request_obj=SimpleNamespace(video_data=None),
++                audio_data=["audio"],
+             )
+         )
+     processor.load_mm_data.assert_not_awaited()
+diff --git a/test/registered/unit/models/test_kimi_k3_video.py b/test/registered/unit/models/test_kimi_k3_video.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ffb43f67664b48bcea1ed8b8aa5143813f03ddcb
+--- /dev/null
++++ b/test/registered/unit/models/test_kimi_k3_video.py
+@@ -0,0 +1,467 @@
++"""CPU checks for bounded Kimi-K3 video staging and owner-side encoding."""
++
++import asyncio
++import base64
++import io
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from types import SimpleNamespace
++from unittest.mock import Mock, patch
++
++import av
++import numpy as np
++import pytest
++import torch
++
++from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
++from sglang.srt.models.kimi_k3 import KimiK3ForConditionalGeneration
++from sglang.srt.models.kimi_k3_vl import Learnable2DInterpPosEmbDividedFixed
++from sglang.srt.multimodal.kimi_k3_image_processing import (
++    DEFERRED_PREPROCESSING_KEY,
++    KimiK3DeferredPreprocessing,
++)
++from sglang.srt.multimodal.media_artifacts.kimi_k3 import KimiK3PreprocessConfig
++from sglang.srt.multimodal.mm_utils import (
++    iter_frame_bounded_image_batches,
++    run_dp_sharded_mrope_vision_model,
++)
++from sglang.srt.multimodal.processors.kimi_k3 import (
++    KimiK3ImageProcessor,
++    _plan_k3_video,
++)
++from sglang.srt.runtime_context import get_context, get_parallel
++from sglang.srt.utils import VideoData
++from sglang.test.ci.ci_register import register_cpu_ci
++
++register_cpu_ci(est_time=8, suite="base-a-test-cpu")
++
++
++class _Video:
++    def __init__(self, frames=8, fps=8.0, shape=(8, 12), value=17):
++        self.frame_count = frames
++        self.avg_fps = fps
++        self.frame_shape = shape
++        self.value = value
++        self.calls = []
++        self.closed = threading.Event()
++
++    def __len__(self):
++        return self.frame_count
++
++    def get_frames_at(self, indices):
++        self.calls.append(tuple(indices))
++        return np.full((len(indices), *self.frame_shape, 3), self.value, np.uint8)
++
++    def get_frames_as_tensor(self, _indices):
++        raise AssertionError("video staging must not start parallel decoders")
++
++    def close(self):
++        self.closed.set()
++
++
++class _Tokenizer:
++    def encode(self, text, **_kwargs):
++        return [14] if text == "<|media_end|>" else [10, 11]
++
++
++def _processor(*videos):
++    processor = object.__new__(KimiK3ImageProcessor)
++    processor.mm_tokens = SimpleNamespace(image_token_id=99)
++    processor.media_proc_cfg = {
++        "patch_size": 2,
++        "merge_kernel_size": 2,
++        "patch_limit_on_one_side": 512,
++        "fixed_output_tokens": None,
++        "in_patch_limit": 100,
++        "in_patch_limit_each_frame": 100,
++        "in_patch_limit_video": 800,
++        "sample_fps": 8.0,
++        "temporal_merge_kernel_size": 4,
++        "timestamp_mode": "hh:mm:ss.fff",
++    }
++    processor._processor = SimpleNamespace(
++        preprocess_config=KimiK3PreprocessConfig(
++            patch_size=2,
++            merge_kernel_size=2,
++            in_patch_limit=100,
++            patch_limit_on_one_side=512,
++            fixed_output_tokens=None,
++            image_mean=[0.5] * 3,
++            image_std=[0.5] * 3,
++            transparent_bg_config=None,
++        )
++    )
++    processor._tokenizer = _Tokenizer()
++    processor.processor_fingerprint = "k3-video-cpu-test"
++    processor.server_args = SimpleNamespace(context_length=100000)
++    processor.hf_config = SimpleNamespace()
++    processor._precompute_hashes_before_cpu_transfer = Mock()
++    if videos:
++        processor._load_single_item = Mock(side_effect=videos)
++    return processor
++
++
++def _request(count=1, **kwargs):
++    return SimpleNamespace(
++        video_data=kwargs.pop("video_data", [f"video-{i}" for i in range(count)]),
++        modalities=["video"] * count,
++        **kwargs,
++    )
++
++
++def _process(processor, request=None, cancelled=None):
++    request = request or _request()
++    return processor._process_video_data_sync(
++        [], [1, *([99] * len(request.video_data)), 2], request, cancelled
++    )
++
++
++@pytest.mark.parametrize("fps", [0, -1, float("nan"), float("inf")])
++def test_video_rejects_bad_metadata_before_decode(fps):
++    video = _Video(fps=fps)
++    with pytest.raises(ValueError, match="positive frame rate"):
++        _process(_processor(video))
++    assert not video.calls
++    assert video.closed.is_set()
++
++
++def test_video_metadata_budget_rejects_before_indices_or_later_sources(monkeypatch):
++    video = _Video(frames=10**9, shape=(2160, 3840))
++    processor = _processor(video, _Video())
++    monkeypatch.setenv("SGLANG_K3_VIDEO_MAX_DECODE_BYTES", "100000")
++    with pytest.raises(ValueError, match="decode byte budget"):
++        _process(processor, _request(2))
++    processor._load_single_item.assert_called_once()
++    assert not video.calls
++    assert video.closed.is_set()
++
++
++def test_video_cumulative_metadata_budget_is_checked_each_source(monkeypatch):
++    videos = [_Video(), _Video(), _Video()]
++    processor = _processor(*videos)
++    plan = _plan_k3_video(videos[0], processor.media_proc_cfg, 0)
++    monkeypatch.setenv(
++        "SGLANG_K3_VIDEO_MAX_DECODE_BYTES",
++        str(3 * plan["retained_bytes"] + plan["scratch_bytes"]),
++    )
++    with pytest.raises(ValueError, match="decode byte budget"):
++        _process(processor, _request(3))
++    assert processor._load_single_item.call_count == 2
++    assert all(not video.calls for video in videos)
++    assert all(video.closed.is_set() for video in videos[:2])
++    assert not videos[2].closed.is_set()
++
++
++def test_video_nonpositive_budget_rejects_before_loading(monkeypatch):
++    processor = _processor(_Video())
++    monkeypatch.setenv("SGLANG_K3_VIDEO_MAX_DECODE_BYTES", "0")
++    with pytest.raises(ValueError, match="budget must be positive"):
++        _process(processor)
++    processor._load_single_item.assert_not_called()
++
++
++@pytest.mark.parametrize("options", [{"fps": 0}, {"max_frames": -1}, {"foo": 1}])
++def test_video_sampling_options_fail_before_loading(options):
++    processor = _processor(_Video())
++    with pytest.raises(ValueError):
++        _process(processor, _request(video_data=[VideoData("video", options)]))
++    processor._load_single_item.assert_not_called()
++
++
++def test_video_context_lower_bound_rejects_before_decode():
++    video = _Video()
++    processor = _processor(video)
++    processor.server_args.context_length = 1
++    with pytest.raises(ValueError, match="model context budget"):
++        _process(processor)
++    assert not video.calls
++    assert video.closed.is_set()
++
++
++def test_video_context_planner_does_not_guess_twenty_header_tokens():
++    video = _Video(frames=1, shape=(4, 4))
++    processor = _processor(video)
++    plan = _plan_k3_video(video, processor.media_proc_cfg, 0)
++    # Actual stub prefix+suffix is 3 tokens. The standard final context check
++    # owns exact expansion; an invented 20-token header would reject this.
++    processor.server_args.context_length = plan["visual_tokens"] + 5
++    output = _process(processor)
++    assert len(output.input_ids) == processor.server_args.context_length
++
++
++def test_video_sampling_stays_chunked_and_reuses_original_resize_plan():
++    video = _Video(frames=10**9, shape=(2, 256))
++    processor = _processor(video)
++    request = _request(video_data=[VideoData("video", {"max_frames": 9})])
++    with patch(
++        "sglang.srt.multimodal.processors.kimi_k3.navit_resize_config",
++        wraps=__import__(
++            "sglang.srt.multimodal.processors.kimi_k3", fromlist=["navit_resize_config"]
++        ).navit_resize_config,
++    ) as resize:
++        output = _process(processor, request)
++    resize.assert_called_once()
++    assert [len(call) for call in video.calls] == [4, 4, 1]
++    assert video.calls[0][0] == 0 and video.calls[-1][-1] == 10**9 - 1
++    assert [item.image_grid_thw[0, 0].item() for item in output.mm_items] == [4, 4, 1]
++    resize_configs = [
++        item.model_specific_data[DEFERRED_PREPROCESSING_KEY].resize_config
++        for item in output.mm_items
++    ]
++    assert resize_configs[0] == resize_configs[1] == resize_configs[2]
++    assert all(item.feature.dtype == torch.uint8 for item in output.mm_items)
++
++
++def test_video_sample_count_avoids_finite_fps_multiplication_overflow():
++    video = _Video(frames=10, fps=1e308)
++    config = dict(_processor().media_proc_cfg, sample_fps=1e308)
++    assert _plan_k3_video(video, config, 0)["sampled_nframes"] == 10
++
++
++def test_video_identity_covers_later_frames_and_sampling_contract():
++    first = _process(_processor(_Video()))
++    changed = _Video()
++    real_decode = changed.get_frames_at
++
++    def decode(indices):
++        frames = real_decode(indices)
++        if 3 in indices:
++            frames[indices.index(3), 0, 0, 0] += 1
++        return frames
++
++    changed.get_frames_at = decode
++    second = _process(_processor(changed))
++    third = _process(_processor(_Video(fps=16)))
++    assert first.mm_items[0].identity != second.mm_items[0].identity
++    assert first.mm_items[0].identity != third.mm_items[0].identity
++    assert len(first.mm_items[0].identity) == 32
++    assert first.video_token_id == first.im_token_id == 99
++
++
++def test_video_bad_decode_closes_owner_and_returns_client_error():
++    video = _Video()
++    video.get_frames_at = Mock(side_effect=RuntimeError("corrupt synthetic payload"))
++    with pytest.raises(ValueError, match="Could not decode Kimi-K3 video"):
++        _process(_processor(video))
++    assert video.closed.is_set()
++
++
++def test_video_internal_resize_failure_is_not_a_client_error():
++    video = _Video(shape=(256, 256))
++    with patch(
++        "sglang.srt.multimodal.processors.kimi_k3._resize_bicubic_if_needed",
++        side_effect=RuntimeError("internal resize failure"),
++    ):
++        with pytest.raises(RuntimeError, match="internal resize failure"):
++            _process(_processor(video))
++    assert video.closed.is_set()
++
++
++def test_video_cancel_mid_decode_closes_owner():
++    video = _Video()
++    cancelled = threading.Event()
++    real_decode = video.get_frames_at
++
++    def decode(indices):
++        frames = real_decode(indices)
++        cancelled.set()
++        return frames
++
++    video.get_frames_at = decode
++    with pytest.raises(ValueError, match="cancelled"):
++        _process(_processor(video), cancelled=cancelled)
++    assert len(video.calls) == 1
++    assert video.closed.is_set()
++
++
++def test_video_async_cancel_keeps_cleanup_in_io_worker():
++    started, release = threading.Event(), threading.Event()
++    video = _Video()
++    real_decode = video.get_frames_at
++
++    def decode(indices):
++        started.set()
++        assert release.wait(5), "test failed to release decoder"
++        return real_decode(indices)
++
++    video.get_frames_at = decode
++    processor = _processor(video)
++
++    async def run():
++        task = asyncio.create_task(
++            processor._process_video_data_async([], [1, 99, 2], _request())
++        )
++        assert await asyncio.to_thread(started.wait, 5)
++        task.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++        release.set()
++        assert await asyncio.to_thread(video.closed.wait, 5)
++
++    with ThreadPoolExecutor(max_workers=1) as executor:
++        processor.io_executor = executor
++        try:
++            asyncio.run(run())
++        finally:
++            release.set()
++
++
++def _video_item(value, frames=4):
++    resize = {
++        "new_width": 4,
++        "new_height": 4,
++        "pad_width": 0,
++        "pad_height": 0,
++        "num_tokens": 1,
++    }
++    return MultimodalDataItem(
++        modality=Modality.VIDEO,
++        offsets=[(0, 0)],
++        feature=torch.full((frames, 3, 4, 4), value, dtype=torch.uint8),
++        model_specific_data={
++            "image_grid_thw": torch.tensor([[frames, 2, 2]]),
++            DEFERRED_PREPROCESSING_KEY: KimiK3DeferredPreprocessing(
++                backend="gpu_video",
++                image_mean=[0.0] * 3,
++                image_std=[1.0] * 3,
++                transparent_bg_config=None,
++                resize_config=resize,
++            ),
++        },
++    )
++
++
++class _StaticTower:
++    device = torch.device("cpu")
++    merge_kernel_size = (2, 2)
++    patch_size = 2
++
++    def __init__(self, list_output):
++        self.config = SimpleNamespace(hidden_size=2)
++        self.patch_embed = SimpleNamespace(proj=SimpleNamespace(weight=torch.empty(1)))
++        self.buffer = torch.empty(1, 4, 2)
++        self.calls = []
++        self.list_output = list_output
++
++    def __call__(self, pixels, *, grid_hw, grid_thw_list, max_seqlen):
++        self.calls.append((pixels.shape[0], grid_thw_list))
++        self.buffer.fill_(pixels[0, 0, 0, 0])
++        return [self.buffer] if self.list_output else self.buffer
++
++
++def _model(list_output=True, data_parallel=False):
++    model = KimiK3ForConditionalGeneration.__new__(KimiK3ForConditionalGeneration)
++    torch.nn.Module.__init__(model)
++    model.use_data_parallel = data_parallel
++    model.vision_tower = _StaticTower(list_output)
++    model.mm_projector = lambda value: value
++    return model
++
++
++@pytest.mark.parametrize("list_output", [False, True])
++def test_video_owner_batches_own_graph_replay_outputs(list_output):
++    model = _model(list_output)
++    with patch(
++        "sglang.srt.multimodal.processors.kimi_k3._k3_to_cuda_chw",
++        side_effect=lambda value: value,
++    ):
++        output = model.get_image_feature([_video_item(51), _video_item(102)])
++    assert model.vision_tower.calls == [(16, [[4, 2, 2]]), (16, [[4, 2, 2]])]
++    torch.testing.assert_close(output[:, 0, 0], torch.tensor([0.2, 0.4]))
++    model.vision_tower.buffer.fill_(-1)
++    torch.testing.assert_close(output[:, 0, 0], torch.tensor([0.2, 0.4]))
++
++
++@pytest.mark.parametrize("rank", [0, 1])
++def test_video_all_ranks_validate_shared_temporal_grid_before_collectives(rank):
++    model = _model(data_parallel=True)
++    with (
++        get_context().override_server_args(tp_size=2),
++        get_parallel().override(tp_size=2, attn_tp_size=2, attn_tp_rank=rank),
++        patch("sglang.srt.multimodal.mm_utils.run_dp_sharded_mrope_vision_model") as dp,
++    ):
++        with pytest.raises(ValueError, match="vision frame budget"):
++            model.get_image_feature([_video_item(1), _video_item(2, frames=5)])
++    dp.assert_not_called()
++    assert not model.vision_tower.calls
++
++
++def test_video_frame_batches_preserve_complete_temporal_items():
++    grids = [[4, 2, 2], [1, 2, 2], [3, 2, 2], [4, 2, 2]]
++    assert list(iter_frame_bounded_image_batches([3, 1, 2, 0], grids, 4)) == [
++        [3],
++        [1, 2],
++        [0],
++    ]
++
++
++@pytest.mark.parametrize("rank", [0, 1])
++def test_video_dp_local_encoder_handles_owner_and_empty_rank(rank):
++    embedding = torch.arange(8, dtype=torch.float32).reshape(1, 4, 2)
++
++    class Group:
++        def broadcast(self, output, src):
++            assert src == 0
++            assert output.shape == (1, 4, 2)
++            output.copy_(embedding)
++
++        def all_gather(self, *_args, **_kwargs):
++            raise AssertionError("one complete temporal item uses broadcast")
++
++    parallel = SimpleNamespace(attn_tp_size=2, attn_tp_rank=rank, attn_tp_group=Group())
++    encode = Mock(return_value=embedding.clone())
++    with patch("sglang.srt.multimodal.mm_utils.get_parallel", return_value=parallel):
++        output = run_dp_sharded_mrope_vision_model(
++            _StaticTower(list_output=True),
++            None,
++            [[4, 2, 2]],
++            rope_type="rope_2d",
++            pool_temporal_dimension=True,
++            encode_local_items=encode,
++            pixel_values_device=torch.device("cpu"),
++            pixel_values_dtype=torch.float32,
++        )
++    if rank == 0:
++        encode.assert_called_once_with([0])
++    else:
++        encode.assert_not_called()
++    torch.testing.assert_close(output, embedding)
++
++
++def test_video_temporal_position_embeddings_preserve_activation_dtype():
++    module = Learnable2DInterpPosEmbDividedFixed(2, 2, 4, 8).to(torch.bfloat16)
++    module.weight.data.zero_()
++    # Checkpoint temporal constants can still be float32 after loading.
++    module.time_weight = module.time_weight.float()
++    output = module.position_embeddings(torch.tensor([[4, 2, 2]]))
++    assert output.dtype == torch.bfloat16
++    assert output.shape == (16, 8)
++
++
++def test_video_real_cpu_decoder_accepts_synthetic_mp4_data_url():
++    buffer = io.BytesIO()
++    with av.open(buffer, mode="w", format="mp4") as container:
++        stream = container.add_stream("mpeg4", rate=8)
++        stream.width = stream.height = 16
++        stream.pix_fmt = "yuv420p"
++        for index in range(8):
++            array = np.full((16, 16, 3), index * 25, dtype=np.uint8)
++            frame = av.VideoFrame.from_ndarray(array, format="rgb24")
++            for packet in stream.encode(frame):
++                container.mux(packet)
++        for packet in stream.encode():
++            container.mux(packet)
++    uri = "data:video/mp4;base64," + base64.b64encode(buffer.getvalue()).decode()
++    processor = _processor()
++    output = _process(processor, _request(video_data=[VideoData(uri)]))
++    assert [item.modality for item in output.mm_items] == [Modality.VIDEO] * 2
++    assert [item.feature.shape[:2] for item in output.mm_items] == [(4, 3), (4, 3)]
++    assert all(item.feature.device.type == "cpu" for item in output.mm_items)
++    assert output.input_ids.count(99) == sum(
++        int(item.image_grid_thw[0, 1:].prod().item()) // 4 for item in output.mm_items
++    )
++    assert (
++        output.mm_items[0].feature[0].float().mean()
++        < output.mm_items[1].feature[-1].float().mean()
++    )
++    assert not torch.cuda.is_initialized()

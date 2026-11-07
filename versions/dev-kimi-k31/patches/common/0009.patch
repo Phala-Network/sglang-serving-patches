@@ -1,0 +1,265 @@
+diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
+index 1965c73e78e6d730d5a1db12507d40a0ce88e822..6e32d9a3196f236c333168a3b4af6e4674716107 100644
+--- a/python/sglang/srt/mem_cache/memory_pool.py
++++ b/python/sglang/srt/mem_cache/memory_pool.py
+@@ -115,6 +115,8 @@ logger = logging.getLogger(__name__)
+ _MAMBA_DEBUG_ASSERTS = os.environ.get("SGLANG_MAMBA_DEBUG_ASSERTS", "0") == "1"
+ 
+ GB = 1024 * 1024 * 1024
++# Arbitrary; no evidence this is the best chunk size for temporal state copies.
++_MAMBA_TEMPORAL_COPY_CHUNK_BYTES = 64 * 1024 * 1024
+ _is_cuda = is_cuda()
+ _is_npu = is_npu()
+ _is_cpu = is_cpu()
+@@ -1162,6 +1164,30 @@ class MambaPool:
+         if temporal.numel() > 0:
+             temporal.index_fill_(1, idx64, 0)
+ 
++    def _copy_temporal_slots(
++        self, *, src_indices: torch.Tensor, dst_indices: torch.Tensor
++    ) -> None:
++        temporal = self.mamba_cache.temporal
++        if temporal.numel() == 0:
++            return
++        num_slots = dst_indices.shape[0]
++        slot_bytes = temporal.element_size() * (temporal.numel() // temporal.shape[1])
++        step = max(1, _MAMBA_TEMPORAL_COPY_CHUNK_BYTES // slot_bytes)
++        if num_slots <= step:
++            temporal[:, dst_indices] = temporal[:, src_indices]
++            return
++        # A batched gather allocates num_slots * slot_bytes at once and can OOM
++        # under admission bursts; chunking requires disjoint src/dst slots.
++        if envs.SGLANG_DEBUG_MEMORY_POOL.get():
++            overlap = set(src_indices.tolist()) & set(dst_indices.tolist())
++            assert not overlap, (
++                "chunked temporal copy requires disjoint src/dst slots; "
++                f"overlap={sorted(overlap)}"
++            )
++        for start in range(0, num_slots, step):
++            chunk = slice(start, start + step)
++            temporal[:, dst_indices[chunk]] = temporal[:, src_indices[chunk]]
++
+     def copy_from(self, src_indices: torch.Tensor, dst_indices: torch.Tensor):
+         """Clone mamba state (conv + temporal) from src slots into dst slots.
+ 
+@@ -1191,17 +1217,13 @@ class MambaPool:
+                     f"overlap={sorted(overlap)}"
+                 )
+             fused_copy_conv_slots(self._conv_slot_desc, src_indices, dst_indices)
+-            temporal = self.mamba_cache.temporal
+-            if temporal.numel() > 0:
+-                temporal[:, dst_indices] = temporal[:, src_indices]
++            self._copy_temporal_slots(src_indices=src_indices, dst_indices=dst_indices)
+         else:
+             for i in range(len(self.mamba_cache.conv)):
+                 self.mamba_cache.conv[i][:, dst_indices] = self.mamba_cache.conv[i][
+                     :, src_indices
+                 ]
+-            self.mamba_cache.temporal[:, dst_indices] = self.mamba_cache.temporal[
+-                :, src_indices
+-            ]
++            self._copy_temporal_slots(src_indices=src_indices, dst_indices=dst_indices)
+         if self.replayssm_write_pos is not None:
+             self.replayssm_write_pos[dst_indices] = 0
+         for sibling in self._slot_siblings:
+diff --git a/python/sglang/srt/mem_cache/unified_radix_cache.py b/python/sglang/srt/mem_cache/unified_radix_cache.py
+index 04b90b504c5f93c5b92237ece637625daab377a9..1d9c504cfe1827b34320e257ceb8a2d96cd0ff92 100644
+--- a/python/sglang/srt/mem_cache/unified_radix_cache.py
++++ b/python/sglang/srt/mem_cache/unified_radix_cache.py
+@@ -3233,11 +3233,16 @@ class UnifiedRadixCache(BasePrefixCache):
+                     operation, info, hit_tokens, aux_hit_tokens
+                 )
+             aux_hit_tokens = hit_tokens
++
++            # Hybrid pools (SWA / Mamba) are trailing-window aligned, so a
++            # shortened recovery boundary may be invalid in storage; only
++            # full-only models may truncate the prefix to fit host capacity.
++            allow_partial = not info.comp_xfers
+             host_indices, alloc_len = cc.allocate_storage_hit(
+                 operation,
+                 hit_tokens,
+-                allow_partial=True,
+-                min_tokens=self.prefetch_threshold,
++                allow_partial=allow_partial,
++                min_tokens=self.prefetch_threshold if allow_partial else hit_tokens,
+                 evict_host=self.evict_host,
+             )
+             if host_indices is None:
+diff --git a/test/registered/unit/mem_cache/test_mamba_unittest.py b/test/registered/unit/mem_cache/test_mamba_unittest.py
+index d6e1343c15c7028fc51299c725c11b73d38f8340..9c6059a9ca58d332fd5202d96fb82736012af437 100755
+--- a/test/registered/unit/mem_cache/test_mamba_unittest.py
++++ b/test/registered/unit/mem_cache/test_mamba_unittest.py
+@@ -9,6 +9,7 @@ from sglang.kernels.ops.attention.fla.chunk_delta_h import CHUNK_SIZE as FLA_CHU
+ from sglang.srt.configs.mamba_utils import Mamba2CacheParams, Mamba2StateShape
+ from sglang.srt.environ import envs
+ from sglang.srt.managers.schedule_batch import Req
++from sglang.srt.mem_cache import memory_pool as memory_pool_module
+ from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
+ from sglang.srt.mem_cache.memory_pool import (
+     HybridLinearKVPool,
+@@ -585,5 +586,71 @@ class TestMamba(unittest.TestCase):
+         )
+ 
+ 
++class TestMambaTemporalCopy(unittest.TestCase):
++    def test_copy_from_cpu_chunk_boundaries(self):
++        """Small CPU pools cover partial chunks and both conv-copy branches."""
++        for use_fused in (False, True):
++            for count in (0, 1, 2, 5):
++                with self.subTest(use_fused=use_fused, count=count):
++                    temporal = torch.arange(2 * 16 * 3 * 4, dtype=torch.float32).view(
++                        2, 16, 3, 4
++                    )
++                    conv = torch.arange(2 * 16 * 2, dtype=torch.bfloat16).view(2, 16, 2)
++                    src = torch.tensor([0, 0, 5, 5, 9][:count], dtype=torch.int64)
++                    dst = torch.tensor([1, 2, 4, 6, 8][:count], dtype=torch.int64)
++                    expected_temporal = temporal.clone()
++                    expected_temporal[:, dst] = temporal[:, src]
++                    expected_conv = conv.clone()
++                    expected_conv[:, dst] = conv[:, src]
++                    sibling_calls = []
++                    pool = object.__new__(MambaPool)
++                    pool.mamba_cache = SimpleNamespace(conv=[conv], temporal=temporal)
++                    pool._should_fuse_slot_ops = lambda: use_fused
++                    pool._conv_slot_desc = object()
++                    pool.replayssm_write_pos = torch.zeros(16, dtype=torch.int32)
++                    pool.replayssm_write_pos[dst] = 3
++                    pool.debug_memory_pool = True
++                    pool._slot_siblings = [
++                        SimpleNamespace(
++                            copy_slots=lambda src, dst: sibling_calls.append(
++                                (src.clone(), dst.clone())
++                            )
++                        )
++                    ]
++                    slot_bytes = temporal.element_size() * temporal.numel() // 16
++
++                    def copy_conv(_desc, src, dst):
++                        conv[:, dst] = conv[:, src]
++
++                    with (
++                        envs.SGLANG_DEBUG_MEMORY_POOL.override(True),
++                        patch.object(
++                            memory_pool_module,
++                            "_MAMBA_TEMPORAL_COPY_CHUNK_BYTES",
++                            2 * slot_bytes,
++                        ),
++                        patch(
++                            "sglang.srt.mem_cache.mamba_slot_fused.fused_copy_conv_slots",
++                            side_effect=copy_conv,
++                        ) as fused_copy,
++                    ):
++                        pool.copy_from(src, dst)
++
++                    torch.testing.assert_close(
++                        temporal, expected_temporal, rtol=0, atol=0
++                    )
++                    torch.testing.assert_close(conv, expected_conv, rtol=0, atol=0)
++                    self.assertEqual(fused_copy.call_count, int(use_fused))
++                    self.assertTrue(
++                        torch.equal(
++                            pool.replayssm_write_pos[dst],
++                            torch.zeros(count, dtype=torch.int32),
++                        )
++                    )
++                    self.assertEqual(len(sibling_calls), 1)
++                    self.assertTrue(torch.equal(sibling_calls[0][0], src))
++                    self.assertTrue(torch.equal(sibling_calls[0][1], dst))
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/test/registered/unit/mem_cache/unified_radix_cache/test_unified_radix_cache_storage.py b/test/registered/unit/mem_cache/unified_radix_cache/test_unified_radix_cache_storage.py
+index 0a326ad363e349c85d64f9dca125a8f0d0f87ae4..7155b9771845b0db0e8500c5c28b3a9955233d6f 100644
+--- a/test/registered/unit/mem_cache/unified_radix_cache/test_unified_radix_cache_storage.py
++++ b/test/registered/unit/mem_cache/unified_radix_cache/test_unified_radix_cache_storage.py
+@@ -5,6 +5,7 @@ import time
+ import unittest
+ from array import array
+ from contextlib import ExitStack
++from queue import Queue
+ from types import SimpleNamespace
+ from unittest import mock
+ 
+@@ -2451,6 +2452,81 @@ class TestUnifiedTreeCoreSWAPrefetchBackends(UnifiedRadixCacheFixtures, CustomTe
+ class TestPrefetchCommitOrdering(CustomTestCase):
+     """The prefetch commit's action ordering (mock-based)."""
+ 
++    def test_hybrid_prefetch_rejects_partial_host_allocation(self):
++        from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
++            HybridCacheController,
++        )
++
++        for component, pool in (
++            (ComponentType.SWA, PoolName.SWA),
++            (ComponentType.MAMBA, PoolName.MAMBA),
++        ):
++            with self.subTest(component=component):
++                cache = mock.MagicMock()
++                cache.host_memory_mode = "cache"
++                cache.page_size = 4
++                cache.prefetch_threshold = 4
++                cc = cache.cache_controller
++                cc.page_size = cache.page_size
++                cc.mem_pool_host.anchor_entry.host_pool = object()
++                cc.mem_pool_host.available_size.return_value = 4
++                cc.prefetch_hit_queue = Queue()
++                cc.prefetch_buffer = Queue()
++                cc.allocate_storage_hit = (
++                    HybridCacheController.allocate_storage_hit.__get__(cc)
++                )
++
++                # A full hit cannot fit, but a page-sized partial allocation can.
++                def allocate_host_buffers(operation, num_tokens):
++                    return list(range(num_tokens)) if num_tokens <= 4 else None
++
++                cc.alloc_prefetch_host_buffers.side_effect = allocate_host_buffers
++                operation = mock.Mock()
++                operation.handle = CacheRequestHandle("hybrid-capacity", 0)
++                operation.storage_start = 4
++                operation.storage_hit_count = 8
++                operation.hash_value = ["h1", "h2"]
++                operation.host_indices = None
++                operation.is_terminated.return_value = False
++                cache.ongoing_prefetch = {
++                    operation.handle: _OngoingPrefetch(
++                        anchor_node_id=0,
++                        prefetch_key=RadixKey(array("q", range(8))),
++                        host_indices=None,
++                        operation=operation,
++                        anchor_lock_params=None,
++                        comp_xfers={component: [PoolTransfer(name=pool)]},
++                    )
++                }
++                cc.prefetch_hit_queue.put(operation)
++
++                UnifiedRadixCache._drain_storage_control_queues_impl(
++                    cache,
++                    n_storage_hit=1,
++                    n_ack_prefetch=0,
++                    n_backup=0,
++                    n_release=0,
++                    extra_release_counts=None,
++                    log_metrics=False,
++                )
++
++                self.assertEqual(
++                    cc.alloc_prefetch_host_buffers.call_args_list,
++                    [mock.call(operation, 8), mock.call(operation, 8)],
++                )
++                self.assertTrue(cc.prefetch_buffer.empty())
++                self.assertIsNone(operation.host_indices)
++                self.assertEqual(operation.storage_hit_count, 8)
++                self.assertEqual(operation.hash_value, ["h1", "h2"])
++                cache._alloc_prefetch_aux_staging.assert_not_called()
++                cache._finish_storage_prefetch.assert_called_once_with(
++                    operation.handle, fulfilled_tokens=0, reason="host_capacity"
++                )
++                cache.revoke_pending_prefetch.assert_called_once_with(operation.handle)
++                cache.storage_prefetch_retries.poll_miss.assert_called_once_with(
++                    operation.handle.rid, 12
++                )
++
+     def test_prefetch_commit_applies_host_insert_actions_before_transfers(self):
+         """The prefetch commit applies the host-insert walk's actions before
+         commit_hicache_transfers, whose emissions ride a fresh list."""

@@ -1,7 +1,7 @@
 {
   "base_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
-  "engine_commit": "204565cce1d82988c4f7235c6113fe1883c0f467",
-  "engine_tree": "91b79deceac376c186949758889e8cba1004a3fa",
+  "engine_commit": "308921ab7f196ce41e866b878aa6c8565a982033",
+  "engine_tree": "c001d76ae187bdcb92be1dfd697edbbc1d0ad109",
   "ordered_steps": [
     {
       "path": "patches/common/0001.patch",
@@ -66,15 +66,39 @@
       "tree": "91b79deceac376c186949758889e8cba1004a3fa",
       "sha256": "86a84dfab14a2faf403179a14badcbaefe718458cbf259cb54f2f9f0333c4b10",
       "ownership": "build"
+    },
+    {
+      "path": "patches/common/0009.patch",
+      "engine_commit": "be6e9093121cd856192665de796bee679dd5c021",
+      "source_parent": "204565cce1d82988c4f7235c6113fe1883c0f467",
+      "tree": "7afc5ca53a438f66b449653a499bb81904fefc9b",
+      "sha256": "d658283c158ecb8c48fbcacd68ef65667301707fe7b60c6aedaf735ad121d5d1",
+      "ownership": "common"
+    },
+    {
+      "path": "patches/models/kimi/0010.patch",
+      "engine_commit": "aec9bc00af13f2331a93c4818d28e8cc21b5cbc5",
+      "source_parent": "be6e9093121cd856192665de796bee679dd5c021",
+      "tree": "fcf360a2c091c876b07e1309e1be7ad96845b477",
+      "sha256": "e4886f8519941161a6a8701eec6b7f11d7f6a53e84f067e51783c715886eae2f",
+      "ownership": "models/kimi"
+    },
+    {
+      "path": "patches/build/0011.patch",
+      "engine_commit": "308921ab7f196ce41e866b878aa6c8565a982033",
+      "source_parent": "aec9bc00af13f2331a93c4818d28e8cc21b5cbc5",
+      "tree": "c001d76ae187bdcb92be1dfd697edbbc1d0ad109",
+      "sha256": "1754042db18cb1328f2439571ae083aec0e282312005372e0a23b76efe4580ee",
+      "ownership": "build"
     }
   ],
   "governor": "not added; external PIG is a separate component",
-  "release_version": "phala-dev-kimi-k31-3",
+  "release_version": "phala-dev-kimi-k31-4",
   "native": {
     "source_repository": "https://github.com/Phala-Network/Mooncake",
     "source_commit": "467533b2e80a101dfabd4789ed5aa8ab251c24a6",
     "source_tag": "phala-v0.3.13.post1-k31-client-1",
     "source_lock": "https://github.com/Phala-Network/sglang/blob/254af1d9de5eb6baf68d72e961dcb3116969acfa/docker/phala/k31/native-client.json"
   },
-  "runtime_base_image": "ghcr.io/phala-network/sglang:phala-dev-kimi-k31-2@sha256:edc2bb25b3c7f7d67a902e0b7e3a99f1ef8a1371e8395f950ecbb06cb9f3db62"
+  "runtime_base_image": "ghcr.io/phala-network/sglang:phala-dev-kimi-k31-3@sha256:08acd79a162875bc9bfded2ff42cd526a8b0b4e1c4f96e32c1997b61246f226b"
 }

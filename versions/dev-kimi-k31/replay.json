@@ -1,8 +1,8 @@
 {
   "passed": true,
   "base_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
-  "engine_commit": "204565cce1d82988c4f7235c6113fe1883c0f467",
-  "engine_tree": "91b79deceac376c186949758889e8cba1004a3fa",
+  "engine_commit": "308921ab7f196ce41e866b878aa6c8565a982033",
+  "engine_tree": "c001d76ae187bdcb92be1dfd697edbbc1d0ad109",
   "steps": [
     {
       "path": "patches/common/0001.patch",
@@ -43,9 +43,24 @@
       "path": "patches/build/0008.patch",
       "tree": "91b79deceac376c186949758889e8cba1004a3fa",
       "matched": true
+    },
+    {
+      "path": "patches/common/0009.patch",
+      "tree": "7afc5ca53a438f66b449653a499bb81904fefc9b",
+      "matched": true
+    },
+    {
+      "path": "patches/models/kimi/0010.patch",
+      "tree": "fcf360a2c091c876b07e1309e1be7ad96845b477",
+      "matched": true
+    },
+    {
+      "path": "patches/build/0011.patch",
+      "tree": "c001d76ae187bdcb92be1dfd697edbbc1d0ad109",
+      "matched": true
     }
   ],
-  "old_four_patch_bytes_preserved": true,
-  "governor": "not added; external PIG remains separate",
+  "old_eight_patch_bytes_preserved": true,
+  "governor": "not added; external PIG is a separate component",
   "gpu_tested": false
 }
