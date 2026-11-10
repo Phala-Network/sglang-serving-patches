@@ -1,0 +1,532 @@
+{
+  "utc": "2026-11-10T06:14:33.561368+00:00",
+  "passed": true,
+  "expected_source_state": "replay",
+  "scope": "CPU_AST_types_order_prompt_framing_and_identity_before_numeric_GPU_preprocessing",
+  "not_verified": [
+    "full_runtime_import",
+    "GPU_decode_preprocess_or_inference",
+    "live_500_stacktrace",
+    "new_immutable_image"
+  ],
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]",
+  "source_sha256": {
+    "kimi_common.py": "595998f11669179388df113a2ce853451cc2d99b2d7d2addc89448231ed48b63",
+    "kimi_k25.py": "027bf2bb2400987aa7778cdd0b8be749841cebe17266a53fb7db582caf0190dc",
+    "kimi_k3.py": "77ca1dda1ec1b29464bc0ed7b941123e2d5dc31e76c11be533505ba1caa1ea03"
+  },
+  "runtime_file": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+  "patch_sha256": "68f03eae4ed03b0c0c49de2e2dee56d684f98d063735ac09fca7fd6d5ec848f7",
+  "patch_replayed_in_memory": true,
+  "harness_sha256": "ef6b47e4c0fbfb4bdaebddebb1ff2219c8ddadf12c9a4f125c2befd4a0c1179d",
+  "candidate_source_sha256": "a876ad5f36aad52a1c3ae71667a11e1f554022bbc43e7ba9fe26219058793baf",
+  "dependency_stubs": [
+    "Torch tensor/PIL/NumPy types",
+    "tokenizer",
+    "framework loader/dispatch",
+    "GPU availability true as branch-control only"
+  ],
+  "production_AST": [
+    "KimiGridMMDataMixin._load_single_item/process_mm_data/count_image_placeholders",
+    "KimiK3ImageProcessor._process_mm_data_uncached/_resolve_visual_modalities/kimi_content_config_digest",
+    "_split_k3_video/_video_frame_to_chw/_KimiK3VisualItem.size",
+    "KimiK3GPUProcessorWrapper.__call__/_gpu_call/_normalize_visual_items",
+    "_get_image_dimensions/navit_resize_config",
+    "_expand_k3_image_prompt_token_ids/_expand_k3_visual_prompt_token_ids",
+    "_gpu_preprocess_k3_visual_items until first numerical preprocessing call"
+  ],
+  "baseline_error_cases": [
+    "image-video-image",
+    "image-video-video-image",
+    "video-image"
+  ],
+  "candidate_cases_reaching_boundary": 9,
+  "results": {
+    "baseline": [
+      {
+        "name": "single-image-pil",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "multiple-images-pil-tensor",
+        "modalities": [
+          "image",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "image1"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "single-video",
+        "modalities": [
+          "video"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "video0-0",
+          "video0-1",
+          "video0-2"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          0
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "image-video-image",
+        "modalities": [
+          "image",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reproduced_AttributeError",
+        "exception": "'KimiLoadedImage' object has no attribute 'size'",
+        "source_trace": [
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 1050,
+            "function": "_process_mm_data_uncached"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_common.py",
+            "line": 100,
+            "function": "process_mm_data"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 436,
+            "function": "__call__"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 451,
+            "function": "_gpu_call"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 98,
+            "function": "size"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k25.py",
+            "line": 82,
+            "function": "_get_image_dimensions"
+          }
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": []
+      },
+      {
+        "name": "video-image",
+        "modalities": [
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reproduced_AttributeError",
+        "exception": "'KimiLoadedImage' object has no attribute 'size'",
+        "source_trace": [
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 1050,
+            "function": "_process_mm_data_uncached"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_common.py",
+            "line": 100,
+            "function": "process_mm_data"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 436,
+            "function": "__call__"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 451,
+            "function": "_gpu_call"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 98,
+            "function": "size"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k25.py",
+            "line": 82,
+            "function": "_get_image_dimensions"
+          }
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": []
+      },
+      {
+        "name": "image-video-video-image",
+        "modalities": [
+          "image",
+          "video",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reproduced_AttributeError",
+        "exception": "'KimiLoadedImage' object has no attribute 'size'",
+        "source_trace": [
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 1050,
+            "function": "_process_mm_data_uncached"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_common.py",
+            "line": 100,
+            "function": "process_mm_data"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 436,
+            "function": "__call__"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 451,
+            "function": "_gpu_call"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+            "line": 98,
+            "function": "size"
+          },
+          {
+            "path": "python/sglang/srt/multimodal/processors/kimi_k25.py",
+            "line": 82,
+            "function": "_get_image_dimensions"
+          }
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": []
+      },
+      {
+        "name": "raw-pil",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "raw-tensor",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "raw-mixed",
+        "modalities": [
+          "image",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "video1-0",
+          "video1-1",
+          "video1-2",
+          "image2"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      }
+    ],
+    "candidate": [
+      {
+        "name": "single-image-pil",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "multiple-images-pil-tensor",
+        "modalities": [
+          "image",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "image1"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "single-video",
+        "modalities": [
+          "video"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "video0-0",
+          "video0-1",
+          "video0-2"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          0
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "image-video-image",
+        "modalities": [
+          "image",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "video1-0",
+          "video1-1",
+          "video1-2",
+          "image2"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "video-image",
+        "modalities": [
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "video0-0",
+          "video0-1",
+          "video0-2",
+          "image1"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          0,
+          1
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "image-video-video-image",
+        "modalities": [
+          "image",
+          "video",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": true,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "video1-0",
+          "video1-1",
+          "video1-2",
+          "video2-0",
+          "video2-1",
+          "video2-2",
+          "image3"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          1,
+          1,
+          2,
+          2,
+          3
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "raw-pil",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "raw-tensor",
+        "modalities": [
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0"
+        ],
+        "original_identity_sources_preserved": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      },
+      {
+        "name": "raw-mixed",
+        "modalities": [
+          "image",
+          "video",
+          "image"
+        ],
+        "encoded_identity_wrappers": false,
+        "outcome": "reached_numeric_preprocessing_boundary",
+        "frames": [
+          "image0",
+          "video1-0",
+          "video1-1",
+          "video1-2",
+          "image2"
+        ],
+        "original_identity_sources_preserved": true,
+        "visual_source_indices": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "normalized_frames_are_raw": true,
+        "prompt_prefixes": [
+          "<|media_begin|>image 80x56<|media_content|>",
+          "00:00:00.000<|media_begin|>video<|media_content|>",
+          "00:00:01.000<|media_begin|>video<|media_content|>",
+          "<|media_begin|>image 80x56<|media_content|>"
+        ],
+        "ordered_prompt_framing_preserved": true
+      }
+    ]
+  },
+  "source_files_unchanged": true
+}

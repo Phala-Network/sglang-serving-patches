@@ -1,0 +1,20 @@
+--- a/python/sglang/srt/multimodal/processors/kimi_k3.py
++++ b/python/sglang/srt/multimodal/processors/kimi_k3.py
+@@ -12,7 +12,7 @@
+ import hashlib
+ import math
+ import re
+-from dataclasses import dataclass
++from dataclasses import dataclass, replace
+ from typing import Any, Dict, List, Literal, Optional, Union
+ 
+ import numpy as np
+@@ -401,7 +401,7 @@
+     def _normalize_visual_items(self, images) -> list[_KimiK3VisualItem]:
+         return [
+             (
+-                image
++                replace(image, frames=tuple(unwrap_kimi_images(image.frames)))
+                 if isinstance(image, _KimiK3VisualItem)
+                 else _KimiK3VisualItem(
+                     media_type="image",

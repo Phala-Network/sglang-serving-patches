@@ -23,6 +23,11 @@ contains the scoped Mooncake read-completeness repair, packaged HF implementatio
 fixed native rail client and optional loader. Its ordered source replay preserves
 the other versioned stacks.
 
+The [Kimi K3.1 rc6 mixed-media overlay candidate](versions/kimi-k31-rc6/README.md)
+fixes wrapped still-image frames over a separately pinned vendor OCI baseline.
+Its single patch and portable CPU regression preserve that source boundary;
+the private base Git commit remains unverified and complete engine identity unknown.
+
 [Official 0.5.22 maintenance](versions/v0.5.22/README.md) preserves one six-step
 source-derived stack and the measured target MoE stream. Exact replay, source
 identity and qualification boundaries are recorded there.
