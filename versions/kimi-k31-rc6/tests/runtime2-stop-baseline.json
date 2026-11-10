@@ -1,0 +1,105 @@
+{
+  "utc": "2026-11-10T08:32:36.580701+00:00",
+  "passed": true,
+  "expected_state": "baseline",
+  "all_contracts_passed": false,
+  "cases": 14,
+  "regression_failures": [
+    "custom_backend_startup_union",
+    "huggingface_xgrammar_startup_union",
+    "init_xgrammar_override_union",
+    "llguidance_startup_union"
+  ],
+  "unexpected_results": [],
+  "results": [
+    {
+      "name": "custom_backend_startup_union",
+      "passed": false,
+      "error_type": "AssertionError",
+      "error": "startup_stop_tokens_missing"
+    },
+    {
+      "name": "huggingface_xgrammar_startup_union",
+      "passed": false,
+      "error_type": "AssertionError",
+      "error": "startup_stop_tokens_missing"
+    },
+    {
+      "name": "llguidance_startup_union",
+      "passed": false,
+      "error_type": "AssertionError",
+      "error": "startup_stop_tokens_missing"
+    },
+    {
+      "name": "init_xgrammar_override_union",
+      "passed": false,
+      "error_type": "AssertionError",
+      "error": "startup_stop_tokens_missing"
+    },
+    {
+      "name": "no_startup_tokens_remains_none",
+      "passed": true
+    },
+    {
+      "name": "existing_zero_and_config_set_preserved",
+      "passed": true
+    },
+    {
+      "name": "special_tokenizer_no_config_override_preserved",
+      "passed": true
+    },
+    {
+      "name": "custom_priority_skips_reasoner_wrapper",
+      "passed": true
+    },
+    {
+      "name": "whitespace_and_compiler_budget_preserved",
+      "passed": true
+    },
+    {
+      "name": "pp_budget_path_preserved",
+      "passed": true
+    },
+    {
+      "name": "unsupported_tokenizer_nonstrict_fallback_preserved",
+      "passed": true
+    },
+    {
+      "name": "unsupported_tokenizer_strict_fails_closed",
+      "passed": true
+    },
+    {
+      "name": "none_backend_strict_fails_closed",
+      "passed": true
+    },
+    {
+      "name": "reasoner_strict_and_outlines_whitespace_preserved",
+      "passed": true
+    }
+  ],
+  "scope": "CPU_execute_actual_factory_and_constructor_AST_with_boundary_doubles",
+  "production_ast": [
+    "grammar_cache_budget_enabled",
+    "register_grammar_backend",
+    "create_grammar_backend",
+    "XGrammarGrammarBackend.__init__"
+  ],
+  "dependency_doubles": [
+    "runtime context",
+    "native grammar compiler and tokenizer-info construction",
+    "backend initialization/wrapping boundaries"
+  ],
+  "not_verified": [
+    "full_runtime_module_import",
+    "native_xgrammar_FSM_bitmasks",
+    "real_model_tokenizer",
+    "GPU_or_TEE_inference"
+  ],
+  "source_sha256": {
+    "base_grammar_backend.py": "e98cb7a22b1008498bb677127df691f0bd345773e8e0242a79193cbfc81a4f4b",
+    "xgrammar_backend.py": "6014ec911d4ba04b246a123ac36702197475f582ff0dc47bf5bab1bc3e789c70"
+  },
+  "harness_sha256": "0b9e8f3b6c989e277428240c4a0dcce7afeb6ad7f07f09603e46611425819c83",
+  "source_files_unchanged": true,
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]"
+}

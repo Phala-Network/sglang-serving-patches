@@ -1,0 +1,12 @@
+{
+  "mode": "candidate",
+  "tests_run": 8,
+  "failures": 0,
+  "errors": 0,
+  "passed": true,
+  "method_source": "C:\\Users\\zozyo\\.codex\\worktrees\\kimi-ref3-production\\phala-models-compose\\tmp\\kimi-k31-ccbridge-20261110\\runtime\\upstream-cancellation\\candidate",
+  "full_engine_imported": false,
+  "gpu_tested": false,
+  "failed_cases": [],
+  "error_cases": []
+}

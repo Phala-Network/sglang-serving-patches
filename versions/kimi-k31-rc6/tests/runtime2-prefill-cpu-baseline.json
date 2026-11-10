@@ -1,0 +1,18 @@
+{
+  "mode": "baseline",
+  "tests_run": 8,
+  "failures": 5,
+  "errors": 0,
+  "passed": false,
+  "method_source": "C:\\Users\\zozyo\\.codex\\worktrees\\kimi-ref3-production\\phala-models-compose\\tmp\\kimi-k31-ccbridge-20261110\\runtime\\vendor-rc6-source",
+  "full_engine_imported": false,
+  "gpu_tested": false,
+  "failed_cases": [
+    "test_delayed_snapshot_excludes_decode_and_releases_exact_owned_row (__main__.TestPrefillAbortCPU.test_delayed_snapshot_excludes_decode_and_releases_exact_owned_row)",
+    "test_eager_grammar_skips_aborted_prefill_but_keeps_mixed_decode (__main__.TestPrefillAbortCPU.test_eager_grammar_skips_aborted_prefill_but_keeps_mixed_decode)",
+    "test_packed_hidden_logprob_and_customized_metadata_keep_live_offset (__main__.TestPrefillAbortCPU.test_packed_hidden_logprob_and_customized_metadata_keep_live_offset) (full=False)",
+    "test_packed_hidden_logprob_and_customized_metadata_keep_live_offset (__main__.TestPrefillAbortCPU.test_packed_hidden_logprob_and_customized_metadata_keep_live_offset) (full=True)",
+    "test_pending_abort_precedes_sampling_mask_error (__main__.TestPrefillAbortCPU.test_pending_abort_precedes_sampling_mask_error)"
+  ],
+  "error_cases": []
+}

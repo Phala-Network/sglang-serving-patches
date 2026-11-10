@@ -1,0 +1,66 @@
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -4284,6 +4284,22 @@
+             and last_batch
+             and last_batch.forward_mode.is_extend()
+         ):
++            if self.result_queue:
++                # The final prefill result can still own these rows. Do not
++                # admit a pending client abort into optimistic decode; its
++                # delayed result will finish and release it without output.
++                # Beam groups retain their coordinator-owned finish path.
++                reqs_to_exclude.update(
++                    req
++                    for req in last_batch.reqs
++                    if req.to_finish is not None
++                    and req.beam_group is None
++                    and (
++                        not last_batch.decoding_reqs
++                        or req not in last_batch.decoding_reqs
++                    )
++                )
++
+             if last_batch.chunked_req is not None:
+                 # In the context pipeline parallelism, after the last chunk, the current microbatch still track outdated chunked_req.
+                 # We need to discard it.
+--- a/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
++++ b/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
+@@ -310,10 +310,20 @@
+                     and not req.is_retracted
+                     and req.inflight_middle_chunks <= 0
+                 )
+-                # A reason here finishes the request without committing this
+-                # forward's output: a failed KV load or an unusable sampling mask.
++                # A pending abort can win the race with the final prefill
++                # result. Reuse the existing discard path so packed metadata
++                # cursors advance without committing the sampled output.
++                pending_prefill_finish = (
++                    req.to_finish
++                    if req.beam_group is None
++                    and (not batch.decoding_reqs or req not in batch.decoding_reqs)
++                    else None
++                )
++                # Preserve failed-KV-load precedence and beam-owned finishes.
+                 discard_finish_reason = (
+-                    req.discard_output_reason if should_commit_output else None
++                    (req.discard_output_reason or pending_prefill_finish)
++                    if should_commit_output
++                    else None
+                 )
+                 if (
+                     should_commit_output
+@@ -910,6 +920,14 @@
+                     req.grammar is None
+                     or req.is_retracted
+                     or req.finished()
++                    or (
++                        req.to_finish is not None
++                        and req.beam_group is None
++                        and (
++                            not batch.decoding_reqs
++                            or req not in batch.decoding_reqs
++                        )
++                    )
+                     or req.inflight_middle_chunks > 0
+                 ):
+                     continue

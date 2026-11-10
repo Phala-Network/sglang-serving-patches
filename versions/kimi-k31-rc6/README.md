@@ -1,4 +1,44 @@
-# Kimi K3.1 rc6 mixed-media overlay candidate
+# Kimi K3.1 rc6 immutable overlays
+
+`runtime2.json` defines the rc6-2 stack: the original mixed-media unwrap,
+startup grammar stop-token completeness ([#46645](https://github.com/sgl-project/sglang/pull/46645)),
+and final chunked-prefill abort commit handling
+([#34153](https://github.com/sgl-project/sglang/pull/34153)). It changes five
+runtime files in one small OCI layer over the same fixed 85-layer vendor base.
+The grammar adaptation retains the vendor's cache/admission budgets and strict
+thinking behavior. The abort adaptation retains mixed-decode, beam ownership and
+failed-restore precedence. Dependencies, CCBridge transport, pool geometry and
+the existing media identity contract stay pinned.
+
+Build and check the selected runtime2 stack with the same metadata inputs:
+
+```sh
+python -B versions/kimi-k31-rc6/build_overlay.py build --stack runtime2 --inputs /path/to/rc6-inputs --init-template /path/to/rc6-init-script.in --boot-tool /path/to/rc6-boot-volume.py --out artifacts/rc6-runtime2
+python -B versions/kimi-k31-rc6/build_overlay.py check --stack runtime2 --inputs /path/to/rc6-inputs --init-template /path/to/rc6-init-script.in --boot-tool /path/to/rc6-boot-volume.py --out artifacts/rc6-runtime2
+```
+
+The recipe checks exact original fixtures, applies the ordered canonical patches,
+checks every final file hash, and packages only those five runtime paths. Added
+registered tests remain source-only. It carries unrelated L0 records unchanged,
+preserves inherited config semantics and non-K3 catalog rows, and never opens an
+application envelope or opaque startup field. The default `--stack mixed1`
+retains the original one-file recipe and output identities below.
+
+For installed runtime2 CPU checks, run the original mixed-media command below and:
+
+```sh
+python -B versions/kimi-k31-rc6/tests/test_stop_tokens_cpu.py --source-dir /sgl-workspace/sglang/python/sglang/srt/constrained --expect fixed --output /tmp/stop-tokens.json
+python -B versions/kimi-k31-rc6/tests/test_prefill_abort_cpu.py --source-root /sgl-workspace/sglang --runtime-root /sgl-workspace/sglang --receipt-dir /tmp
+```
+
+These harnesses execute actual installed source AST with CPU boundary doubles.
+They establish token-set propagation, strict/budget control behavior and abort
+commit/accounting invariants. They do not establish native xgrammar FSM masks,
+full runtime import, CUDA/TEE correctness or serving quality. Exact per-file
+identities and the unchanged mixed patch identity remain in the stack manifest;
+complete private engine Git identity remains unknown.
+
+## Original mixed1 release
 
 This two-line overlay fixes wrapped still images in rc6 mixed image/video input.
 The processor previously put `KimiLoadedImage` inside a visual frame tuple;

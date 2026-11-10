@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import tarfile
@@ -74,13 +75,101 @@ def fixed(path, digest, code):
 
 
 def layer_bytes(source):
+    files = source if isinstance(source, dict) else {SOURCE_PATH: source}
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT) as tar:
-        info = tarfile.TarInfo(SOURCE_PATH)
-        info.size, info.mode = len(source), 0o644
-        info.uid = info.gid = info.mtime = 0
-        tar.addfile(info, io.BytesIO(source))
+        for name, data in sorted(files.items()):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o644
+            info.uid = info.gid = info.mtime = 0
+            tar.addfile(info, io.BytesIO(data))
     return out.getvalue()
+
+
+def apply_runtime_patch(files, raw):
+    """Apply exact LF hunks to selected runtime files; tests stay in source only."""
+    text = re.sub(r"(?m)^(?:diff --git |index )[^\n]*\n", "", raw.decode("utf-8"))
+    sections = re.split(r"(?m)(?=^--- a/)", text)[1:]
+    require(sections, "stack_patch_no_sections")
+    for section in sections:
+        lines = section.splitlines(keepends=True)
+        old_path = re.fullmatch(r"--- a/(\S+)\n", lines[0])
+        new_path = re.fullmatch(r"\+\+\+ b/(\S+)\n", lines[1])
+        require(old_path and new_path and old_path[1] == new_path[1], "stack_patch_paths")
+        name = old_path[1]
+        require(not name.startswith("/") and ".." not in Path(name).parts, "stack_patch_path_escape")
+        if name.startswith("test/"):
+            continue
+        require(name in files, "stack_patch_unexpected_runtime_file")
+        old = files[name].decode("utf-8").splitlines(keepends=True)
+        result, cursor, index = [], 0, 2
+        while index < len(lines):
+            line = lines[index]
+            if not line.startswith("@@ "):
+                require(line.startswith(("index ", "--- a/", "+++ b/")), "stack_patch_header")
+                index += 1
+                continue
+            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            require(match is not None, "stack_patch_hunk")
+            start = int(match[1]) - 1
+            require(cursor <= start <= len(old), "stack_patch_hunk_order")
+            result.extend(old[cursor:start])
+            cursor = start
+            old_count = new_count = 0
+            index += 1
+            while index < len(lines) and not lines[index].startswith("@@ "):
+                change = lines[index]
+                require(change[:1] in (" ", "+", "-"), "stack_patch_hunk_line")
+                if change[:1] in (" ", "-"):
+                    require(cursor < len(old) and old[cursor] == change[1:], "stack_patch_context")
+                    cursor += 1
+                    old_count += 1
+                if change[:1] in (" ", "+"):
+                    result.append(change[1:])
+                    new_count += 1
+                index += 1
+            require(old_count == int(match[2] or 1) and new_count == int(match[4] or 1), "stack_patch_hunk_count")
+        result.extend(old[cursor:])
+        files[name] = "".join(result).encode("utf-8")
+
+
+def legacy_overlay():
+    return {"original_sha256": ORIGINAL_SOURCE, "patched_sha256": PATCHED_SOURCE, "patch_sha256": PATCH,
+            "image_path": "/" + SOURCE_PATH, "complete_engine_source_commit": None,
+            "source_boundary": "fixed rc6 OCI plus one file; complete engine provenance is unresolved"}
+
+
+def runtime_stack(a):
+    if a.stack == "mixed1":
+        return None
+    source_record = json.loads((VERSION / "source.json").read_bytes())
+    raw = fixed(VERSION / "runtime2.json", source_record["runtime2"]["manifest_sha256"], "stack_manifest")
+    spec = json.loads(raw)
+    require(spec["schema"] == "phala-rc6-overlay-stack-v1" and spec["name"] == "runtime2", "stack_schema")
+    require(spec["base_image_ref"] == BASE_REF, "stack_base")
+    files = {}
+    for row in spec["files"]:
+        name = row["runtime_file"]
+        require(name.startswith("python/sglang/srt/") and ".." not in Path(name).parts and name not in files, "stack_file_path")
+        require(row["archive_path"] == "sgl-workspace/sglang/" + name, "stack_archive_path")
+        fixture = VERSION / row["fixture"]
+        require(fixture.resolve().is_relative_to(VERSION.resolve()), "stack_fixture_path")
+        files[name] = fixed(fixture, row["original_sha256"], "stack_original_source")
+    for row in spec["patches"]:
+        path = VERSION / row["path"]
+        require(path.resolve().is_relative_to(VERSION.resolve()), "stack_patch_path")
+        apply_runtime_patch(files, fixed(path, row["sha256"], "stack_patch"))
+    payloads = {}
+    for row in spec["files"]:
+        data = files[row["runtime_file"]]
+        require(sha(data) == row["patched_sha256"], "stack_patched_source")
+        payloads[row["archive_path"]] = data
+    require(any(row["sha256"] == PATCH for row in spec["patches"]), "stack_mixed_patch_missing")
+    require(sha(payloads[SOURCE_PATH]) == PATCHED_SOURCE, "stack_mixed_source_changed")
+    overlay = legacy_overlay()
+    overlay.update({"stack": "runtime2", "stack_manifest_sha256": sha(raw), "patches": spec["patches"],
+                    "files": spec["files"], "source_boundary": "fixed rc6 OCI plus selected runtime files; complete engine provenance is unresolved"})
+    return {"payloads": payloads, "overlay": overlay, "sha256": sha(raw)}
 
 
 def tar_records(raw):
@@ -179,8 +268,10 @@ def inputs(a):
 
 def check(out, a):
     raw, old_m, old_c, old_images, old_release = inputs(a)
+    stack = runtime_stack(a)
     receipt = json.loads((out / "candidate.json").read_bytes())
     require(receipt["source_overlay"]["patch_sha256"] == PATCH, "receipt_patch")
+    require(receipt["source_overlay"] == (stack["overlay"] if stack else legacy_overlay()), "receipt_source_overlay")
     require(receipt["prelaunch_field_accessed"] is False, "unexpected_startup_field_access")
     mhex, chex, lhex = [receipt[k].removeprefix("sha256:") for k in ("manifest_digest", "config_digest", "layer_digest")]
     blobs = out / "oci-delta/blobs/sha256"
@@ -194,18 +285,24 @@ def check(out, a):
     require(canonical(m) == manifest and canonical(c) == config, "candidate_canonical_json")
     require(c["rootfs"]["diff_ids"] == old_c["rootfs"]["diff_ids"] + ["sha256:" + lhex], "candidate_diff_ids")
     require(c["history"][:-1] == old_c["history"] and not c["history"][-1].get("empty_layer"), "candidate_history")
+    history = "CCBridge immutable source overlay " + ("stack sha256:" + stack["sha256"] if stack else "sha256:" + PATCH)
+    require(c["history"][-1] == {"created_by": history}, "candidate_history_entry")
     normalized = copy.deepcopy(c)
     normalized["rootfs"]["diff_ids"] = old_c["rootfs"]["diff_ids"]
     normalized["history"] = old_c["history"]
     require(normalized == old_c, "base_config_semantics_changed")
     with tarfile.open(fileobj=io.BytesIO(layer), mode="r:") as tar:
         members = tar.getmembers()
-        require(len(members) == 1 and members[0].name == SOURCE_PATH and members[0].isfile(), "overlay_file_set")
-        member = members[0]
-        require((member.uid, member.gid, member.mtime, member.mode) == (0, 0, 0, 0o644), "overlay_file_metadata")
-        source = tar.extractfile(member).read()
-        require(sha(source) == PATCHED_SOURCE, "overlay_source_digest")
-        require(layer_bytes(source) == layer, "overlay_tar_determinism")
+        expected = stack["payloads"] if stack else {SOURCE_PATH: None}
+        require([m.name for m in members] == sorted(expected) and all(m.isfile() for m in members), "overlay_file_set")
+        actual = {}
+        for member in members:
+            require((member.uid, member.gid, member.mtime, member.mode) == (0, 0, 0, 0o644), "overlay_file_metadata")
+            data = tar.extractfile(member).read()
+            digest = sha(expected[member.name]) if stack else PATCHED_SOURCE
+            require(sha(data) == digest, "overlay_source_digest")
+            actual[member.name] = data
+        require(layer_bytes(actual) == layer, "overlay_tar_determinism")
     images_raw = (out / "catalog-delta/images.json").read_bytes()
     require(sha(images_raw) == receipt["images_sha256"], "catalog_digest")
     images = json.loads(images_raw)
@@ -233,20 +330,27 @@ def check(out, a):
             "layers": 86, "new_layers": 1, "new_layer_bytes": len(layer), "images_sha256": receipt["images_sha256"],
             "boot_volume_sha256": boot["sha256"], "boot_volume_bytes": len(image), "l0_records": records,
             "base_config_semantics_preserved": True, "non_k3_catalog_preserved": True,
+            "overlay_files": len(actual), "stack": a.stack,
             "prelaunch_field_accessed": False, "final_runtime_executed": False,
             "source_publication_verified": False, "gpu_qualified": False}
 
 
 def build(a):
     raw, old_m, old_c, old_images, old_release = inputs(a)
-    source = fixed(a.patched_source, PATCHED_SOURCE, "patched_source")
-    fixed(a.original_source, ORIGINAL_SOURCE, "original_source")
-    fixed(a.patch, PATCH, "source_patch")
+    stack = runtime_stack(a)
+    if stack:
+        source, overlay = stack["payloads"], stack["overlay"]
+    else:
+        source = fixed(a.patched_source, PATCHED_SOURCE, "patched_source")
+        fixed(a.original_source, ORIGINAL_SOURCE, "original_source")
+        fixed(a.patch, PATCH, "source_patch")
+        overlay = legacy_overlay()
     layer = layer_bytes(source)
     lhex = sha(layer)
     config = copy.deepcopy(old_c)
     config["rootfs"]["diff_ids"].append("sha256:" + lhex)
-    config.setdefault("history", []).append({"created_by": "CCBridge immutable source overlay sha256:" + PATCH})
+    history = "CCBridge immutable source overlay " + ("stack sha256:" + stack["sha256"] if stack else "sha256:" + PATCH)
+    config.setdefault("history", []).append({"created_by": history})
     config_bytes = canonical(config)
     chex = sha(config_bytes)
     layers = old_m["layers"] + [{"mediaType": LAYER_TYPE, "digest": "sha256:" + lhex, "size": len(layer)}]
@@ -288,9 +392,6 @@ def build(a):
         path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
     boot = json.loads((a.out / "boot/boot-volume.json").read_bytes())
     known = {row["digest"] for value in old_images.values() for row in value["layers"]}
-    overlay = {"original_sha256": ORIGINAL_SOURCE, "patched_sha256": PATCHED_SOURCE, "patch_sha256": PATCH,
-               "image_path": "/" + SOURCE_PATH, "complete_engine_source_commit": None,
-               "source_boundary": "fixed rc6 OCI plus one file; complete engine provenance is unresolved"}
     receipt = {"base_commit": COMMIT, "base_image_ref": BASE_REF, "base_config_digest": "sha256:" + BASE_CONFIG,
                "base_catalog_sha256": BASE_CATALOG, "base_l0_sha256": BASE_L0, "image_ref": ref,
                "manifest_digest": "sha256:" + mhex, "config_digest": "sha256:" + chex,
@@ -324,13 +425,14 @@ def main():
     parser.add_argument("command", choices=("build", "check"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
+    parser.add_argument("--stack", choices=("mixed1", "runtime2"), default="mixed1")
     parser.add_argument("--patched-source", type=Path)
     parser.add_argument("--original-source", type=Path, default=VERSION / "tests/fixtures/processors/kimi_k3.py")
     parser.add_argument("--patch", type=Path, default=VERSION / "patches/models/kimi/0001-mixed-image-unwrap.patch")
     parser.add_argument("--init-template", type=Path, required=True)
     parser.add_argument("--boot-tool", type=Path, required=True)
     args = parser.parse_args()
-    require(args.command != "build" or args.patched_source is not None, "patched_source_required")
+    require(args.command != "build" or args.stack == "runtime2" or args.patched_source is not None, "patched_source_required")
     result = build(args) if args.command == "build" else check(args.out, args)
     print(json.dumps(result, sort_keys=True))
 

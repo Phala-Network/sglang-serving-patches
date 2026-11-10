@@ -1,0 +1,63 @@
+{
+  "schema": "phala-rc6-overlay-stack-v1",
+  "name": "runtime2",
+  "base_image_ref": "offline.invalid/ccimage/k3@sha256:e5ece94b04b0557639a05790aaf607bb0a55848b34fe63e334e4dcbeeafd55f3",
+  "patches": [
+    {
+      "id": "grammar-startup-stop-tokens",
+      "path": "patches/common/0002-grammar-startup-stop-tokens.patch",
+      "sha256": "84a2899dcd9add070b4e8caf26e69466c8d9a65e4eff158e5f5f39e0789c8471",
+      "upstream_pr": "https://github.com/sgl-project/sglang/pull/46645",
+      "upstream_head": "bbdaf270c120aebe6eb033499f7186bac5e7d656"
+    },
+    {
+      "id": "final-prefill-abort",
+      "path": "patches/common/0003-final-prefill-abort.patch",
+      "sha256": "ce4f713ac20613b7caf9f1e89206995463c5a9ccfeb1faf71af8a746dd115cbc",
+      "upstream_pr": "https://github.com/sgl-project/sglang/pull/34153",
+      "upstream_head": "e4a5693b7fb6dccbb721cd32d1daa71eb7c5ab7c"
+    },
+    {
+      "id": "mixed-image-unwrap",
+      "path": "patches/models/kimi/0001-mixed-image-unwrap.patch",
+      "sha256": "68f03eae4ed03b0c0c49de2e2dee56d684f98d063735ac09fca7fd6d5ec848f7"
+    }
+  ],
+  "files": [
+    {
+      "runtime_file": "python/sglang/srt/constrained/base_grammar_backend.py",
+      "archive_path": "sgl-workspace/sglang/python/sglang/srt/constrained/base_grammar_backend.py",
+      "original_sha256": "e98cb7a22b1008498bb677127df691f0bd345773e8e0242a79193cbfc81a4f4b",
+      "patched_sha256": "8f795f3454b44d373f794cfa796157c967c7ce39e301fd20d0e208db9eed5f65",
+      "fixture": "tests/fixtures/runtime/python/sglang/srt/constrained/base_grammar_backend.py"
+    },
+    {
+      "runtime_file": "python/sglang/srt/constrained/xgrammar_backend.py",
+      "archive_path": "sgl-workspace/sglang/python/sglang/srt/constrained/xgrammar_backend.py",
+      "original_sha256": "6014ec911d4ba04b246a123ac36702197475f582ff0dc47bf5bab1bc3e789c70",
+      "patched_sha256": "c51f938ef2ff03d93eb93bda0708bffadee79ecf73cad5f92af72db7b830295e",
+      "fixture": "tests/fixtures/runtime/python/sglang/srt/constrained/xgrammar_backend.py"
+    },
+    {
+      "runtime_file": "python/sglang/srt/managers/scheduler.py",
+      "archive_path": "sgl-workspace/sglang/python/sglang/srt/managers/scheduler.py",
+      "original_sha256": "1301d147211bb9c08d6babec707670e8d3a31994dfadb04a64ff2ad45a33d777",
+      "patched_sha256": "dbecb326709ae9703d31f721343cd4168b7ca3a4674a2a91698a259bcecb8cbd",
+      "fixture": "tests/fixtures/runtime/python/sglang/srt/managers/scheduler.py"
+    },
+    {
+      "runtime_file": "python/sglang/srt/managers/scheduler_components/batch_result_processor.py",
+      "archive_path": "sgl-workspace/sglang/python/sglang/srt/managers/scheduler_components/batch_result_processor.py",
+      "original_sha256": "96646bef90319b8e5000f8e6cf265e4c5d0918629e51ccb3ccbce1c2db377ee8",
+      "patched_sha256": "ac97f7c78a7bb2657b06b6f2602434e6a15f9b3b181d43faf89d7c0d5490d4f4",
+      "fixture": "tests/fixtures/runtime/python/sglang/srt/managers/scheduler_components/batch_result_processor.py"
+    },
+    {
+      "runtime_file": "python/sglang/srt/multimodal/processors/kimi_k3.py",
+      "archive_path": "sgl-workspace/sglang/python/sglang/srt/multimodal/processors/kimi_k3.py",
+      "original_sha256": "77ca1dda1ec1b29464bc0ed7b941123e2d5dc31e76c11be533505ba1caa1ea03",
+      "patched_sha256": "a876ad5f36aad52a1c3ae71667a11e1f554022bbc43e7ba9fe26219058793baf",
+      "fixture": "tests/fixtures/processors/kimi_k3.py"
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+diff --git a/python/sglang/srt/constrained/base_grammar_backend.py b/python/sglang/srt/constrained/base_grammar_backend.py
+--- a/python/sglang/srt/constrained/base_grammar_backend.py
++++ b/python/sglang/srt/constrained/base_grammar_backend.py
+@@ -711,6 +711,20 @@
+     GRAMMAR_BACKEND_REGISTRY[name] = init_func
+ 
+ 
++def grammar_stop_token_ids(tokenizer, eos_token_ids=None) -> Optional[set]:
++    """Stop tokens known at startup: config EOS, tokenizer EOS and additional
++    stop tokens. A stop token missing here is ordinary text to the grammar, so a
++    constrained request could end on it before the grammar is complete."""
++    ids = set(eos_token_ids or ())
++    eos_token_id = getattr(tokenizer, "eos_token_id", None)
++    if eos_token_id is not None:
++        ids.add(eos_token_id)
++    additional_stop_token_ids = getattr(tokenizer, "additional_stop_token_ids", None)
++    if additional_stop_token_ids is not None:
++        ids.update(additional_stop_token_ids)
++    return ids or None
++
++
+ def create_grammar_backend(
+     server_args: ServerArgs,
+     tokenizer,
+@@ -719,6 +733,7 @@
+     think_end_ids: Optional[List[int]] = None,
+ ) -> Optional[BaseGrammarBackend]:
+     name = get_exec().kernel.grammar_backend
++    eos_token_ids = grammar_stop_token_ids(tokenizer, eos_token_ids)
+     if not grammar_cache_budget_enabled():
+         logger.info(
+             "Grammar cache/admission budgets apply to PP1; PP uses its existing cache path"
+diff --git a/python/sglang/srt/constrained/xgrammar_backend.py b/python/sglang/srt/constrained/xgrammar_backend.py
+--- a/python/sglang/srt/constrained/xgrammar_backend.py
++++ b/python/sglang/srt/constrained/xgrammar_backend.py
+@@ -266,6 +266,10 @@
+                 # Not supported tokenizer
+                 raise TokenizerNotSupportedError(
+                     f"Tokenizer type {type(tokenizer).__name__} is not supported by XGrammar"
++                )
++            if model_eos_token_ids:
++                override_stop_tokens = sorted(
++                    set(override_stop_tokens or ()) | set(model_eos_token_ids)
+                 )
+         else:
+             # Create TokenizerInfo with model's EOS tokens as the authoritative stop tokens
+diff --git a/test/registered/unit/constrained/test_base_grammar_backend.py b/test/registered/unit/constrained/test_base_grammar_backend.py
+--- a/test/registered/unit/constrained/test_base_grammar_backend.py
++++ b/test/registered/unit/constrained/test_base_grammar_backend.py
+@@ -14,6 +14,7 @@
+ import json
+ import unittest
+ from concurrent.futures import Future
++from types import SimpleNamespace
+ from unittest.mock import MagicMock, patch
+ 
+ from sglang.srt.arg_groups.overrides import resolution_result
+@@ -24,6 +25,7 @@
+     GrammarStats,
+     InvalidGrammarObject,
+     create_grammar_backend,
++    grammar_stop_token_ids,
+     register_grammar_backend,
+ )
+ from sglang.srt.runtime_context import get_context  # noqa: E402
+@@ -234,6 +236,19 @@
+         self.assertEqual(received["tokenizer"], "my_tok")
+         self.assertEqual(received["vocab_size"], 50000)
+         self.assertEqual(received["eos_token_ids"], {0, 2})
++
++    def test_custom_backend_receives_tokenizer_stop_tokens(self):
++        received = {}
++
++        def init_fn(server_args, tokenizer, vocab_size, eos_token_ids):
++            received["eos_token_ids"] = eos_token_ids
++            return MagicMock()
++
++        register_grammar_backend("capture_stop", init_fn)
++        args = self._make_server_args("capture_stop")
++        tokenizer = SimpleNamespace(eos_token_id=1, additional_stop_token_ids={3})
++        create_grammar_backend(args, tokenizer, 50000, {0, 2})
++        self.assertEqual(received["eos_token_ids"], {0, 1, 2, 3})
+ 
+     def test_custom_backend_skips_reasoner_wrapping(self):
+         """Custom registered backends return directly, bypassing reasoner wrapping."""
+@@ -417,5 +432,39 @@
+                 dispatch.assert_called_once_with(key_string)
+ 
+ 
++class TestGrammarStopTokenIds(unittest.TestCase):
++    def test_no_startup_stop_tokens_gives_none(self):
++        self.assertIsNone(grammar_stop_token_ids(SimpleNamespace(), None))
++
++    @patch("sglang.srt.constrained.xgrammar_backend.XGrammarGrammarBackend")
++    def test_xgrammar_receives_startup_stop_tokens(self, mock_xgrammar_cls):
++        mock_xgrammar_cls.return_value = MagicMock(spec=BaseGrammarBackend)
++        override = get_context().override_server_args(
++            grammar_backend="xgrammar",
++            reasoning_parser=None,
++            constrained_json_disable_any_whitespace=False,
++            constrained_json_max_whitespace_cnt=None,
++        )
++        override.install()
++        self.addCleanup(override.restore)
++        tokenizer = SimpleNamespace(eos_token_id=163585, additional_stop_token_ids={7})
++
++        create_grammar_backend(MagicMock(), tokenizer, 50000, {163586})
++
++        eos = mock_xgrammar_cls.call_args.kwargs["model_eos_token_ids"]
++        self.assertEqual(sorted(eos), [7, 163585, 163586])
++
++    @patch(
++        "sglang.srt.constrained.xgrammar_backend.XGrammarGrammarBackend._new_framing_compiler"
++    )
++    @patch("sglang.srt.constrained.xgrammar_backend.GrammarCompiler")
++    def test_init_xgrammar_tokenizer_keeps_startup_stop_tokens(self, *_):
++        from sglang.srt.constrained.xgrammar_backend import XGrammarGrammarBackend
++
++        tokenizer = SimpleNamespace(init_xgrammar=lambda: (MagicMock(), [2]))
++        backend = XGrammarGrammarBackend(tokenizer, 100, model_eos_token_ids=[2, 7])
++        self.assertEqual(backend.override_stop_tokens, [2, 7])
++
++
+ if __name__ == "__main__":
+     unittest.main()

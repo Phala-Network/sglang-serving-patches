@@ -1,0 +1,59 @@
+{
+  "utc": "2026-11-10T08:40:09.434521+00:00",
+  "kit_commit": "bfe9d8575ca5b7e4698da844e3f9c0a36c392c9d",
+  "installer": "source/kit/integrations/sglang/ccbridge_sglang/install.py",
+  "installer_sha256": "f8e16cfa5368c4cdd9218dd98ac0c388f2088958d14869871441179db687ec7e",
+  "method": "Read actual installer apply() and execute its unchanged pinned_files() AST against literal pin dictionaries; scoped package search for exact target filenames found no other references.",
+  "pinned_file_count": 26,
+  "pinned_paths": [
+    "managers/cache_controller.py",
+    "managers/hisparse_coordinator.py",
+    "managers/scheduler_components/weight_updater.py",
+    "mem_cache/deepseek_v4_memory_pool.py",
+    "mem_cache/device_pool_info.py",
+    "mem_cache/hicache_storage.py",
+    "mem_cache/hybrid_cache/host_pool_config.py",
+    "mem_cache/hybrid_cache/hybrid_cache_controller.py",
+    "mem_cache/hybrid_cache/hybrid_pool_assembler.py",
+    "mem_cache/index_key_cache.py",
+    "mem_cache/kv_cache_builder.py",
+    "mem_cache/l2_transfer.py",
+    "mem_cache/memory_pool.py",
+    "mem_cache/memory_pool_host.py",
+    "mem_cache/pool_host/base.py",
+    "mem_cache/pool_host/common.py",
+    "mem_cache/pool_host/dsa.py",
+    "mem_cache/pool_host/group.py",
+    "mem_cache/pool_host/hisparse.py",
+    "mem_cache/pool_host/host_pool_decl.py",
+    "mem_cache/pool_host/mamba.py",
+    "mem_cache/pool_host/mha.py",
+    "mem_cache/pool_host/mla.py",
+    "mem_cache/pool_host/qsa.py",
+    "mem_cache/unified_radix_cache.py",
+    "runtime_context.py"
+  ],
+  "targets": [
+    {
+      "srt_path": "constrained/base_grammar_backend.py",
+      "in_installer_source_hash_allowlist": false
+    },
+    {
+      "srt_path": "constrained/xgrammar_backend.py",
+      "in_installer_source_hash_allowlist": false
+    },
+    {
+      "srt_path": "managers/scheduler.py",
+      "in_installer_source_hash_allowlist": false
+    },
+    {
+      "srt_path": "managers/scheduler_components/batch_result_processor.py",
+      "in_installer_source_hash_allowlist": false
+    }
+  ],
+  "target_pin_conflict": false,
+  "global_revision_check": "Only if .git exists; compares HEAD to unchanged SGLANG_REVISION, not whole-tree content. Overlay does not change that field.",
+  "runtime_pins_json": "Dependency/version and historical provenance record; no target-file SHA allowlist.",
+  "kit_or_allowlist_modified": false,
+  "validation_boundary": "Fixed kit installer source reviewed; final-image boot/CPU qualification remains separate."
+}
