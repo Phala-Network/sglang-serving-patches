@@ -1,0 +1,77 @@
+diff --git a/python/sglang/srt/function_call/glm4_moe_detector.py b/python/sglang/srt/function_call/glm4_moe_detector.py
+index 3e37d3294dc634f618315cdecceae95185afed36..22b9d398d68fbfae398e8faa5c1a6fb529619304 100644
+--- a/python/sglang/srt/function_call/glm4_moe_detector.py
++++ b/python/sglang/srt/function_call/glm4_moe_detector.py
+@@ -1056,7 +1056,9 @@ def generate_glm_grammar(
+         f'{root_name} ::= assistant_turn ( "{special_tokens.assistant_token}" assistant_turn )*'
+         if allow_multiple_assistant_turns
+         else f"{root_name} ::= assistant_turn",
+-        "assistant_turn ::= thinking_block text_block tool_call_blocks",
++        "assistant_turn ::= thinking_block "
++        + ("" if required and functions else "text_block ")
++        + "tool_call_blocks",
+     ]
+ 
+     thinking_exclusions = [
+diff --git a/test/registered/unit/function_call/test_function_call_parser.py b/test/registered/unit/function_call/test_function_call_parser.py
+index 5b1101c9e69ea9fe207a9363e549238834454ace..b292a34e2c5a6b795be7ff10b1f3e49ab8425c89 100644
+--- a/test/registered/unit/function_call/test_function_call_parser.py
++++ b/test/registered/unit/function_call/test_function_call_parser.py
+@@ -3704,11 +3704,19 @@ class TestGlm47FullAssistantGrammar(unittest.TestCase):
+             max_threads=1,
+         )
+ 
+-    def _compile(self, parameters=None, choice="auto", parallel=True, thinking=False):
+-        tools = [
+-            Tool(type="function", function=Function(name=name, parameters=parameters))
+-            for name in ("alpha", "beta")
+-        ]
++    def _compile(
++        self, parameters=None, choice="auto", parallel=True, thinking=False, tools=True
++    ):
++        tools = (
++            [
++                Tool(
++                    type="function", function=Function(name=name, parameters=parameters)
++                )
++                for name in ("alpha", "beta")
++            ]
++            if tools
++            else []
++        )
+         parser = FunctionCallParser(tools, "glm47")
+         constraint = parser.get_structure_constraint(
+             choice, parallel_tool_calls=parallel, thinking_mode=thinking
+@@ -3738,6 +3746,15 @@ class TestGlm47FullAssistantGrammar(unittest.TestCase):
+                             self._accepts(grammar, prefix + "Hello"),
+                             choice in ("auto", "none"),
+                         )
++                        matcher = xgr.GrammarMatcher(grammar)
++                        self.assertEqual(
++                            matcher.accept_string(prefix + "Hello"),
++                            choice in ("auto", "none"),
++                        )
++                        self.assertEqual(
++                            self._accepts(grammar, prefix + "Hello" + alpha),
++                            choice == "auto",
++                        )
+                         self.assertEqual(
+                             self._accepts(grammar, prefix + alpha), choice != "none"
+                         )
+@@ -3750,6 +3767,16 @@ class TestGlm47FullAssistantGrammar(unittest.TestCase):
+                             parallel and choice != "none",
+                         )
+ 
++    def test_no_tools_allows_text(self):
++        for thinking in (False, True):
++            with self.subTest(thinking=thinking):
++                grammar = self._compile(choice="auto", thinking=thinking, tools=False)
++                prefix = "analysis</think>" if thinking else ""
++                self.assertTrue(self._accepts(grammar, prefix + "Hello"))
++                self.assertFalse(
++                    self._accepts(grammar, prefix + "<tool_call>alpha</tool_call>")
++                )
++
+     def test_enum_json_types_and_boolean_schemas(self):
+         cases = [
+             ({"enum": [1, 2]}, ["1", "2"], ["3"]),
