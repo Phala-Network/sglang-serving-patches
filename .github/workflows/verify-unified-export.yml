@@ -10,6 +10,7 @@ on:
       - '*verification.json'
       - 'series'
       - 'patches/**'
+      - 'versions/v0.5.23/**'
       - 'integrations/**'
       - 'native/**'
       - 'scripts/*.py'
@@ -26,6 +27,7 @@ on:
       - '*verification.json'
       - 'series'
       - 'patches/**'
+      - 'versions/v0.5.23/**'
       - 'integrations/**'
       - 'native/**'
       - 'scripts/*.py'
@@ -89,6 +91,12 @@ jobs:
                   for field in ("source_commit", "source_parent"):
                       if patch.get(field):
                           commits.add(patch[field])
+          versioned = read_stack(Path("versions/v0.5.23"))
+          commits.update((versioned["upstream"], versioned["engine_commit"]))
+          for patch in versioned["patches"]:
+              for field in ("source_commit", "source_parent"):
+                  if patch.get(field):
+                      commits.add(patch[field])
           active = read_stack()
           commits.update((active["upstream"], active["engine_commit"]))
           for patch in active["patches"]:
@@ -131,6 +139,8 @@ jobs:
         run: python3 scripts/export_selectors.py --source "$SOURCE" --check
       - name: Verify the complete active unified stack
         run: python3 scripts/stack.py verify --source "$SOURCE"
+      - name: Verify the complete v0.5.23 version-maintenance export
+        run: python3 scripts/stack.py verify --stack-root versions/v0.5.23 --source "$SOURCE"
       - name: Verify independent Mooncake source export
         shell: bash
         run: |

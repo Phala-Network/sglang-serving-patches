@@ -1,0 +1,3156 @@
+diff --git a/python/sglang/srt/configs/model_config.py b/python/sglang/srt/configs/model_config.py
+index d76308f6b4370be4d33e6ad2df051987d115dfd3..89dbd84e787de0f027b95db7d544ee5c293caa65 100644
+--- a/python/sglang/srt/configs/model_config.py
++++ b/python/sglang/srt/configs/model_config.py
+@@ -667,6 +667,11 @@ class ModelConfig:
+         rope_scaling = getattr(self.hf_text_config, "rope_parameters", None) or getattr(
+             self.hf_text_config, "rope_scaling", {}
+         )
++        from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++
++        self.request_static_yarn_config = RequestStaticYarnConfig.from_hf_config(
++            self.hf_text_config
++        )
+         # Text-only serving comes from either the checkpoint's own declaration
+         # or the --language-model-only flag; every capability flag below
+         # (is_multimodal, is_*_understandable_model) must see both sources,
+@@ -716,6 +721,13 @@ class ModelConfig:
+             else:
+                 enable_multimodal = True
+ 
++        if self.request_static_yarn_config is not None:
++            # Check the source wrapper before embedded MTP rewrites its arch.
++            self.request_static_yarn_config.validate_model_support(
++                self.hf_config.architectures,
++                enable_multimodal and not self.is_lm_only,
++            )
++
+         # Config draft model
+         self._config_draft_model()
+ 
+diff --git a/python/sglang/srt/configs/request_static_yarn.py b/python/sglang/srt/configs/request_static_yarn.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f738e5a399d18ef8dd658b0dac195ce9fa34107f
+--- /dev/null
++++ b/python/sglang/srt/configs/request_static_yarn.py
+@@ -0,0 +1,164 @@
++# SPDX-License-Identifier: Apache-2.0
++# Request-static table selection adapted from vLLM PR #53964, head
++# 7ba5fd5e671e210b9e3d3f423ff2e1bf48314f45 (Apache-2.0).
++
++"""Admission policy for immutable per-request mRoPE YaRN profiles."""
++
++from dataclasses import dataclass
++import hashlib
++import json
++import math
++from typing import Any
++
++
++@dataclass(frozen=True)
++class YarnProfile:
++    factor: float
++    offset: int
++    profile_id: str
++    budget: int
++
++
++@dataclass(frozen=True)
++class RequestStaticYarnConfig:
++    factors: tuple[float, ...]
++    original_max_position: int
++    profiles: tuple[tuple[float, int, str], ...]
++
++    @classmethod
++    def from_hf_config(cls, hf_text_config: Any):
++        rope = getattr(hf_text_config, "rope_parameters", None) or getattr(
++            hf_text_config, "rope_scaling", None
++        )
++        factors = rope.get("request_static_factors") if isinstance(rope, dict) else None
++        if factors is None:
++            return None
++        normalized = tuple(float(factor) for factor in factors)
++        if (
++            not normalized
++            or any(not math.isfinite(f) or f < 1 for f in normalized)
++            or normalized != tuple(sorted(set(normalized)))
++        ):
++            raise ValueError(
++                "request_static_factors must be finite, sorted, unique and >= 1"
++            )
++        if (
++            rope.get("rope_type", rope.get("type")) != "yarn"
++            or "mrope_section" not in rope
++        ):
++            raise ValueError("Request-static YaRN requires yarn mRoPE")
++        if float(rope.get("factor", 1)) != normalized[-1]:
++            raise ValueError(
++                "Largest request-static factor must equal configured YaRN factor"
++            )
++        original = rope.get("original_max_position_embeddings")
++        if not isinstance(original, int) or isinstance(original, bool) or original <= 0:
++            raise ValueError(
++                "Request-static YaRN requires a positive original context length"
++            )
++        profiles = []
++        offset = 0
++        for factor in normalized:
++            rows = 4 * original * factor
++            if not rows.is_integer():
++                raise ValueError("Request-static YaRN must have integral table sizes")
++            params = {k: v for k, v in rope.items() if k != "request_static_factors"}
++            params["factor"] = factor
++            identity = {
++                "rope": params,
++                "head_dim": getattr(hf_text_config, "head_dim", None),
++                "rope_theta": params.get(
++                    "rope_theta", getattr(hf_text_config, "rope_theta", None)
++                ),
++                "partial_rotary_factor": params.get(
++                    "partial_rotary_factor",
++                    getattr(hf_text_config, "partial_rotary_factor", None),
++                ),
++                "layout": "sglang-mrope-request-static-v1",
++            }
++            digest = hashlib.sha256(
++                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
++            ).hexdigest()
++            profiles.append((factor, offset, "yarn:" + digest))
++            offset += int(rows)
++        return cls(normalized, original, tuple(profiles))
++
++    def validate_model_support(self, architectures, is_multimodal: bool):
++        # These wrappers and their embedded MTP consume mrope_positions. Bare
++        # CausalLM forwards do not, and prefill graphs allocate that input only
++        # in multimodal mode. Reject unsupported combinations at model load.
++        if not architectures or architectures[0] not in (
++            "Qwen3_5ForConditionalGeneration",
++            "Qwen3_5MoeForConditionalGeneration",
++        ):
++            raise ValueError(
++                "Request-static YaRN requires a Qwen3.5/3.8 ConditionalGeneration wrapper"
++            )
++        if not is_multimodal:
++            raise ValueError(
++                "Request-static YaRN requires multimodal mode; language-model-only "
++                "and disabled multimodal mode are unsupported"
++            )
++
++    def select(self, budget: int, explicit_factor=None) -> YarnProfile:
++        if not isinstance(budget, int) or budget < 0:
++            raise ValueError("Request-static YaRN requires a nonnegative token budget")
++        if explicit_factor is not None:
++            if isinstance(explicit_factor, bool) or not isinstance(
++                explicit_factor, (int, float)
++            ):
++                raise ValueError(
++                    "custom_params.yarn_factor must be a configured numeric factor"
++                )
++            if explicit_factor not in self.factors:
++                raise ValueError(
++                    "custom_params.yarn_factor must be a configured factor"
++                )
++        for factor, offset, profile_id in self.profiles:
++            if explicit_factor is not None and factor != explicit_factor:
++                continue
++            if budget <= self.original_max_position * factor:
++                return YarnProfile(factor, offset, profile_id, budget)
++        raise ValueError(
++            "Prompt plus output budget exceeds the selected YaRN profile capacity"
++        )
++
++
++def admit_request_static_yarn(req, config, context_length: int):
++    """Select once, before output clipping, cache lookup or chunked prefill."""
++    explicit = (req.sampling_params.custom_params or {}).get("yarn_factor")
++    if config is None:
++        if explicit is not None:
++            raise ValueError("custom_params.yarn_factor requires request-static YaRN")
++        return
++    if getattr(req, "rope_profile", None) is not None:
++        return
++    prompt_len = len(req.origin_input_ids)
++    output_budget = req.sampling_params.max_new_tokens
++    # None is the existing SGLang unbounded-output contract: reserve the whole
++    # remaining server context rather than silently treating it as one token.
++    if output_budget is None:
++        output_budget = max(0, context_length - prompt_len)
++    budget = prompt_len + output_budget
++    if budget > context_length:
++        raise ValueError(
++            "Prompt plus requested output budget exceeds server context length"
++        )
++    profile = config.select(budget, explicit)
++    mm = getattr(req, "multimodal_inputs", None)
++    if mm is not None and mm.mrope_positions is not None:
++        positions = mm.mrope_positions
++        max_position = int(positions.max()) if positions.numel() else -1
++        if (
++            max_position + output_budget
++            >= 4 * config.original_max_position * profile.factor
++        ):
++            raise ValueError(
++                "Multimodal positions exceed the selected YaRN table capacity"
++            )
++    # Preserve the caller namespace without ambiguous string concatenation.
++    req.extra_key = json.dumps(
++        [req.extra_key, getattr(req, "lora_id", None), profile.profile_id],
++        separators=(",", ":"),
++    )
++    req.rope_profile = profile
+diff --git a/python/sglang/srt/function_call/qwen3_coder_detector.py b/python/sglang/srt/function_call/qwen3_coder_detector.py
+index 01c52631921bbd276047b4e7d08e53931bf69c5e..72ca981428b0f415a5018b7aea9feaac6fecbd46 100644
+--- a/python/sglang/srt/function_call/qwen3_coder_detector.py
++++ b/python/sglang/srt/function_call/qwen3_coder_detector.py
+@@ -1,16 +1,23 @@
++import copy
+ import json
+ import logging
+ import re
+-from typing import Any, List, Optional
++from typing import Any, List, Literal, Optional, Union
+ 
+-from sglang.srt.entrypoints.openai.protocol import Tool
+-from sglang.srt.function_call.base_format_detector import BaseFormatDetector
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.environ import envs
++from sglang.srt.function_call.base_format_detector import (
++    BaseFormatDetector,
++    StructuralTag,
++)
+ from sglang.srt.function_call.core_types import (
+     StreamingParseResult,
+     ToolCallItem,
+     _GetInfoFunc,
+ )
+ from sglang.srt.function_call.utils import (
++    coerce_argument_to_schema,
++    get_argument_schema,
+     get_schema_properties,
+     infer_type_from_json_schema,
+     safe_literal_eval,
+@@ -19,6 +26,113 @@ from sglang.srt.function_call.utils import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _preserve_xml_parameter_schema(structural_tag: StructuralTag) -> StructuralTag:
++    """Preserve top-level XML required/empty contracts with stock XGrammar."""
++    value = structural_tag.model_dump()
++
++    def visit(node: Any) -> None:
++        if isinstance(node, dict):
++            if node.get("type") == "json_schema" and node.get("style") == "qwen_xml":
++                schema = node.get("json_schema")
++                if not isinstance(schema, dict):
++                    return
++                properties = schema.get("properties") or {}
++                required = schema.get("required") or []
++                missing = [name for name in required if name not in properties]
++                if len(set(required)) > schema.get("maxProperties", float("inf")):
++                    raise ValueError("Required XML parameters exceed maxProperties")
++                if missing:
++                    if schema.get("patternProperties") or schema.get("propertyNames"):
++                        raise ValueError(
++                            "Undeclared required XML parameters have complex key constraints"
++                        )
++                    additional = schema.get(
++                        "additionalProperties",
++                        schema.get("unevaluatedProperties", True),
++                    )
++                    if additional is False:
++                        raise ValueError(
++                            "Undeclared required XML parameters are forbidden"
++                        )
++                    properties = dict(properties)
++                    for name in missing:
++                        properties[name] = (
++                            copy.deepcopy(additional)
++                            if isinstance(additional, dict)
++                            else {}
++                        )
++                    schema["properties"] = properties
++                # The Qwen XML tool serializer treats an undeclared parameter
++                # set as a no-argument function unless additionalProperties is
++                # explicitly open. This is not the default for plain JSON Schema.
++                empty = schema.get("maxProperties") == 0 or (
++                    not properties
++                    and not required
++                    and not schema.get("patternProperties")
++                    and not any(
++                        key in schema for key in ("$ref", "allOf", "anyOf", "oneOf")
++                    )
++                    and schema.get("additionalProperties", False) is False
++                )
++                if empty:
++                    if schema.get("minProperties", 0) > 0:
++                        raise ValueError(
++                            "Empty XML parameters cannot satisfy minProperties"
++                        )
++                    node.clear()
++                    node.update(type="const_string", value="")
++                return
++            for child in node.values():
++                visit(child)
++        elif isinstance(node, list):
++            for child in node:
++                visit(child)
++
++    visit(value)
++    return StructuralTag.model_validate(value)
++
++
++def _align_required_tool_call_repetition(
++    structural_tag: StructuralTag, parallel_tool_calls: bool
++) -> StructuralTag:
++    """Match Qwen's trained separator and enforce the request's call limit."""
++    value = structural_tag.model_dump()
++    repetitions = []
++
++    def visit(node: Any) -> None:
++        if isinstance(node, dict):
++            if node.get("type") in ("tags_with_separator", "triggered_tags"):
++                repetitions.append(node)
++            for child in node.values():
++                visit(child)
++        elif isinstance(node, list):
++            for child in node:
++                visit(child)
++
++    visit(value)
++    if len(repetitions) != 1:
++        raise ValueError(
++            "Qwen3 Coder required structural tag must contain one repeated-tag format"
++        )
++
++    repetition = repetitions[0]
++    if repetition.get("type") == "triggered_tags":
++        if not repetition.get("at_least_one") or repetition.get("triggers") != [
++            "<tool_call>\n<function="
++        ]:
++            raise ValueError("Unexpected Qwen3 Coder required tool-call trigger")
++        tags = repetition["tags"]
++        repetition.clear()
++        repetition.update(
++            type="tags_with_separator",
++            tags=tags,
++            at_least_one=True,
++        )
++    repetition["separator"] = "\n"
++    repetition["stop_after_first"] = not parallel_tool_calls
++    return StructuralTag.model_validate(value)
++
++
+ class Qwen3CoderDetector(BaseFormatDetector):
+     def __init__(self):
+         super().__init__()
+@@ -31,33 +145,16 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         self.parameter_prefix: str = "<parameter="
+         self.parameter_end_token: str = "</parameter>"
+ 
+-        # Regex for non-streaming fallback
++        # Only closed function bodies inside closed tool blocks are executable.
+         self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+         self.tool_call_function_regex = re.compile(
+-            r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
++            r"<function=([^<>]+)>(.*?)</function>", re.DOTALL
+         )
+         self.tool_call_parameter_regex = re.compile(
+             r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+             re.DOTALL,
+         )
+ 
+-        # Streaming State
+-        # Base class already initializes _buffer, we just use it directly
+-        # No need to check with hasattr - we control the lifecycle through inheritance
+-
+-        # Index pointing to the next character to be processed in buffer
+-        self.parsed_pos: int = 0
+-        # Parameter count inside the current tool being processed, used to determine whether to add comma
+-        self.current_tool_param_count: int = 0
+-        # Flag indicating whether current tool has already sent '{'
+-        self.json_started: bool = False
+-
+-        # [FIX] New state flag: mark whether inside tool_call structure block
+-        self.is_inside_tool_call: bool = False
+-
+-        # Initialize attributes that were missing in the original PR
+-        self.current_func_name: Optional[str] = None
+-
+     def has_tool_call(self, text: str) -> bool:
+         return self.tool_call_start_token in text
+ 
+@@ -88,7 +185,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     return params
+                 else:
+                     return {}
+-        logger.warning(f"Tool '{func_name}' is not defined in the tools list.")
++        logger.warning("Tool is not defined in the tools list.")
+         return {}
+ 
+     def _get_param_type(self, param_schema: Any) -> str:
+@@ -99,9 +196,40 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         return str(inferred_type).strip().lower()
+ 
+     def _convert_param_value(
+-        self, param_value: str, param_name: str, param_config: dict, func_name: str
++        self,
++        param_value: str,
++        param_name: str,
++        param_config: dict,
++        func_name: str,
++        tools: Optional[List[Tool]] = None,
+     ) -> Any:
+         """Convert parameter value based on its type in the schema."""
++        argument_schema = get_argument_schema(func_name, param_name, tools or [])
++        if argument_schema is None:
++            for tool in tools or []:
++                if tool.function.name != func_name:
++                    continue
++                schema = tool.function.parameters
++                if not isinstance(schema, dict) or schema.get("patternProperties"):
++                    break
++                if param_name in get_schema_properties(schema):
++                    break
++                additional = schema.get(
++                    "additionalProperties", schema.get("unevaluatedProperties")
++                )
++                if isinstance(additional, dict):
++                    argument_schema = dict(additional)
++                    for key in ("$defs", "definitions"):
++                        if key in schema and key not in argument_schema:
++                            argument_schema[key] = schema[key]
++                break
++        if argument_schema is not None:
++            converted, schema_valid = coerce_argument_to_schema(
++                param_value, argument_schema
++            )
++            if schema_valid:
++                return converted
++
+         # Handle null value for any type
+         if param_value.lower() == "null":
+             return None
+@@ -109,8 +237,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+         if param_name not in param_config:
+             if param_config != {}:
+                 logger.warning(
+-                    f"Parsed parameter '{param_name}' is not defined in the tool "
+-                    f"parameters for tool '{func_name}', directly returning the string value."
++                    "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                 )
+             return param_value
+ 
+@@ -128,8 +255,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                 param_value = int(param_value)
+             except Exception:
+                 logger.warning(
+-                    f"Parsed value '{param_value}' of parameter '{param_name}' is not an integer in tool "
+-                    f"'{func_name}', degenerating to string."
++                    "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                 )
+             return param_value
+         elif param_type.startswith("num") or param_type.startswith("float"):
+@@ -142,15 +268,14 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     param_value = int(param_value)
+             except Exception:
+                 logger.warning(
+-                    f"Parsed value '{param_value}' of parameter '{param_name}' is not a float in tool "
+-                    f"'{func_name}', degenerating to string."
++                    "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                 )
+             return param_value
+         elif param_type in ["boolean", "bool", "binary"]:
+             param_value = param_value.lower()
+             if param_value not in ["true", "false"]:
+                 logger.warning(
+-                    f"Parsed value '{param_value}' of parameter '{param_name}' is not a boolean (`true` of `false`) in tool '{func_name}', degenerating to false."
++                    "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                 )
+             return param_value == "true"
+         else:
+@@ -164,45 +289,43 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     return param_value
+                 except Exception:
+                     logger.warning(
+-                        f"Parsed value '{param_value}' of parameter '{param_name}' cannot be parsed with json.loads in tool "
+-                        f"'{func_name}', will try other methods to parse it."
++                        "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                     )
+             try:
+                 param_value = safe_literal_eval(param_value)
+             except Exception:
+                 logger.warning(
+-                    f"Parsed value '{param_value}' of parameter '{param_name}' cannot be converted via Python `ast.literal_eval()` in tool '{func_name}', degenerating to string."
++                    "Tool argument conversion could not use the declared type; retaining fallback semantics."
+                 )
+             return param_value
+ 
+     def detect_and_parse(self, text: str, tools: List[Tool]) -> StreamingParseResult:
+-        """One-shot parsing for non-streaming scenarios."""
+-        if self.tool_call_start_token not in text:
+-            return StreamingParseResult(normal_text=text)
++        """Use the streaming block boundary rules without retaining request state."""
++        detector = type(self)()
++        parsed = detector.parse_streaming_increment(text, tools)
++        tail = detector.finish(tools)
++        return StreamingParseResult(
++            normal_text=parsed.normal_text + tail.normal_text, calls=parsed.calls
++        )
+ 
++    def _parse_complete_block(self, text: str, tools: List[Tool]) -> List[ToolCallItem]:
++        """Parse function bodies only after the outer block has closed."""
+         calls = []
+         try:
+-            # Simple cleanup of the text to find tool calls
+-            # Note: This is a simplified regex approach consistent with vLLM
+             raw_tool_calls = self.tool_call_regex.findall(text)
+-            if not raw_tool_calls:
+-                # Fallback: maybe the whole text is inside the tag or tags are stripped
+-                if self.tool_call_prefix in text:
+-                    raw_tool_calls = [text]
++            known_names = {tool.function.name for tool in tools or []}
+ 
+             tool_idx = 0
+             for tool_content in raw_tool_calls:
+                 # Find function calls
+                 funcs = self.tool_call_function_regex.findall(tool_content)
+-                for func_match in funcs:
+-                    func_body = func_match[0] or func_match[1]
+-                    if ">" not in func_body:
++                for func_name, params_str in funcs:
++                    if (
++                        func_name not in known_names
++                        and not envs.SGLANG_FORWARD_UNKNOWN_TOOLS.get()
++                    ):
+                         continue
+ 
+-                    name_end = func_body.index(">")
+-                    func_name = func_body[:name_end]
+-                    params_str = func_body[name_end + 1 :]
+-
+                     param_config = self._get_arguments_config(func_name, tools)
+                     parsed_params = {}
+ 
+@@ -219,7 +342,7 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                             p_val = p_val[:-1]
+ 
+                         parsed_params[p_name] = self._convert_param_value(
+-                            p_val, p_name, param_config, func_name
++                            p_val, p_name, param_config, func_name, tools
+                         )
+ 
+                     calls.append(
+@@ -231,251 +354,107 @@ class Qwen3CoderDetector(BaseFormatDetector):
+                     )
+                     tool_idx += 1
+ 
+-            # Determine normal text (text before the first tool call)
+-            start_idx = text.find(self.tool_call_start_token)
+-            if start_idx == -1:
+-                start_idx = text.find(self.tool_call_prefix)
+-            normal_text = text[:start_idx] if start_idx > 0 else ""
+-
+-            return StreamingParseResult(normal_text=normal_text, calls=calls)
+-
+-        except Exception as e:
+-            logger.error(f"Error in detect_and_parse: {e}")
+-            return StreamingParseResult(normal_text=text)
++        except Exception:
++            logger.error("Error parsing complete Qwen tool block")
++            return []
++        return calls
+ 
+     def parse_streaming_increment(
+         self, new_text: str, tools: List[Tool]
+     ) -> StreamingParseResult:
+-        """
+-        Robust cursor-based streaming parser.
+-        """
++        """Publish complete blocks atomically; incomplete calls are never emitted."""
+         self._buffer += new_text
+-
+-        # Guard against empty buffer
+-        if not self._buffer:
+-            return StreamingParseResult()
+-
+         calls = []
+         normal_text_chunks = []
+ 
+-        while True:
+-            # Working text slice
+-            current_slice = self._buffer[self.parsed_pos :]
+-
+-            # Optimization: If almost empty, wait for more
+-            if not current_slice:
++        while self._buffer:
++            start = self._buffer.find(self.tool_call_start_token)
++            if start < 0:
++                # Retain a suffix only if it could become the opening marker.
++                keep = 0
++                for size in range(
++                    1, min(len(self._buffer), len(self.tool_call_start_token) - 1) + 1
++                ):
++                    if self.tool_call_start_token.startswith(self._buffer[-size:]):
++                        keep = size
++                normal_text_chunks.append(
++                    self._buffer[:-keep] if keep else self._buffer
++                )
++                self._buffer = self._buffer[-keep:] if keep else ""
+                 break
+-
+-            # -------------------------------------------------------
+-            # 1. Priority detection: check if it's the start of Tool Call
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_start_token):
+-                self.parsed_pos += len(self.tool_call_start_token)
+-                self.is_inside_tool_call = True
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 2. Function Name: <function=name>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_prefix):
+-                end_angle = current_slice.find(">")
+-                if end_angle != -1:
+-                    func_name = current_slice[len(self.tool_call_prefix) : end_angle]
+-
+-                    self.current_tool_id += 1
+-                    self.current_tool_name_sent = True
+-                    self.current_tool_param_count = 0
+-                    self.json_started = False
+-                    self.current_func_name = func_name
+-
+-                    calls.append(
+-                        ToolCallItem(
+-                            tool_index=self.current_tool_id,
+-                            name=func_name,
+-                            parameters="",
+-                        )
+-                    )
+-
+-                    self.parsed_pos += end_angle + 1
+-                    continue
+-                else:
+-                    # Incomplete tag
+-                    break
+-
+-            # -------------------------------------------------------
+-            # 3. Parameter: <parameter=name>value...
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.parameter_prefix):
+-                name_end = current_slice.find(">")
+-                if name_end != -1:
+-                    value_start_idx = name_end + 1
+-                    rest_of_slice = current_slice[value_start_idx:]
+-
+-                    # A parameter can end in multiple ways:
+-                    # 1. [Normal] Encounter </parameter>
+-                    # 2. [Abnormal] Encounter next <parameter=
+-                    # 3. [Abnormal] Encounter </function>
+-                    # So we need to find the smallest one as the parameter end position.
+-                    cand_end_param = rest_of_slice.find(self.parameter_end_token)
+-                    cand_next_param = rest_of_slice.find(self.parameter_prefix)
+-                    cand_end_func = rest_of_slice.find(self.function_end_token)
+-
+-                    candidates = []
+-                    if cand_end_param != -1:
+-                        candidates.append(
+-                            (cand_end_param, len(self.parameter_end_token))
+-                        )
+-                    if cand_next_param != -1:
+-                        candidates.append((cand_next_param, 0))
+-                    if cand_end_func != -1:
+-                        candidates.append((cand_end_func, 0))
+-
+-                    if candidates:
+-                        best_cand = min(candidates, key=lambda x: x[0])
+-                        end_pos = best_cand[0]
+-                        end_token_len = best_cand[1]
+-
+-                        param_name = current_slice[
+-                            len(self.parameter_prefix) : name_end
+-                        ]
+-                        raw_value = rest_of_slice[:end_pos]
+-
+-                        # Cleanup value
+-                        if raw_value.startswith("\n"):
+-                            raw_value = raw_value[1:]
+-                        if raw_value.endswith("\n"):
+-                            raw_value = raw_value[:-1]
+-
+-                        # JSON Construction
+-                        if not self.json_started:
+-                            calls.append(
+-                                ToolCallItem(
+-                                    tool_index=self.current_tool_id, parameters="{"
+-                                )
+-                            )
+-                            self.json_started = True
+-
+-                        param_config = self._get_arguments_config(
+-                            self.current_func_name, tools
+-                        )
+-                        converted_val = self._convert_param_value(
+-                            raw_value, param_name, param_config, self.current_func_name
+-                        )
+-
+-                        # Construct JSON fragment: "key": value
+-                        # Note: We must be careful with json.dumps to ensure valid JSON streaming
+-                        json_key_val = f"{json.dumps(param_name)}: {json.dumps(converted_val, ensure_ascii=False)}"
+-
+-                        if self.current_tool_param_count > 0:
+-                            fragment = f", {json_key_val}"
+-                        else:
+-                            fragment = json_key_val
+-
+-                        calls.append(
+-                            ToolCallItem(
+-                                tool_index=self.current_tool_id, parameters=fragment
+-                            )
+-                        )
+-                        self.current_tool_param_count += 1
+-
+-                        # Advance cursor
+-                        total_len = (name_end + 1) + end_pos + end_token_len
+-                        self.parsed_pos += total_len
+-                        continue
+-
+-                # Incomplete parameter tag or value
++            if start:
++                normal_text_chunks.append(self._buffer[:start])
++                self._buffer = self._buffer[start:]
++            end = self._buffer.find(
++                self.tool_call_end_token, len(self.tool_call_start_token)
++            )
++            if end < 0:
+                 break
+-
+-            # -------------------------------------------------------
+-            # 4. Function End: </function>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.function_end_token):
+-                if not self.json_started:
+-                    calls.append(
+-                        ToolCallItem(tool_index=self.current_tool_id, parameters="{")
+-                    )
+-                    self.json_started = True
+-
++            boundary = end + len(self.tool_call_end_token)
++            block = self._buffer[:boundary]
++            self._buffer = self._buffer[boundary:]
++            for call in self._parse_complete_block(block, tools):
++                self.current_tool_id += 1
+                 calls.append(
+-                    ToolCallItem(tool_index=self.current_tool_id, parameters="}")
++                    ToolCallItem(
++                        tool_index=self.current_tool_id,
++                        name=call.name,
++                        parameters=call.parameters,
++                    )
+                 )
+-                self.parsed_pos += len(self.function_end_token)
+-                self.current_func_name = None
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 5. Tool Call End: </tool_call>
+-            # -------------------------------------------------------
+-            if current_slice.startswith(self.tool_call_end_token):
+-                self.parsed_pos += len(self.tool_call_end_token)
+-                self.is_inside_tool_call = False  # [FIX] Exit tool call region
+-                continue
+-
+-            # -------------------------------------------------------
+-            # 6. Handling content / whitespace / normal text
+-            # -------------------------------------------------------
+-            # If current position is not the start of a tag (i.e., doesn't start with <), it might be plain text,
+-            # or a newline between two tags.
+-            # But we need to be careful not to output truncated tags like "<fun" as text.
+-
+-            next_open_angle = current_slice.find("<")
+-
+-            if next_open_angle == -1:
+-                # This entire segment is plain text
+-                if not self.is_inside_tool_call:
+-                    normal_text_chunks.append(current_slice)
+-                # [FIX] If inside tool call, discard this text (usually \n), don't append
+-                self.parsed_pos += len(current_slice)
+-                continue
+-
+-            elif next_open_angle == 0:
+-                # Looks like a Tag, but doesn't match any known Tag above
+-
+-                possible_tags = [
+-                    self.tool_call_start_token,
+-                    self.tool_call_end_token,
+-                    self.tool_call_prefix,
+-                    self.function_end_token,
+-                    self.parameter_prefix,
+-                    self.parameter_end_token,
+-                ]
+-
+-                is_potential_tag = False
+-                for tag in possible_tags:
+-                    if tag.startswith(current_slice):
+-                        is_potential_tag = True
+-                        break
+-
+-                if is_potential_tag:
+-                    break  # Wait for more
+-                else:
+-                    # Just a plain '<' symbol
+-                    if not self.is_inside_tool_call:
+-                        normal_text_chunks.append("<")
+-                    self.parsed_pos += 1
+-                    continue
+-
+-            else:
+-                # '<' is in the middle
+-                text_segment = current_slice[:next_open_angle]
+-                if not self.is_inside_tool_call:
+-                    normal_text_chunks.append(text_segment)
+-                # [FIX] If inside tool call, discard whitespace/text before Tag
+-                self.parsed_pos += next_open_angle
+-                continue
+-
+-        # Memory Cleanup: Slice the buffer
+-        # Keep unparsed part, discard parsed part
+-        if self.parsed_pos > 0:
+-            self._buffer = self._buffer[self.parsed_pos :]
+-            self.parsed_pos = 0
+ 
+         normal_text = "".join(normal_text_chunks) if normal_text_chunks else ""
+         return StreamingParseResult(calls=calls, normal_text=normal_text)
+ 
++    def finish(self, tools: List[Tool]) -> StreamingParseResult:
++        tail = self._buffer
++        self._buffer = ""
++        if tail.startswith(self.tool_call_start_token):
++            return StreamingParseResult()
++        return StreamingParseResult(normal_text=tail)
++
+     def supports_structural_tag(self) -> bool:
+         return True
+ 
++    def get_structural_tag(
++        self,
++        tools: Union[List[Tool], None] = None,
++        tool_choice: Union[ToolChoice, Literal["auto", "required"]] = "auto",
++        thinking_mode: bool = False,
++        parallel_tool_calls: bool = True,
++    ) -> Optional[StructuralTag]:
++        # Stock XGrammar treats an absent schema as free text. In the Qwen
++        # tool API it denotes a no-argument function, like an empty schema.
++        # Copy only that tool so the request's original schema stays intact.
++        native_tools = []
++        for tool in tools or []:
++            if tool.function.parameters is None:
++                function = tool.function.model_copy(
++                    update={
++                        "parameters": {
++                            "type": "object",
++                            "properties": {},
++                            "additionalProperties": False,
++                        }
++                    }
++                )
++                tool = tool.model_copy(update={"function": function})
++            native_tools.append(tool)
++        structural_tag = super().get_structural_tag(
++            tools=native_tools,
++            tool_choice=tool_choice,
++            thinking_mode=thinking_mode,
++            parallel_tool_calls=parallel_tool_calls,
++        )
++        if structural_tag is None:
++            return None
++        structural_tag = _preserve_xml_parameter_schema(structural_tag)
++        if tool_choice != "required":
++            return structural_tag
++        return _align_required_tool_call_repetition(
++            structural_tag, parallel_tool_calls=parallel_tool_calls
++        )
++
+     def structure_info(self) -> _GetInfoFunc:
+         raise NotImplementedError
+ 
+diff --git a/python/sglang/srt/models/qwen3_5.py b/python/sglang/srt/models/qwen3_5.py
+index 5e452cb6b25682c087cfcac85964851e21afaff8..e2373e92ff3b612f7c013e14c1334a21b1146a5f 100644
+--- a/python/sglang/srt/models/qwen3_5.py
++++ b/python/sglang/srt/models/qwen3_5.py
+@@ -2390,7 +2390,8 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration):
+             self.config, "rope_scaling", {}
+         )
+         self.is_mrope_enabled = (
+-            not self.language_model_only and "mrope_section" in rope_config
++            (not self.language_model_only or "request_static_factors" in rope_config)
++            and "mrope_section" in rope_config
+         )
+ 
+         self.deepstack_visual_indexes = (
+@@ -2603,7 +2604,8 @@ class Qwen3_5MoeForConditionalGeneration(Qwen3VLForConditionalGeneration):
+             self.config, "rope_scaling", {}
+         )
+         self.is_mrope_enabled = (
+-            not self.language_model_only and "mrope_section" in rope_config
++            (not self.language_model_only or "request_static_factors" in rope_config)
++            and "mrope_section" in rope_config
+         )
+ 
+         self.deepstack_visual_indexes = (
+diff --git a/python/sglang/srt/models/qwen3_5_mtp.py b/python/sglang/srt/models/qwen3_5_mtp.py
+index e3450be475d2ea51280c7c51de8f13ad13ae4a8e..36d84c78c20f1789bc5e82c4f44b39e522e882a3 100644
+--- a/python/sglang/srt/models/qwen3_5_mtp.py
++++ b/python/sglang/srt/models/qwen3_5_mtp.py
+@@ -123,6 +123,10 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
+         quant_config = _mtp_quant_config(quant_config)
+ 
+         self.config = config
++        rope = getattr(config, "rope_parameters", None) or getattr(
++            config, "rope_scaling", {}
++        )
++        self.is_mrope_enabled = "request_static_factors" in rope
+         self.quant_config = quant_config
+         self.pp_group = get_parallel().pp_group
+ 
+@@ -194,6 +198,8 @@ class Qwen3_5ForCausalLMMTP(nn.Module):
+         input_embeds: Optional[torch.Tensor] = None,
+         **kwargs,
+     ):
++        if self.is_mrope_enabled:
++            positions = forward_batch.mrope_positions
+         exit_stack = ExitStack()
+         if (
+             is_npu()
+diff --git a/python/sglang/srt/multimodal/processors/qwen_vl.py b/python/sglang/srt/multimodal/processors/qwen_vl.py
+index 3006c481b20d7a5019342bfa1bd8349c82d76d42..7a75a720988cfd30ebbef15b0091c82c75437e87 100644
+--- a/python/sglang/srt/multimodal/processors/qwen_vl.py
++++ b/python/sglang/srt/multimodal/processors/qwen_vl.py
+@@ -53,6 +53,7 @@ from sglang.srt.multimodal.transport.cuda_ipc import (
+ )
+ from sglang.srt.runtime_context import get_mm, get_parallel
+ from sglang.srt.utils import cpu_has_amx_support, is_cpu
++from sglang.srt.utils.framework_log_privacy import safe_exception_type
+ from sglang.srt.utils.video_decoder import VideoDecoderWrapper
+ from sglang.utils import logger
+ 
+@@ -144,7 +145,8 @@ if _is_cpu and _is_cpu_amx_available:
+         transformers.models.qwen2_vl.image_processing_qwen2_vl_fast.Qwen2VLImageProcessorFast._preprocess = fast_preprocess_cpu
+     except Exception as e:
+         logger.warning(
+-            f"Failed to hack Qwen2VLImageProcessorFast with AMX optimization: {e}"
++            "Failed to enable Qwen2VLImageProcessorFast AMX optimization (type=%s)",
++            safe_exception_type(e),
+         )
+ 
+ 
+@@ -908,9 +910,9 @@ class QwenVLImageProcessor(MediaArtifactCacheMixin, SGLangBaseProcessor):
+             if "prompt placeholders" not in str(exc):
+                 raise
+             logger.debug(
+-                "Qwen-VL fast path skipped after normalization (%s); "
++                "Qwen-VL fast path skipped after normalization (type=%s); "
+                 "falling back to full preprocessing",
+-                exc,
++                safe_exception_type(exc),
+             )
+             return None
+         input_ids_list = list(input_ids_tuple)
+@@ -1019,7 +1021,6 @@ class QwenVLImageProcessor(MediaArtifactCacheMixin, SGLangBaseProcessor):
+             multimodal_tokens=self.mm_tokens,
+         )
+         load_time = time.perf_counter()
+-        rid = getattr(request_obj, "rid", "anonymous_rid")
+ 
+         video_metadata = None
+         if base_output.videos and not isinstance(base_output.videos[0], dict):
+@@ -1151,7 +1152,7 @@ class QwenVLImageProcessor(MediaArtifactCacheMixin, SGLangBaseProcessor):
+             mrope_positions = mrope_positions.squeeze(1)
+         get_rope_index_time = time.perf_counter()
+         logger.debug(
+-            f"[QwenVLProcessor Perf] {rid=}, "
++            "[QwenVLProcessor Perf] "
+             f"load_time: {(load_time - entry_time) * 1000:.2f} ms, "
+             f"preprocess_time: {(preprocess_time - load_time) * 1000:.2f} ms, "
+             f"process_time: {(process_time - preprocess_time) * 1000:.2f} ms, "
+diff --git a/test/registered/unit/configs/test_request_static_yarn_policy.py b/test/registered/unit/configs/test_request_static_yarn_policy.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2daa368ff1a2a238cdafcd07bef4bc96a2109451
+--- /dev/null
++++ b/test/registered/unit/configs/test_request_static_yarn_policy.py
+@@ -0,0 +1,197 @@
++"""Pure CPU checks of the real admission policy; no CUDA/import substitutes."""
++
++import ast
++import importlib.util
++from pathlib import Path
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++SOURCE = (
++    Path(__file__).resolve().parents[4]
++    / "python/sglang/srt/configs/request_static_yarn.py"
++)
++spec = importlib.util.spec_from_file_location(
++    "request_static_yarn_policy_under_test", SOURCE
++)
++policy = importlib.util.module_from_spec(spec)
++sys.modules[spec.name] = policy
++spec.loader.exec_module(policy)
++
++
++def config(**updates):
++    rope = {
++        "rope_type": "yarn",
++        "factor": 4.0,
++        "request_static_factors": [1, 2, 4],
++        "original_max_position_embeddings": 262144,
++        "rope_theta": 10000000,
++        "partial_rotary_factor": 0.25,
++        "mrope_section": [11, 11, 10],
++        "mrope_interleaved": True,
++        **updates,
++    }
++    return policy.RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(rope_parameters=rope)
++    )
++
++
++def request(prompt, output, *, explicit=None, namespace=None):
++    return SimpleNamespace(
++        origin_input_ids=range(prompt),
++        sampling_params=SimpleNamespace(
++            max_new_tokens=output, custom_params={"yarn_factor": explicit}
++        ),
++        extra_key=namespace,
++        rope_profile=None,
++        multimodal_inputs=None,
++    )
++
++
++@pytest.mark.parametrize(
++    "budget,factor",
++    [
++        (1, 1),
++        (262144, 1),
++        (262145, 2),
++        (524288, 2),
++        (524289, 4),
++        (1000000, 4),
++        (1048576, 4),
++    ],
++)
++def test_smallest_covering_profile(budget, factor):
++    assert config().select(budget).factor == factor
++
++
++def test_table_offsets_and_profile_identity():
++    first = config()
++    assert [x[1] for x in first.profiles] == [0, 1048576, 3145728]
++    assert len({x[2] for x in first.profiles}) == 3
++    assert first.select(1).profile_id == config().select(1).profile_id
++    assert first.select(1).profile_id != config(rope_theta=1000000).select(1).profile_id
++
++
++@pytest.mark.parametrize(
++    "architecture",
++    ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"],
++)
++def test_supported_wrapper_requires_multimodal_mode(architecture):
++    config().validate_model_support([architecture], True)
++    with pytest.raises(ValueError, match="requires multimodal mode"):
++        config().validate_model_support([architecture], False)
++
++
++@pytest.mark.parametrize(
++    "architectures",
++    [None, [], ["Qwen3_5ForCausalLM"], ["Qwen3_5MoeForCausalLM"], ["Qwen3ForCausalLM"]],
++)
++def test_unported_architecture_is_not_silently_accepted(architectures):
++    with pytest.raises(ValueError, match="ConditionalGeneration wrapper"):
++        config().validate_model_support(architectures, True)
++
++
++def test_model_support_guard_precedes_embedded_mtp_architecture_remapping():
++    # This source-wiring check runs without Torch. Behavioral model startup is
++    # a separate image gate; validating the rewritten MTP arch would reject
++    # the supported wrapper's own embedded draft worker.
++    tree = ast.parse(SOURCE.with_name("model_config.py").read_text(encoding="utf8"))
++    model_config = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.ClassDef) and node.name == "ModelConfig"
++    )
++    init = next(
++        node for node in model_config.body if getattr(node, "name", None) == "__init__"
++    )
++    calls = {
++        node.func.attr: node.lineno
++        for node in ast.walk(init)
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Attribute)
++        and node.func.attr in ("validate_model_support", "_config_draft_model")
++    }
++    assert calls["validate_model_support"] < calls["_config_draft_model"]
++
++
++@pytest.mark.parametrize(
++    "updates",
++    [
++        {"request_static_factors": []},
++        {"request_static_factors": [2, 1, 4]},
++        {"request_static_factors": [1, 2, 2, 4]},
++        {"request_static_factors": [1, float("nan"), 4]},
++        {"request_static_factors": [1, float("inf")]},
++        {"request_static_factors": [0.5, 4]},
++        {"request_static_factors": [1, 2]},
++        {"rope_type": "default"},
++        {"original_max_position_embeddings": 0},
++    ],
++)
++def test_invalid_configuration_fails(updates):
++    with pytest.raises(ValueError):
++        config(**updates)
++
++
++def test_prompt_plus_output_and_expanded_mm_admission():
++    req = request(262140, 5)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 2
++    assert req.rope_profile.budget == 262145
++
++
++def test_no_reselection_after_chunking_retraction_or_custom_param_change():
++    req = request(262140, 5)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    selected, namespace = req.rope_profile, req.extra_key
++    req.origin_input_ids = range(300000)
++    req.sampling_params.custom_params["yarn_factor"] = 4
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile is selected
++    assert req.extra_key == namespace
++    with pytest.raises(Exception):
++        selected.factor = 4
++
++
++def test_explicit_output_budget_is_not_clipped_to_make_it_fit():
++    with pytest.raises(ValueError, match="server context"):
++        policy.admit_request_static_yarn(request(999999, 2), config(), 1000000)
++    with pytest.raises(ValueError, match="profile capacity"):
++        policy.admit_request_static_yarn(
++            request(262140, 5, explicit=1), config(), 1000000
++        )
++    with pytest.raises(ValueError):
++        config().select(1048577)
++
++
++@pytest.mark.parametrize("explicit", [0, 3, True, "2", float("nan")])
++def test_invalid_explicit_factor_rejected(explicit):
++    with pytest.raises(ValueError):
++        config().select(32, explicit)
++
++
++def test_explicit_factor_is_test_control_and_none_reserves_full_context():
++    req = request(10, 10, explicit=4)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 4
++    req = request(10, None)
++    policy.admit_request_static_yarn(req, config(), 1000000)
++    assert req.rope_profile.factor == 4
++    assert req.rope_profile.budget == 1000000
++
++
++def test_cache_namespace_keeps_user_identity_and_isolates_profiles():
++    reqs = [request(100, 10, explicit=f, namespace="tenant|x") for f in [1, 2, 4]]
++    for req in reqs:
++        policy.admit_request_static_yarn(req, config(), 1000000)
++    assert len({req.extra_key for req in reqs}) == 3
++    assert all(policy.json.loads(req.extra_key)[0] == "tenant|x" for req in reqs)
++
++
++def test_feature_off_is_unchanged_and_override_not_silently_ignored():
++    req = request(1000001, 10)
++    policy.admit_request_static_yarn(req, None, 1000000)
++    assert req.rope_profile is None
++    with pytest.raises(ValueError, match="requires"):
++        policy.admit_request_static_yarn(request(10, 1, explicit=2), None, 1000000)
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca251358068fb70f1377f87a2b1e9dcd27da61e8
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_parallel_structural_tag.py
+@@ -0,0 +1,106 @@
++import xgrammar as xgr
++from xgrammar.testing import _is_grammar_accept_string
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.function_call_parser import FunctionCallParser
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool():
++    return Tool(
++        type="function",
++        function=Function(
++            name="search_catalog",
++            description="Search the product catalog",
++            strict=True,
++            parameters={
++                "type": "object",
++                "properties": {
++                    "query": {"type": "string"},
++                    "max_results": {"type": "integer"},
++                },
++                "required": ["query", "max_results"],
++                "additionalProperties": False,
++            },
++        ),
++    )
++
++
++def _repetition(structural_tag):
++    matches = []
++
++    def visit(value):
++        if isinstance(value, dict):
++            if value.get("type") == "tags_with_separator":
++                matches.append(value)
++            for child in value.values():
++                visit(child)
++        elif isinstance(value, list):
++            for child in value:
++                visit(child)
++
++    visit(structural_tag.model_dump())
++    assert len(matches) == 1
++    return matches[0]
++
++
++def test_required_parallel_uses_official_template_separator():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=True,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is False
++
++
++def test_required_serial_stops_after_first_call():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=False,
++        parallel_tool_calls=False,
++    )
++
++    assert isinstance(tag, xgr.StructuralTag)
++    assert isinstance(xgr.Grammar.from_structural_tag(tag), xgr.Grammar)
++    assert _repetition(tag)["separator"] == "\n"
++    assert _repetition(tag)["stop_after_first"] is True
++
++
++def test_required_reasoning_prefix_is_preserved():
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [_tool()],
++        tool_choice="required",
++        thinking_mode=True,
++        parallel_tool_calls=True,
++    )
++    serialized = tag.model_dump_json()
++
++    assert "</think>" in serialized
++    assert "\\n\\n" in serialized
++    assert _repetition(tag)["separator"] == "\n"
++
++
++def test_non_strict_required_uses_native_qwen_call_in_pinned_xgrammar():
++    tool = _tool()
++    tool.function.strict = False
++    constraint = FunctionCallParser([tool], "qwen3_coder").get_structure_constraint(
++        "required", thinking_mode=False
++    )
++
++    assert constraint is not None
++    assert constraint[0] == "structural_tag"
++    grammar = xgr.Grammar.from_structural_tag(constraint[1])
++    native_call = (
++        "<tool_call>\n<function=search_catalog>\n"
++        "<parameter=query>Paris</parameter>\n</function>\n</tool_call>"
++    )
++    assert _is_grammar_accept_string(grammar, native_call)
++    assert not _is_grammar_accept_string(
++        grammar, '[{"name":"search_catalog","parameters":{"query":"Paris"}}]'
++    )
+diff --git a/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f890dc0c766de5e0e9c5b402f88e4291888bfac
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py
+@@ -0,0 +1,207 @@
++import json
++
++import pytest
++
++from sglang.srt.entrypoints.openai.protocol import Function, Tool
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++
++
++def _tool(name, properties, **parameter_overrides):
++    parameters = {"type": "object", "properties": properties}
++    parameters.update(parameter_overrides)
++    return Tool(
++        type="function",
++        function=Function(name=name, description="test", parameters=parameters),
++    )
++
++
++def _call(name, *parameters):
++    body = "".join(
++        f"<parameter={key}>\n{value}\n</parameter>\n" for key, value in parameters
++    )
++    return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
++
++
++def _stream(detector, text, tools, chunk_size):
++    calls = []
++    for start in range(0, len(text), chunk_size):
++        calls.extend(
++            detector.parse_streaming_increment(
++                text[start : start + chunk_size], tools
++            ).calls
++        )
++    grouped = {}
++    for call in calls:
++        item = grouped.setdefault(call.tool_index, {"name": "", "parameters": ""})
++        if call.name:
++            item["name"] = call.name
++        if call.parameters:
++            item["parameters"] += call.parameters
++    return [grouped[index] for index in sorted(grouped)]
++
++
++def test_named_defs_ref_nested_object_non_streaming():
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                    "required": ["lat", "lon"],
++                }
++            }
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++@pytest.mark.parametrize("chunk_size", [1, 7, 64])
++def test_named_defs_ref_nested_object_streaming(chunk_size):
++    tool = _tool(
++        "get_weather_by_coordinate",
++        {"location": {"$ref": "#/$defs/Coordinate"}},
++        **{
++            "$defs": {
++                "Coordinate": {
++                    "type": "object",
++                    "properties": {
++                        "lat": {"type": "number"},
++                        "lon": {"type": "number"},
++                    },
++                }
++            }
++        },
++    )
++    calls = _stream(
++        Qwen3CoderDetector(),
++        _call(
++            "get_weather_by_coordinate",
++            ("location", '{"lat": 48.8566, "lon": 2.3522}'),
++        ),
++        [tool],
++        chunk_size,
++    )
++
++    assert len(calls) == 1
++    assert json.loads(calls[0]["parameters"]) == {
++        "location": {"lat": 48.8566, "lon": 2.3522}
++    }
++
++
++def test_mixed_union_enum_const_uses_schema_valid_scalar_types():
++    tool = _tool(
++        "record_union_values",
++        {
++            "retry": {"type": ["integer", "null"]},
++            "payload": {"oneOf": [{"type": "string"}, {"type": "integer"}], "const": 7},
++            "state": {"enum": ["ready", "queued"]},
++            "selector": {"enum": ["alpha", 2, False], "const": False},
++            "mode": {"type": "string", "const": "safe"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "record_union_values",
++            ("retry", "null"),
++            ("payload", "7"),
++            ("state", "ready"),
++            ("selector", "false"),
++            ("mode", "safe"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "retry": None,
++        "payload": 7,
++        "state": "ready",
++        "selector": False,
++        "mode": "safe",
++    }
++
++
++def test_ambiguous_union_preserves_genuine_numeric_string():
++    tool = _tool(
++        "lookup",
++        {
++            "union_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "enum_id": {"enum": ["7", 7]},
++            "quoted_id": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
++            "quoted_const": {
++                "oneOf": [{"type": "string"}, {"type": "integer"}],
++                "const": 7,
++            },
++            "integer_id": {"type": "integer"},
++        },
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call(
++            "lookup",
++            ("union_id", "7"),
++            ("enum_id", "7"),
++            ("quoted_id", '"7"'),
++            ("quoted_const", '"7"'),
++            ("integer_id", "7"),
++        ),
++        [tool],
++    )
++
++    assert json.loads(result.calls[0].parameters) == {
++        "union_id": "7",
++        "enum_id": "7",
++        "quoted_id": "7",
++        "quoted_const": 7,
++        "integer_id": 7,
++    }
++
++
++def test_invalid_value_is_not_replaced_with_schema_const():
++    tool = _tool("record_const", {"payload": {"type": "integer", "const": 7}})
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("record_const", ("payload", "8")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 8}
++
++
++def test_top_level_oneof_parameter_lookup_preserves_local_defs():
++    tool = Tool(
++        type="function",
++        function=Function(
++            name="resolve_branch",
++            description="test",
++            parameters={
++                "$defs": {"seven": {"type": "integer", "const": 7}},
++                "oneOf": [
++                    {
++                        "type": "object",
++                        "properties": {"payload": {"$ref": "#/$defs/seven"}},
++                    },
++                    {
++                        "type": "object",
++                        "properties": {"message": {"type": "string"}},
++                    },
++                ],
++            },
++        ),
++    )
++    result = Qwen3CoderDetector().detect_and_parse(
++        _call("resolve_branch", ("payload", "7")), [tool]
++    )
++
++    assert json.loads(result.calls[0].parameters) == {"payload": 7}
+diff --git a/test/registered/unit/function_call/test_qwen_complete_call_cpu.py b/test/registered/unit/function_call/test_qwen_complete_call_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e31129e2a66044ec9262ea36227f0d15cd2b7664
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen_complete_call_cpu.py
+@@ -0,0 +1,353 @@
++"""Execute real Qwen methods and schema helpers without the GPU serving imports.
++
++Only protocol data envelopes and the environment getter are substituted. Schema
++validation uses the real jsonschema library, not a fake validator. These tests
++do not qualify native grammar compilation, SSE framing, IDs or finish_reason.
++"""
++
++import ast
++from dataclasses import dataclass, field
++import json
++import logging
++import math
++from pathlib import Path
++import re
++import threading
++from types import SimpleNamespace
++import unittest
++import warnings
++
++from jsonschema import Draft202012Validator
++from referencing import Registry
++from referencing.exceptions import NoSuchResource
++
++ROOT = Path(__file__).resolve().parents[4]
++SOURCE = ROOT / "python/sglang/srt/function_call"
++
++
++@dataclass
++class ToolCallItem:
++    tool_index: int
++    parameters: str
++    name: str | None = None
++
++
++@dataclass
++class StreamingParseResult:
++    normal_text: str = ""
++    calls: list = field(default_factory=list)
++
++
++def load_detector(forward_unknown=False, source_override=None):
++    namespace = dict(
++        ast=ast,
++        json=json,
++        logging=logging,
++        math=math,
++        re=re,
++        threading=threading,
++        warnings=warnings,
++        Draft202012Validator=Draft202012Validator,
++        Registry=Registry,
++        NoSuchResource=NoSuchResource,
++        ToolCallItem=ToolCallItem,
++        StreamingParseResult=StreamingParseResult,
++        logger=logging.getLogger(__name__),
++        safe_exception_type=lambda error: "Exception",
++        envs=SimpleNamespace(
++            SGLANG_FORWARD_UNKNOWN_TOOLS=SimpleNamespace(get=lambda: forward_unknown)
++        ),
++    )
++    future = ast.ImportFrom(
++        module="__future__", names=[ast.alias(name="annotations")], level=0
++    )
++    tree = ast.parse((SOURCE / "utils.py").read_text(encoding="utf-8"))
++    nodes = [
++        node
++        for node in tree.body
++        if isinstance(node, (ast.FunctionDef, ast.Assign, ast.AnnAssign))
++    ]
++    exec(
++        compile(
++            ast.fix_missing_locations(
++                ast.Module(body=[future, *nodes], type_ignores=[])
++            ),
++            str(SOURCE / "utils.py"),
++            "exec",
++        ),
++        namespace,
++    )
++    tree = ast.parse((SOURCE / "base_format_detector.py").read_text(encoding="utf-8"))
++    base = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.ClassDef) and node.name == "BaseFormatDetector"
++    )
++    base.bases = []
++    base.body = [
++        node
++        for node in base.body
++        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
++    ]
++    source = source_override or (SOURCE / "qwen3_coder_detector.py").read_text(
++        encoding="utf-8"
++    )
++    tree = ast.parse(source)
++    detector = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.ClassDef) and node.name == "Qwen3CoderDetector"
++    )
++    exec(
++        compile(
++            ast.fix_missing_locations(
++                ast.Module(body=[future, base, detector], type_ignores=[])
++            ),
++            str(SOURCE / "qwen3_coder_detector.py"),
++            "exec",
++        ),
++        namespace,
++    )
++    return namespace["Qwen3CoderDetector"]
++
++
++def tool(name="probe", parameters=None):
++    return SimpleNamespace(
++        type="function",
++        function=SimpleNamespace(name=name, parameters=parameters or {}),
++    )
++
++
++def call(name="probe", body=""):
++    return f"<tool_call><function={name}>{body}</function></tool_call>"
++
++
++def parameter(name, value):
++    return f"<parameter={name}>\n{value}\n</parameter>"
++
++
++def signature(result):
++    return [
++        (item.tool_index, item.name, json.loads(item.parameters))
++        for item in result.calls
++    ]
++
++
++class QwenCompleteCallTests(unittest.TestCase):
++    def setUp(self):
++        self.subject = load_detector()
++        self.tools = [tool()]
++
++    def stream(self, text, size, tools=None):
++        detector = self.subject()
++        normal, calls = [], []
++        for start in range(0, len(text), size):
++            result = detector.parse_streaming_increment(
++                text[start : start + size], tools or self.tools
++            )
++            normal.append(result.normal_text)
++            calls.extend(result.calls)
++        tail = detector.finish(tools or self.tools)
++        normal.append(tail.normal_text)
++        calls.extend(tail.calls)
++        self.assertEqual(detector.finish(self.tools).calls, [])
++        self.assertEqual(detector.finish(self.tools).normal_text, "")
++        return StreamingParseResult("".join(normal), calls)
++
++    def test_every_truncation_before_outer_close_emits_no_call(self):
++        text = call(body=parameter("message", 'hello "world"'))
++        for end in range(len("<tool_call>"), len(text)):
++            with self.subTest(end=end):
++                partial = text[:end]
++                self.assertEqual(
++                    self.subject().detect_and_parse(partial, self.tools).calls, []
++                )
++                parsed = self.stream(partial, 1)
++                self.assertEqual(parsed.calls, [])
++                self.assertEqual(parsed.normal_text, "")
++
++    def test_every_two_chunk_split_is_atomic_and_complete(self):
++        text = call()
++        for split in range(1, len(text)):
++            with self.subTest(split=split):
++                detector = self.subject()
++                self.assertEqual(
++                    detector.parse_streaming_increment(text[:split], self.tools).calls,
++                    [],
++                )
++                result = detector.parse_streaming_increment(text[split:], self.tools)
++                self.assertEqual(signature(result), [(0, "probe", {})])
++                self.assertEqual(detector.finish(self.tools).calls, [])
++
++    def test_unknown_rejected_in_both_modes_without_consuming_index(self):
++        text = call("missing") + call()
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, self.tools)),
++            [(0, "probe", {})],
++        )
++        for size in (1, 7, 64):
++            self.assertEqual(signature(self.stream(text, size)), [(0, "probe", {})])
++
++    def test_explicit_unknown_forwarding_compatibility(self):
++        detector = load_detector(forward_unknown=True)
++        self.assertEqual(
++            signature(detector().detect_and_parse(call("missing"), self.tools)),
++            [(0, "missing", {})],
++        )
++        self.assertEqual(
++            signature(
++                detector().parse_streaming_increment(call("missing"), self.tools)
++            ),
++            [(0, "missing", {})],
++        )
++
++    def test_empty_or_prefix_names_never_match(self):
++        for name in ("", "pro", "probe ", "probe_extra"):
++            with self.subTest(name=name):
++                self.assertEqual(
++                    self.subject().detect_and_parse(call(name), self.tools).calls, []
++                )
++                self.assertEqual(self.stream(call(name), 1).calls, [])
++
++    def test_missing_function_end_in_closed_block_is_not_a_call(self):
++        text = "<tool_call><function=probe><parameter=x>1</parameter></tool_call>"
++        self.assertEqual(self.subject().detect_and_parse(text, self.tools).calls, [])
++        self.assertEqual(self.stream(text, 1).calls, [])
++
++    def test_closed_first_function_does_not_validate_incomplete_second(self):
++        text = "<tool_call><function=probe></function><function=probe></tool_call>"
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, self.tools)),
++            [(0, "probe", {})],
++        )
++        self.assertEqual(signature(self.stream(text, 1)), [(0, "probe", {})])
++
++    def test_parallel_and_repeated_calls_have_contiguous_indexes(self):
++        tools = [tool(), tool("second")]
++        text = call() + "\n" + call("second") + "\n" + call()
++        expected = [(0, "probe", {}), (1, "second", {}), (2, "probe", {})]
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, tools)), expected
++        )
++        for size in (1, 2, 7, 64, len(text)):
++            self.assertEqual(signature(self.stream(text, size, tools)), expected)
++
++    def test_two_functions_in_one_block_are_both_drained(self):
++        text = "<tool_call><function=probe></function><function=probe></function></tool_call>"
++        expected = [(0, "probe", {}), (1, "probe", {})]
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, self.tools)), expected
++        )
++        self.assertEqual(signature(self.stream(text, len(text))), expected)
++
++    def test_orphan_parameters_never_emit_argument_only_delta(self):
++        for text in (
++            "<tool_call><parameter=x>1</parameter></function></tool_call>",
++            "<parameter=x>1</parameter></function>",
++        ):
++            self.assertEqual(
++                self.subject().detect_and_parse(text, self.tools).calls, []
++            )
++            self.assertEqual(self.stream(text, 1).calls, [])
++
++    def test_complete_call_survives_truncated_followup(self):
++        text = call() + "\n<tool_call><function=probe>"
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, self.tools)),
++            [(0, "probe", {})],
++        )
++        self.assertEqual(signature(self.stream(text, 1)), [(0, "probe", {})])
++
++    def test_text_and_partial_marker_flush_parity(self):
++        for text in ("plain final answer", "a < b <tool", "before" + call() + "after"):
++            with self.subTest(text=text):
++                expected = self.subject().detect_and_parse(text, self.tools)
++                for size in (1, 7, 64):
++                    parsed = self.stream(text, size)
++                    self.assertEqual(parsed.normal_text, expected.normal_text)
++                    self.assertEqual(signature(parsed), signature(expected))
++
++    def test_refs_unions_enum_const_nested_and_large_string(self):
++        schema = {
++            "$defs": {
++                "record": {"type": "object", "properties": {"n": {"type": "integer"}}}
++            },
++            "type": "object",
++            "properties": {
++                "payload": {"$ref": "#/$defs/record"},
++                "nullable": {"type": ["integer", "null"]},
++                "enum": {"enum": ["ready", 2]},
++                "const": {"const": 7},
++                "message": {"type": "string"},
++                "path": {"type": "string"},
++                "regex": {"type": "string"},
++                "array": {"type": "array"},
++            },
++        }
++        message = 'Unicode 北京 "quoted" \\\\ ' * 256
++        values = {
++            "payload": '{"n": 7}',
++            "nullable": "null",
++            "enum": "2",
++            "const": "7",
++            "message": message,
++            "path": r"C:\data\file.txt",
++            "regex": r"^\d+_[a-z]+$",
++            "array": '[true, null, {"a": 1}]',
++        }
++        text = call(
++            body="".join(parameter(key, value) for key, value in values.items())
++        )
++        tools = [tool(parameters=schema)]
++        expected = [
++            (
++                0,
++                "probe",
++                {
++                    "payload": {"n": 7},
++                    "nullable": None,
++                    "enum": 2,
++                    "const": 7,
++                    "message": message,
++                    "path": r"C:\data\file.txt",
++                    "regex": r"^\d+_[a-z]+$",
++                    "array": [True, None, {"a": 1}],
++                },
++            )
++        ]
++        self.assertEqual(
++            signature(self.subject().detect_and_parse(text, tools)), expected
++        )
++        for size in (1, 7, 64, len(text)):
++            self.assertEqual(signature(self.stream(text, size, tools)), expected)
++
++    def test_empty_arguments_and_lenient_parameter_end_remain_supported(self):
++        for body, expected in (
++            ("", {}),
++            ("<parameter=x>value", {"x": "value"}),
++            ("<parameter=x>1<parameter=y>2", {"x": "1", "y": "2"}),
++        ):
++            with self.subTest(body=body):
++                text = call(body=body)
++                self.assertEqual(
++                    signature(self.subject().detect_and_parse(text, self.tools)),
++                    [(0, "probe", expected)],
++                )
++                self.assertEqual(
++                    signature(self.stream(text, 1)), [(0, "probe", expected)]
++                )
++
++    def test_no_tools_does_not_authorize_unknown_name(self):
++        self.assertEqual(self.subject().detect_and_parse(call(), []).calls, [])
++        self.assertEqual(self.subject().parse_streaming_increment(call(), []).calls, [])
++
++    def test_nonstream_reuse_does_not_carry_stream_indexes(self):
++        detector = self.subject()
++        detector.parse_streaming_increment(call(), self.tools)
++        self.assertEqual(
++            signature(detector.detect_and_parse(call(), self.tools)), [(0, "probe", {})]
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca6fe492705364717475ecd8f0c52adafd64237a
+--- /dev/null
++++ b/test/registered/unit/function_call/test_qwen_xml_empty_required_schema.py
+@@ -0,0 +1,249 @@
++"""Exercise the installed native compiler, not just structural-tag serialization."""
++
++import copy
++import json
++
++import pytest
++import xgrammar as xgr
++from xgrammar.structural_tag import JSONSchemaFormat, StructuralTag
++from xgrammar.testing import _is_grammar_accept_string
++
++from sglang.srt.entrypoints.openai.protocol import Tool, ToolChoice
++from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
++from sglang.srt.function_call.utils import normalize_json_schema_types
++
++
++def tool(schema):
++    # Match OpenAIServingChat's real validation order. Tool.model_validate by
++    # itself deliberately does not perform the request-level null normalization.
++    schema = copy.deepcopy(schema)
++    normalize_json_schema_types(schema)
++    return Tool.model_validate(
++        {
++            "type": "function",
++            "function": {"name": "probe", "strict": True, "parameters": schema},
++        }
++    )
++
++
++def grammar(schema, choice="named", parallel=False):
++    item = tool(copy.deepcopy(schema))
++    selected = (
++        ToolChoice.model_validate({"type": "function", "function": {"name": "probe"}})
++        if choice == "named"
++        else choice
++    )
++    tag = Qwen3CoderDetector().get_structural_tag(
++        [item], selected, thinking_mode=False, parallel_tool_calls=parallel
++    )
++    return xgr.Grammar.from_structural_tag(tag)
++
++
++def call(body="", name="probe"):
++    return f"<tool_call>\n<function={name}>\n{body}\n</function>\n</tool_call>"
++
++
++def parameter(name="city", value="Paris"):
++    return f"<parameter={name}>{value}</parameter>"
++
++
++CLOSED_EMPTY_SCHEMA = {"type": "object", "additionalProperties": False}
++
++EMPTY_SCHEMAS = [
++    None,
++    {},
++    CLOSED_EMPTY_SCHEMA,
++    {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
++    {
++        "type": "object",
++        "properties": None,
++        "required": None,
++        "additionalProperties": False,
++    },
++    {"type": "object", "properties": {}, "required": []},
++    {"type": "object", "additionalProperties": True, "maxProperties": 0},
++]
++
++
++@pytest.mark.parametrize("schema", EMPTY_SCHEMAS)
++@pytest.mark.parametrize("choice", ["named", "required"])
++def test_empty_tool_has_no_whitespace_only_parameter_zone(schema, choice):
++    compiled = grammar(schema, choice)
++    assert _is_grammar_accept_string(compiled, call())
++    for whitespace in [" ", "\n", "\t", "\t" * 64, " \n\t"]:
++        assert not _is_grammar_accept_string(compiled, call(whitespace))
++    assert not _is_grammar_accept_string(compiled, call(parameter()))
++
++
++def test_omitted_parameter_schema_is_not_mutated_by_native_grammar():
++    item = tool(None)
++    selected = ToolChoice.model_validate(
++        {"type": "function", "function": {"name": "probe"}}
++    )
++    tag = Qwen3CoderDetector().get_structural_tag([item], selected)
++    compiled = xgr.Grammar.from_structural_tag(tag)
++    assert item.function.parameters is None
++    assert _is_grammar_accept_string(compiled, call())
++    assert not _is_grammar_accept_string(compiled, call(" "))
++
++
++@pytest.mark.parametrize("properties", ["omitted", None, {}])
++@pytest.mark.parametrize("additional", ["omitted", True, {"type": "string"}])
++def test_undeclared_required_property_is_not_discarded(properties, additional):
++    schema = {"type": "object", "required": ["city"]}
++    if properties != "omitted":
++        schema["properties"] = properties
++    if additional != "omitted":
++        schema["additionalProperties"] = additional
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++    assert not _is_grammar_accept_string(compiled, call())
++    assert not _is_grammar_accept_string(compiled, call(parameter("country", "France")))
++
++
++@pytest.mark.parametrize(
++    "schema",
++    [
++        {"type": "object", "required": ["city"], "additionalProperties": False},
++        {
++            "type": "object",
++            "properties": {},
++            "required": ["city"],
++            "additionalProperties": False,
++        },
++        {"type": "object", "required": ["city"], "unevaluatedProperties": False},
++        {"type": "object", "required": ["city"], "maxProperties": 0},
++        {
++            "type": "object",
++            "properties": {},
++            "additionalProperties": False,
++            "minProperties": 1,
++        },
++    ],
++)
++def test_unsatisfiable_required_property_rejected_before_generation(schema):
++    with pytest.raises((RuntimeError, ValueError)):
++        grammar(schema)
++
++
++def test_typed_additional_required_property_remains_typed():
++    schema = {
++        "type": "object",
++        "required": ["count"],
++        "additionalProperties": {"type": "integer"},
++    }
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("count", "7")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("count", "wrong")))
++    assert not _is_grammar_accept_string(compiled, call())
++
++
++@pytest.mark.parametrize("streaming", [False, True])
++@pytest.mark.parametrize("keyword", ["additionalProperties", "unevaluatedProperties"])
++def test_typed_additional_parameter_parser(streaming, keyword):
++    schema = {"type": "object", "required": ["count"], keyword: {"type": "integer"}}
++    detector = Qwen3CoderDetector()
++    tools = [tool(schema)]
++    text = call(parameter("count", "7"))
++    if streaming:
++        chunks = [
++            detector.parse_streaming_increment(text[i : i + 3], tools)
++            for i in range(0, len(text), 3)
++        ]
++        arguments = "".join(
++            item.parameters or "" for chunk in chunks for item in chunk.calls
++        )
++    else:
++        arguments = detector.detect_and_parse(text, tools).calls[0].parameters
++    assert json.loads(arguments) == {"count": 7}
++
++
++def test_declared_and_undeclared_required_fields_both_enforced():
++    schema = {
++        "type": "object",
++        "properties": {"city": {"type": "string"}},
++        "required": ["city", "country"],
++    }
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(
++        compiled, call(parameter() + parameter("country", "France"))
++    )
++    assert not _is_grammar_accept_string(compiled, call(parameter()))
++
++
++def test_optional_nonempty_tool_keeps_its_parameter_branch():
++    schema = {
++        "type": "object",
++        "properties": {"city": {"type": "string"}},
++        "required": [],
++        "additionalProperties": False,
++    }
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call())
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++    assert not _is_grammar_accept_string(compiled, call(parameter("wrong")))
++
++
++def test_required_parallel_empty_calls_keep_template_separator():
++    compiled = grammar(CLOSED_EMPTY_SCHEMA, "required", parallel=True)
++    assert _is_grammar_accept_string(compiled, call() + "\n" + call())
++    assert not _is_grammar_accept_string(
++        grammar(CLOSED_EMPTY_SCHEMA, "required"), call() + "\n" + call()
++    )
++
++
++def test_nested_empty_object_keeps_json_braces_and_ref():
++    schema = {
++        "type": "object",
++        "properties": {"config": {"$ref": "#/$defs/Empty"}},
++        "required": ["config"],
++        "additionalProperties": False,
++        "$defs": {"Empty": CLOSED_EMPTY_SCHEMA},
++    }
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("config", "{}")))
++    assert _is_grammar_accept_string(compiled, call(parameter("config", "{ \n\t}")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("config", "")))
++
++
++def test_plain_json_empty_object_is_unchanged():
++    compiled = xgr.Grammar.from_structural_tag(
++        StructuralTag(format=JSONSchemaFormat(json_schema=CLOSED_EMPTY_SCHEMA))
++    )
++    assert _is_grammar_accept_string(compiled, "{}")
++    assert _is_grammar_accept_string(compiled, "{ \n\t}")
++    assert not _is_grammar_accept_string(compiled, "")
++
++
++def test_open_object_not_collapsed_to_no_arguments():
++    compiled = grammar({"type": "object", "additionalProperties": True})
++    assert _is_grammar_accept_string(compiled, call())
++    assert _is_grammar_accept_string(compiled, call(parameter()))
++
++
++@pytest.mark.parametrize(
++    "extra",
++    [
++        {"patternProperties": {"^city$": {"type": "string"}}},
++        {"propertyNames": {"enum": ["city"]}},
++    ],
++)
++def test_undeclared_required_complex_key_constraints_fail_closed(extra):
++    with pytest.raises((RuntimeError, ValueError), match="Undeclared required"):
++        grammar({"type": "object", "required": ["city"], **extra})
++
++
++def test_typed_additional_ref_preserved_in_parser():
++    schema = {
++        "type": "object",
++        "required": ["count"],
++        "additionalProperties": {"$ref": "#/$defs/Count"},
++        "$defs": {"Count": {"type": "integer", "minimum": 1}},
++    }
++    compiled = grammar(schema)
++    assert _is_grammar_accept_string(compiled, call(parameter("count", "7")))
++    assert not _is_grammar_accept_string(compiled, call(parameter("count", "0")))
++    parsed = Qwen3CoderDetector().detect_and_parse(
++        call(parameter("count", "7")), [tool(schema)]
++    )
++    assert json.loads(parsed.calls[0].parameters) == {"count": 7}
+diff --git a/test/registered/unit/managers/test_request_static_yarn_admission_reject.py b/test/registered/unit/managers/test_request_static_yarn_admission_reject.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..30fc56514c3979b0e80c10d15b78660963fae5c3
+--- /dev/null
++++ b/test/registered/unit/managers/test_request_static_yarn_admission_reject.py
+@@ -0,0 +1,316 @@
++"""Real Scheduler/Req intake rejection lifecycle; no inference or GPU claim."""
++
++from array import array
++from http import HTTPStatus
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++import torch
++
++from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++from sglang.srt.disaggregation.utils import DisaggregationMode
++from sglang.srt.managers.io_struct import TokenizedGenerateReqInput
++from sglang.srt.managers.schedule_batch import (
++    FINISH_ABORT,
++    Modality,
++    MultimodalDataItem,
++    MultimodalInputs,
++    Req,
++)
++from sglang.srt.managers.scheduler import Scheduler, _MultimodalInputProcessingError
++from sglang.srt.multimodal.transport.cuda_ipc import CudaIpcTensorTransportProxy
++from sglang.srt.sampling.sampling_params import SamplingParams
++
++
++def yarn_config():
++    return RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={
++                "rope_type": "yarn",
++                "factor": 4.0,
++                "request_static_factors": [1, 2, 4],
++                "original_max_position_embeddings": 262144,
++                "mrope_section": [11, 11, 10],
++            }
++        )
++    )
++
++
++def make_case(*, output, factor=None, mm=False, stream=False, logprob=False):
++    params = SamplingParams(
++        temperature=0,
++        max_new_tokens=output,
++        custom_params={"yarn_factor": factor} if factor is not None else None,
++    )
++    params.normalize(None)
++    ids = array("q", range(23))
++    recv = TokenizedGenerateReqInput(
++        rid="intake-fixture",
++        input_text="",
++        input_ids=ids,
++        input_embeds=None,
++        mm_inputs=object() if mm else None,
++        token_type_ids=None,
++        sampling_params=params,
++        return_logprob=logprob,
++        logprob_start_len=0 if logprob else -1,
++        top_logprobs_num=0,
++        token_ids_logprob=None,
++        stream=stream,
++        bootstrap_port=1,
++        extra_key="caller-namespace",
++    )
++    req = Req(
++        recv.rid,
++        recv.input_text,
++        recv.input_ids,
++        params,
++        return_logprob=logprob,
++        stream=stream,
++        disagg_mode=DisaggregationMode.NULL,
++        extra_key=recv.extra_key,
++    )
++    req.time_stats = MagicMock()
++    req.init_next_round_input = MagicMock(
++        side_effect=AssertionError("rejected request reached cache lookup")
++    )
++
++    scheduler = object.__new__(Scheduler)
++    scheduler.enable_session_radix_cache = False
++    scheduler.disaggregation_mode = DisaggregationMode.NULL
++    scheduler.metrics_reporter = SimpleNamespace(enable_metrics=False)
++    scheduler.model_config = SimpleNamespace(
++        hf_eos_token_id={0},
++        vocab_size=128,
++        context_len=1000000,
++        request_static_yarn_config=yarn_config(),
++    )
++    scheduler.kv_events_publisher = SimpleNamespace(enable_kv_cache_events=False)
++    scheduler.tokenizer = None
++    scheduler.dllm_config = None
++    scheduler.max_req_input_len = 999999
++    scheduler._maybe_namespace_elastic_radix_cache = MagicMock()
++    scheduler.validate_dllm_request = MagicMock(return_value=None)
++    scheduler.spec_algorithm = SimpleNamespace(
++        is_dflash_family=lambda: False,
++        is_uno=lambda: False,
++        is_none=lambda: True,
++    )
++    scheduler.init_req_max_new_tokens = MagicMock()
++    scheduler.waiting_queue = []
++    scheduler.enable_priority_scheduling = False
++    scheduler.abort_on_priority_when_disabled = True
++    scheduler.max_queued_requests = None
++    scheduler.enable_hicache_storage = False
++    scheduler.enable_lmcache = False
++    scheduler.processed_tokens_counter = 0
++    scheduler._add_request_to_queue = MagicMock(wraps=scheduler._add_request_to_queue)
++    scheduler.tree_cache = MagicMock()
++    scheduler.tree_cache.cache_controller = SimpleNamespace()
++    scheduler.beam_coordinator = MagicMock()
++    scheduler.grammar_manager = MagicMock()
++    scheduler.grammar_manager.process_req_with_grammar.return_value = False
++    scheduler.output_streamer = MagicMock()
++    scheduler.pad_input_ids_func = None
++    scheduler._maybe_compute_mrope_positions = MagicMock()
++
++    proxy = None
++    if mm:
++        # Reuse the deferred-transport lifecycle fixture: no CUDA allocation.
++        proxy = object.__new__(CudaIpcTensorTransportProxy)
++        proxy.total_consumer_count = 1
++        proxy.acknowledge_consumption = MagicMock()
++        mm_inputs = MultimodalInputs(
++            mm_items=[MultimodalDataItem(modality=Modality.IMAGE, feature=proxy)],
++            mrope_positions=torch.arange(95, dtype=torch.int64).expand(3, -1),
++        )
++        scheduler._get_multimodal_inputs = MagicMock(return_value=mm_inputs)
++
++        def pad(_recv, actual_req, _mm):
++            actual_req.origin_input_ids = array("q", range(95))
++            return True
++
++        scheduler._try_apply_padded_mm_input_ids = MagicMock(side_effect=pad)
++    return scheduler, recv, req, proxy
++
++
++def handle(scheduler, recv, req, **kwargs):
++    with (
++        patch("sglang.srt.managers.scheduler.Req", return_value=req),
++        patch(
++            "sglang.srt.managers.scheduler.get_serving",
++            return_value=SimpleNamespace(allow_auto_truncate=False),
++        ),
++        patch(
++            "sglang.srt.managers.scheduler.get_device",
++            return_value=SimpleNamespace(mlx_enable_sampling=False),
++        ),
++        patch(
++            "sglang.srt.managers.scheduler.get_parallel",
++            return_value=SimpleNamespace(pp_rank=0),
++        ),
++        patch(
++            "sglang.srt.managers.schedule_batch.get_parallel",
++            return_value=SimpleNamespace(tp_rank=1),
++        ),
++        patch(
++            "sglang.srt.managers.schedule_batch.get_spec",
++            return_value=SimpleNamespace(speculative_algorithm="EAGLE"),
++        ),
++    ):
++        scheduler.handle_generate_request(recv, **kwargs)
++
++
++def assert_local_rejection(
++    scheduler, req, message, *, queued_validator=False, internal_error=False
++):
++    assert scheduler.waiting_queue == []
++    if queued_validator:
++        scheduler._add_request_to_queue.assert_called_once_with(req)
++        scheduler.init_req_max_new_tokens.assert_called_once_with(req)
++    else:
++        scheduler._add_request_to_queue.assert_not_called()
++        scheduler.init_req_max_new_tokens.assert_not_called()
++    assert req.rope_profile is None
++    assert req.extra_key == "caller-namespace"
++    assert req.finished()
++    assert isinstance(req.finished_reason, FINISH_ABORT)
++    assert req.finished_reason.status_code == (
++        HTTPStatus.INTERNAL_SERVER_ERROR if internal_error else HTTPStatus.BAD_REQUEST
++    )
++    assert req.finished_reason.err_type == (
++        "InternalServerError" if internal_error else "BadRequestError"
++    )
++    assert message in req.finished_reason.message
++    assert req.to_finish is None
++    assert not req.kv.holds_kv and not req.kv.holds_mamba
++    scheduler.grammar_manager.process_req_with_grammar.assert_not_called()
++    req.init_next_round_input.assert_not_called()
++    scheduler.tree_cache.match_prefix.assert_not_called()
++    scheduler.tree_cache.finish.assert_called_once()
++    assert scheduler.tree_cache.finish.call_args.args[0] == req.cache_request_handle
++    scheduler.beam_coordinator.retire_group.assert_called_once_with(req)
++    req.time_stats.trace_ctx.abort.assert_called_once()
++    scheduler.output_streamer.stream_output.assert_called_once_with([req], False)
++
++
++@pytest.mark.parametrize(
++    "stream,logprob", [(False, False), (True, False), (False, True), (True, True)]
++)
++def test_mm_expansion_undercoverage_is_request_local(stream, logprob):
++    # Exact observed boundary: 23 text IDs -> 95 MM IDs; 95 + 262050 = 262145.
++    scheduler, recv, req, proxy = make_case(
++        output=262050, factor=1, mm=True, stream=stream, logprob=logprob
++    )
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, "selected YaRN profile capacity")
++    proxy.acknowledge_consumption.assert_called_once_with(1)
++    assert req.multimodal_inputs is None
++
++
++@pytest.mark.parametrize(
++    "output,factor,message",
++    [
++        (1000000, None, "server context length"),
++        (524266, 2, "selected YaRN profile capacity"),
++        (1, 3, "configured factor"),
++    ],
++)
++def test_native_policy_rejections_are_request_local(output, factor, message):
++    scheduler, recv, req, _ = make_case(output=output, factor=factor)
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, message)
++
++
++def test_explicit_factor_on_disabled_feature_is_request_local():
++    scheduler, recv, req, _ = make_case(output=1, factor=1)
++    scheduler.model_config.request_static_yarn_config = None
++    handle(scheduler, recv, req)
++    assert_local_rejection(scheduler, req, "requires request-static YaRN")
++
++
++def test_legal_request_after_rejection_keeps_normal_path():
++    scheduler, recv, rejected, _ = make_case(output=262050, factor=1, mm=True)
++    handle(scheduler, recv, rejected)
++    assert_local_rejection(scheduler, rejected, "selected YaRN profile capacity")
++    _, legal_recv, legal, _ = make_case(output=1, factor=2)
++    handle(scheduler, legal_recv, legal)
++    assert legal.rope_profile.factor == 2
++    assert legal.rope_profile.budget == 24
++    assert not legal.finished()
++    assert scheduler.waiting_queue == [legal]
++    scheduler._add_request_to_queue.assert_called_once_with(legal)
++    scheduler.init_req_max_new_tokens.assert_called_once_with(legal)
++    scheduler.grammar_manager.process_req_with_grammar.assert_called_once_with(legal)
++    # The accepted request did not emit a second rejection completion.
++    scheduler.output_streamer.stream_output.assert_called_once_with([rejected], False)
++
++
++def test_auto_selection_still_uses_expanded_prompt_before_clipping():
++    scheduler, recv, req, proxy = make_case(output=262050, mm=True)
++    handle(scheduler, recv, req)
++    assert req.rope_profile.factor == 2
++    assert req.rope_profile.budget == 262145
++    assert req.sampling_params.max_new_tokens == 262050
++    assert not req.finished()
++    assert scheduler.waiting_queue == [req]
++    scheduler.init_req_max_new_tokens.assert_called_once_with(req)
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
++    proxy.acknowledge_consumption.assert_not_called()
++
++
++@pytest.mark.parametrize("failure", ["expanded-length", "processing", "fanout"])
++def test_pre_admission_mm_abort_never_enters_prefill(failure):
++    scheduler, recv, req, proxy = make_case(output=1, factor=1, mm=True)
++    if failure == "expanded-length":
++        scheduler.max_req_input_len = 95
++        handle(scheduler, recv, req)
++        message = "Multimodal prompt is too long"
++        proxy.acknowledge_consumption.assert_called_once_with(1)
++    elif failure == "processing":
++        scheduler._get_multimodal_inputs.side_effect = _MultimodalInputProcessingError(
++            "fixture MM processing failure"
++        )
++        handle(scheduler, recv, req)
++        message = "fixture MM processing failure"
++    else:
++        handle(scheduler, recv, req, mm_input_error="fixture MM fanout failure")
++        message = "fixture MM fanout failure"
++    assert_local_rejection(
++        scheduler,
++        req,
++        message,
++        queued_validator=True,
++        internal_error=failure != "expanded-length",
++    )
++    assert req.multimodal_inputs is None
++
++
++def test_feature_disabled_keeps_existing_mm_abort_queue_path():
++    scheduler, recv, req, proxy = make_case(output=1, mm=True)
++    scheduler.model_config.request_static_yarn_config = None
++    scheduler.max_req_input_len = 95
++    handle(scheduler, recv, req)
++    assert scheduler.waiting_queue == [req]
++    assert not req.finished()
++    assert isinstance(req.to_finish, FINISH_ABORT)
++    proxy.acknowledge_consumption.assert_called_once_with(1)
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
++
++
++@pytest.mark.parametrize("state", ["retracted", "holds-kv"])
++def test_owned_or_retracted_abort_keeps_existing_queue_path(state):
++    scheduler, _, req, _ = make_case(output=1)
++    req.rope_profile = scheduler.model_config.request_static_yarn_config.select(24)
++    req.to_finish = FINISH_ABORT("existing in-flight abort")
++    if state == "retracted":
++        req.is_retracted = True
++    else:
++        req.kv.req_pool_idx = 0
++    scheduler._add_request_to_queue(req)
++    assert scheduler.waiting_queue == [req]
++    scheduler.output_streamer.stream_output.assert_not_called()
++    scheduler.tree_cache.finish.assert_not_called()
+diff --git a/test/registered/unit/mem_cache/test_request_static_yarn_cache.py b/test/registered/unit/mem_cache/test_request_static_yarn_cache.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7599cc8eb7a33448c6f99ec6d037f9b8127ffb8c
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_request_static_yarn_cache.py
+@@ -0,0 +1,264 @@
++"""Actual FULL/MAMBA cache and deferred COW; no model-inference claim."""
++
++from array import array
++from types import SimpleNamespace
++
++import pytest
++import torch
++from sglang.test.kits.unified_radix_cache.config import CacheConfig
++from sglang.test.kits.unified_radix_cache.fixtures import build_fixture
++
++from sglang.srt.configs.request_static_yarn import (
++    RequestStaticYarnConfig,
++    admit_request_static_yarn,
++)
++from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
++from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams, MatchPrefixParams
++from sglang.srt.mem_cache.radix_cache import RadixKey
++from sglang.srt.mem_cache.unified_cache.components.base import ComponentType
++from sglang.srt.model_executor.forward_batch_info import ForwardMode
++from sglang.srt.model_executor.model_runner import ModelRunner
++from sglang.srt.sampling.sampling_params import SamplingParams
++
++
++def state_tensors(pool, logical_indices):
++    physical = pool.translate_mamba_indices(logical_indices)
++    state = pool.mamba_pool.mamba_cache
++    return [state.temporal[:, physical].clone()] + [
++        conv[:, physical].clone() for conv in state.conv
++    ]
++
++
++def write_state(pool, logical_indices, marker):
++    physical = pool.translate_mamba_indices(logical_indices)
++    state = pool.mamba_pool.mamba_cache
++    # Advanced indexing returns a copy, so fill_ on the indexed result would
++    # leave the actual pool unchanged. Assign into each pool tensor directly.
++    state.temporal[:, physical] = marker
++    for index, conv in enumerate(state.conv):
++        conv[:, physical] = marker + index + 1
++
++
++def cache_key(req, tokens):
++    return RadixKey(
++        array("q", tokens), extra_key=req.extra_key, cache_salt=req.cache_salt
++    )
++
++
++def matched_indices(cache, result):
++    # MatchResult now carries the prefix length and tree node, not a KV copy.
++    return cache.path_device_indices(result.last_device_node)[:result.device_prefix_len]
++
++
++def test_real_cache_separates_adapter_ids_from_colliding_caller_namespace():
++    from test_mamba_checkpoint_pressure import TestMambaCheckpointPressure
++
++    cache, allocator, pool = TestMambaCheckpointPressure().fixture(size=16)
++    config = RequestStaticYarnConfig.from_hf_config(SimpleNamespace(rope_parameters={
++        "rope_type": "yarn", "factor": 4.0, "request_static_factors": [1, 2, 4],
++        "original_max_position_embeddings": 256, "mrope_section": [11, 11, 10],
++    }))
++    tokens = list(range(64))
++    adapter_id = "a" * 32
++
++    def request(caller_namespace, adapter, factor=1):
++        req = Req("namespace-fixture", "", array("q", tokens + [1000]),
++                  SamplingParams(max_new_tokens=1, custom_params={"yarn_factor": factor}),
++                  extra_key=caller_namespace,
++                  lora_id=adapter)
++        return req
++
++    adapted = request(None, adapter_id)
++    base = request(adapter_id, None)
++    assert adapted.extra_key == base.extra_key == adapter_id
++    admit_request_static_yarn(adapted, config, 1024)
++    admit_request_static_yarn(base, config, 1024)
++    assert adapted.extra_key != base.extra_key
++    indices = allocator.alloc(64)
++    slot = pool.mamba_allocator.alloc(1)
++    assert indices is not None and slot is not None
++    cache.insert(InsertParams(key=cache_key(adapted, tokens), value=indices,
++                              mamba_value=slot))
++    miss = cache.match_prefix(MatchPrefixParams(key=cache_key(base, tokens + [1000])))
++    assert len(matched_indices(cache, miss)) == 0
++    repeated = request(None, adapter_id)
++    admit_request_static_yarn(repeated, config, 1024)
++    hit = cache.match_prefix(MatchPrefixParams(key=cache_key(repeated, tokens + [1000])))
++    assert torch.equal(matched_indices(cache, hit), indices)
++    for isolated in (request("caller", adapter_id), request(None, adapter_id, 2),
++                     request(None, "b" * 32), request(None, None)):
++        admit_request_static_yarn(isolated, config, 1024)
++        cold = cache.match_prefix(MatchPrefixParams(key=cache_key(isolated, tokens + [1000])))
++        assert len(matched_indices(cache, cold)) == 0
++    default_base = request(None, None)
++    admit_request_static_yarn(default_base, config, 1024)
++    base_indices = allocator.alloc(64)
++    base_slot = pool.mamba_allocator.alloc(1)
++    assert base_indices is not None and base_slot is not None
++    cache.insert(InsertParams(key=cache_key(default_base, tokens), value=base_indices,
++                              mamba_value=base_slot))
++    base_repeat = request(None, None)
++    admit_request_static_yarn(base_repeat, config, 1024)
++    base_hit = cache.match_prefix(MatchPrefixParams(key=cache_key(base_repeat, tokens + [1000])))
++    assert torch.equal(matched_indices(cache, base_hit), base_indices)
++    cache.evict(EvictParams(num_tokens=4096, mamba_num=16))
++    assert allocator.available_size() == 4096
++    assert pool.mamba_allocator.available_size() == 16
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++def test_real_full_mamba_namespaces_deferred_cow_and_suffix_reuse():
++    cache, allocator, pool = build_fixture(
++        CacheConfig(
++            components=(ComponentType.FULL, ComponentType.MAMBA),
++            num_layers=4,
++            full_attention_layer_ids=(3,),
++            enable_mamba_extra_buffer=True,
++            kv_size=512,
++            max_num_reqs=16,
++            mamba_cache_size=64,
++        ),
++        tree_core_backend="python",
++    )
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={
++                "rope_type": "yarn",
++                "factor": 4.0,
++                "request_static_factors": [1, 2, 4],
++                "original_max_position_embeddings": 256,
++                "mrope_section": [11, 11, 10],
++                "mrope_interleaved": True,
++            }
++        )
++    )
++    prefix = list(range(64))
++    suffix = list(range(1000, 1064))
++
++    def make_req(tokens, factor, *, salt="tenant", namespace="adapter", alloc=True):
++        req = Req(
++            rid=f"{factor}-{salt}-{namespace}-{len(tokens)}",
++            origin_input_text="",
++            origin_input_ids=array("q", tokens),
++            sampling_params=SamplingParams(
++                temperature=0,
++                max_new_tokens=1,
++                custom_params={"yarn_factor": factor},
++            ),
++            extra_key=namespace,
++            cache_salt=salt,
++        )
++        admit_request_static_yarn(req, config, 1024)
++        if alloc:
++            assert pool.alloc([req]) is not None
++        return req
++
++    full_pool = allocator.get_kvcache().full_kv_pool
++    key_buffer = full_pool.get_key_buffer(full_pool.start_layer)
++    value_buffer = full_pool.get_value_buffer(full_pool.start_layer)
++    entries = []
++    for factor in (1, 2, 4):
++        req = make_req(prefix, factor)
++        # A prefix already inserted under another factor must be a cold miss.
++        miss = cache.match_prefix(MatchPrefixParams(key=cache_key(req, prefix)))
++        assert len(matched_indices(cache, miss)) == 0
++        indices = allocator.alloc(len(prefix))
++        assert indices is not None
++        key_buffer[indices] = factor
++        value_buffer[indices] = factor + 8
++        slot = req.kv.mamba_pool_idx.unsqueeze(0)
++        write_state(pool, slot, factor * 10)
++        inserted = cache.insert(
++            InsertParams(key=cache_key(req, prefix), value=indices, mamba_value=slot)
++        )
++        entries.append((factor, indices, slot, inserted.last_device_node))
++
++    assert len({entry[3] for entry in entries}) == 3
++    continuations = []
++    for factor, indices, src_slot, node in entries:
++        req = make_req(prefix + suffix, factor)
++        match = cache.match_prefix(
++            MatchPrefixParams(
++                key=cache_key(req, prefix + suffix), cow_mamba=True, req=req
++            )
++        )
++        assert match.best_match_node == node
++        assert torch.equal(matched_indices(cache, match), indices)
++        assert torch.all(key_buffer[matched_indices(cache, match)] == factor)
++        assert torch.all(value_buffer[matched_indices(cache, match)] == factor + 8)
++        assert torch.equal(req.kv.mamba_cow_src_index, src_slot)
++        dst_slot = req.kv.mamba_pool_idx.unsqueeze(0)
++        assert not torch.equal(src_slot, dst_slot)
++        # Make the deferred copy observable even if a fresh slot starts at zero.
++        write_state(pool, dst_slot, -100)
++        continuations.append((req, match, src_slot, dst_slot))
++
++    cold_req = make_req(prefix, 1, salt="other")
++    write_state(pool, cold_req.kv.mamba_pool_idx.unsqueeze(0), 99)
++    cold_match = cache.match_prefix(
++        MatchPrefixParams(key=cache_key(cold_req, prefix), cow_mamba=True, req=cold_req)
++    )
++    assert len(matched_indices(cache, cold_match)) == 0
++    assert cold_req.kv.mamba_cow_src_index is None
++    other_adapter = make_req(prefix, 1, namespace="other", alloc=False)
++    assert cache.match_prefix(
++        MatchPrefixParams(key=cache_key(other_adapter, prefix))
++    ).device_prefix_len == 0
++
++    batch = SimpleNamespace()
++    ScheduleBatch._collect_deferred_mamba_cow_and_clear(
++        batch, [entry[0] for entry in continuations] + [cold_req]
++    )
++    assert batch.mamba_cow_src_indices.numel() == 3
++    assert batch.mamba_clear_indices.numel() == 1
++    forward_batch = SimpleNamespace(
++        forward_mode=ForwardMode.EXTEND,
++        mamba_cow_src_indices=batch.mamba_cow_src_indices,
++        mamba_cow_dst_indices=batch.mamba_cow_dst_indices,
++        mamba_clear_indices=batch.mamba_clear_indices,
++    )
++    runner = SimpleNamespace(req_to_token_pool=pool, is_draft_worker=False)
++    ModelRunner._maybe_execute_deferred_mamba_cow_and_clear(runner, forward_batch)
++    assert forward_batch.mamba_cow_src_indices is None
++    assert forward_batch.mamba_cow_dst_indices is None
++    assert forward_batch.mamba_clear_indices is None
++    for state in state_tensors(pool, cold_req.kv.mamba_pool_idx.unsqueeze(0)):
++        assert torch.count_nonzero(state) == 0
++
++    for req, match, src_slot, dst_slot in continuations:
++        assert req.kv.mamba_cow_src_index is None
++        assert not req.kv.mamba_needs_clear
++        source_state = state_tensors(pool, src_slot)
++        for actual, expected in zip(state_tensors(pool, dst_slot), source_state):
++            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++        write_state(pool, dst_slot, req.rope_profile.factor * 20)
++        for actual, expected in zip(state_tensors(pool, src_slot), source_state):
++            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++
++        suffix_indices = allocator.alloc(len(suffix))
++        assert suffix_indices is not None
++        key_buffer[suffix_indices] = req.rope_profile.factor + 16
++        value_buffer[suffix_indices] = req.rope_profile.factor + 24
++        extended_indices = torch.cat((matched_indices(cache, match), suffix_indices))
++        cache.insert(
++            InsertParams(
++                key=cache_key(req, prefix + suffix),
++                value=extended_indices,
++                mamba_value=dst_slot,
++            )
++        )
++        reused = cache.match_prefix(
++            MatchPrefixParams(key=cache_key(req, prefix + suffix))
++        )
++        assert torch.equal(matched_indices(cache, reused), extended_indices)
++        stored_slot = cache.tree_core.get_component_device_value(
++            reused.best_match_node, ComponentType.MAMBA
++        )
++        assert torch.equal(stored_slot, dst_slot)
++        assert torch.all(
++            key_buffer[matched_indices(cache, reused)[:64]] == req.rope_profile.factor
++        )
++        assert torch.all(
++            key_buffer[matched_indices(cache, reused)[64:]] == req.rope_profile.factor + 16
++        )
++    cache.sanity_check()
+diff --git a/test/registered/unit/model_executor/test_request_static_yarn_torch.py b/test/registered/unit/model_executor/test_request_static_yarn_torch.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cb7f0eb06d0a5a0b57746ef6a7b08eb6499d76c
+--- /dev/null
++++ b/test/registered/unit/model_executor/test_request_static_yarn_torch.py
+@@ -0,0 +1,441 @@
++"""Real Torch/kernel checks; CUDA cases run only on an actual GPU."""
++
++from contextlib import ExitStack
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++import torch
++
++from sglang.srt.configs.request_static_yarn import RequestStaticYarnConfig
++from sglang.srt.layers.rotary_embedding import get_rope
++from sglang.srt.model_executor.forward_batch_info import (
++    CaptureHiddenMode,
++    ForwardBatch,
++    ForwardMode,
++)
++
++
++@pytest.mark.parametrize("feature", [False, True])
++def test_actual_tokenizer_budget_path_cannot_clip_request_static_budget(feature):
++    from sglang.srt.managers.tokenizer_manager import TokenizerManager
++
++    manager = object.__new__(TokenizerManager)
++    manager.context_len = 1000
++    manager.allow_auto_truncate = True
++    manager.validate_total_tokens = True
++    manager.num_reserved_tokens = 0
++    manager.model_config = SimpleNamespace(
++        request_static_yarn_config=object() if feature else None,
++        joint_head_config=None, pointer_head=None
++    )
++    req = SimpleNamespace(sampling_params={"max_new_tokens": 2})
++    execution = SimpleNamespace(
++        features=SimpleNamespace(enable_encoder_swa_bounded_replay=False)
++    )
++    with patch(
++        "sglang.srt.managers.tokenizer_manager.get_exec", return_value=execution
++    ):
++        if feature:
++            with pytest.raises(ValueError, match="maximum context length"):
++                manager._validate_token_budget(req, list(range(999)))
++            assert req.sampling_params["max_new_tokens"] == 2
++        else:
++            manager._validate_token_budget(req, list(range(999)))
++            assert req.sampling_params["max_new_tokens"] == 1
++
++
++PARAMETERS = {
++    "rope_type": "yarn",
++    "factor": 4.0,
++    "original_max_position_embeddings": 64,
++    "mrope_section": [11, 11, 10],
++    "mrope_interleaved": True,
++}
++
++
++def rope(factor=None, dtype=torch.float32):
++    params = dict(PARAMETERS)
++    if factor is None:
++        params["request_static_factors"] = [1, 2, 4]
++    elif factor == 1:
++        params["rope_type"] = "default"
++    else:
++        params["factor"] = factor
++    return get_rope(
++        head_size=256,
++        rotary_dim=256,
++        max_position=256,
++        base=10000000,
++        rope_scaling=params,
++        partial_rotary_factor=0.25,
++        dtype=dtype,
++    )
++
++
++def inputs(device, order=(1, 2, 4), vision=True):
++    gen = torch.Generator(device=device).manual_seed(71983)
++    positions = torch.cat(
++        [
++            torch.randint(0, int(64 * factor), (3, 4), generator=gen, device=device)
++            for factor in order
++        ],
++        dim=1,
++    )
++    if not vision:
++        positions = positions[0:1].expand(3, -1).contiguous()
++    q = torch.randn(12, 512, generator=gen, device=device)
++    k = torch.randn(12, 256, generator=gen, device=device)
++    return positions, q, k
++
++
++@pytest.mark.parametrize("vision", [False, True])
++def test_combined_native_matches_isolated_static_and_native_1x(vision):
++    combined = rope()
++    positions, q, k = inputs("cpu", vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)]
++    ).repeat_interleave(4)
++    actual = combined.forward_native(positions + offsets, q.clone(), k.clone())
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        expected = rope(factor).forward_native(
++            positions[:, sl], q[sl].clone(), k[sl].clone()
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++    assert torch.equal(actual[0][:, 64:256], q[:, 64:256])
++
++
++@pytest.mark.parametrize("uniform,lengths", [(False, [1, 3, 2]), (True, [4, 4, 4])])
++def test_real_forward_batch_offsets_preserve_physical_and_vision_positions(
++    uniform, lengths
++):
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={**PARAMETERS, "request_static_factors": [1, 2, 4]}
++        )
++    )
++    profiles = [config.select(1, f) for f in (4, 1, 2)]
++    n = sum(lengths)
++    physical = torch.arange(n)
++    original = torch.stack((physical, physical + 2, physical + 5))
++    # Exercise the actual ForwardBatch method without constructing unrelated
++    # scheduler resources or replacing its implementation with a simulator.
++    fb = object.__new__(ForwardBatch)
++    fb.positions = physical.clone()
++    fb.mrope_positions = original.clone()
++    batch = SimpleNamespace(
++        reqs=[SimpleNamespace(rope_profile=p) for p in profiles], extend_lens=lengths
++    )
++    runner = SimpleNamespace(
++        device="cpu", model_config=SimpleNamespace(request_static_yarn_config=config)
++    )
++    fb._apply_request_static_yarn_offsets(runner, batch, uniform=uniform)
++    expected_offsets = torch.tensor([p.offset for p in profiles]).repeat_interleave(
++        torch.tensor(lengths)
++    )
++    assert torch.equal(fb.mrope_positions, original + expected_offsets)
++    assert torch.equal(fb.positions, physical)
++
++
++@pytest.mark.parametrize("explicit_positions", [False, True])
++@pytest.mark.parametrize("mixed_mm", [False, True])
++@pytest.mark.parametrize("enabled", [False, True])
++def test_spec_mrope_entrypoint_applies_profiles_once(
++    explicit_positions, mixed_mm, enabled
++):
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={**PARAMETERS, "request_static_factors": [1, 2, 4]}
++        )
++    )
++    profiles = [config.select(1, f) for f in (2, 4, 1)]
++    physical = torch.tensor([65, 66, 67, 129, 130, 131, 4, 5, 6])
++    original = physical.clone()
++    deltas = [0, 7, 0] if mixed_mm else [0, 0, 0]
++    mm = [None, SimpleNamespace(mrope_position_delta=torch.tensor([[7]])), None]
++    batch = SimpleNamespace(
++        reqs=[SimpleNamespace(rope_profile=p) for p in profiles],
++        multimodal_inputs=mm if mixed_mm else [None] * 3,
++        spec_info=SimpleNamespace(positions=physical),
++    )
++    runner = SimpleNamespace(
++        device="cpu",
++        model_config=SimpleNamespace(
++            request_static_yarn_config=config if enabled else None
++        ),
++    )
++    fb = object.__new__(ForwardBatch)
++    fb.positions = physical
++    fb.seq_lens = torch.tensor([68, 132, 7])
++    fb.compute_spec_mrope_positions(
++        runner, batch, seq_positions=physical if explicit_positions else None
++    )
++    per_request = torch.tensor(deltas)
++    if enabled:
++        per_request += torch.tensor([p.offset for p in profiles])
++    expected = original + per_request.repeat_interleave(3)
++    assert torch.equal(fb.mrope_positions, expected.unsqueeze(0).repeat(3, 1))
++    assert torch.equal(fb.positions, original)
++    assert torch.equal(batch.spec_info.positions, original)
++
++
++@pytest.mark.parametrize("enabled", [False, True])
++@pytest.mark.parametrize(
++    "mode,prepared",
++    [
++        (ForwardMode.DECODE, "spec"),
++        (ForwardMode.TARGET_VERIFY, "spec"),
++        (ForwardMode.DRAFT_EXTEND_V2, "extend"),
++        (ForwardMode.TARGET_VERIFY, "compute"),
++        (ForwardMode.DRAFT_EXTEND_V2, "compute"),
++    ],
++)
++def test_init_new_precomputed_mrope_paths_apply_profile_exactly_once(
++    enabled, mode, prepared
++):
++    """Real init_new chooses physical/prepared positions before model-only encoding."""
++    import sglang.srt.model_executor.forward_batch_info as module
++
++    class BatchInputs(SimpleNamespace):
++        def __getattr__(self, name):
++            return None
++
++    config = RequestStaticYarnConfig.from_hf_config(
++        SimpleNamespace(
++            rope_parameters={**PARAMETERS, "request_static_factors": [1, 2, 4]}
++        )
++    )
++    profiles = [config.select(1, f) for f in (2, 4, 1)]
++    width = 1 if mode == ForwardMode.DECODE else 4
++    physical = torch.arange(width * 3, dtype=torch.int64)
++    mrope = physical.unsqueeze(0).repeat(3, 1)
++    prepared_copy = mrope.clone()
++    batch = BatchInputs(
++        forward_mode=mode,
++        seq_lens=torch.tensor([67, 131, 7]),
++        seq_lens_cpu=torch.tensor([67, 131, 7]),
++        seq_lens_sum=205,
++        input_ids=torch.zeros(width * 3, dtype=torch.int64),
++        req_pool_indices=torch.tensor([1, 2, 3]),
++        out_cache_loc=torch.arange(width * 3),
++        reqs=[SimpleNamespace(rope_profile=p, lora_id=None, rid="cpu") for p in profiles],
++        extend_lens=[width] * 3,
++        prefix_lens=[0] * 3,
++        extend_num_tokens=width * 3,
++        extend_logprob_start_lens=[0] * 3,
++        multimodal_inputs=[None] * 3,
++        spec_info=SimpleNamespace(positions=physical),
++        sampling_info=None,
++    )
++    runner = SimpleNamespace(
++        device="cpu",
++        is_draft_worker=mode != ForwardMode.TARGET_VERIFY,
++        model_config=SimpleNamespace(
++            model_is_mrope=True,
++            request_static_yarn_config=config if enabled else None,
++        ),
++        ngram_embedding_manager=SimpleNamespace(enabled=False),
++        lora_manager=None,
++        kv_index_translator=SimpleNamespace(own_plan=lambda _: MagicMock()),
++    )
++    # Device planning and unrelated metadata are stubs; init_new's own position
++    # selection and both real mrope methods run unmodified.
++    with ExitStack() as stack:
++        for name in (
++            "_maybe_init_non_generation_fields",
++            "_init_num_token_non_padded",
++            "init_mlp_sync_metadata",
++        ):
++            stack.enter_context(patch.object(ForwardBatch, name))
++        stack.enter_context(patch.object(module, "_maybe_build_forward_token_modalities"))
++        stack.enter_context(
++            patch.object(module, "get_parallel", return_value=SimpleNamespace(attn_dcp_size=1))
++        )
++        stack.enter_context(patch.object(module, "is_pin_memory_available", return_value=False))
++        result = ForwardBatch.init_new(
++            batch,
++            runner,
++            capture_hidden_mode=CaptureHiddenMode.NULL,
++            return_hidden_states_before_norm=False,
++            spec_mrope_positions=mrope if prepared == "spec" else None,
++            extend_position_info=(
++                physical,
++                torch.tensor([0, width, width * 2]),
++                mrope if prepared == "extend" else None,
++            ),
++        )
++    offsets = (
++        torch.tensor([p.offset for p in profiles]).repeat_interleave(width)
++        if enabled
++        else torch.zeros(width * 3, dtype=torch.int64)
++    )
++    assert torch.equal(result.mrope_positions, prepared_copy + offsets)
++    assert torch.equal(result.positions, physical)
++    assert torch.equal(mrope, prepared_copy)
++    assert torch.equal(batch.spec_info.positions, physical)
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("vision", [False, True])
++def test_cuda_mixed_profiles_match_isolated_tables(vision):
++    combined = rope().to("cuda")
++    positions, q, k = inputs("cuda", vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)], device="cuda"
++    ).repeat_interleave(4)
++    actual = combined.forward_cuda(positions + offsets, q.clone(), k.clone())
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        expected = (
++            rope(factor)
++            .to("cuda")
++            .forward_cuda(positions[:, sl], q[sl].clone(), k[sl].clone())
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++def test_cuda_graph_replays_new_mixed_profile_positions():
++    combined = rope().to("cuda")
++    positions, q, k = inputs("cuda")
++    position_buffer = torch.zeros_like(positions)
++    q_buffer, k_buffer = q.clone(), k.clone()
++    for _ in range(3):
++        combined.forward_cuda(position_buffer, q_buffer, k_buffer)
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        result = combined.forward_cuda(position_buffer, q_buffer, k_buffer)
++    for order in [(1, 2, 4), (4, 1, 2), (2, 4, 1)]:
++        positions, q, k = inputs("cuda", order=order)
++        offsets = torch.tensor(
++            [combined.scaling_factor_to_offset[f] for f in order], device="cuda"
++        ).repeat_interleave(4)
++        encoded = positions + offsets
++        expected = combined.forward_cuda(encoded, q.clone(), k.clone())
++        position_buffer.copy_(encoded)
++        q_buffer.copy_(q)
++        k_buffer.copy_(k)
++        graph.replay()
++        torch.cuda.synchronize()
++        for actual_tensor, expected_tensor in zip(result, expected):
++            torch.testing.assert_close(actual_tensor, expected_tensor, rtol=0, atol=0)
++
++
++def fused_inputs(order=(1, 2, 4), vision=True):
++    """Ordinary 27B head layout; tables stay small to isolate kernel/layout math."""
++    positions = torch.cat(
++        [
++            torch.tensor(
++                [
++                    [0, 1, 64 * factor - 2, 64 * factor - 1],
++                    [0, 3, 64 * factor - 1, 64 * factor - 2],
++                    [1, 0, 64 * factor - 3, 64 * factor - 1],
++                ],
++                device="cuda",
++            )
++            for factor in order
++        ],
++        dim=1,
++    )
++    if not vision:
++        positions = positions[0:1].expand(3, -1).contiguous()
++    gen = torch.Generator(device="cuda").manual_seed(71984)
++    q_gate = torch.randn(
++        12, 24 * 2 * 256, device="cuda", dtype=torch.bfloat16, generator=gen
++    )
++    k = torch.randn(12, 4 * 256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    q_weight = torch.randn(256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    k_weight = torch.randn(256, device="cuda", dtype=torch.bfloat16, generator=gen)
++    return positions, q_gate, k, q_weight, k_weight
++
++
++def call_actual_qwen_fused(rotary, positions, q_gate, k, q_weight, k_weight):
++    from sglang.kernels.ops.attention.fused_qk_rmsnorm_rope_gate import (
++        fused_qk_gemma_rmsnorm_rope_gate,
++    )
++
++    return fused_qk_gemma_rmsnorm_rope_gate(
++        q_gate,
++        k,
++        q_weight,
++        k_weight,
++        rotary.cos_sin_cache,
++        positions,
++        1e-6,
++        24,
++        4,
++        256,
++        64,
++        has_gate=True,
++        mrope_axis_map=rotary.axis_map,
++    )
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("table_dtype", [torch.bfloat16, torch.float32])
++@pytest.mark.parametrize("vision", [False, True])
++def test_actual_qwen_fused_mixed_profiles_match_isolated_tables(table_dtype, vision):
++    combined = rope(dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++    positions, q_gate, k, q_weight, k_weight = fused_inputs(vision=vision)
++    offsets = torch.tensor(
++        [combined.scaling_factor_to_offset[f] for f in (1, 2, 4)], device="cuda"
++    ).repeat_interleave(4)
++    actual = call_actual_qwen_fused(
++        combined, positions + offsets, q_gate, k, q_weight, k_weight
++    )
++    for index, factor in enumerate((1, 2, 4)):
++        sl = slice(index * 4, (index + 1) * 4)
++        isolated = rope(factor, dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++        expected = call_actual_qwen_fused(
++            isolated, positions[:, sl], q_gate[sl], k[sl], q_weight, k_weight
++        )
++        for result, reference in zip(actual, expected):
++            torch.testing.assert_close(result[sl], reference, rtol=0, atol=0)
++    torch.testing.assert_close(
++        actual[2], q_gate.view(12, 24, 512)[..., 256:], rtol=0, atol=0
++    )
++
++
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="actual CUDA device required")
++@pytest.mark.parametrize("table_dtype", [torch.bfloat16, torch.float32])
++def test_actual_qwen_fused_graph_replays_profile_reordering(table_dtype):
++    combined = rope(dtype=table_dtype).to(device="cuda", dtype=table_dtype)
++    positions, q_gate, k, q_weight, k_weight = fused_inputs()
++    position_buffer = torch.zeros_like(positions)
++    q_gate_buffer, k_buffer = q_gate.clone(), k.clone()
++    for _ in range(3):
++        call_actual_qwen_fused(
++            combined, position_buffer, q_gate_buffer, k_buffer, q_weight, k_weight
++        )
++    torch.cuda.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        result = call_actual_qwen_fused(
++            combined, position_buffer, q_gate_buffer, k_buffer, q_weight, k_weight
++        )
++    for order in [(1, 2, 4), (4, 1, 2), (2, 4, 1)]:
++        positions, q_gate, k, _q_weight, _k_weight = fused_inputs(order=order)
++        offsets = torch.tensor(
++            [combined.scaling_factor_to_offset[f] for f in order], device="cuda"
++        ).repeat_interleave(4)
++        position_buffer.copy_(positions + offsets)
++        q_gate_buffer.copy_(q_gate)
++        k_buffer.copy_(k)
++        graph.replay()
++        torch.cuda.synchronize()
++        for index, factor in enumerate(order):
++            sl = slice(index * 4, (index + 1) * 4)
++            isolated = rope(factor, dtype=table_dtype).to(
++                device="cuda", dtype=table_dtype
++            )
++            expected = call_actual_qwen_fused(
++                isolated, positions[:, sl], q_gate[sl], k[sl], q_weight, k_weight
++            )
++            for actual_tensor, expected_tensor in zip(result, expected):
++                torch.testing.assert_close(
++                    actual_tensor[sl], expected_tensor, rtol=0, atol=0
++                )

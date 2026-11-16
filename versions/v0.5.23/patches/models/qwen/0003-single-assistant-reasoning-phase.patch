@@ -1,0 +1,420 @@
+diff --git a/python/sglang/srt/parser/reasoning_parser.py b/python/sglang/srt/parser/reasoning_parser.py
+index b85d1563e541cdec33721146f0d191376859f756..fd96a97516adca1d62dff1c07e127de29274a7d8 100644
+--- a/python/sglang/srt/parser/reasoning_parser.py
++++ b/python/sglang/srt/parser/reasoning_parser.py
+@@ -461,6 +461,7 @@ class Qwen3Detector(BaseReasoningFormatDetector):
+         continue_final_message: bool = False,
+         previous_content: str = "",
+         force_nonempty_content: bool = False,
++        single_assistant_reasoning: bool = True,
+     ):
+         think_excluded_tokens = [
+             "<tool_call>",
+@@ -483,6 +484,107 @@ class Qwen3Detector(BaseReasoningFormatDetector):
+             reasoning_default="enable_thinking",
+             force_nonempty_content=force_nonempty_content,
+         )
++        # Other model detectors inherit Qwen's delimiter vocabulary. Keep their
++        # existing policy; only Qwen's single-assistant path commits to content.
++        self._single_assistant_reasoning = (
++            type(self) is Qwen3Detector and single_assistant_reasoning
++        )
++        self._qwen_phase = "initial"
++        if self._single_assistant_reasoning:
++            # The shared constructor recognizes markers anywhere in history.
++            # Rebuild only this assistant's phase using the same initial-only
++            # transitions as new output, then discard history's pending payload.
++            self._in_reasoning = bool(force_reasoning)
++            self.stripped_think_start = False
++            if self.previous_content:
++                self._parse_streaming_increment_impl(self.previous_content)
++                self._buffer = ""
++
++    def _detect_and_parse_impl(self, text: str) -> StreamingParseResult:
++        if not self._single_assistant_reasoning:
++            return super()._detect_and_parse_impl(text)
++
++        # Use the same transitions as SSE without retaining one-shot state.
++        # Visibility fallback remains owned by detect_and_parse's outer layer.
++        detector = Qwen3Detector(
++            stream_reasoning=False,
++            force_reasoning=self.force_reasoning,
++            continue_final_message=self.continue_final_message,
++            previous_content=self.previous_content,
++        )
++        parsed = detector.parse_streaming_increment(text)
++        tail = detector.finish()
++        return StreamingParseResult(
++            reasoning_text=parsed.reasoning_text + tail.reasoning_text,
++            normal_text=parsed.normal_text + tail.normal_text,
++        )
++
++    def _strip_leading_think_start(self, text: str) -> str:
++        if self._single_assistant_reasoning:
++            # Initial control markers are consumed only by our transition path.
++            # A later buffered opener is payload, including during continuation.
++            return text
++        return super()._strip_leading_think_start(text)
++
++    def _parse_streaming_increment_impl(self, new_text: str) -> StreamingParseResult:
++        if not self._single_assistant_reasoning:
++            return super()._parse_streaming_increment_impl(new_text)
++
++        if self._qwen_phase == "content":
++            text = self._buffer + new_text
++            self._buffer = ""
++            return StreamingParseResult(normal_text=text)
++
++        if self._qwen_phase == "initial":
++            text = self._buffer + new_text
++            self._buffer = ""
++            whitespace = ""
++            while True:
++                stripped = text.lstrip()
++                if not stripped or (
++                    self.think_start_token.startswith(stripped)
++                    and stripped != self.think_start_token
++                ):
++                    # Resolve only the initial opener; an incomplete prefix is
++                    # flushed unchanged by finish() if it never becomes a tag.
++                    self._buffer = whitespace + text
++                    return StreamingParseResult()
++                if stripped.startswith(self.think_start_token):
++                    whitespace += text[: len(text) - len(stripped)]
++                    text = stripped[len(self.think_start_token) :]
++                    self._in_reasoning = True
++                    self.stripped_think_start = True
++                    continue
++                text = whitespace + text
++                if not self._in_reasoning:
++                    self._qwen_phase = "content"
++                    return StreamingParseResult(normal_text=text)
++                self._qwen_phase = "reasoning"
++                # Initial markers were handled above. Literal later openers
++                # inside reasoning must not be removed by the shared parser.
++                self.stripped_think_start = True
++                break
++        else:
++            text = new_text
++
++        pending = self._buffer + text
++        tool_idx = self._find_tool_start(pending, self._streamed_reasoning_tail)
++        end_idx = pending.find(self.think_end_token)
++        if tool_idx >= 0 and (end_idx < 0 or tool_idx < end_idx):
++            # Resolve the first actual closer. Looking at a later </think>
++            # before an earlier tool opener would make chunking change the split.
++            self._buffer = ""
++            self._in_reasoning = False
++            result = StreamingParseResult(
++                reasoning_text=pending[:tool_idx], normal_text=pending[tool_idx:]
++            )
++        else:
++            result = super()._parse_streaming_increment_impl(text)
++
++        if not self._in_reasoning:
++            # Closing reasoning commits to the answer even with an empty tail.
++            self._qwen_phase = "content"
++        return result
+ 
+ 
+ class KimiDetector(BaseReasoningFormatDetector):
+@@ -2349,6 +2451,11 @@ class ReasoningParser:
+ 
+         # Only pass force_reasoning if explicitly set, let detectors use their defaults
+         kwargs = {"stream_reasoning": stream_reasoning}
++        if detector_class is Qwen3Detector:
++            kwargs["single_assistant_reasoning"] = model_type.lower() in {
++                "qwen3",
++                "qwen3-thinking",
++            }
+         if force_reasoning is not None:
+             kwargs["force_reasoning"] = force_reasoning
+ 
+diff --git a/test/registered/unit/parser/test_qwen_single_assistant_cpu.py b/test/registered/unit/parser/test_qwen_single_assistant_cpu.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..59ac1cdd7990aae67d21a8c2826aade50f78022a
+--- /dev/null
++++ b/test/registered/unit/parser/test_qwen_single_assistant_cpu.py
+@@ -0,0 +1,241 @@
++"""Real Qwen parser regressions; no engine, model or tokenizer load."""
++
++import pytest
++from types import SimpleNamespace
++
++from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
++from sglang.srt.parser.reasoning_parser import (
++    BaseReasoningFormatDetector,
++    Qwen3Detector,
++    ReasoningParser,
++)
++
++CASES = [
++    (
++        False,
++        '{"key":"value"}\nuser\nassistant\n<think>later unfinished',
++        "",
++        '{"key":"value"}\nuser\nassistant\n<think>later unfinished',
++    ),
++    (False, "answer<think>literal</think>tail", "", "answer<think>literal</think>tail"),
++    (
++        False,
++        'A literal "<think>" is not a new assistant.',
++        "",
++        'A literal "<think>" is not a new assistant.',
++    ),
++    (
++        False,
++        '{"key":"value"}\nuser\nassistant\n<think>later</think>tail',
++        "",
++        '{"key":"value"}\nuser\nassistant\n<think>later</think>tail',
++    ),
++    (
++        False,
++        "<think>thought</think>answer<think>literal</think>",
++        "thought",
++        "answer<think>literal</think>",
++    ),
++    (False, "<think></think><think>literal</think>", "", "<think>literal</think>"),
++    (False, "<think><think>thought</think>answer", "thought", "answer"),
++    (False, "\n<think>thought</think>\nanswer", "\nthought", "\nanswer"),
++    (False, "<think>thought</thi", "thought</thi", ""),
++    (False, "<think>thought<", "thought<", ""),
++    (False, "<thi", "", "<thi"),
++    (False, "answer<thi", "", "answer<thi"),
++    (
++        False,
++        "\r\n🚀 answer字<think>literal</think>尾",
++        "",
++        "\r\n🚀 answer字<think>literal</think>尾",
++    ),
++    (False, "</think>answer", "", "</think>answer"),
++    (False, " \n\t", "", " \n\t"),
++    (
++        True,
++        "prefilled thought</think>answer<think>literal</think>",
++        "prefilled thought",
++        "answer<think>literal</think>",
++    ),
++    (True, "<think>thought</think>answer", "thought", "answer"),
++    (True, "<thi", "<thi", ""),
++    (True, "thought </thi", "thought </thi", ""),
++    (True, "</think>answer", "", "answer"),
++]
++
++
++def streamed(detector, chunks):
++    reasoning, content = [], []
++    for chunk in chunks:
++        result = detector.parse_streaming_increment(chunk)
++        reasoning.append(result.reasoning_text)
++        content.append(result.normal_text)
++    result = detector.finish()
++    reasoning.append(result.reasoning_text)
++    content.append(result.normal_text)
++    # A second final flush cannot duplicate content or a partial marker.
++    final = detector.finish()
++    assert final.normal_text == final.reasoning_text == ""
++    return "".join(reasoning), "".join(content)
++
++
++@pytest.mark.parametrize("force,text,reasoning,content", CASES)
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_stream_and_nonstream_match_at_every_split(
++    force, text, reasoning, content, stream_reasoning
++):
++    expected = (reasoning, content)
++    result = Qwen3Detector(force_reasoning=force).detect_and_parse(text)
++    assert (result.reasoning_text, result.normal_text) == expected
++    for split in range(len(text) + 1):
++        detector = Qwen3Detector(
++            force_reasoning=force, stream_reasoning=stream_reasoning
++        )
++        assert streamed(detector, [text[:split], text[split:]]) == expected
++    detector = Qwen3Detector(force_reasoning=force, stream_reasoning=stream_reasoning)
++    assert streamed(detector, list(text)) == expected
++
++
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_visible_content_is_never_reclassified_or_removed(stream_reasoning):
++    detector = Qwen3Detector(stream_reasoning=stream_reasoning)
++    first = detector.parse_streaming_increment("visible prefix")
++    assert first.normal_text == "visible prefix"
++    assert first.reasoning_text == ""
++    tail = "\nuser\nassistant\n<think>body literal</think>tail<thi"
++    assert streamed(detector, list(tail)) == ("", tail)
++
++
++def test_disabled_mode_does_not_hide_a_real_leading_thought():
++    request = ChatCompletionRequest(
++        messages=[{"role": "user", "content": "Answer directly."}],
++        chat_template_kwargs={"enable_thinking": False},
++    )
++    parser = ReasoningParser("qwen3", force_reasoning=False, request=request)
++    assert parser.parse_non_stream("<think>actual thought</think>answer") == (
++        "actual thought",
++        "answer",
++    )
++    parser = ReasoningParser("qwen3", force_reasoning=False, request=request)
++    text = "answer<think>literal</think>"
++    assert parser.parse_non_stream(text) == ("", text)
++
++
++@pytest.mark.parametrize(
++    "previous,text,expected",
++    [
++        ("prior content", "<think>literal</think>", ("", "<think>literal</think>")),
++        ("visible prefix<think>literal", " suffix", ("", " suffix")),
++        (
++            "<think>thought<tool_call>payload",
++            " suffix<think>literal</think>",
++            ("", " suffix<think>literal</think>"),
++        ),
++        ("<think>prior thought", "more</think>answer", ("more", "answer")),
++        ("<think>prior thought", "<think>literal", ("<think>literal", "")),
++        (
++            "<think>prior thought",
++            'use "<think>" literally</think>answer',
++            ('use "<think>" literally', "answer"),
++        ),
++        (
++            "<think>prior</think>",
++            "<think>literal</think>",
++            ("", "<think>literal</think>"),
++        ),
++    ],
++)
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_continuation_preserves_the_existing_assistant_phase(
++    previous, text, expected, stream_reasoning
++):
++    create = lambda: Qwen3Detector(
++        continue_final_message=True,
++        previous_content=previous,
++        stream_reasoning=stream_reasoning,
++    )
++    result = create().detect_and_parse(text)
++    assert (result.reasoning_text, result.normal_text) == expected
++    assert streamed(create(), list(text)) == expected
++
++
++@pytest.mark.parametrize("stream_reasoning", [False, True])
++def test_tool_interruption_still_closes_real_initial_reasoning(stream_reasoning):
++    text = "<think>thought<tool_call>payload</tool_call><think>literal</think>"
++    expected = ("thought", "<tool_call>payload</tool_call><think>literal</think>")
++    result = Qwen3Detector().detect_and_parse(text)
++    assert (result.reasoning_text, result.normal_text) == expected
++    assert (
++        streamed(Qwen3Detector(stream_reasoning=stream_reasoning), list(text))
++        == expected
++    )
++
++
++def test_reusing_nonstream_parser_does_not_retain_a_previous_choice_phase():
++    parser = ReasoningParser("qwen3", force_reasoning=False)
++    for text, expected in [
++        ("answer<think>literal</think>", ("", "answer<think>literal</think>")),
++        ("<thi", ("", "<thi")),
++        ("<think>real thought</think>answer", ("real thought", "answer")),
++        ("another answer", ("", "another answer")),
++    ]:
++        assert parser.parse_non_stream(text) == expected
++
++
++def test_real_chat_stream_choice_parsers_do_not_share_terminal_content_state():
++    from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
++
++    chat = object.__new__(OpenAIServingChat)
++    chat.reasoning_parser = "qwen3"
++    chat.template_manager = SimpleNamespace(force_reasoning=False)
++    chat.tokenizer_manager = SimpleNamespace(tokenizer=None)
++    chat._get_reasoning_from_request = lambda request: False
++    chat._tool_call_parsing_active = lambda request: False
++    request = ChatCompletionRequest(
++        messages=[{"role": "user", "content": "Answer directly."}],
++        n=2,
++        stream=True,
++        chat_template_kwargs={"enable_thinking": False},
++    )
++    parsers = {}
++    outputs = {0: ["", ""], 1: ["", ""]}
++    for index, chunk, finished in [
++        (0, "visible", None),
++        (1, "<thi", None),
++        (0, "<think>literal</think>", "stop"),
++        (1, "nk>real thought</think>answer", "stop"),
++    ]:
++        reasoning, content = chat._process_reasoning_stream(
++            index, chunk, parsers, {}, request, finished
++        )
++        outputs[index][0] += reasoning or ""
++        outputs[index][1] += content or ""
++    assert outputs == {
++        0: ["", "visible<think>literal</think>"],
++        1: ["real thought", "answer"],
++    }
++    assert parsers[0] is not parsers[1]
++
++
++@pytest.mark.parametrize(
++    "name",
++    ["dots", "minimax", "nanbeige", "interns1", "deepseek-v3", "mimo", "poolside_v1"],
++)
++def test_non_qwen_aliases_and_subclasses_preserve_actual_parse_behavior(name):
++    parser = ReasoningParser(name)
++    detector = parser.detector
++    for text in (
++        "prefix<think>thought</think>answer",
++        "<think>thought</think>answer",
++        "plain",
++    ):
++        legacy = BaseReasoningFormatDetector(
++            detector.think_start_token,
++            detector.think_end_token,
++            tool_start_token=detector.tool_start_token,
++            force_reasoning=detector.force_reasoning,
++        ).detect_and_parse(text)
++        assert parser.parse_non_stream(text) == (
++            legacy.reasoning_text,
++            legacy.normal_text,
++        )
+diff --git a/test/registered/unit/parser/test_reasoning_parser.py b/test/registered/unit/parser/test_reasoning_parser.py
+index bfb9ed87473b8d313a0a3f987ea24ba0cf8e5bea..64bca81f09ad7dc0803b98a3389ca7a95c1e7451 100644
+--- a/test/registered/unit/parser/test_reasoning_parser.py
++++ b/test/registered/unit/parser/test_reasoning_parser.py
+@@ -1019,7 +1019,7 @@ class TestStreamingChunkSizeInvariance(CustomTestCase):
+ 
+     Speculative decoding and stream_interval > 1 deliver multiple tokens per
+     step, which splits multi-character tokens like `</think>` across chunk
+-    boundaries. The two `_is_chunk_dependent` tests pin known exceptions.
++    boundaries. Format-specific tool interruption exceptions remain pinned below.
+     """
+ 
+     CHUNK_SIZES = [1, 2, 3, 5, 7, 11, 23, 1000]
+@@ -1090,9 +1090,8 @@ class TestStreamingChunkSizeInvariance(CustomTestCase):
+                         self._feed(DeepSeekR1Detector(), text, chunk_size), expected
+                     )
+ 
+-    def test_text_before_think_token_is_chunk_dependent(self):
+-        """Accepted divergence, inherited from main: text before `<think>` lands
+-        in reasoning or content depending on where the chunk boundary falls."""
++    def test_text_before_think_token_stays_content_across_chunks(self):
++        """A later literal opener cannot reclassify an assistant's answer."""
+         text = "lead<think>r</think>tail"
+         variants = {
+             self._feed(Qwen3Detector(), text, chunk_size)
+@@ -1101,13 +1100,10 @@ class TestStreamingChunkSizeInvariance(CustomTestCase):
+ 
+         self.assertEqual(
+             variants,
+-            {("r", "leadtail"), ("", text), ("leadr", "tail")},
++            {("", text)},
+         )
+-        # And the non-streaming path produces yet a fourth split.
+         one_shot = Qwen3Detector().detect_and_parse(text)
+-        self.assertEqual(
+-            (one_shot.reasoning_text, one_shot.normal_text), ("lead<think>r", "tail")
+-        )
++        self.assertEqual((one_shot.reasoning_text, one_shot.normal_text), ("", text))
+ 
+ 
+ class TestGptOssDetector(CustomTestCase):

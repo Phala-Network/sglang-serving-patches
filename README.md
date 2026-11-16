@@ -18,6 +18,11 @@ pinned versions of these projects.
 
 ## Version compatibility maintenance
 
+[Official v0.5.23 version-maintenance candidate](versions/v0.5.23/README.md)
+contains one shared ordered export for the complete version line, with conditional
+Qwen differences and no embedded Governor. It is unpublished; source and final-image
+qualification remain distinct. Older stacks and the active v0.5.20 selector stay intact.
+
 [Official Kimi K3.1 developer-image maintenance](versions/dev-kimi-k31/README.md)
 contains the scoped Mooncake read-completeness repair, packaged HF implementations,
 fixed native rail client and optional loader. Its ordered source replay preserves

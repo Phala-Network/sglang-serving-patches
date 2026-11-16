@@ -1,0 +1,5 @@
+# Complete v0.5.23 version stack; shared fixes once, Qwen behavior conditional.
+patches/common/0001-shared-serving-safety-and-context-integration.patch
+patches/models/qwen/0002-guarded-qwen-policy-model-and-protocol.patch
+patches/models/qwen/0003-single-assistant-reasoning-phase.patch
+patches/common/0004-scope-version-line-ci.patch
