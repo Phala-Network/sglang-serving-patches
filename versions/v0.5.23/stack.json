@@ -10,7 +10,7 @@
     "commit": "3923738f25611164d67496bbe3789a78a167c5d1",
     "tree": "68963b8974b65b028f174a222710c75643c11886",
     "version_line": "v0.5.23",
-    "navigation_branch": "codex/v0.5.23-release-prep-20261116"
+    "navigation_branch": "codex/sglang-v0.5.23-maintenance"
   },
   "patches": [
     {
