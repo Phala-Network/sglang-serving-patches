@@ -1,24 +1,33 @@
 # Official v0.5.23 version maintenance candidate
 
-This is a source-stage complete-version candidate. No image has been published and
-production has not been updated. Performance and quality selection remain in progress.
-It preserves the shared v0.5.20 engine main and all older compatibility stacks.
-The official base is `297e54fd105e974cdf401e5b4d20253a22c16f90`. The complete source
-[`3923738f25611164d67496bbe3789a78a167c5d1`](https://github.com/Phala-Network/sglang/commit/3923738f25611164d67496bbe3789a78a167c5d1)
-has tree `68963b8974b65b028f174a222710c75643c11886` and is available on
+This shared version stack preserves the v0.5.20 engine main and all older
+compatibility stacks. The official base remains
+`297e54fd105e974cdf401e5b4d20253a22c16f90` (v0.5.23).
+The complete source successor
+[`35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed`](https://github.com/Phala-Network/sglang/commit/35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed)
+has tree `0b2441c7279392ba0dff1e02ec201aa4e6359e37` on
 [`codex/sglang-v0.5.23-maintenance`](https://github.com/Phala-Network/sglang/tree/codex/sglang-v0.5.23-maintenance).
-Its CPU-qualified parser predecessor `a4d36d4be1df6867b1cbf6517857009d89aed554`
-has tree `93ca7bb5e66fa212bf7d551fd425ea1ec617d2af`.
-Its core predecessor `85e8b30df15fc21a74f01c40cf1d075522348292` is exactly tree-equivalent to frozen B1 core
-`902375be759ed3311339c23d30bcef63e464e44f`. The final Qwen parser is included unchanged from
-patch `5a2e4eb9dcbc01ebcb2500021ae3ecac0dc2200a97e1596c5b12737110b29413`; its seven-file CPU green passes 300 tests and 122 subtests.
-This is not final-image, GPU or production acceptance.
+It adds a focused nullable-tool repair after the previous complete source
+`3923738f25611164d67496bbe3789a78a167c5d1`; no published tag is moved.
 
-`stack.json` and `series` contain four source-derived steps: shared serving/privacy/lifecycle/
-grammar/cache safety and integration, followed by conditionally enabled Qwen policy/model/protocol
-adaptations, then the bounded Qwen single-assistant parser. The complete series is required before engine import; intermediate application trees are not
-standalone acceptance claims. Shared changes occur once for this official version. No 48/162-step
-historical set, Governor hooks, native component or old model profile is copied into this line.
+`stack.json` and `series` contain five ordered source-derived steps: shared
+serving/privacy/lifecycle/grammar/cache safety, conditional Qwen policy/model/
+protocol adaptations, the Qwen single-assistant reasoning parser, scoped
+version-line CI, and the nullable Qwen XML sentinel repair. Apply the complete
+series before engine import; intermediate trees are not independently qualified.
+Shared repairs occur once. No historical 48/162-step set or embedded Governor
+component is copied into this line; external PIG owns admission.
+
+The fifth step resolves an unquoted XML `null` before the generic mixed-union
+string preference only when the original argument schema also accepts null.
+Quoted strings, string-only/enum/const constraints, reference scope and the
+generic coercion utility keep their existing behavior. The exact changed
+module and tests passed isolated CPU red 7 failed/18 passed, then green 25
+passed, including stream splits at 1/7/64 characters. This ran in the previous
+candidate image's dependency environment with CUDA hidden, no network and no
+credentials. It is source-development evidence, not final-image or live API
+acceptance. The reasoning parser is unchanged, so its prior CPU evidence
+(300 tests and 122 subtests) remains applicable to that unchanged path.
 
 Use the existing verifier from the patch repository root:
 
@@ -26,18 +35,10 @@ Use the existing verifier from the patch repository root:
 python scripts/stack.py verify --stack-root versions/v0.5.23 --source /path/to/sglang
 ```
 
-The exact clean-index replay report is recorded separately. Source replay and the existing B1
-CPU/GPU evidence do not publish this candidate, qualify a final image, or accept production.
-The final engine source/tag/Release binds the real v0.5.23 version-line commit. Engine main owns
-recipe/docs; patches main owns this shared version export. Those main commits must be recorded
-separately and must never be substituted for the complete engine identity. External PIG is the
-only admission controller; embedded Governor is not selected.
-
-The complete engine adds only version-line CI
-metadata after the CPU-qualified parser source above. Both the complete `python/sglang` and
-`test` subtrees are identical to `a4d36d4be1df6867b1cbf6517857009d89aed554`; parser patch bytes remain unchanged.
-The four-step series uses two workflows: scoped static source checks and the existing Phala
-manual full lint. Unrelated upstream hardware, bot and automatic publishing workflows are
-retained in official/history refs rather than enabled on this version line. Exact patch replay
-uses the existing patches CI job. Applicable source CI is pending; source availability
-does not establish final-image or production acceptance.
+The export workflow checks source-derived patch bytes and clean ordered replay.
+The engine's scoped source workflow checks syntax and whitespace; runtime CPU,
+GPU, quality and chain checks have separate evidence. No image has been
+published and production has not been updated. The final receipt must bind
+complete engine source, patches main, recipe main and eventual immutable
+source tag/Release/image digest separately. Recipe main is not the complete
+v0.5.23 engine identity.

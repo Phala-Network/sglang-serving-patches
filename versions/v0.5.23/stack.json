@@ -7,8 +7,8 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "3923738f25611164d67496bbe3789a78a167c5d1",
-    "tree": "68963b8974b65b028f174a222710c75643c11886",
+    "commit": "35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed",
+    "tree": "0b2441c7279392ba0dff1e02ec201aa4e6359e37",
     "version_line": "v0.5.23",
     "navigation_branch": "codex/sglang-v0.5.23-maintenance"
   },
@@ -297,12 +297,29 @@
         ".github/workflows/weekly-update-est-time.yml",
         ".github/workflows/xpu-ci-job-monitor.yml"
       ]
+    },
+    {
+      "id": "v0523-0005",
+      "path": "patches/models/qwen/0005-preserve-nullable-xml-null-sentinels.patch",
+      "owner": "qwen-family-conditional",
+      "title": "Preserve nullable Qwen XML null sentinels before generic string preference",
+      "source_parent": "3923738f25611164d67496bbe3789a78a167c5d1",
+      "source_commit": "35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed",
+      "result_tree": "0b2441c7279392ba0dff1e02ec201aa4e6359e37",
+      "sha256": "01d41bb99ec7db080ee65484fe0147a7285f2b7a27186f86082931c65ce96a7e",
+      "apply_after": [
+        "v0523-0004"
+      ],
+      "changed_files": [
+        "python/sglang/srt/function_call/qwen3_coder_detector.py",
+        "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py"
+      ]
     }
   ],
   "governor": {
     "selected": false,
     "embedded": false
   },
-  "qualification": "Unpublished complete-version source candidate. Frozen core tree is B1-equivalent; final parser CPU green passes 300 tests and 122 subtests. Independent source acceptance, final selection, CI distribution configuration, final-image/GPU qualification and publication remain distinct. CI-only step preserves the complete python/sglang and test subtrees; it is not a new CPU/GPU pass.",
+  "qualification": "Unpublished nullable-tool correctness successor. The exact changed Qwen module and test bytes passed isolated same-image CPU red 7 failed/18 passed then green 25 passed, with CUDA hidden, network disabled and no credentials. The existing reasoning-parser CPU evidence remains applicable because that parser is unchanged; final-image, GPU, performance attribution, quality, chain and publication remain separate.",
   "composition": "Apply the complete ordered version stack before importing or running the engine; shared context hooks and conditional Qwen policy are cross-layer dependencies, not standalone qualified intermediate engines."
 }
