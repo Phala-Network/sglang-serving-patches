@@ -4,3 +4,5 @@ patches/models/qwen/0002-guarded-qwen-policy-model-and-protocol.patch
 patches/models/qwen/0003-single-assistant-reasoning-phase.patch
 patches/common/0004-scope-version-line-ci.patch
 patches/models/qwen/0005-preserve-nullable-xml-null-sentinels.patch
+patches/models/qwen/0006-bf16-q-for-b300-generation.patch
+patches/build/0007-release-b300-bf16-q-image.patch

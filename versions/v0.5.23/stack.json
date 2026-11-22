@@ -7,8 +7,8 @@
   },
   "engine": {
     "repository": "https://github.com/Phala-Network/sglang",
-    "commit": "35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed",
-    "tree": "0b2441c7279392ba0dff1e02ec201aa4e6359e37",
+    "commit": "1c9a64c947af8fd05cf2a813111d919e3e682146",
+    "tree": "4631df1ef06df40ab9774e8c238cad337b052402",
     "version_line": "v0.5.23",
     "navigation_branch": "codex/sglang-v0.5.23-maintenance"
   },
@@ -314,12 +314,45 @@
         "python/sglang/srt/function_call/qwen3_coder_detector.py",
         "test/registered/unit/function_call/test_qwen3_coder_schema_coercion.py"
       ]
+    },
+    {
+      "id": "v0523-0006",
+      "path": "patches/models/qwen/0006-bf16-q-for-b300-generation.patch",
+      "owner": "qwen-family-geometry-conditional",
+      "title": "Keep BF16 queries for qualifying B300 generation",
+      "source_parent": "35f00f8cfaaa56fa3f13edb9e81ae0ae1d4504ed",
+      "source_commit": "afa21206ab228b8be69de41acb14c54f91acff3b",
+      "result_tree": "05cea1fc2413d032754bdd9d53aeacbb50ff4c95",
+      "sha256": "82a237500641b151c86d3f022af62c0fa509f45ed37b381d81cf9f3a2bcad708",
+      "apply_after": [
+        "v0523-0005"
+      ],
+      "changed_files": [
+        "python/sglang/srt/layers/attention/trtllm_mha_backend.py"
+      ]
+    },
+    {
+      "id": "v0523-0007",
+      "path": "patches/build/0007-release-b300-bf16-q-image.patch",
+      "owner": "version-release-build",
+      "title": "Build and verify the scoped B300 BF16 Q release image",
+      "source_parent": "afa21206ab228b8be69de41acb14c54f91acff3b",
+      "source_commit": "1c9a64c947af8fd05cf2a813111d919e3e682146",
+      "result_tree": "4631df1ef06df40ab9774e8c238cad337b052402",
+      "sha256": "cb2964037ae2de545bff12bfd2067466400953abae3c2e3dbf7b83b42653d4ed",
+      "apply_after": [
+        "v0523-0006"
+      ],
+      "changed_files": [
+        ".github/workflows/phala-source-check.yml",
+        "docker/phala/v0.5.23/Dockerfile.bf16-q"
+      ]
     }
   ],
   "governor": {
     "selected": false,
     "embedded": false
   },
-  "qualification": "Unpublished nullable-tool correctness successor. The exact changed Qwen module and test bytes passed isolated same-image CPU red 7 failed/18 passed then green 25 passed, with CUDA hidden, network disabled and no credentials. The existing reasoning-parser CPU evidence remains applicable because that parser is unchanged; final-image, GPU, performance attribution, quality, chain and publication remain separate.",
+  "qualification": "The BF16 Q backend is byte-identical to the B300 development candidate that passed width-1 and width-4 kernel tests and CUDA Graph replay. Final immutable image verification is recorded with the release.",
   "composition": "Apply the complete ordered version stack before importing or running the engine; shared context hooks and conditional Qwen policy are cross-layer dependencies, not standalone qualified intermediate engines."
 }
