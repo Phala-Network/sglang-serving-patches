@@ -1,6 +1,6 @@
 {
   "schema": "phala.sglang.selector-verification.v3",
-  "as_of": "2026-10-02",
+  "as_of": "2026-10-06",
   "source_repository": "https://github.com/Phala-Network/sglang",
   "method": "Verify immutable commit/tree, exported patch bytes and SHA256; replay the frozen series from official upstream, then exact successor selectors from that verified tree. Moving or archived branches do not change identity. Reference-only rows do not pass replay.",
   "frozen_base_replay_tree": "83dcb00885129cc2afefdce2e169ebba697a9a67",
@@ -180,14 +180,14 @@
     "unified-v0520-governor-r6": {
       "passed": true,
       "identity_verified": true,
-      "fork_commit": "ce7a79563954a2cb2b2850b9869b7a7192d7d78b",
-      "fork_tree": "027b8478bd37052c8206b61b49a907a9082ec724",
-      "fork_branch": "codex/llguidance-strict-p11-20261002",
-      "patch_count": 131,
+      "fork_commit": "460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108",
+      "fork_tree": "d093000351737a9e49348f1cb8036c37de0e7433",
+      "fork_branch": "fix/glm47-parser-correctness",
+      "patch_count": 135,
       "replay_mode": "exact",
-      "status": "P11 llguidance strict-thinking token filter compatibility",
-      "validation_boundary": "Complete source replay and 117 native CPU tests including real GLM tokenizer/factory; final-image, GPU startup and model/HTTP acceptance separate",
-      "replay_tree": "027b8478bd37052c8206b61b49a907a9082ec724"
+      "status": "GLM47 active-tool and template-aware grammar correctness on the shared P11 stack",
+      "validation_boundary": "Exact complete-source replay; maintained-source CPU parser/chat tests and separate deployed v0.5.21 GLM Flash GPU evidence. No final-image or cross-model qualification of this v0.5.20 tree.",
+      "replay_tree": "d093000351737a9e49348f1cb8036c37de0e7433"
     }
   },
   "test_boundary": "Source/tree and export verification only. Linux imports, GPU execution, model-serving and production acceptance remain per-selector gates.",

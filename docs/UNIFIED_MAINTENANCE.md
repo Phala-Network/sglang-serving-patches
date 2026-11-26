@@ -6,17 +6,21 @@ There is no model selector argument and no second list of patch bytes to maintai
 The historical selectors and failed replay records remain evidence, not separate
 model release workflows.
 
-## Unified P11 source
+## Current unified source
 
-- Engine candidate for `v0.5.20-phala-unified-p11`: `ce7a79563954a2cb2b2850b9869b7a7192d7d78b`; tree `027b8478bd37052c8206b61b49a907a9082ec724`. Published P8-r1 remains the rollback baseline.
-- Ordered stack: 31 protected plus 131 successor steps (162 total). llguidance is the default; explicit XGrammar remains supported. Kimi's exact JSON trailer, EOS, rollback/copy and tokenizer bytes are preserved. Structural-tag grammars handle literal, special and composite markers without losing schema constraints.
-- Linux CPU development tests passed 117/117 with zero skips, including nine real Kimi tokenizer cases, batched masks, tokenizer/padded-vocabulary checks, mixed/composite structural markers and strict negative cases. This uses candidate code in a disposable P10 container; it is not final-image evidence.
+- Engine with GLM47 parser/grammar increments: `460d63a87c44c5dc9a9fd3837e9cb5b6d5b4e108`; tree `d093000351737a9e49348f1cb8036c37de0e7433`. Published P8-r1 remains the rollback baseline.
+- Ordered stack: 31 protected plus 135 successor steps (166 total). llguidance is the default; explicit XGrammar remains supported. Kimi's exact JSON trailer, EOS, rollback/copy and tokenizer bytes are preserved. Structural-tag grammars handle literal, special and composite markers without losing schema constraints.
+- Earlier P11 Linux CPU development tests passed 117/117 with zero skips, including nine real Kimi tokenizer cases, batched masks, tokenizer/padded-vocabulary checks, mixed/composite structural markers and strict negative cases. This uses candidate code in a disposable P10 container; it is not final-image evidence.
 - Governor remains `f40dc2b985e4b0c68c1e8c72fbacb0e9e9a9b155`, version 0.2.10/ABI5. XGrammar remains 0.2.6+phala.union1; llguidance remains 1.8.0 in the pinned image base. Native exports and gateway/PD inputs are unchanged.
 - The final immutable image must pass installed tests without runtime overlays. GPU inference, model HTTP quality and production deployment remain later owner acceptance gates. PIG is a separate sidecar, independently pinned by production Compose.
 
 Default or explicit modern schemas preserve no-op propertyNames, inapplicable/false uniqueItems, and contains limits without contains. Reference resolution happens before removing no-ops, respecting resource IDs and pointer escaping. Effective array uniqueness remains rejected. Explicit legacy or unknown dialects anywhere in schema positions are passed unchanged to native llguidance; no new legacy-dialect compatibility is claimed.
 
 P11 adds stateless packed-mask token filtering through the existing shared torch helper. Seven real GLM deployment-tokenizer tests cover the strict-thinking startup grammar factory, reasoning isolation, budgets, clone/rollback and sampling masks; five packed-bit tests cover signed/duplicate IDs and row isolation. These are CPU checks, not GPU startup or model HTTP acceptance.
+
+The latest GLM47 increments have separate [maintained-source CPU and deployed
+v0.5.21 GPU evidence](GLM47_PARSER_VALIDATION_20261006.md). That deployment does not
+qualify the complete unified v0.5.20 image or other model families.
 
 ## Verify and Prepare
 

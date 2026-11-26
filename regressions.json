@@ -82,6 +82,26 @@
       {
         "name": "deepseek-protocol",
         "path": "test/manual/phala/test_dsv41_shared_protocol_cpu.py"
+      },
+      {
+        "name": "glm47-stream-chunks",
+        "path": "test/registered/unit/function_call/test_glm47_stream_chunks.py"
+      },
+      {
+        "name": "glm47-required-call-grammar",
+        "path": "test/registered/unit/function_call/test_function_call_parser.py",
+        "args": [
+          "-k",
+          "Glm47FullAssistantGrammar"
+        ]
+      },
+      {
+        "name": "glm47-chat-template-grammar",
+        "path": "test/registered/unit/entrypoints/openai/test_serving_chat.py",
+        "args": [
+          "-k",
+          "glm47 or glm_tool_grammar"
+        ]
       }
     ],
     "simulator": [
